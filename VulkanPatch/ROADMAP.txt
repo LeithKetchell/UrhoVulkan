@@ -1,0 +1,85 @@
+Urho3D Vulkan Enhancement Roadmap
+Let's assume that Vulkan is now doing all the rendering for Urho3D - and no more support for Legacy rendering (D3D, OpenGL, etc.)
+Here's a list of MORE ways that Urho3D can benefit from Vulkan features:
+
+Step	Urho3D System / Feature	        Vulkan Feature(s)	                                Benefits / Notes	                                     Priority
+==================================================================================================================================================================
+1	    Graphics Backend Core	        Vulkan instance, device, swapchain, render passes	Full Vulkan backend, replaces OpenGL/D3D	             Must do first
+2	    Materials & Shaders	            SPIR-V runtime compilation, descriptor sets	        All existing shaders work; dynamic material support	     High
+3	    Rendering Loop	                Multi-threaded command buffers	                    Parallel mesh submission, CPU-bound scenes accelerate	 High
+4	    Octree / Scene Culling	        GPU-driven culling (optional compute shader)	    Offloads frustum / occlusion culling to GPU	             Medium
+5	    Deferred / Post-processing	    Subpasses, tile-based optimization	                Reduced memory bandwidth, more efficient G-buffer passes Medium
+6	    Texture / Resource Management	Bindless textures, descriptor indexing	            Thousands of textures without rebinding                  Medium
+7	    Animation & Skinning	        GPU compute shaders	                                Real-time skinning for many animated models	             Medium
+8	    Particles / VFX	Compute shaders	                                                    Large particle systems on GPU                            Medium
+9	    Pipeline Caching	            Disk-persistent pipeline cache	                    Reduce startup and shader compilation time	             Medium
+10	    Multi-GPU / Device Selection	Vulkan physical device selection	                Performance tuning, high-end multi-GPU support	         Low
+11	    Ray Tracing (optional)	        VK_KHR_ray_tracing	                                Advanced shadows, reflections, GI	                     Low / optional
+12	    Async Resource Loading	        Vulkan fences, semaphores	                        Load textures, buffers, meshes without stalls	         Low
+
+Implementation Notes for Each Step
+Step 1 — Core Vulkan Backend
+Already discussed: GraphicsVulkan, swapchain, render passes.
+Required to replace legacy backends completely.
+
+Step 2 — Materials & Shaders
+Use ShaderCompiler for runtime SPIR-V compilation.
+Map every Urho3D Material to a Vulkan pipeline.
+Supports all render passes and material variants.
+
+Step 3 — Multi-threaded Command Buffers
+Traverse Octree on multiple threads.
+Each thread records draw commands into its command buffer.
+Main thread aggregates and submits to Vulkan queue.
+
+Step 4 — GPU-driven Culling
+Optional compute shader processes Octree / bounding boxes.
+Outputs visible indices to a buffer for the main render pass.
+
+Step 5 — Deferred & Post-processing
+Use Vulkan subpasses and explicit render pass dependencies.
+Optimize G-buffer creation and post-processing (bloom, SSAO, FXAA).
+
+Step 6 — Bindless / Descriptor Indexing
+Allocate a large descriptor set with thousands of textures.
+Materials reference textures via index instead of rebinding each time.
+
+Step 7 — GPU Skinning
+Store bone matrices in SSBO.
+Compute shader updates vertex positions directly on GPU.
+
+Step 8 — Particles / VFX
+Compute shaders update particle positions, velocities, and lifetimes.
+Reduces CPU overhead for thousands of particles.
+
+Step 9 — Pipeline Caching
+Use VkPipelineCache object.
+Serialize to disk for subsequent runs.
+Reduces runtime compilation cost for frequently used materials.
+
+Step 10 — Multi-GPU / Device Selection
+Enumerate physical devices.
+Select discrete GPU if available.
+Optional AFR (Alternate Frame Rendering) for extreme performance.
+
+Step 11 — Ray Tracing
+Optional high-end feature.
+Can be integrated later without affecting base rasterization.
+
+Step 12 — Async Resource Loading
+Use Vulkan fences and semaphores to schedule resource uploads.
+Prevents frame stalls during texture or mesh streaming.
+
+
+Recommended Implementation Order
+Replace graphics backend (Vulkan-only) → mandatory first
+Integrate SPIR-V shader compilation & pipelines → essential for material support
+Multi-threaded command buffers → immediate CPU performance boost
+Bindless textures → medium-term performance improvement
+Deferred / post-processing optimizations → optional but highly beneficial
+GPU skinning & compute particle systems → optional performance enhancements
+Pipeline caching → startup time optimization
+Multi-GPU & Ray tracing → optional high-end features
+
+
+

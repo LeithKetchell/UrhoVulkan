@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(xargs:*)",
+      "Bash(apt-cache search:*)",
+      "Bash(sudo apt-get:*)",
+      "Bash(sudo apt-get install:*)",
+      "Bash(apt-get install:*)",
+      "Bash(export VULKAN_SDK=/home/leith/Desktop/1.4.313.0/x86_64)",
+      "Bash(cmake:*)",
+      "Bash(VULKAN_SDK=/home/leith/Desktop/1.4.313.0/x86_64 LD_LIBRARY_PATH=$VULKAN_SDK/lib:$LD_LIBRARY_PATH make:*)",
+      "Bash(LD_LIBRARY_PATH=$VULKAN_SDK/lib:$LD_LIBRARY_PATH make:*)",
+      "Bash(make:*)",
+      "Bash(export:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
