@@ -9,7 +9,7 @@
 
 Main website: [https://urho3d.io/](https://urho3d.io/)
 
-### 🚀 Vulkan Graphics Backend (v1.9.0 Enhancement)
+### 🚀 Vulkan Graphics Backend (v2.0.1 Enhancement)
 This build includes a complete **modern Vulkan graphics backend** alongside the legacy OpenGL and Direct3D 11 support:
 - **Phase 1-9**: Core Vulkan implementation (instance, device, buffers, textures, shaders, pipelines)
 - **Phase 10**: Staging buffer optimization for asynchronous GPU uploads

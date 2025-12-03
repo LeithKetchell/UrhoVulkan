@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Urho3D** is a free, lightweight, cross-platform 2D and 3D game engine implemented in C++, released under the MIT license. It supports multiple scripting languages (AngelScript, Lua) and multiple rendering backends (OpenGL, Direct3D 11).
 
-- **Current Version**: 1.9.0
+- **Current Version**: 2.0.1
 - **Build System**: CMake 3.15+
 - **Supported Platforms**: Windows, Linux, macOS, iOS, tvOS, Android, Web (Emscripten), Raspberry Pi
 - **Documentation**: https://urho3d.io/documentation
@@ -262,7 +262,7 @@ Uses ccache for build caching and Docker for cross-platform builds.
 
 ### Overview
 
-Urho3D 1.9.0 now includes **Vulkan** as a modern graphics backend alongside legacy OpenGL and Direct3D 11 support. Vulkan is the preferred backend on supported Linux platforms, with automatic fallback to OpenGL/D3D11.
+Urho3D 2.0.1 now includes **Vulkan** as a modern graphics backend alongside legacy OpenGL and Direct3D 11 support. Vulkan is the preferred backend on supported Linux platforms, with automatic fallback to OpenGL/D3D11.
 
 ### Building with Vulkan
 
