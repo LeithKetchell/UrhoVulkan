@@ -4,6 +4,7 @@
 #pragma once
 
 #include <Urho3D/Core/Object.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 using namespace Urho3D;
 
@@ -46,5 +47,6 @@ public:
     bool zoom_;
     /// Gyroscope on/off flag.
     bool useGyroscope_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };
 

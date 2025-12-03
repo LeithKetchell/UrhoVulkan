@@ -41,6 +41,11 @@ void SkeletalAnimation::Start()
     // Execute base class startup
     Sample::Start();
 
+    // Load UI style for ProfilerUI (must be before creating UI elements)
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
     // Create the scene content
     CreateScene();
 
@@ -55,6 +60,13 @@ void SkeletalAnimation::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_ABSOLUTE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void SkeletalAnimation::CreateScene()
@@ -160,6 +172,14 @@ void SkeletalAnimation::CreateInstructions()
     instructionText->SetHorizontalAlignment(HA_CENTER);
     instructionText->SetVerticalAlignment(VA_CENTER);
     instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    ui->GetRoot()->AddChild(vulkanIndicator);
 }
 
 void SkeletalAnimation::SetupViewport()
@@ -228,6 +248,13 @@ void SkeletalAnimation::HandleUpdate(StringHash eventType, VariantMap& eventData
 
     // Move the camera, scale movement with time step
     MoveCamera(timeStep);
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
 
 void SkeletalAnimation::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)

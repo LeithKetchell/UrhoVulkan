@@ -5,7 +5,9 @@
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Graphics/Graphics.h>
 #include <Urho3D/GraphicsAPI/Texture2D.h>
+#include <Urho3D/UI/Font.h>
 #include <Urho3D/UI/Sprite.h>
+#include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
 
 #include "Sprites.h"
@@ -30,6 +32,11 @@ void Sprites::Start()
     // Execute base class startup
     Sample::Start();
 
+    // Load UI style for ProfilerUI (must be before creating UI elements)
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
     // Create the sprites to the user interface
     CreateSprites();
 
@@ -38,6 +45,14 @@ void Sprites::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void Sprites::CreateSprites()
@@ -83,6 +98,14 @@ void Sprites::CreateSprites()
         // Store sprites to our own container for easy movement update iteration
         sprites_.Push(sprite);
     }
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    ui->GetRoot()->AddChild(vulkanIndicator);
 }
 
 void Sprites::MoveSprites(float timeStep)
@@ -127,4 +150,11 @@ void Sprites::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     // Move sprites, scale movement with time step
     MoveSprites(timeStep);
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }

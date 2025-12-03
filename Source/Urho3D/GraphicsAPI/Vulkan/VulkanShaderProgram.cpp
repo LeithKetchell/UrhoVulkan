@@ -2,121 +2,119 @@
 // Copyright (c) 2008-2024 the Urho3D project.
 // License: MIT
 //
-// Vulkan shader program implementation (Phase 6)
+// Vulkan shader program implementation (Phase 9)
+
+#include "../Precompiled.h"
+#include "VulkanShaderProgram.h"
+#include "../ShaderVariation.h"
+#include "../ConstantBuffer.h"
+#include "../../IO/Log.h"
 
 #ifdef URHO3D_VULKAN
-
-#include "VulkanShaderProgram.h"
-#include "VulkanGraphicsImpl.h"
-#include "VulkanShaderCompiler.h"
-#include "../Shader.h"
-#include "../ShaderVariation.h"
-#include "../../Core/Log.h"
 
 namespace Urho3D
 {
 
-ShaderProgram_VK::ShaderProgram_VK()
+VulkanShaderProgram::VulkanShaderProgram(ShaderVariation* vs, ShaderVariation* ps) :
+    vertexShader_(vs),
+    pixelShader_(ps)
 {
+    LinkParameters();
 }
 
-ShaderProgram_VK::~ShaderProgram_VK()
+VulkanShaderProgram::~VulkanShaderProgram()
 {
-    Release();
+    // Constant buffers are cleaned up automatically via SharedPtr
+    // Pipeline layout should be cleaned up by caller before destruction
 }
 
-void ShaderProgram_VK::Release()
+const ShaderParameter* VulkanShaderProgram::GetParameter(StringHash param) const
 {
-    if (pipelineLayout_)
-    {
-        Graphics* graphics = GetSubsystem<Graphics>();
-        if (graphics)
-        {
-            VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
-            if (impl)
-            {
-                vkDestroyPipelineLayout(impl->GetDevice(), pipelineLayout_, nullptr);
-            }
-        }
-        pipelineLayout_ = nullptr;
-    }
-
-    for (VkDescriptorSetLayout layout : descriptorSetLayouts_)
-    {
-        if (layout)
-        {
-            Graphics* graphics = GetSubsystem<Graphics>();
-            if (graphics)
-            {
-                VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
-                if (impl)
-                {
-                    vkDestroyDescriptorSetLayout(impl->GetDevice(), layout, nullptr);
-                }
-            }
-        }
-    }
-    descriptorSetLayouts_.Clear();
-}
-
-bool ShaderProgram_VK::Link(ShaderVariation* vs, ShaderVariation* ps)
-{
-    Release();
-
-    if (!vs || !ps)
-    {
-        URHO3D_LOGERROR("Invalid shader variations for linking");
-        return false;
-    }
-
-    Graphics* graphics = GetSubsystem<Graphics>();
-    if (!graphics)
-    {
-        URHO3D_LOGERROR("Graphics subsystem not available");
-        return false;
-    }
-
-    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
-    if (!impl)
-    {
-        URHO3D_LOGERROR("Vulkan graphics implementation not available");
-        return false;
-    }
-
-    // For now, create a minimal pipeline layout without descriptor sets
-    // Full implementation would reflect SPIR-V and create descriptor layouts
-    VkPipelineLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount = 0;
-    layoutInfo.pSetLayouts = nullptr;
-    layoutInfo.pushConstantRangeCount = 0;
-
-    if (vkCreatePipelineLayout(impl->GetDevice(), &layoutInfo, nullptr, &pipelineLayout_) != VK_SUCCESS)
-    {
-        URHO3D_LOGERROR("Failed to create pipeline layout for shader program");
-        return false;
-    }
-
-    URHO3D_LOGDEBUG("Shader program linked successfully");
-    return true;
-}
-
-VkDescriptorSetLayout ShaderProgram_VK::GetDescriptorSetLayout(uint32_t set) const
-{
-    if (set < descriptorSetLayouts_.Size())
-        return descriptorSetLayouts_[set];
+    auto it = parameters_.Find(param);
+    if (it != parameters_.End())
+        return &it->second_;
     return nullptr;
 }
 
-bool ShaderProgram_VK::ReflectShaders(ShaderVariation* vs, ShaderVariation* ps)
+void VulkanShaderProgram::LinkParameters()
 {
-    // TODO: Implement SPIR-V reflection (Phase 7)
-    // This would involve:
-    // 1. Getting SPIR-V bytecode from both shader variations
-    // 2. Using spirv-reflect or glslang reflection to analyze descriptor bindings
-    // 3. Creating VkDescriptorSetLayout objects for each set
-    // 4. Updating the pipeline layout with descriptor set layouts
-    return false;
+    parameters_.Clear();
+
+    // Combine parameters from vertex shader
+    if (vertexShader_)
+    {
+        const HashMap<StringHash, ShaderParameter>& vsParams = vertexShader_->GetParameters();
+        for (auto it = vsParams.Begin(); it != vsParams.End(); ++it)
+        {
+            parameters_[it->first_] = it->second_;
+        }
+    }
+
+    // Combine parameters from pixel shader
+    if (pixelShader_)
+    {
+        const HashMap<StringHash, ShaderParameter>& psParams = pixelShader_->GetParameters();
+        for (auto it = psParams.Begin(); it != psParams.End(); ++it)
+        {
+            parameters_[it->first_] = it->second_;
+        }
+    }
+
+    // Initialize constant buffers for each parameter group if not already created
+    for (unsigned i = 0; i < MAX_SHADER_PARAMETER_GROUPS; ++i)
+    {
+        if (!constantBuffers_[i])
+        {
+            // Constant buffers will be created on-demand when parameters are set
+            // For now, leave as null - they'll be created in SetShaderParameter
+        }
+    }
+
+    // Phase 23: Clear reflected resources (will be populated during shader compilation)
+    reflectedResources_.Clear();
+}
+
+bool VulkanShaderProgram::CreatePipelineLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout)
+{
+    if (!device)
+        return false;
+
+    // Create pipeline layout with push constants and descriptor sets
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+    // Add descriptor set layout if provided
+    if (descriptorSetLayout)
+    {
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &descriptorSetLayout;
+    }
+
+    // Add push constants for fast-changing data (Phase 9)
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = 128;  // 104 bytes for VulkanBatchPushConstants + padding
+
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create pipeline layout");
+        return false;
+    }
+
+    return true;
+}
+
+void VulkanShaderProgram::DestroyPipelineLayout(VkDevice device)
+{
+    if (device && pipelineLayout_)
+    {
+        vkDestroyPipelineLayout(device, pipelineLayout_, nullptr);
+        pipelineLayout_ = nullptr;
+    }
 }
 
 } // namespace Urho3D

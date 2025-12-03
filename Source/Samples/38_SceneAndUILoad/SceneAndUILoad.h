@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -47,4 +48,5 @@ private:
     void ToggleLight1(StringHash eventType, VariantMap& eventData);
     /// Handle toggle button 2 being pressed.
     void ToggleLight2(StringHash eventType, VariantMap& eventData);
+    SharedPtr<ProfilerUI> profilerUI_;
 };

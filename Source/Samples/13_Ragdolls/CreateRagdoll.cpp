@@ -9,6 +9,7 @@
 #include "CreateRagdoll.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 CreateRagdoll::CreateRagdoll(Context* context) :
     Component(context)

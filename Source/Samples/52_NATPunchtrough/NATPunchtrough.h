@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -84,6 +85,8 @@ private:
     void HandleClientConnected(StringHash eventType, VariantMap& eventData);
     /// Handle client disconnecting
     void HandleClientDisconnected(StringHash eventType, VariantMap& eventData);
+    /// Handle the logic update event.
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
 
     /// NAT master server address
     SharedPtr<LineEdit> natServerAddress_;
@@ -103,4 +106,5 @@ private:
     Vector<String> logHistory_;
     /// Created server GUID field
     SharedPtr<LineEdit> guid_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

@@ -117,6 +117,10 @@ if (NOT ANDROID AND NOT ARM AND NOT WEB)
         add_subdirectory (ThirdParty/GLEW)
     endif()
 
+    if (URHO3D_VULKAN)
+        add_subdirectory (ThirdParty/VMA)
+    endif()
+
     if (NOT CMAKE_SYSTEM_NAME STREQUAL Linux)
         add_subdirectory (ThirdParty/LibCpuId)
     endif ()

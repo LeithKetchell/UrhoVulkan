@@ -15,6 +15,7 @@
 #include "SoundSynthesis.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // Expands to this example's entry-point
 URHO3D_DEFINE_APPLICATION_MAIN(SoundSynthesis)
@@ -51,6 +52,18 @@ void SoundSynthesis::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Load UI style for ProfilerUI
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void SoundSynthesis::CreateSound()
@@ -112,6 +125,14 @@ void SoundSynthesis::CreateInstructions()
     instructionText_->SetHorizontalAlignment(HA_CENTER);
     instructionText_->SetVerticalAlignment(VA_CENTER);
     instructionText_->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    ui->GetRoot()->AddChild(vulkanIndicator);
 }
 
 void SoundSynthesis::SubscribeToEvents()
@@ -139,4 +160,12 @@ void SoundSynthesis::HandleUpdate(StringHash eventType, VariantMap& eventData)
         "Coefficient: " + String(filter_));
 
     UpdateSound();
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
+

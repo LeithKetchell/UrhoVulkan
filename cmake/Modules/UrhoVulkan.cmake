@@ -13,8 +13,32 @@ endif()
 message(STATUS "Vulkan found: ${Vulkan_LIBRARIES}")
 message(STATUS "Vulkan include: ${Vulkan_INCLUDE_DIRS}")
 
+# Validate Vulkan SDK version (require 1.0+)
+if(Vulkan_VERSION)
+    message(STATUS "Vulkan SDK version: ${Vulkan_VERSION}")
+    if(Vulkan_VERSION VERSION_LESS "1.0.0")
+        message(FATAL_ERROR "Vulkan SDK version ${Vulkan_VERSION} is too old. Require 1.0.0 or later.")
+    endif()
+else()
+    message(WARNING "Could not determine Vulkan SDK version. Proceeding anyway.")
+endif()
+
 # Add Vulkan include directories
 include_directories(${Vulkan_INCLUDE_DIRS})
+
+# Find and configure VMA (Vulkan Memory Allocator)
+set(VMA_PATH "${CMAKE_SOURCE_DIR}/Source/ThirdParty/VMA")
+if(EXISTS "${VMA_PATH}/include/vk_mem_alloc.h")
+    message(STATUS "Found VMA (Vulkan Memory Allocator) at: ${VMA_PATH}")
+    include_directories(${VMA_PATH}/include)
+    set(VMA_FOUND_MSG "FOUND")
+    set(VMA_FOUND TRUE)
+    # VMA should be built as part of the main Urho3D library CMakeLists.txt
+else()
+    message(WARNING "VMA (Vulkan Memory Allocator) not found at ${VMA_PATH}")
+    set(VMA_FOUND_MSG "NOT FOUND")
+    set(VMA_FOUND FALSE)
+endif()
 
 # Link Vulkan library
 link_libraries(${Vulkan_LIBRARIES})
@@ -95,3 +119,19 @@ function(compile_glsl_to_spirv GLSL_SOURCE SPIRV_OUTPUT)
         message(WARNING "Cannot compile shaders: shader compiler not found")
     endif()
 endfunction()
+
+# ============================================================================
+# Vulkan Configuration Validation Summary
+# ============================================================================
+message(STATUS "")
+message(STATUS "========== Vulkan Configuration Summary ==========")
+message(STATUS "Vulkan SDK:              FOUND (${Vulkan_LIBRARIES})")
+message(STATUS "VMA (Memory Allocator):  ${VMA_FOUND_MSG}")
+message(STATUS "Shader Compiler:         ${SHADER_COMPILER_FOUND}")
+if(ShaderC_FOUND)
+    message(STATUS "  - Primary: shaderc (Google's GLSL compiler)")
+elseif(glslang_FOUND)
+    message(STATUS "  - Primary: glslang (Khronos reference compiler)")
+endif()
+message(STATUS "Platform Definitions:    ${VULKAN_PLATFORM_DEFINES}")
+message(STATUS "==================================================")

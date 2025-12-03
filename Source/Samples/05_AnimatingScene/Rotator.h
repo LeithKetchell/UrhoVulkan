@@ -4,6 +4,7 @@
 #pragma once
 
 #include <Urho3D/Scene/LogicComponent.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // All Urho3D classes reside in namespace Urho3D
 using namespace Urho3D;
@@ -28,4 +29,5 @@ public:
 private:
     /// Rotation speed.
     Vector3 rotationSpeed_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

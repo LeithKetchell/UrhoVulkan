@@ -6,6 +6,7 @@
 #include <Urho3D/Math/BigInt.h>
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 class Clicker : public Sample
 {
@@ -50,4 +51,5 @@ private:
 
     /// Handle the mouse click event.
     void HandleMouseButtonDown(StringHash eventType, VariantMap& eventData);
+    SharedPtr<ProfilerUI> profilerUI_;
 };

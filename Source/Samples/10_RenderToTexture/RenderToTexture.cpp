@@ -40,6 +40,11 @@ void RenderToTexture::Start()
     // Execute base class startup
     Sample::Start();
 
+    // Load UI style for ProfilerUI (must be before creating UI elements)
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
     // Create the scene content
     CreateScene();
 
@@ -54,6 +59,13 @@ void RenderToTexture::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_RELATIVE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void RenderToTexture::CreateScene()

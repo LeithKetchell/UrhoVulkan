@@ -10,6 +10,7 @@
 #include "AppState_ResultScreen.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 using namespace Urho3D;
 

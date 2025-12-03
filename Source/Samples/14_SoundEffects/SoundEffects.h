@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -54,6 +55,10 @@ private:
     Button* CreateButton(int x, int y, int xSize, int ySize, const String& text);
     /// Create a horizontal slider with specified text above it.
     Slider* CreateSlider(int x, int y, int xSize, int ySize, const String& text);
+    /// Subscribe to application-wide logic update events.
+    void SubscribeToEvents();
+    /// Handle the logic update event.
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
     /// Handle a sound effect button click.
     void HandlePlaySound(StringHash eventType, VariantMap& eventData);
     /// Handle "play music" button click.
@@ -64,6 +69,7 @@ private:
     void HandleSoundVolume(StringHash eventType, VariantMap& eventData);
     /// Handle music volume slider change.
     void HandleMusicVolume(StringHash eventType, VariantMap& eventData);
+    SharedPtr<ProfilerUI> profilerUI_;
 };
 
 

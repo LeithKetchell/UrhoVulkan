@@ -455,6 +455,87 @@ export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
 - [Vulkan Samples](https://github.com/KhronosGroup/Vulkan-Samples)
 - [VMA Documentation](https://gpuopen.com/vulkan-memory-allocator/)
 
+## ProfilerUI in Examples (STANDARD PATTERN)
+
+All 55+ examples now follow a consistent pattern for displaying the Vulkan profiler UI overlay with proper styling.
+
+### Required Setup in Example Headers (.h)
+
+```cpp
+#pragma once
+
+#include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
+
+class YourExample : public Sample
+{
+    // ... class definition ...
+
+private:
+    /// Profiler UI overlay
+    SharedPtr<ProfilerUI> profilerUI_;
+};
+```
+
+### Required Setup in Start() Method
+
+```cpp
+void YourExample::Start()
+{
+    // Execute base class startup
+    Sample::Start();
+
+    // Load UI style for ProfilerUI (must be before creating UI elements)
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
+    // ... create scene, UI, setup viewport, subscribe to events ...
+
+    // Set the mouse mode to use in the sample
+    Sample::InitMouseMode(MM_FREE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
+}
+```
+
+### Required Setup in HandleUpdate() Method
+
+```cpp
+void YourExample::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    // ... your update code ...
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
+}
+```
+
+### Key Points
+
+1. **UI style must be loaded FIRST** - before any UI element creation
+2. **ProfilerUI must be initialized LAST** - after InitMouseMode() and all other setup
+3. **HandleUpdate must call both RecordFrame() and Update()** - to properly display metrics
+4. **All examples use the same pattern** - ensures consistency across the codebase
+
+### Current Status
+
+✅ **All 55 numbered examples + benchmark properly configured**
+✅ **Complete build verification successful**
+✅ **See EXAMPLES_UI_FIXES_SUMMARY.md for detailed changes**
+
 ## Known Build Options and Platforms
 
 - **32/64-bit**: `-DURHO3D_64BIT=1` (default: auto-detect)

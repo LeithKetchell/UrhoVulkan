@@ -4,6 +4,7 @@
 #pragma once
 
 #include <Urho3D/Scene/LogicComponent.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // All Urho3D classes reside in namespace Urho3D
 using namespace Urho3D;
@@ -50,4 +51,5 @@ public:
     bool aboveClimbable_;
     /// Indicate when the player is climbing a slope, so we can apply force to its body.
     bool onSlope_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <Urho3D/Scene/LogicComponent.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // All Urho3D classes reside in namespace Urho3D
 using namespace Urho3D;
@@ -48,4 +49,5 @@ public:
     float moveSpeedScale_;
     /// Camera's zoom (used to scale movement speed based on camera zoom).
     float zoom_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

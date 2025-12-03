@@ -14,8 +14,8 @@ namespace Urho3D
 
 // Vulkan-specific constants and definitions
 
-/// Default frame pipelining depth (number of in-flight frames)
-static const uint32_t VULKAN_FRAME_COUNT = 2;
+/// Default frame pipelining depth (number of in-flight frames) - Triple buffering for better GPU utilization
+static const uint32_t VULKAN_FRAME_COUNT = 3;
 
 /// Default descriptor pool sizes
 static const uint32_t VULKAN_DESCRIPTOR_POOL_SIZE = 1000;
@@ -24,8 +24,8 @@ static const uint32_t VULKAN_DESCRIPTOR_SET_LAYOUT_POOL_SIZE = 100;
 /// Default command buffer pool sizes
 static const uint32_t VULKAN_COMMAND_BUFFER_PER_FRAME = 1;
 
-/// Swapchain configuration
-static const uint32_t VULKAN_DEFAULT_SWAPCHAIN_IMAGES = 2;
+/// Swapchain configuration (Quick Win #7 - Triple buffering support)
+static const uint32_t VULKAN_DEFAULT_SWAPCHAIN_IMAGES = 3;
 static const VkFormat VULKAN_PREFERRED_SURFACE_FORMAT = VK_FORMAT_B8G8R8A8_SRGB;
 static const VkFormat VULKAN_FALLBACK_SURFACE_FORMAT = VK_FORMAT_R8G8B8A8_SRGB;
 

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -104,4 +105,6 @@ private:
     WeakPtr<Character> character_;
     /// First person camera flag.
     bool firstPerson_;
+    /// Profiler UI overlay
+    SharedPtr<ProfilerUI> profilerUI_;
 };

@@ -49,6 +49,12 @@ public:
     /// Allocate a descriptor set
     VkDescriptorSet AllocateDescriptorSet(VkDescriptorSetLayout layout);
 
+    /// Get or reuse descriptor set (with caching for common patterns)
+    VkDescriptorSet GetOrCreateDescriptorSet(VkDescriptorSetLayout layout, uint64_t resourceBindingHash);
+
+    /// Reset per-frame descriptor set cache
+    void ResetFrameCache();
+
     /// Get descriptor pool
     VkDescriptorPool GetPool() const { return descriptorPool_; }
 
@@ -61,6 +67,14 @@ private:
 
     // Cached descriptor set layouts by binding configuration
     HashMap<StringHash, VkDescriptorSetLayout> layoutCache_;
+
+    // Per-frame descriptor set cache by (layout hash + resource binding hash)
+    // Key: layout hash XOR resource binding hash, Value: descriptor set
+    HashMap<uint64_t, VkDescriptorSet> frameDescriptorSetCache_;
+    // Descriptor set caching can be implemented later with proper hashing
+
+    // Track which descriptor sets are in use this frame (for potential reuse)
+    Vector<VkDescriptorSet> activeDescriptorSets_;
 };
 
 } // namespace Urho3D

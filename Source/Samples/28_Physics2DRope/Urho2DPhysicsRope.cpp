@@ -22,6 +22,7 @@
 #include "Urho2DPhysicsRope.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(Urho2DPhysicsRope)
 
@@ -37,6 +38,11 @@ void Urho2DPhysicsRope::Start()
     // Execute base class startup
     Sample::Start();
 
+    // Load UI style for ProfilerUI (must be before creating UI elements)
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
     // Create the scene content
     CreateScene();
 
@@ -51,6 +57,14 @@ void Urho2DPhysicsRope::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void Urho2DPhysicsRope::CreateScene()
@@ -205,4 +219,12 @@ void Urho2DPhysicsRope::HandleUpdate(StringHash eventType, VariantMap& eventData
 
     auto* physicsWorld = scene_->GetComponent<PhysicsWorld2D>();
     physicsWorld->DrawDebugGeometry();
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
+

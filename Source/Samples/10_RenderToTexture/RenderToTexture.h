@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -46,4 +47,5 @@ private:
     SharedPtr<Scene> rttScene_;
     /// Camera scene node in the render-to-texture scene.
     SharedPtr<Node> rttCameraNode_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

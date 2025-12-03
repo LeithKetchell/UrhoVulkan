@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -76,4 +77,5 @@ private:
     bool animate_;
     /// Group optimization flag.
     bool useGroups_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

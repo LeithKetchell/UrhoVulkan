@@ -4,6 +4,8 @@
 #pragma once
 
 #include <Urho3D/Base/PrimitiveTypes.h>
+#include <Urho3D/Container/Ptr.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 using namespace Urho3D::PrimitiveTypes;
 
@@ -51,4 +53,5 @@ public:
     int GetCurrentFps() const { return currentFps_; }
 
     void Update(float timeStep);
+    Urho3D::SharedPtr<Urho3D::ProfilerUI> profilerUI_;
 };

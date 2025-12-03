@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -78,6 +79,8 @@ private:
     void HandleClientDisconnected(StringHash eventType, VariantMap& eventData);
     /// Handle remote event from server which tells our controlled object node ID.
     void HandleClientObjectID(StringHash eventType, VariantMap& eventData);
+    /// Handle the logic update event.
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
 
     /// Mapping from client connections to controllable objects.
     HashMap<Connection*, WeakPtr<Node>> serverObjects_;
@@ -101,4 +104,5 @@ private:
     SharedPtr<Text> packetsOut_;
     /// Packet counter UI update timer
     Timer packetCounterTimer_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

@@ -163,6 +163,8 @@ if (CMAKE_PROJECT_NAME STREQUAL Urho3D)
     # On Windows platform Direct3D11 can be optionally chosen
     # Using Direct3D11 on non-MSVC compiler may require copying and renaming Microsoft official libraries (.lib to .a), else link failures or non-functioning graphics may result
     cmake_dependent_option (URHO3D_D3D11 "Use Direct3D11 (Windows platform only)" TRUE "WIN32" FALSE)
+    # Vulkan support is enabled by default on Linux and Windows where the SDK is available
+    cmake_dependent_option (URHO3D_VULKAN "Use Vulkan (Linux and Windows platforms)" TRUE "NOT IOS AND NOT TVOS AND NOT ANDROID AND NOT WEB AND NOT APPLE" FALSE)
     if (X86 OR E2K OR WEB)
         # TODO: Rename URHO3D_SSE to URHO3D_SIMD
         if (MINGW AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.9.1)

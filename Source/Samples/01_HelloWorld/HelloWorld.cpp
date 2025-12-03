@@ -25,6 +25,11 @@ void HelloWorld::Start()
     // Execute base class startup
     Sample::Start();
 
+    // Load UI style and set as default for all UI elements
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
     // Create "Hello World" Text
     CreateText();
 
@@ -35,11 +40,20 @@ void HelloWorld::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void HelloWorld::CreateText()
 {
     auto* cache = GetSubsystem<ResourceCache>();
+    auto* ui = GetSubsystem<UI>();
+    UIElement* root = ui->GetRoot();
 
     // Construct new Text object
     SharedPtr<Text> helloText(new Text(context_));
@@ -56,7 +70,15 @@ void HelloWorld::CreateText()
     helloText->SetVerticalAlignment(VA_CENTER);
 
     // Add Text instance to the UI root element
-    GetSubsystem<UI>()->GetRoot()->AddChild(helloText);
+    root->AddChild(helloText);
+
+    // Add Vulkan indicator in top-left corner
+    SharedPtr<Text> vulkanIndicator(new Text(context_));
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    root->AddChild(vulkanIndicator);
 }
 
 void HelloWorld::SubscribeToEvents()
@@ -67,5 +89,15 @@ void HelloWorld::SubscribeToEvents()
 
 void HelloWorld::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
-    // Do nothing for now, could be extended to eg. animate the display
+    using namespace Update;
+
+    // Take the frame time step
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }

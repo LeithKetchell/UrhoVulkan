@@ -24,6 +24,7 @@
 #include "PBRMaterials.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(PBRMaterials)
 
@@ -53,6 +54,13 @@ void PBRMaterials::Start()
 
     // Subscribe to global events for camera movement
     SubscribeToEvents();
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void PBRMaterials::CreateInstructions()
@@ -162,6 +170,14 @@ void PBRMaterials::CreateUI()
     ambientSlider->SetRange(10.0f); // 0 - 10 range
     SubscribeToEvent(ambientSlider, E_SLIDERCHANGED, URHO3D_HANDLER(PBRMaterials, HandleAmbientSliderChanged));
     ambientSlider->SetValue(zone_->GetAmbientColor().a_);
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    ui->GetRoot()->AddChild(vulkanIndicator);
 }
 
 void PBRMaterials::HandleRoughnessSliderChanged(StringHash eventType, VariantMap& eventData)
@@ -262,4 +278,12 @@ void PBRMaterials::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     // Move the camera, scale movement with time step
     MoveCamera(timeStep);
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
+

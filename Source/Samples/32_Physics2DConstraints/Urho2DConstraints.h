@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -98,4 +99,5 @@ private:
     bool drawDebug_{};
     /// Camera object.
     Camera* camera_{};
+    SharedPtr<ProfilerUI> profilerUI_;
 };

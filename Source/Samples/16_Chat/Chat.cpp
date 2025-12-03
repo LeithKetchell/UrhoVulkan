@@ -3,6 +3,7 @@
 
 #include <Urho3D/Audio/Audio.h>
 #include <Urho3D/Audio/Sound.h>
+#include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Graphics/Graphics.h>
 #include <Urho3D/Graphics/Zone.h>
@@ -26,6 +27,7 @@
 #include "Chat.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // Undefine Windows macro, as our Connection class has a function called SendMessage
 #ifdef SendMessage
@@ -60,6 +62,13 @@ void Chat::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void Chat::CreateUI()
@@ -102,6 +111,14 @@ void Chat::CreateUI()
 
     // No viewports or scene is defined. However, the default zone's fog color controls the fill color
     GetSubsystem<Renderer>()->GetDefaultZone()->SetFogColor(Color(0.0f, 0.0f, 0.1f));
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    root->AddChild(vulkanIndicator);
 }
 
 void Chat::SubscribeToEvents()
@@ -121,6 +138,9 @@ void Chat::SubscribeToEvents()
     SubscribeToEvent(E_SERVERCONNECTED, URHO3D_HANDLER(Chat, HandleConnectionStatus));
     SubscribeToEvent(E_SERVERDISCONNECTED, URHO3D_HANDLER(Chat, HandleConnectionStatus));
     SubscribeToEvent(E_CONNECTFAILED, URHO3D_HANDLER(Chat, HandleConnectionStatus));
+
+    // Subscribe to update events
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(Chat, HandleUpdate));
 }
 
 Button* Chat::CreateButton(const String& text, int width)
@@ -268,4 +288,17 @@ void Chat::HandleNetworkMessage(StringHash /*eventType*/, VariantMap& eventData)
 void Chat::HandleConnectionStatus(StringHash /*eventType*/, VariantMap& eventData)
 {
     UpdateButtons();
+}
+
+void Chat::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }

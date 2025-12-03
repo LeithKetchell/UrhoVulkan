@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -51,4 +52,5 @@ private:
     void HandleDragBegin(StringHash eventType, VariantMap& eventData);
     void HandleDragMove(StringHash eventType, VariantMap& eventData);
     void HandleDragCancel(StringHash eventType, VariantMap& eventData);
+    SharedPtr<ProfilerUI> profilerUI_;
 };

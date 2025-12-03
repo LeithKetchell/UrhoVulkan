@@ -4,12 +4,14 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 /// This first example, maintaining tradition, prints a "Hello World" message.
 /// Furthermore it shows:
 ///     - Using the Sample / Application classes, which initialize the Urho3D engine and run the main loop
 ///     - Adding a Text element to the graphical user interface
 ///     - Subscribing to and handling of update events
+///     - Profiling Vulkan backend performance (Phase 13)
 class HelloWorld : public Sample
 {
     URHO3D_OBJECT(HelloWorld, Sample);
@@ -38,4 +40,7 @@ private:
     void SubscribeToEvents();
     /// Handle the logic update event.
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
+
+    /// Profiler UI overlay
+    SharedPtr<ProfilerUI> profilerUI_;
 };

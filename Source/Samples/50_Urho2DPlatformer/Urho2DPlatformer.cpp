@@ -40,6 +40,7 @@
 #include "Utilities2D/Sample2D.h"
 #include "Utilities2D/Mover.h"
 #include "Urho2DPlatformer.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 
 URHO3D_DEFINE_APPLICATION_MAIN(Urho2DPlatformer)
@@ -80,6 +81,25 @@ void Urho2DPlatformer::Start()
 
     // Hook up to the frame update events
     SubscribeToEvents();
+
+    // Add Vulkan indicator in top-left corner
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    GetSubsystem<UI>()->GetRoot()->AddChild(vulkanIndicator);
+
+    // Load UI style for ProfilerUI
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    ui->GetRoot()->SetDefaultStyle(uiStyle);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void Urho2DPlatformer::CreateScene()

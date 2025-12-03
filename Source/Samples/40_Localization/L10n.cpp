@@ -8,6 +8,7 @@
 #include <Urho3D/Graphics/StaticModel.h>
 #include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Resource/Localization.h>
+#include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Resource/ResourceEvents.h>
 #include <Urho3D/UI/Button.h>
 #include <Urho3D/UI/Font.h>
@@ -19,6 +20,7 @@
 #include "L10n.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(L10n)
 
@@ -48,6 +50,22 @@ void L10n::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Add Vulkan indicator in top-left corner
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    GetSubsystem<UI>()->GetRoot()->AddChild(vulkanIndicator);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void L10n::InitLocalizationSystem()
@@ -187,6 +205,13 @@ void L10n::HandleUpdate(StringHash eventType, VariantMap& eventData)
     pitch_ += MOUSE_SENSITIVITY * mouseMove.y_;
     pitch_ = Clamp(pitch_, -90.0f, 90.0f);
     cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
 
 void L10n::HandleChangeLangButtonPressed(StringHash eventType, VariantMap& eventData)
@@ -223,3 +248,4 @@ void L10n::HandleChangeLanguage(StringHash eventType, VariantMap& eventData)
 
     // A text on the button "Press this button" changes automatically
 }
+

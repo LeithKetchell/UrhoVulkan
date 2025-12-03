@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -70,4 +71,5 @@ private:
     SharedPtr<Node> spriterNode_;
     /// Spriter animation index.
     int spriterAnimationIndex_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

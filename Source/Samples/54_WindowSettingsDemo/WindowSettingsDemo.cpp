@@ -16,6 +16,7 @@
 #include <Urho3D/UI/Button.h>
 #include <Urho3D/UI/CheckBox.h>
 #include <Urho3D/UI/DropDownList.h>
+#include <Urho3D/UI/Font.h>
 #include <Urho3D/UI/LineEdit.h>
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/ToolTip.h>
@@ -26,6 +27,7 @@
 #include "WindowSettingsDemo.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(WindowSettingsDemo)
 
@@ -69,6 +71,24 @@ void WindowSettingsDemo::Start()
     auto* renderer = GetSubsystem<Renderer>();
     SharedPtr<Viewport> viewport(new Viewport(context_, scene_, cameraNode_->GetComponent<Camera>()));
     renderer->SetViewport(0, viewport);
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    GetSubsystem<UI>()->GetRoot()->AddChild(vulkanIndicator);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
+
+    // Subscribe to update events
+    SubscribeToEvents();
 }
 
 void WindowSettingsDemo::CreateScene()
@@ -291,5 +311,23 @@ void WindowSettingsDemo::SynchronizeSettings()
     {
         if (graphics->GetMultiSample() == static_cast<int>(1 << i))
             multiSampleControl_->SetSelection(i);
+    }
+}
+
+void WindowSettingsDemo::SubscribeToEvents()
+{
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(WindowSettingsDemo, HandleUpdate));
+}
+
+void WindowSettingsDemo::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
     }
 }

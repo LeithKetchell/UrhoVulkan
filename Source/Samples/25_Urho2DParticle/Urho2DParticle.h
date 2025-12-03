@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -46,9 +47,12 @@ private:
     void SetupViewport();
     /// Subscribe to application-wide logic update events.
     void SubscribeToEvents();
+    /// Handle the logic update event.
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
     /// Handle mouse move event.
     void HandleMouseMove(StringHash eventType, VariantMap& eventData);
 
     /// Particle scene node.
     SharedPtr<Node> particleNode_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

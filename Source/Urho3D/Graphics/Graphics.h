@@ -15,6 +15,10 @@
 #include "../Math/Rect.h"
 #include "../Resource/Image.h"
 
+#ifdef URHO3D_VULKAN
+#include "VulkanProfiler.h"
+#endif
+
 struct SDL_Window;
 
 namespace Urho3D
@@ -24,6 +28,7 @@ class ConstantBuffer;
 class File;
 class Image;
 class IndexBuffer;
+class Material;
 class GPUObject;
 class RenderSurface;
 class Shader;
@@ -36,6 +41,7 @@ class TextureCube;
 class Vector3;
 class Vector4;
 class VertexBuffer;
+class VulkanProfiler;
 
 #ifdef URHO3D_OPENGL
 class GraphicsImpl_OGL;
@@ -342,6 +348,15 @@ public:
     {
         assert(Graphics::GetGAPI() == GAPI_D3D11);
         return static_cast<GraphicsImpl_D3D11*>(impl_);
+    }
+#endif
+
+#ifdef URHO3D_VULKAN
+    /// Return graphics implementation, which holds the actual API-specific resources.
+    class VulkanGraphicsImpl* GetImpl_Vulkan() const
+    {
+        assert(Graphics::GetGAPI() == GAPI_VULKAN);
+        return static_cast<VulkanGraphicsImpl*>(impl_);
     }
 #endif
 
@@ -728,6 +743,14 @@ public:
     /// Return whether is using an OpenGL 3 context. Return always false on Direct3D9 & Direct3D11.
     static bool GetGL3Support();
 
+#ifdef URHO3D_VULKAN
+    /// Return the Vulkan profiler instance.
+    VulkanProfiler* GetVulkanProfiler() const { return vulkanProfiler_.Get(); }
+#else
+    /// Return null when Vulkan is not enabled.
+    VulkanProfiler* GetVulkanProfiler() const { return nullptr; }
+#endif
+
 private:
     /// Create the application window icon.
     void CreateWindowIcon();
@@ -1027,6 +1050,43 @@ private:
     static unsigned GetFormat_D3D11(const String& formatName);
 #endif // def URHO3D_D3D11
 
+#ifdef URHO3D_VULKAN
+    // Vulkan graphics API proxy functions
+    void Constructor_Vulkan();
+    bool BeginFrame_Vulkan();
+    void EndFrame_Vulkan();
+    void Clear_Vulkan(ClearTargetFlags flags, const Color& color = Color(0.0f, 0.0f, 0.0f, 0.0f), float depth = 1.0f, u32 stencil = 0);
+    void SetViewport_Vulkan(int x, int y, int width, int height);
+    void SetScissor_Vulkan(int x, int y, int width, int height);
+    /// Phase 27: Material descriptor binding for GPU access
+    /// Binds material texture and parameter descriptors before drawing
+    bool BindMaterialDescriptors_Vulkan(Material* material) const;
+    /// Phase 27: Draw geometry with material descriptors bound
+    /// Integrates Phases 17-26 descriptor pipeline into rendering
+    void Draw_Vulkan(class Geometry* geometry, class Material* material);
+    void SetVertexBuffer_Vulkan(unsigned index, VertexBuffer* buffer);
+    void SetIndexBuffer_Vulkan(IndexBuffer* buffer);
+    void SetBlendMode_Vulkan(BlendMode mode, bool alphaToCoverage = false);
+    void SetCullMode_Vulkan(CullMode mode);
+    void SetDepthTest_Vulkan(CompareMode mode);
+    void SetDepthWrite_Vulkan(bool enable);
+    void SetFillMode_Vulkan(FillMode mode);
+    void SetStencilTest_Vulkan(bool enable, CompareMode mode = CMP_ALWAYS, StencilOp pass = OP_KEEP, StencilOp fail = OP_KEEP, StencilOp zFail = OP_KEEP, u32 stencilRef = 0, u32 compareMask = M_U32_MASK_ALL_BITS, u32 writeMask = M_U32_MASK_ALL_BITS);
+    void SetColorWrite_Vulkan(bool enable);
+    void Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned vertexCount);
+    void Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount);
+    void Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned baseVertexIndex, unsigned minVertex, unsigned vertexCount);
+    void DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount, unsigned instanceCount);
+    void DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned baseVertexIndex, unsigned minVertex, unsigned vertexCount, unsigned instanceCount);
+    void PrepareDraw_Vulkan();
+    void SetTexture_Vulkan(unsigned index, Texture* texture);
+    void SetShaderParameter_Vulkan(StringHash param, const Variant& value);
+    bool NeedParameterUpdate_Vulkan(ShaderParameterGroup group, const void* source);
+    void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps);
+    void SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget);
+    void SetDepthStencil_Vulkan(RenderSurface* depthStencil);
+#endif // def URHO3D_VULKAN
+
     /// Mutex for accessing the GPU objects vector from several threads.
     Mutex gpuObjectMutex_;
     /// Implementation.
@@ -1180,6 +1240,10 @@ private:
     mutable String lastShaderName_;
     /// Shader precache utility.
     SharedPtr<ShaderPrecache> shaderPrecache_;
+#ifdef URHO3D_VULKAN
+    /// Vulkan profiler utility.
+    SharedPtr<VulkanProfiler> vulkanProfiler_;
+#endif
     /// Allowed screen orientations.
     String orientations_;
     /// Graphics API name.

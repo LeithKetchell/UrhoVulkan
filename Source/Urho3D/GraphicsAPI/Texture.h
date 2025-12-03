@@ -8,6 +8,10 @@
 #include "../Math/Color.h"
 #include "../Resource/Resource.h"
 
+#ifdef URHO3D_VULKAN
+#include <vulkan/vulkan.h>
+#endif
+
 namespace Urho3D
 {
 
@@ -179,6 +183,12 @@ public:
 
     /// Return Vulkan sampler (VkSampler cast to void*). Only used on Vulkan.
     void* GetSampler_Vulkan() const { return sampler_; }
+
+    /// Return Vulkan image view as VkImageView. Only used on Vulkan.
+    /// Phase 19: Texture VkImageView Exposure
+    /// Returns the VkImageView handle for shader resource binding in descriptors.
+    /// Returns VK_NULL_HANDLE if not a Vulkan texture or not initialized.
+    VkImageView GetVkImageView() const { return (VkImageView)shaderResourceView_; }
 #else
     void* GetImageView_Vulkan() const { return nullptr; }
     void* GetSampler_Vulkan() const { return nullptr; }

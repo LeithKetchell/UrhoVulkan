@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -77,4 +78,5 @@ private:
     SharedPtr<Node> stretchSpriteNode_;
     /// Transform mode tracking index.
     unsigned selectTransform_ = 0;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

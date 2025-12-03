@@ -19,6 +19,7 @@
 #include "Urho2DStretchableSprite.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(Urho2DStretchableSprite)
 
@@ -46,6 +47,18 @@ void Urho2DStretchableSprite::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Load UI style for ProfilerUI
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void Urho2DStretchableSprite::CreateScene()
@@ -100,6 +113,14 @@ void Urho2DStretchableSprite::CreateInstructions()
     instructionText->SetHorizontalAlignment(HA_CENTER);
     instructionText->SetVerticalAlignment(VA_CENTER);
     instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    ui->GetRoot()->AddChild(vulkanIndicator);
 }
 
 void Urho2DStretchableSprite::SetupViewport()
@@ -138,6 +159,13 @@ void Urho2DStretchableSprite::HandleUpdate(StringHash /*eventType*/, VariantMap&
     case 2: TranslateSprites(timeStep);
         break;
     default: URHO3D_LOGERRORF("bad transform selection: %d", selectTransform_);
+    }
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
     }
 }
 
@@ -220,3 +248,4 @@ void Urho2DStretchableSprite::ScaleSprites(float timeStep)
         stretchSpriteNode_->Scale2D(scale);
     }
 }
+

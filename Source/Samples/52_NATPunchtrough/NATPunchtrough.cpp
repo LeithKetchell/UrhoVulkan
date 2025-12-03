@@ -3,6 +3,7 @@
 
 #include <Urho3D/Audio/Audio.h>
 #include <Urho3D/Audio/Sound.h>
+#include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Input/Input.h>
@@ -19,6 +20,7 @@
 #include <Urho3D/UI/UI.h>
 
 #include "NATPunchtrough.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // Undefine Windows macro, as our Connection class has a function called SendMessage
 #ifdef SendMessage
@@ -48,6 +50,13 @@ void NATPunchtrough::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void NATPunchtrough::CreateUI()
@@ -88,6 +97,14 @@ void NATPunchtrough::CreateUI()
 
     // No viewports or scene is defined. However, the default zone's fog color controls the fill color
     GetSubsystem<Renderer>()->GetDefaultZone()->SetFogColor(Color(0.0f, 0.0f, 0.1f));
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    root->AddChild(vulkanIndicator);
 }
 
 void NATPunchtrough::SubscribeToEvents()
@@ -111,6 +128,9 @@ void NATPunchtrough::SubscribeToEvents()
     SubscribeToEvent(saveNatSettingsButton_, "Released", URHO3D_HANDLER(NATPunchtrough, HandleSaveNatSettings));
     SubscribeToEvent(startServerButton_, "Released", URHO3D_HANDLER(NATPunchtrough, HandleStartServer));
     SubscribeToEvent(connectButton_, "Released", URHO3D_HANDLER(NATPunchtrough, HandleConnect));
+
+    // Subscribe to update events
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(NATPunchtrough, HandleUpdate));
 }
 
 Button* NATPunchtrough::CreateButton(const String& text, int width, IntVector2 position)
@@ -247,4 +267,17 @@ void NATPunchtrough::HandleClientConnected(StringHash eventType, VariantMap& eve
 void NATPunchtrough::HandleClientDisconnected(StringHash eventType, VariantMap& eventData)
 {
     ShowLogMessage("Server: Client disconnected!");
+}
+
+void NATPunchtrough::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }

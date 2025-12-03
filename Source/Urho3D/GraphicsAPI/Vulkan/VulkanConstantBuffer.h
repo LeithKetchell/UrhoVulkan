@@ -41,6 +41,7 @@ public:
 private:
     VkBuffer buffer_{};
     VmaAllocation allocation_{};
+    void* mappedData_{};  // Persistent mapping pointer (Quick Win #10)
     unsigned size_{};
 };
 

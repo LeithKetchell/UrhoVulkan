@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 /// Text rendering example.
 /// Displays text at various sizes, with checkboxes to change the rendering parameters.
@@ -41,4 +42,5 @@ private:
     void HandleFontHintLevel(StringHash eventType, VariantMap& eventData);
     void HandleFontSubpixel(StringHash eventType, VariantMap& eventData);
     void HandleFontOversampling(StringHash eventType, VariantMap& eventData);
+    SharedPtr<ProfilerUI> profilerUI_;
 };

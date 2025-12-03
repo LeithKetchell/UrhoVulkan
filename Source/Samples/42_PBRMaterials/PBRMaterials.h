@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -64,4 +65,5 @@ private:
     Text* ambientLabel_;
     /// Zone component in scene.
     WeakPtr<Zone> zone_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

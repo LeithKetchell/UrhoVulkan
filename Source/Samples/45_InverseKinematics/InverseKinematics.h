@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -66,4 +67,5 @@ private:
     void HandleSceneDrawableUpdateFinished(StringHash eventType, VariantMap& eventData);
     /// Camera node.
     SharedPtr<Node> cameraRotateNode_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

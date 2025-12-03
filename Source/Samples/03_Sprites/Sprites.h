@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 /// Moving sprites example.
 /// This sample demonstrates:
@@ -44,4 +45,6 @@ private:
 
     /// Vector to store the sprites for iterating through them.
     Vector<SharedPtr<Sprite>> sprites_;
+    /// Profiler UI for displaying performance metrics
+    SharedPtr<ProfilerUI> profilerUI_;
 };

@@ -583,6 +583,11 @@ Graphics::Graphics(Context* context, GAPI gapi)
 {
     Graphics::gapi = gapi;
 
+#ifdef URHO3D_VULKAN
+    // Create Vulkan profiler instance
+    vulkanProfiler_ = new VulkanProfiler();
+#endif
+
 #ifdef URHO3D_OPENGL
     if (gapi == GAPI_OPENGL)
     {
@@ -837,6 +842,11 @@ void Graphics::Draw(PrimitiveType type, unsigned vertexStart, unsigned vertexCou
         return Draw_OGL(type, vertexStart, vertexCount);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Draw_Vulkan(type, vertexStart, vertexCount);
+#endif
+
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return Draw_D3D11(type, vertexStart, vertexCount);;
@@ -850,6 +860,11 @@ void Graphics::Draw(PrimitiveType type, unsigned indexStart, unsigned indexCount
 #ifdef URHO3D_OPENGL
     if (gapi == GAPI_OPENGL)
         return Draw_OGL(type, indexStart, indexCount, minVertex, vertexCount);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Draw_Vulkan(type, indexStart, indexCount, minVertex, vertexCount);
 #endif
 
 #ifdef URHO3D_D3D11
@@ -867,6 +882,11 @@ void Graphics::Draw(PrimitiveType type, unsigned indexStart, unsigned indexCount
         return Draw_OGL(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Draw_Vulkan(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount);
+#endif
+
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return Draw_D3D11(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount);
@@ -880,6 +900,11 @@ void Graphics::DrawInstanced(PrimitiveType type, unsigned indexStart, unsigned i
 #ifdef URHO3D_OPENGL
     if (gapi == GAPI_OPENGL)
         return DrawInstanced_OGL(type, indexStart, indexCount, minVertex, vertexCount, instanceCount);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return DrawInstanced_Vulkan(type, indexStart, indexCount, minVertex, vertexCount, instanceCount);
 #endif
 
 #ifdef URHO3D_D3D11
@@ -896,6 +921,11 @@ void Graphics::DrawInstanced(PrimitiveType type, unsigned indexStart, unsigned i
 #ifdef URHO3D_OPENGL
     if (gapi == GAPI_OPENGL)
         return DrawInstanced_OGL(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount, instanceCount);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return DrawInstanced_Vulkan(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount, instanceCount);
 #endif
 
 #ifdef URHO3D_D3D11
