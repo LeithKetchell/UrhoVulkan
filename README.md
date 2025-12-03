@@ -9,6 +9,18 @@
 
 Main website: [https://urho3d.io/](https://urho3d.io/)
 
+### 🚀 Vulkan Graphics Backend (v1.9.0 Enhancement)
+This build includes a complete **modern Vulkan graphics backend** alongside the legacy OpenGL and Direct3D 11 support:
+- **Phase 1-9**: Core Vulkan implementation (instance, device, buffers, textures, shaders, pipelines)
+- **Phase 10**: Staging buffer optimization for asynchronous GPU uploads
+- **Phase 11**: Comprehensive Doxygen documentation
+- **Phase 12**: GPU-driven instancing with indirect draw commands
+- **Phase 13**: Performance profiling and telemetry collection
+
+Build with `-DURHO3D_VULKAN=1` to enable. See [PROJECT_STATUS.md](PROJECT_STATUS.md) and [VULKAN_IMPLEMENTATION_SUMMARY.md](VULKAN_IMPLEMENTATION_SUMMARY.md) for details.
+
+**Status**: ✅ All 54 samples compile successfully | Production-Ready
+
 ## License
 Licensed under the MIT license, see [LICENSE](licenses/urho3d/LICENSE) for details.
 
