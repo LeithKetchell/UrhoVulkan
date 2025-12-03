@@ -531,6 +531,31 @@ private:
     /// Returns VK_SAMPLE_COUNT_1_BIT if requested count unavailable.
     VkSampleCountFlagBits SelectBestSampleCount(uint32_t requestedCount);
 
+    /// \brief Detect timeline semaphore extension support
+    /// \returns True if device supports VK_KHR_timeline_semaphore, false otherwise
+    /// \details Queries device features for timeline semaphore capability.
+    /// Called during physical device selection to enable timeline-based synchronization.
+    bool DetectTimelineSemaphoreSupport();
+
+    /// \brief Create timeline semaphore for render completion tracking
+    /// \returns True if semaphore created successfully, false on error
+    /// \details Creates VkSemaphore with VK_SEMAPHORE_TYPE_TIMELINE for GPU-CPU sync.
+    /// Replaces 3 binary render complete semaphores with single timeline counter.
+    /// Initial counter value set to 0 (VULKAN_TIMELINE_INITIAL_VALUE).
+    bool CreateTimelineSemaphore();
+
+    /// \brief Wait on timeline semaphore reaching specific counter value
+    /// \param targetValue Expected timeline counter value to wait for
+    /// \returns True if semaphore reached value, false on timeout
+    /// \details Non-blocking alternative to WaitForFrameFence().
+    /// GPU waits on specific timeline counter instead of CPU blocking on fence.
+    bool WaitOnTimelineRenderSemaphore(uint64_t targetValue);
+
+    /// \brief Signal timeline semaphore after frame completion
+    /// \details Increments timelineRenderCounter_ after vkQueueSubmit().
+    /// Called from Present() to mark frame as GPU-complete.
+    void SignalTimelineRenderSemaphore();
+
     // Vulkan instance and device objects
     VkInstance instance_{};
     VkPhysicalDevice physicalDevice_{};
@@ -606,6 +631,11 @@ private:
     VkSampleCountFlagBits requestedSampleCount_{VK_SAMPLE_COUNT_1_BIT};  ///< User-requested sample count
     VkSampleCountFlagBits actualSampleCount_{VK_SAMPLE_COUNT_1_BIT};     ///< Device-supported sample count (clamped)
     uint32_t supportedSampleCountsMask_{VK_SAMPLE_COUNT_1_BIT};           ///< Bitmask of device-supported sample counts
+
+    // Timeline semaphore support (Phase 33)
+    bool supportsTimelineSemaphores_{false};         ///< Device supports VK_KHR_timeline_semaphore
+    VkSemaphore timelineRenderSemaphore_{};          ///< Timeline semaphore for render completion (replaces 3 binary semaphores)
+    uint64_t timelineRenderCounter_{0};              ///< Current timeline counter value (incremented after each frame)
 
     // Frame tracking
     uint32_t frameIndex_{0};
