@@ -56,6 +56,9 @@ bool Graphics::BeginFrame_Vulkan()
     if (!vkImpl)
         return false;
 
+    // Apply user-requested MSAA setting from screen parameters
+    vkImpl->SetRequestedSampleCount(screenParams_.multiSample_);
+
     // Acquire next swapchain image
     if (!vkImpl->AcquireNextImage())
     {
