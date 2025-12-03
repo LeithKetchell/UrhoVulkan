@@ -31,7 +31,8 @@ if (URHO3D_VULKAN)
     find_package(Vulkan REQUIRED)
     include(UrhoVulkan)
     message(STATUS "Vulkan support: ENABLED")
-    add_definitions(-DURHO3D_VULKAN)
+    # Note: URHO3D_VULKAN is defined in the generated Urho3D.h header (Source/Urho3D/CMakeLists.txt)
+    # No need to add it as a compiler definition here to avoid redefinition warnings
     # Disable SDL Vulkan detection to avoid configuration issues
     # Urho3D handles Vulkan integration separately
     set(VIDEO_VULKAN OFF CACHE BOOL "Disable SDL Vulkan" FORCE)

@@ -25,6 +25,7 @@
 #include "Urho2DPhysics.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(Urho2DPhysics)
 
@@ -40,6 +41,11 @@ void Urho2DPhysics::Start()
     // Execute base class startup
     Sample::Start();
 
+    // Load UI style for ProfilerUI (must be before creating UI elements)
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
     // Create the scene content
     CreateScene();
 
@@ -54,6 +60,14 @@ void Urho2DPhysics::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void Urho2DPhysics::CreateScene()
@@ -219,4 +233,12 @@ void Urho2DPhysics::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     // Move the camera, scale movement with time step
     MoveCamera(timeStep);
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
+

@@ -4,11 +4,13 @@
 //
 // Vulkan vertex buffer implementation (Phase 4)
 
+#include "../../Precompiled.h"
+
 #ifdef URHO3D_VULKAN
 
 #include "../VertexBuffer.h"
 #include "../../Graphics/Graphics.h"
-#include "../../Core/Log.h"
+#include "../../IO/Log.h"
 #include "VulkanGraphicsImpl.h"
 
 namespace Urho3D
@@ -76,12 +78,38 @@ bool VertexBuffer::Create_Vulkan()
     allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
     allocInfo.flags = dynamic_ ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT : 0;
 
+    // Attempt to use memory pool for optimized allocation
+    VulkanMemoryPoolManager* poolMgr = impl->GetMemoryPoolManager();
+    if (poolMgr)
+    {
+        VulkanMemoryPoolType poolType = dynamic_ ? VulkanMemoryPoolType::DynamicGeometry : VulkanMemoryPoolType::StaticGeometry;
+        VmaPool pool = poolMgr->GetPool(poolType);
+        if (pool)
+        {
+            allocInfo.pool = pool;
+        }
+    }
+
     VkBuffer buffer;
     VmaAllocation allocation;
     if (vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo, &buffer, &allocation, nullptr) != VK_SUCCESS)
     {
-        URHO3D_LOGERROR("Failed to create Vulkan vertex buffer");
-        return false;
+        // Fallback: attempt without pool if pool allocation failed
+        if (poolMgr)
+        {
+            allocInfo.pool = nullptr;
+            allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+            if (vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo, &buffer, &allocation, nullptr) != VK_SUCCESS)
+            {
+                URHO3D_LOGERROR("Failed to create Vulkan vertex buffer");
+                return false;
+            }
+        }
+        else
+        {
+            URHO3D_LOGERROR("Failed to create Vulkan vertex buffer");
+            return false;
+        }
     }
 
     object_.ptr_ = (void*)buffer;
@@ -217,6 +245,7 @@ void VertexBuffer::UnmapBuffer_Vulkan()
 {
     Unlock_Vulkan();
 }
+
 
 } // namespace Urho3D
 

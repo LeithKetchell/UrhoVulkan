@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -63,6 +64,8 @@ private:
     void HandleStopServer(StringHash eventType, VariantMap& eventData);
     /// Start network discovery
     void HandleDoNetworkDiscovery(StringHash eventType, VariantMap& eventData);
+    /// Handle the logic update event.
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
     /// Start server
     SharedPtr<Button> startServer_;
     /// Stop server
@@ -71,4 +74,5 @@ private:
     SharedPtr<Button> refreshServerList_;
     /// Found server list
     SharedPtr<Text> serverList_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

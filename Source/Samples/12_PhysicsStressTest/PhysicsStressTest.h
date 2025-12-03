@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -72,4 +73,5 @@ private:
 
     /// Flag for drawing debug geometry.
     bool drawDebug_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

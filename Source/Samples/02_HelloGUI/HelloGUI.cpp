@@ -7,8 +7,10 @@
 #include <Urho3D/GraphicsAPI/Texture2D.h>
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/Resource/ResourceCache.h>
+#include <Urho3D/UI/BorderImage.h>
 #include <Urho3D/UI/Button.h>
 #include <Urho3D/UI/CheckBox.h>
+#include <Urho3D/UI/Font.h>
 #include <Urho3D/UI/LineEdit.h>
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/ToolTip.h>
@@ -19,6 +21,7 @@
 #include "HelloGUI.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(HelloGUI)
 
@@ -53,8 +56,26 @@ void HelloGUI::Start()
     // Create a draggable Fish
     CreateDraggableFish();
 
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    uiRoot_->AddChild(vulkanIndicator);
+
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
+
+    // Subscribe to update events
+    SubscribeToEvents();
 }
 
 void HelloGUI::InitControls()
@@ -203,4 +224,22 @@ void HelloGUI::HandleControlClicked(StringHash eventType, VariantMap& eventData)
 
     // Update the Window's title text
     windowTitle->SetText("Hello " + name + "!");
+}
+
+void HelloGUI::SubscribeToEvents()
+{
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(HelloGUI, HandleUpdate));
+}
+
+void HelloGUI::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }

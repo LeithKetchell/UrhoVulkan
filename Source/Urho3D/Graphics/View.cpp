@@ -25,6 +25,12 @@
 #include "../GraphicsAPI/Texture3D.h"
 #include "../GraphicsAPI/TextureCube.h"
 #include "../GraphicsAPI/VertexBuffer.h"
+
+#ifdef URHO3D_VULKAN
+#include "../GraphicsAPI/Vulkan/VulkanSecondaryCommandBuffer.h"
+#include "../GraphicsAPI/Vulkan/VulkanGraphicsImpl.h"
+#endif
+
 #include "../IO/FileSystem.h"
 #include "../IO/Log.h"
 #include "../Resource/ResourceCache.h"
@@ -3208,5 +3214,164 @@ Texture* View::FindNamedTexture(const String& name, bool isRenderTarget, bool is
 
     return nullptr;
 }
+
+#ifdef URHO3D_VULKAN
+
+void View::InitializeSecondaryCommandBuffers(i32 numThreads)
+{
+    Graphics* graphics = GetGraphics();
+    if (!graphics)
+        return;
+
+    // Only initialize on Vulkan backend
+    if (graphics->GetGAPI() != GAPI_VULKAN)
+        return;
+
+#ifdef URHO3D_VULKAN
+    // Get Vulkan implementation from Graphics
+    VulkanGraphicsImpl* vulkanImpl = graphics->GetImpl_Vulkan();
+    if (!vulkanImpl)
+    {
+        URHO3D_LOGERROR("Failed to get Vulkan graphics implementation");
+        return;
+    }
+
+    // Create or reinitialize the secondary buffer pool
+    if (!secondaryBufferPool_)
+    {
+        secondaryBufferPool_ = MakeShared<VulkanSecondaryCommandBufferPool>(vulkanImpl);
+    }
+
+    // Initialize pool with the number of worker threads
+    if (!secondaryBufferPool_->Initialize(numThreads))
+    {
+        URHO3D_LOGERROR("Failed to initialize secondary command buffer pool");
+        secondaryBufferPool_ = nullptr;
+        return;
+    }
+
+    URHO3D_LOGINFO("Secondary command buffer pool initialized for " + String(numThreads) + " threads");
+#endif
+}
+
+void View::DrawBatchQueueParallel(
+    BatchQueue& queue,
+    Camera* camera,
+    bool markToStencil,
+    bool usingLightOptimization,
+    bool allowDepthWrite)
+{
+    // Phase 4: Parallel batch recording with secondary command buffers
+    Graphics* graphics = GetGraphics();
+    if (!graphics || !secondaryBufferPool_ || secondaryBufferPool_->GetNumThreads() < 2)
+    {
+        // Fallback to regular single-threaded drawing if pool not available or too small
+        queue.Draw(this, camera, markToStencil, usingLightOptimization, allowDepthWrite);
+        return;
+    }
+
+#ifdef URHO3D_VULKAN
+    // Parallel batch distribution strategy:
+    // - Distribute batch groups and batches across available secondary buffers
+    // - Each thread records to its own command buffer (no synchronization needed)
+    // - Then execute all secondary buffers from primary buffer
+
+    uint32_t numThreads = secondaryBufferPool_->GetNumThreads();
+
+    // Initialize all secondary buffers for this frame
+    for (uint32_t i = 0; i < numThreads; ++i)
+    {
+        VulkanSecondaryCommandBuffer* buf = secondaryBufferPool_->GetThreadBuffer(i);
+        if (buf)
+            buf->Begin(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT);
+    }
+
+    // Distribute batch groups (instanced) across threads using round-robin
+    size_t groupIndex = 0;
+    for (Vector<BatchGroup*>::ConstIterator i = queue.sortedBatchGroups_.Begin(); i != queue.sortedBatchGroups_.End(); ++i)
+    {
+        uint32_t threadIndex = groupIndex % numThreads;
+        VulkanSecondaryCommandBuffer* threadBuffer = secondaryBufferPool_->GetThreadBuffer(threadIndex);
+
+        if (threadBuffer && threadBuffer->IsRecording())
+        {
+            BatchGroup* group = *i;
+            if (group)
+                group->DrawToSecondaryCommandBuffer(this, camera, allowDepthWrite, threadBuffer->GetHandle());
+        }
+        ++groupIndex;
+    }
+
+    // Distribute non-instanced batches across threads using round-robin
+    size_t batchIndex = 0;
+    for (Vector<Batch*>::ConstIterator i = queue.sortedBatches_.Begin(); i != queue.sortedBatches_.End(); ++i)
+    {
+        uint32_t threadIndex = batchIndex % numThreads;
+        VulkanSecondaryCommandBuffer* threadBuffer = secondaryBufferPool_->GetThreadBuffer(threadIndex);
+
+        if (threadBuffer && threadBuffer->IsRecording())
+        {
+            Batch* batch = *i;
+            if (batch)
+                batch->DrawToSecondaryCommandBuffer(this, camera, allowDepthWrite, threadBuffer->GetHandle());
+        }
+        ++batchIndex;
+    }
+
+    // Finalize all secondary buffers
+    for (uint32_t i = 0; i < numThreads; ++i)
+    {
+        VulkanSecondaryCommandBuffer* buf = secondaryBufferPool_->GetThreadBuffer(i);
+        if (buf && buf->IsRecording())
+            buf->End();
+    }
+
+    // Mark buffers as recorded (they'll be submitted in SubmitSecondaryCommandBuffers)
+    URHO3D_LOGDEBUG("Recorded " + String((int)groupIndex) + " batch groups and " + String((int)batchIndex) +
+                    " batches across " + String((int)numThreads) + " threads");
+#else
+    // Fallback for non-Vulkan builds
+    queue.Draw(this, camera, markToStencil, usingLightOptimization, allowDepthWrite);
+#endif
+}
+
+void View::SubmitSecondaryCommandBuffers()
+{
+    // Phase 4: Submit secondary command buffers to primary buffer
+    Graphics* graphics = GetGraphics();
+    if (!graphics || !secondaryBufferPool_ || secondaryBufferPool_->GetNumThreads() < 2)
+        return;
+
+#ifdef URHO3D_VULKAN
+    // Get all recorded secondary buffers
+    Vector<VkCommandBuffer> recordedBuffers = secondaryBufferPool_->GetRecordedCommandBuffers();
+    if (recordedBuffers.Empty())
+    {
+        // No buffers recorded, reset for next frame and return
+        secondaryBufferPool_->ResetAllBuffers();
+        return;
+    }
+
+    // Get the primary command buffer from Vulkan implementation
+    VulkanGraphicsImpl* vulkanImpl = graphics->GetImpl_Vulkan();
+    if (!vulkanImpl)
+        return;
+
+    VkCommandBuffer primaryBuffer = vulkanImpl->GetFrameCommandBuffer();
+    if (!primaryBuffer)
+        return;
+
+    // Submit all secondary command buffers to the primary buffer
+    // This concatenates all parallel recordings into the primary buffer within the render pass
+    vkCmdExecuteCommands(primaryBuffer, recordedBuffers.Size(), recordedBuffers.Buffer());
+
+    // Reset all buffers for the next frame
+    secondaryBufferPool_->ResetAllBuffers();
+
+    URHO3D_LOGDEBUG("Submitted " + String((int)recordedBuffers.Size()) + " secondary command buffers");
+#endif
+}
+
+#endif  // URHO3D_VULKAN
 
 }

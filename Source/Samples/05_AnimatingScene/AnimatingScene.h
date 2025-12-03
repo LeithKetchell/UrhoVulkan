@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -42,4 +43,7 @@ private:
     void MoveCamera(float timeStep);
     /// Handle the logic update event.
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
+
+    /// Profiler UI overlay
+    SharedPtr<ProfilerUI> profilerUI_;
 };

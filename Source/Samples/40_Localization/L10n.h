@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 /// Localization example.
 /// This sample demonstrates:
@@ -35,6 +36,7 @@ private:
     // Hook up to the buttons pressing
     void HandleChangeLangButtonPressed(StringHash eventType, VariantMap& eventData);
     void HandleQuitButtonPressed(StringHash eventType, VariantMap& eventData);
+    SharedPtr<ProfilerUI> profilerUI_;
 };
 
 

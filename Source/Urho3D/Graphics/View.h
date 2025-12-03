@@ -4,11 +4,16 @@
 #pragma once
 
 #include "../Container/HashSet.h"
+#include "../Container/Ptr.h"
 #include "../Core/Object.h"
 #include "../Graphics/Batch.h"
 #include "../Graphics/Light.h"
 #include "../Graphics/Zone.h"
 #include "../Math/Polyhedron.h"
+
+#ifdef URHO3D_VULKAN
+#include "../Graphics/VulkanProfiler.h"
+#endif
 
 namespace Urho3D
 {
@@ -30,6 +35,10 @@ class Viewport;
 class Zone;
 struct RenderPathCommand;
 struct WorkItem;
+
+#ifdef URHO3D_VULKAN
+class VulkanSecondaryCommandBufferPool;
+#endif
 
 /// Intermediate light processing result.
 struct LightQueryResult
@@ -174,6 +183,30 @@ public:
 
     /// Get a named texture from the rendertarget list or from the resource cache, to be either used as a rendertarget or texture binding.
     Texture* FindNamedTexture(const String& name, bool isRenderTarget, bool isVolumeMap = false);
+
+    // Vulkan secondary command buffer support for parallel batch recording
+    /// Initialize secondary command buffer pool for parallel batch rendering (Vulkan only).
+    /// Must be called once during graphics initialization with the number of worker threads.
+    /// Sets up per-thread VkCommandPool and VkCommandBuffer instances for later use.
+    /// Safe to call multiple times (will reinitialize). Non-intrusive: does nothing on non-Vulkan backends.
+    void InitializeSecondaryCommandBuffers(i32 numThreads);
+
+    /// Draw batch queue using secondary command buffers for parallel recording (Vulkan only).
+    /// Distributes batch groups across available worker threads for concurrent command recording.
+    /// Each thread records to its own secondary command buffer, eliminating synchronization overhead.
+    /// Falls back to primary buffer rendering if secondary buffers unavailable or Vulkan disabled.
+    /// **Call Pattern:** ExecuteRenderPathCommands() replaces queue.Draw() calls with this method.
+    /// **Parameters:** Same as BatchQueue::Draw() plus optional secondary buffer management.
+    /// **Performance:** Expected 20-40% CPU reduction in command recording time with many batches.
+    void DrawBatchQueueParallel(BatchQueue& queue, Camera* camera, bool markToStencil, bool usingLightOptimization, bool allowDepthWrite);
+
+    /// Submit recorded secondary command buffers to primary command buffer (Vulkan only).
+    /// Called after all batch recording is complete to execute secondary buffers within primary.
+    /// Uses vkCmdExecuteCommands() to embed all recorded buffers into the primary command buffer.
+    /// Manages render pass state and stencil/scissor transitions between batches.
+    /// Synchronization point that waits for all worker threads to finish recording.
+    /// Non-intrusive: does nothing on non-Vulkan backends.
+    void SubmitSecondaryCommandBuffers();
 
 private:
     /// Query the octree for drawable objects.
@@ -415,6 +448,14 @@ private:
     const RenderPathCommand* passCommand_{};
     /// Flag for scene being resolved from the backbuffer.
     bool usedResolve_{};
+
+#ifdef URHO3D_VULKAN
+    /// High-resolution profiler for Vulkan rendering phases.
+    SharedPtr<VulkanProfiler> vulkanProfiler_;
+
+    /// Secondary command buffer pool for parallel batch recording (Phase 4).
+    SharedPtr<VulkanSecondaryCommandBufferPool> secondaryBufferPool_;
+#endif
 };
 
 }

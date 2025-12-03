@@ -10,9 +10,14 @@
 #include <Urho3D/Engine/EngineEvents.h>
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/IO/Log.h>
+#include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/UI/Button.h>
+#include <Urho3D/UI/Font.h>
+#include <Urho3D/UI/Text.h>
+#include <Urho3D/UI/UI.h>
 
 #include "DatabaseDemo.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // Expands to this example's entry-point
 URHO3D_DEFINE_APPLICATION_MAIN(DatabaseDemo)
@@ -100,6 +105,26 @@ void DatabaseDemo::Start()
     HandleInput("insert into tbl1 values('Hello', 10)");
     HandleInput("insert into tbl1 values('World', 20)");
     HandleInput("select * from tbl1");
+
+    // Add Vulkan indicator in top-left corner
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    GetSubsystem<UI>()->GetRoot()->AddChild(vulkanIndicator);
+
+    // Load UI style for ProfilerUI
+    auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void DatabaseDemo::HandleConsoleCommand(StringHash eventType, VariantMap& eventData)

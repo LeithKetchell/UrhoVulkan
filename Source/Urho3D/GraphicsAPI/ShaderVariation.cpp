@@ -71,6 +71,11 @@ void ShaderVariation::OnDeviceLost()
     if (gapi == GAPI_D3D11)
         return OnDeviceLost_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return OnDeviceLost_Vulkan();
+#endif
 }
 
 void ShaderVariation::Release()
@@ -85,6 +90,11 @@ void ShaderVariation::Release()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return Release_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Release_Vulkan();
 #endif
 }
 
@@ -102,6 +112,11 @@ bool ShaderVariation::Create()
         return Create_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Create_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -117,6 +132,11 @@ void ShaderVariation::SetDefines(const String& defines)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetDefines_D3D11(defines);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDefines_Vulkan(defines);
 #endif
 }
 

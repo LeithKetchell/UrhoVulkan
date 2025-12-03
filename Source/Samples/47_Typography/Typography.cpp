@@ -6,6 +6,7 @@
 #include <Urho3D/Graphics/RenderPath.h>
 #include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Input/Input.h>
+#include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/UI/CheckBox.h>
 #include <Urho3D/UI/DropDownList.h>
 #include <Urho3D/UI/Font.h>
@@ -16,6 +17,7 @@
 #include "Typography.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // Expands to this example's entry-point
 URHO3D_DEFINE_APPLICATION_MAIN(Typography)
@@ -115,6 +117,20 @@ void Typography::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    GetSubsystem<UI>()->GetRoot()->AddChild(vulkanIndicator);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void Typography::CreateText()

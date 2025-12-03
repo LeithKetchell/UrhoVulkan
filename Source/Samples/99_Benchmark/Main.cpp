@@ -9,6 +9,7 @@
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/IO/FileSystem.h>
 #include <Urho3D/Resource/ResourceCache.h>
+#include <Urho3D/UI/Font.h>
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
 
@@ -60,6 +61,15 @@ public:
         GetSubsystem<Input>()->SetToggleFullscreen(false); // Block Alt+Enter
 
         CreateCurrentFpsUiElement();
+
+        // Add Vulkan indicator in top-left corner
+        auto* cache = GetSubsystem<ResourceCache>();
+        auto* vulkanIndicator = new Text(context_);
+        vulkanIndicator->SetText("Using: Vulkan");
+        vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+        vulkanIndicator->SetColor(Color::YELLOW);
+        vulkanIndicator->SetPosition(10, 30);
+        GetSubsystem<UI>()->GetRoot()->AddChild(vulkanIndicator);
     }
 
     void ApplyAppState(StringHash eventType, VariantMap& eventData)

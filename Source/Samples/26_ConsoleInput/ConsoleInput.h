@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 /// Console input example.
 /// This sample demonstrates:
@@ -64,4 +65,5 @@ private:
     int hunger_{};
     /// Threat of Urho level.
     int urhoThreat_{};
+    SharedPtr<ProfilerUI> profilerUI_;
 };

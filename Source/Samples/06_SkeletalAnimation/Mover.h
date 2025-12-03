@@ -4,6 +4,7 @@
 #pragma once
 
 #include <Urho3D/Scene/LogicComponent.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 using namespace Urho3D;
 
@@ -35,4 +36,5 @@ private:
     float rotationSpeed_;
     /// Movement boundaries.
     BoundingBox bounds_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

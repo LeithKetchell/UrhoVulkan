@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -68,6 +69,8 @@ private:
     void HandleNetworkMessage(StringHash eventType, VariantMap& eventData);
     /// Handle connection status change (just update the buttons that should be shown.)
     void HandleConnectionStatus(StringHash eventType, VariantMap& eventData);
+    /// Handle the logic update event.
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
     /// Strings printed so far.
     Vector<String> chatHistory_;
     /// Chat text element.
@@ -84,4 +87,5 @@ private:
     SharedPtr<Button> disconnectButton_;
     /// Start server button.
     SharedPtr<Button> startServerButton_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

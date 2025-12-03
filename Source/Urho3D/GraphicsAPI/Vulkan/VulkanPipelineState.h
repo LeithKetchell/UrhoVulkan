@@ -43,40 +43,6 @@ struct VulkanPipelineState
     bool operator==(const VulkanPipelineState& other) const;
 };
 
-/// Manages graphics pipeline creation and caching
-class VulkanPipelineCache
-{
-public:
-    /// Constructor
-    VulkanPipelineCache();
-    /// Destructor
-    ~VulkanPipelineCache();
-
-    /// Initialize pipeline cache
-    bool Initialize(VkDevice device, VkPipelineLayout pipelineLayout);
-
-    /// Release resources
-    void Release();
-
-    /// Get or create graphics pipeline
-    VkPipeline GetOrCreateGraphicsPipeline(
-        const VulkanPipelineState& state,
-        VkRenderPass renderPass,
-        VkShaderModule vertexShader,
-        VkShaderModule fragmentShader,
-        const VkPipelineVertexInputStateCreateInfo& vertexInputState);
-
-    /// Get device
-    VkDevice GetDevice() const { return device_; }
-
-private:
-    VkDevice device_{};
-    VkPipelineLayout pipelineLayout_{};
-    VkPipelineCache pipelineCache_{};
-
-    // Cached pipelines by state hash
-    HashMap<StringHash, VkPipeline> pipelineCache_;
-};
 
 } // namespace Urho3D
 

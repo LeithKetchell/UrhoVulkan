@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -79,6 +80,7 @@ private:
     bool drawDebug_;
     /// Last clicked UI element.
     WeakPtr<UIElement> current_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };
 
 

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -84,4 +85,5 @@ private:
     float osc1_;
     /// Second oscillator.
     float osc2_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

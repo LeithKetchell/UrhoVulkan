@@ -9,12 +9,15 @@
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
 #include <Urho3D/UI/Button.h>
+#include <Urho3D/UI/Font.h>
+#include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
 #include <Urho3D/UI/UIEvents.h>
 
 #include "SceneAndUILoad.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(SceneAndUILoad)
 
@@ -42,6 +45,13 @@ void SceneAndUILoad::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_RELATIVE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void SceneAndUILoad::CreateScene()
@@ -92,6 +102,14 @@ void SceneAndUILoad::CreateUI()
     button = layoutRoot->GetChildStaticCast<Button>("ToggleLight2", true);
     if (button)
         SubscribeToEvent(button, E_RELEASED, URHO3D_HANDLER(SceneAndUILoad, ToggleLight2));
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    ui->GetRoot()->AddChild(vulkanIndicator);
 }
 
 void SceneAndUILoad::SetupViewport()
@@ -158,6 +176,13 @@ void SceneAndUILoad::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     // Move the camera, scale movement with time step
     MoveCamera(timeStep);
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
 
 void SceneAndUILoad::ToggleLight1(StringHash eventType, VariantMap& eventData)
@@ -173,3 +198,4 @@ void SceneAndUILoad::ToggleLight2(StringHash eventType, VariantMap& eventData)
     if (lightNode)
         lightNode->SetEnabled(!lightNode->IsEnabled());
 }
+

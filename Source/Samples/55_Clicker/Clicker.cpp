@@ -11,6 +11,7 @@
 #include "Clicker.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // Expands to this example's entry-point
 URHO3D_DEFINE_APPLICATION_MAIN(Clicker)
@@ -26,6 +27,13 @@ void Clicker::Start()
     CreateUI();
     Sample::InitMouseMode(MM_FREE);
     SubscribeToEvents();
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void Clicker::CreateUI()
@@ -48,6 +56,14 @@ void Clicker::CreateUI()
     powerText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 30);
     powerText->SetColor(Color::WHITE);
     powerText->SetPosition({10, 10});
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    uiRoot->AddChild(vulkanIndicator);
 }
 
 void Clicker::SubscribeToEvents()
@@ -131,6 +147,13 @@ void Clicker::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
         clickDelay_ = 0.2f;
     }
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
 
 void Clicker::HandleMouseButtonDown(StringHash eventType, VariantMap& eventData)
@@ -148,3 +171,4 @@ void Clicker::HandleMouseButtonDown(StringHash eventType, VariantMap& eventData)
         powerText->SetText("Power: " + ShortNumberRepresentation(power_));
     }
 }
+

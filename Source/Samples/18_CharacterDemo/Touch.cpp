@@ -8,6 +8,7 @@
 
 #include "Character.h"
 #include "Touch.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 const float GYROSCOPE_THRESHOLD = 0.1f;
 

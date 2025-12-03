@@ -103,8 +103,11 @@ public:
     /// Return vertex element hash.
     hash64 GetElementHash() const { return elementHash_; }
 
-    /// Return shader bytecode. Stored persistently on Direct3D11 only.
+    /// Return shader bytecode. Stored persistently on Direct3D11 and Vulkan.
     const Vector<unsigned char>& GetByteCode() const { return byteCode_; }
+
+    /// Set shader bytecode (for Vulkan SPIR-V caching).
+    void SetByteCode(const Vector<unsigned char>& byteCode) { byteCode_ = byteCode; }
 
     /// Return defines.
     const String& GetDefines() const { return defines_; }
@@ -160,6 +163,13 @@ private:
     bool Create_D3D11();
     void SetDefines_D3D11(const String& defines);
 #endif // def URHO3D_D3D11
+
+#ifdef URHO3D_VULKAN
+    void OnDeviceLost_Vulkan();
+    void Release_Vulkan();
+    bool Create_Vulkan();
+    void SetDefines_Vulkan(const String& defines);
+#endif // def URHO3D_VULKAN
 
     /// Shader this variation belongs to.
     WeakPtr<Shader> owner_;

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -154,4 +155,5 @@ private:
     HashMap<IntVector2, Vector<byte>> tileData_;
     /// Added tiles.
     HashSet<IntVector2> addedTiles_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

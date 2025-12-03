@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -43,6 +44,10 @@ private:
     void InitSettings();
     /// Synchronize settings with current state of the engine.
     void SynchronizeSettings();
+    /// Subscribe to application-wide logic update events.
+    void SubscribeToEvents();
+    /// Handle the logic update event.
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
 
     /// The Window.
     Window* window_{};
@@ -63,6 +68,7 @@ private:
     CheckBox* vsyncControl_{};
     /// MSAA control.
     DropDownList* multiSampleControl_{};
+    SharedPtr<ProfilerUI> profilerUI_;
 };
 
 

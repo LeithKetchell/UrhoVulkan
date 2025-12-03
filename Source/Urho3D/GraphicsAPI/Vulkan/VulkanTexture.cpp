@@ -4,11 +4,13 @@
 //
 // Vulkan 2D texture implementation (Phase 5)
 
+#include "../../Precompiled.h"
+
 #ifdef URHO3D_VULKAN
 
 #include "../Texture2D.h"
 #include "../../Graphics/Graphics.h"
-#include "../../Core/Log.h"
+#include "../../IO/Log.h"
 #include "../../Resource/Image.h"
 #include "VulkanGraphicsImpl.h"
 
@@ -95,12 +97,37 @@ bool Texture2D::Create_Vulkan()
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
 
+    // Attempt to use memory pool for optimized allocation
+    VulkanMemoryPoolManager* poolMgr = impl->GetMemoryPoolManager();
+    if (poolMgr)
+    {
+        VmaPool pool = poolMgr->GetPool(VulkanMemoryPoolType::Textures);
+        if (pool)
+        {
+            allocInfo.pool = pool;
+        }
+    }
+
     VkImage image;
     VmaAllocation allocation;
     if (vmaCreateImage(impl->GetAllocator(), &imageInfo, &allocInfo, &image, &allocation, nullptr) != VK_SUCCESS)
     {
-        URHO3D_LOGERROR("Failed to create Vulkan texture image");
-        return false;
+        // Fallback: attempt without pool if pool allocation failed
+        if (poolMgr)
+        {
+            allocInfo.pool = nullptr;
+            allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+            if (vmaCreateImage(impl->GetAllocator(), &imageInfo, &allocInfo, &image, &allocation, nullptr) != VK_SUCCESS)
+            {
+                URHO3D_LOGERROR("Failed to create Vulkan texture image");
+                return false;
+            }
+        }
+        else
+        {
+            URHO3D_LOGERROR("Failed to create Vulkan texture image");
+            return false;
+        }
     }
 
     object_.ptr_ = (void*)image;
@@ -130,6 +157,12 @@ bool Texture2D::Create_Vulkan()
     }
 
     shaderResourceView_ = imageView;
+
+    // Transition image layout from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
+    impl->TransitionImageLayout(image, vkFormat,
+                               VK_IMAGE_LAYOUT_UNDEFINED,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                               levels_);
 
     // Create sampler
     VkSamplerCreateInfo samplerInfo{};
@@ -229,6 +262,7 @@ bool Texture2D::GetData_Vulkan(unsigned level, void* dest) const
     URHO3D_LOGWARNING("GetData not supported on Vulkan - use Image resource instead");
     return false;
 }
+
 
 } // namespace Urho3D
 

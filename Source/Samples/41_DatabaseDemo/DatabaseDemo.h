@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 /// Database demo. This sample demonstrates how to use database subsystem to connect to a database and execute adhoc SQL statements.
 class DatabaseDemo : public Sample
@@ -52,4 +53,5 @@ private:
     unsigned row_;
     /// Maximum rows to be printed out.
     unsigned maxRows_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

@@ -34,6 +34,7 @@
 #include "SceneReplication.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // UDP port we will use
 static const unsigned short SERVER_PORT = 2345;
@@ -74,6 +75,13 @@ void SceneReplication::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_RELATIVE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void SceneReplication::CreateScene()
@@ -194,6 +202,14 @@ void SceneReplication::CreateUI()
     startServerButton_ = CreateButton("Start Server", 110);
 
     UpdateButtons();
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    root->AddChild(vulkanIndicator);
 }
 
 void SceneReplication::SetupViewport()
@@ -230,6 +246,9 @@ void SceneReplication::SubscribeToEvents()
     SubscribeToEvent(E_CLIENTOBJECTID, URHO3D_HANDLER(SceneReplication, HandleClientObjectID));
     // Events sent between client & server (remote events) must be explicitly registered or else they are not allowed to be received
     GetSubsystem<Network>()->RegisterRemoteEvent(E_CLIENTOBJECTID);
+
+    // Subscribe to update events
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(SceneReplication, HandleUpdate));
 }
 
 Button* SceneReplication::CreateButton(const String& text, int width)
@@ -511,4 +530,17 @@ void SceneReplication::HandleClientDisconnected(StringHash eventType, VariantMap
 void SceneReplication::HandleClientObjectID(StringHash eventType, VariantMap& eventData)
 {
     clientObjectID_ = eventData[P_ID].GetU32();
+}
+
+void SceneReplication::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }

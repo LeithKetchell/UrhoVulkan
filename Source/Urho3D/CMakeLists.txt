@@ -362,7 +362,22 @@ setup_library (${URHO3D_LIB_TYPE} ${EXCLUDE_FROM_ALL})
 if (URHO3D_VULKAN)
     if (Vulkan_FOUND)
         target_include_directories(${TARGET_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS})
-        target_link_libraries(${TARGET_NAME} PRIVATE ${Vulkan_LIBRARIES})
+        target_link_libraries(${TARGET_NAME} ${Vulkan_LIBRARIES})
+    endif()
+    # Add VMA (Vulkan Memory Allocator) for Vulkan backend
+    if (TARGET VulkanMemoryAllocator)
+        target_link_libraries(${TARGET_NAME} VulkanMemoryAllocator)
+        # Note: VMA_IMPLEMENTATION is now defined internally by the VMA library itself
+    endif()
+endif()
+
+# Link Wayland client library if SDL2 was built with Wayland support
+# This is needed because SDL2 references Wayland symbols in its Wayland backend implementation
+find_package (PkgConfig QUIET)
+if (PKG_CONFIG_FOUND)
+    pkg_check_modules (WAYLAND wayland-client)
+    if (WAYLAND_FOUND)
+        target_link_libraries(${TARGET_NAME} ${WAYLAND_LIBRARIES})
     endif()
 endif()
 

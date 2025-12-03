@@ -6,6 +6,7 @@
 #include <Urho3D/Math/Plane.h>
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -52,4 +53,5 @@ private:
     Plane waterPlane_;
     /// Clipping plane for reflection rendering. Slightly biased downward from the reflection plane to avoid artifacts.
     Plane waterClipPlane_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

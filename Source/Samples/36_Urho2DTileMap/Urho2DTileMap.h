@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 /// Urho2D tile map example.
 /// This sample demonstrates:
@@ -62,4 +63,5 @@ private:
     void HandleMouseButtonDown(StringHash eventType, VariantMap& eventData);
     /// Get mouse position in 2D world coordinates.
     Vector2 GetMousePositionXY();
+    SharedPtr<ProfilerUI> profilerUI_;
 };

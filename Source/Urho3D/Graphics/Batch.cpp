@@ -16,6 +16,13 @@
 #include "../GraphicsAPI/VertexBuffer.h"
 #include "../Scene/Scene.h"
 
+#ifdef URHO3D_VULKAN
+#include "../GraphicsAPI/Vulkan/VulkanPushConstants.h"
+#include "../GraphicsAPI/Vulkan/VulkanBatchDispatcher.h"
+#include "../GraphicsAPI/Vulkan/VulkanGraphicsImpl.h"
+#include <vulkan/vulkan.h>
+#endif
+
 #include "../DebugNew.h"
 
 namespace Urho3D
@@ -633,6 +640,75 @@ void Batch::Draw(View* view, Camera* camera, bool allowDepthWrite) const
     }
 }
 
+void Batch::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool allowDepthWrite, void* secondaryCommandBuffer) const
+{
+    // For non-Vulkan builds or when secondary command buffer is not available, fall back to regular draw
+    if (!secondaryCommandBuffer)
+    {
+        Draw(view, camera, allowDepthWrite);
+        return;
+    }
+
+#ifdef URHO3D_VULKAN
+    // Vulkan secondary command buffer recording with push constants
+    if (!geometry_->IsEmpty() && worldTransform_)
+    {
+        Prepare(view, camera, true, allowDepthWrite);
+
+        // Record push constants for per-batch transform data
+        // Calculate normal matrix from model matrix for lighting
+        Matrix3x4 normalMatrix = VulkanPushConstantManager::CalculateNormalMatrix(*worldTransform_);
+        VulkanBatchPushConstants pushConstants(*worldTransform_);
+        pushConstants.normalMatrix = normalMatrix;
+        pushConstants.materialIndex = 0;  // TODO: Per-material index from material data
+        pushConstants.batchFlags = 0;     // TODO: Batch-specific flags (skinning, billboarding, etc.)
+
+        // Record to secondary command buffer via Vulkan API
+        VkCommandBuffer cmdBuffer = static_cast<VkCommandBuffer>(secondaryCommandBuffer);
+        vkCmdPushConstants(
+            cmdBuffer,
+            nullptr,  // TODO: Get pipeline layout from shader program
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,  // offset
+            VulkanBatchPushConstants::SIZE,
+            &pushConstants
+        );
+
+        geometry_->Draw(view->GetGraphics());
+    }
+#else
+    // Fall back to primary command buffer if not using Vulkan
+    Draw(view, camera, allowDepthWrite);
+#endif
+}
+
+bool Batch::RecordToIndirectBuffer(View* view, Camera* camera, bool allowDepthWrite, void* dispatcher) const
+{
+    // For non-Vulkan builds or when dispatcher is not available, fall back to regular draw
+    if (!dispatcher)
+    {
+        Draw(view, camera, allowDepthWrite);
+        return true;
+    }
+
+#ifdef URHO3D_VULKAN
+    // Vulkan GPU-driven rendering via indirect draw dispatcher
+    if (!geometry_ || geometry_->IsEmpty() || !worldTransform_)
+        return false;
+
+    // Prepare state (set shaders, materials, parameters)
+    Prepare(view, camera, true, allowDepthWrite);
+
+    // Cast dispatcher to correct type and record batch
+    VulkanBatchDispatcher* batchDispatcher = static_cast<VulkanBatchDispatcher*>(dispatcher);
+    return batchDispatcher->RecordBatch(this, view, camera);
+#else
+    // Fall back to immediate rendering if not using Vulkan
+    Draw(view, camera, allowDepthWrite);
+    return true;
+#endif
+}
+
 void BatchGroup::SetInstancingData(void* lockedData, i32 stride, i32& freeIndex)
 {
     assert(stride >= 0);
@@ -701,6 +777,136 @@ void BatchGroup::Draw(View* view, Camera* camera, bool allowDepthWrite) const
             vertexBuffers.Pop();
         }
     }
+}
+
+void BatchGroup::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool allowDepthWrite, void* secondaryCommandBuffer) const
+{
+    // For non-Vulkan builds or when secondary command buffer is not available, fall back to regular draw
+    if (!secondaryCommandBuffer)
+    {
+        Draw(view, camera, allowDepthWrite);
+        return;
+    }
+
+#ifdef URHO3D_VULKAN
+    // Vulkan secondary command buffer recording with push constants
+    Graphics* graphics = view->GetGraphics();
+    Renderer* renderer = view->GetRenderer();
+    VkCommandBuffer cmdBuffer = static_cast<VkCommandBuffer>(secondaryCommandBuffer);
+
+    if (instances_.Size() && !geometry_->IsEmpty())
+    {
+        // Draw as individual objects if instancing not supported or could not fill the instancing buffer
+        VertexBuffer* instanceBuffer = renderer->GetInstancingBuffer();
+        if (!instanceBuffer || geometryType_ != GEOM_INSTANCED || startIndex_ == NINDEX)
+        {
+            Batch::Prepare(view, camera, false, allowDepthWrite);
+
+            graphics->SetIndexBuffer(geometry_->GetIndexBuffer());
+            graphics->SetVertexBuffers(geometry_->GetVertexBuffers());
+
+            for (const InstanceData& instance : instances_)
+            {
+                if (graphics->NeedParameterUpdate(SP_OBJECT, instance.worldTransform_))
+                    graphics->SetShaderParameter(VSP_MODEL, *instance.worldTransform_);
+
+                // Record push constants for each instance
+                if (instance.worldTransform_)
+                {
+                    Matrix3x4 normalMatrix = VulkanPushConstantManager::CalculateNormalMatrix(*instance.worldTransform_);
+                    VulkanBatchPushConstants pushConstants(*instance.worldTransform_);
+                    pushConstants.normalMatrix = normalMatrix;
+                    pushConstants.materialIndex = 0;  // TODO: Per-material index
+                    pushConstants.batchFlags = 0;     // TODO: Batch flags
+
+                    vkCmdPushConstants(
+                        cmdBuffer,
+                        nullptr,  // TODO: Get pipeline layout from shader program
+                        VK_SHADER_STAGE_VERTEX_BIT,
+                        0,
+                        VulkanBatchPushConstants::SIZE,
+                        &pushConstants
+                    );
+                }
+
+                graphics->Draw(geometry_->GetPrimitiveType(), geometry_->GetIndexStart(), geometry_->GetIndexCount(),
+                    geometry_->GetVertexStart(), geometry_->GetVertexCount());
+            }
+        }
+        else
+        {
+            Batch::Prepare(view, camera, false, allowDepthWrite);
+
+            // Get the geometry vertex buffers, then add the instancing stream buffer
+            // Hack: use a const_cast to avoid dynamic allocation of new temp vectors
+            auto& vertexBuffers = const_cast<Vector<SharedPtr<VertexBuffer>>&>(
+                geometry_->GetVertexBuffers());
+            vertexBuffers.Push(SharedPtr<VertexBuffer>(instanceBuffer));
+
+            graphics->SetIndexBuffer(geometry_->GetIndexBuffer());
+            graphics->SetVertexBuffers(vertexBuffers, startIndex_);
+
+            // Record push constants for the batch group as a whole (instanced)
+            // For instanced rendering, we record once before DrawInstanced
+            if (worldTransform_)
+            {
+                Matrix3x4 normalMatrix = VulkanPushConstantManager::CalculateNormalMatrix(*worldTransform_);
+                VulkanBatchPushConstants pushConstants(*worldTransform_);
+                pushConstants.normalMatrix = normalMatrix;
+                pushConstants.materialIndex = 0;  // TODO: Per-material index
+                pushConstants.batchFlags = 0;     // TODO: Batch flags
+
+                vkCmdPushConstants(
+                    cmdBuffer,
+                    nullptr,  // TODO: Get pipeline layout from shader program
+                    VK_SHADER_STAGE_VERTEX_BIT,
+                    0,
+                    VulkanBatchPushConstants::SIZE,
+                    &pushConstants
+                );
+            }
+
+            graphics->DrawInstanced(geometry_->GetPrimitiveType(), geometry_->GetIndexStart(), geometry_->GetIndexCount(),
+                geometry_->GetVertexStart(), geometry_->GetVertexCount(), instances_.Size());
+
+            // Remove the instancing buffer & element mask now
+            vertexBuffers.Pop();
+        }
+    }
+#else
+    // Fall back to primary command buffer if not using Vulkan
+    Draw(view, camera, allowDepthWrite);
+#endif
+}
+
+bool BatchGroup::RecordToIndirectBuffer(View* view, Camera* camera, bool allowDepthWrite, void* dispatcher) const
+{
+    // For non-Vulkan builds or when dispatcher is not available, fall back to regular draw
+    if (!dispatcher || instances_.Empty())
+    {
+        if (!dispatcher && !instances_.Empty())
+            Draw(view, camera, allowDepthWrite);
+        return true;
+    }
+
+#ifdef URHO3D_VULKAN
+    // Vulkan GPU-driven rendering via indirect draw dispatcher for instanced data
+    if (geometry_->IsEmpty())
+        return true;
+
+    // Prepare state once for entire group (single setup for all instances)
+    Prepare(view, camera, false, allowDepthWrite);
+
+    // Cast dispatcher to correct type
+    VulkanBatchDispatcher* batchDispatcher = static_cast<VulkanBatchDispatcher*>(dispatcher);
+
+    // Record batch group with all instances
+    return batchDispatcher->RecordBatchGroup(this, view, camera);
+#else
+    // Fall back to immediate rendering if not using Vulkan
+    Draw(view, camera, allowDepthWrite);
+    return true;
+#endif
 }
 
 hash32 BatchGroupKey::ToHash() const
@@ -879,6 +1085,72 @@ void BatchQueue::Draw(View* view, Camera* camera, bool markToStencil, bool using
 
         batch->Draw(view, camera, allowDepthWrite);
     }
+}
+
+void BatchQueue::RecordToIndirectBuffer(View* view, Camera* camera, bool markToStencil, bool usingLightOptimization, bool allowDepthWrite, void* dispatcher) const
+{
+    // If no dispatcher provided, fall back to immediate rendering
+    if (!dispatcher)
+    {
+        Draw(view, camera, markToStencil, usingLightOptimization, allowDepthWrite);
+        return;
+    }
+
+#ifdef URHO3D_VULKAN
+    // Phase 14.6: Record batch queue to indirect draw buffer
+    // Record all batch groups and individual batches to dispatcher for GPU-driven rendering
+
+    // Record instanced batch groups
+    for (Vector<BatchGroup*>::ConstIterator i = sortedBatchGroups_.Begin(); i != sortedBatchGroups_.End(); ++i)
+    {
+        BatchGroup* group = *i;
+        // TODO: Phase 14.6.1 - Set stencil for per-batch-group masking if needed
+        // if (markToStencil) { ... }
+        group->RecordToIndirectBuffer(view, camera, allowDepthWrite, dispatcher);
+    }
+
+    // Record non-instanced batches
+    for (Vector<Batch*>::ConstIterator i = sortedBatches_.Begin(); i != sortedBatches_.End(); ++i)
+    {
+        Batch* batch = *i;
+        // TODO: Phase 14.6.2 - Set stencil for per-batch masking if needed
+        // if (markToStencil) { ... }
+
+        // TODO: Phase 14.6.3 - Apply scissor optimization for alpha batches
+        // if (!usingLightOptimization && !batch->isBase_ && batch->lightQueue_) { ... }
+
+        batch->RecordToIndirectBuffer(view, camera, allowDepthWrite, dispatcher);
+    }
+
+    /// \brief Phase 14.6.4 - Submit all recorded indirect draw commands
+    /// \details After all batches have been recorded to GPU indirect buffers,
+    /// submit them together as a single indirect draw to minimize CPU overhead.
+    /// This replaces immediate per-batch vkCmdDrawIndexed() calls with
+    /// a single vkCmdDrawIndexedIndirect() call for true GPU-driven rendering.
+
+    VulkanBatchDispatcher* batchDispatcher = static_cast<VulkanBatchDispatcher*>(dispatcher);
+    if (batchDispatcher)
+    {
+        // Get current frame's command buffer from graphics implementation
+        // This buffer has already been allocated and begun recording in BeginFrame()
+        Graphics* graphics = view->GetGraphics();
+        if (graphics)
+        {
+            VkCommandBuffer cmdBuffer = graphics->GetImpl_Vulkan() ?
+                graphics->GetImpl_Vulkan()->GetFrameCommandBuffer() : VK_NULL_HANDLE;
+
+            if (cmdBuffer != VK_NULL_HANDLE)
+            {
+                // Submit all recorded indirect draws with proper state binding
+                // This is called once per view after all batches in this queue are recorded
+                batchDispatcher->SubmitIndirectDraws(cmdBuffer);
+            }
+        }
+    }
+#else
+    // Non-Vulkan fallback: immediate rendering
+    Draw(view, camera, markToStencil, usingLightOptimization, allowDepthWrite);
+#endif
 }
 
 i32 BatchQueue::GetNumInstances() const

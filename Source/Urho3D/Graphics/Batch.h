@@ -54,6 +54,16 @@ struct Batch
     void Prepare(View* view, Camera* camera, bool setModelTransform, bool allowDepthWrite) const;
     /// Prepare and draw.
     void Draw(View* view, Camera* camera, bool allowDepthWrite) const;
+    /// Draw to Vulkan secondary command buffer (for parallel recording).
+    /// Records this batch to a secondary command buffer for parallel rendering.
+    /// Falls back to primary buffer rendering if secondaryCommandBuffer is null or Vulkan unavailable.
+    /// Non-intrusive: completely safe to call on non-Vulkan builds.
+    void DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool allowDepthWrite, void* secondaryCommandBuffer) const;
+    /// Record to Vulkan indirect draw buffer (GPU-driven rendering).
+    /// Records this batch to an indirect draw command buffer for batched rendering.
+    /// Falls back to immediate rendering if dispatcher is null or Vulkan unavailable.
+    /// Non-intrusive: completely safe to call on non-Vulkan builds.
+    bool RecordToIndirectBuffer(View* view, Camera* camera, bool allowDepthWrite, void* dispatcher) const;
 
     /// State sorting key.
     hash64 sortKey_{};
@@ -148,6 +158,17 @@ struct BatchGroup : public Batch
     void SetInstancingData(void* lockedData, i32 stride, i32& freeIndex);
     /// Prepare and draw.
     void Draw(View* view, Camera* camera, bool allowDepthWrite) const;
+    /// Draw to Vulkan secondary command buffer (for parallel recording).
+    /// Records this batch group (potentially many instanced draws) to a secondary buffer.
+    /// Optimized for instancing with per-instance data handling.
+    /// Falls back to primary buffer rendering if secondaryCommandBuffer is null or Vulkan unavailable.
+    /// Non-intrusive: completely safe to call on non-Vulkan builds.
+    void DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool allowDepthWrite, void* secondaryCommandBuffer) const;
+    /// Record to Vulkan indirect draw buffer (GPU-driven instancing).
+    /// Records all instances in this batch group to indirect command buffer.
+    /// Falls back to immediate rendering if dispatcher is null or Vulkan unavailable.
+    /// Non-intrusive: completely safe to call on non-Vulkan builds.
+    bool RecordToIndirectBuffer(View* view, Camera* camera, bool allowDepthWrite, void* dispatcher) const;
 
     /// Instance data.
     Vector<InstanceData> instances_;
@@ -219,6 +240,11 @@ public:
     void SetInstancingData(void* lockedData, i32 stride, i32& freeIndex);
     /// Draw.
     void Draw(View* view, Camera* camera, bool markToStencil, bool usingLightOptimization, bool allowDepthWrite) const;
+    /// Record batches to Vulkan indirect draw buffer for GPU-driven rendering.
+    /// Records all batch groups and batches to dispatcher for indirect command buffering.
+    /// Falls back to immediate rendering if dispatcher is null or Vulkan unavailable.
+    /// Non-intrusive: completely safe to call on non-Vulkan builds.
+    void RecordToIndirectBuffer(View* view, Camera* camera, bool markToStencil, bool usingLightOptimization, bool allowDepthWrite, void* dispatcher) const;
     /// Return the combined amount of instances.
     i32 GetNumInstances() const;
 

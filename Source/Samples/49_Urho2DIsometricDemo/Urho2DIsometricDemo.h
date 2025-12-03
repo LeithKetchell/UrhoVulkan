@@ -5,6 +5,7 @@
 
 #include "Sample.h"
 #include "Utilities2D/Sample2D.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 class Character2D;
 class Sample2D;
@@ -61,4 +62,6 @@ private:
 
     /// Sample2D utility object.
     SharedPtr<Sample2D> sample2D_;
+    /// Profiler UI overlay
+    SharedPtr<ProfilerUI> profilerUI_;
 };

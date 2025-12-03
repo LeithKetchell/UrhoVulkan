@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -49,6 +50,8 @@ private:
     void InitControls();
     /// Create a draggable fish button.
     void CreateDraggableFish();
+    /// Subscribe to application-wide logic update events.
+    void SubscribeToEvents();
     /// Handle drag begin for the fish button.
     void HandleDragBegin(StringHash eventType, VariantMap& eventData);
     /// Handle drag move for the fish button.
@@ -59,6 +62,8 @@ private:
     void HandleControlClicked(StringHash eventType, VariantMap& eventData);
     /// Handle close button pressed and released.
     void HandleClosePressed(StringHash eventType, VariantMap& eventData);
+    /// Handle the logic update event.
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
 
     /// The Window.
     SharedPtr<Window> window_;
@@ -66,6 +71,7 @@ private:
     SharedPtr<UIElement> uiRoot_;
     /// Remembered drag begin position.
     IntVector2 dragBeginPosition_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };
 
 

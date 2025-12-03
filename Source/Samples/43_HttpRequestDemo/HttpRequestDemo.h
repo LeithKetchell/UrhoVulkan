@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Sample.h"
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
 {
@@ -46,4 +47,5 @@ private:
     String message_;
     SharedPtr<Text> text_;
     SharedPtr<HttpRequest> httpRequest_;
+    SharedPtr<ProfilerUI> profilerUI_;
 };

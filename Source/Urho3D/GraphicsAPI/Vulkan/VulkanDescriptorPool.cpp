@@ -4,10 +4,12 @@
 //
 // Vulkan descriptor pool management (Phase 7)
 
+#include "../../Precompiled.h"
+
 #ifdef URHO3D_VULKAN
 
 #include "VulkanDescriptorPool.h"
-#include "../../Core/Log.h"
+#include "../../IO/Log.h"
 #include <cstring>
 
 namespace Urho3D
@@ -111,6 +113,10 @@ bool VulkanDescriptorPool::Initialize(VkDevice device, VkPhysicalDevice physical
 
 void VulkanDescriptorPool::Release()
 {
+    // Clear frame cache
+    frameDescriptorSetCache_.Clear();
+    activeDescriptorSets_.Clear();
+
     // Destroy cached layouts
     for (auto& pair : layoutCache_)
     {
@@ -153,7 +159,7 @@ VkDescriptorSetLayout VulkanDescriptorPool::GetOrCreateDescriptorSetLayout(
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.Size());
-    layoutInfo.pBindings = bindings.Data();
+    layoutInfo.pBindings = !bindings.Empty() ? &bindings[0] : nullptr;
 
     VkDescriptorSetLayout layout;
     if (vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
@@ -189,6 +195,46 @@ VkDescriptorSet VulkanDescriptorPool::AllocateDescriptorSet(VkDescriptorSetLayou
 
     return descriptorSet;
 }
+
+VkDescriptorSet VulkanDescriptorPool::GetOrCreateDescriptorSet(VkDescriptorSetLayout layout, uint64_t resourceBindingHash)
+{
+    if (!descriptorPool_ || !layout || !device_)
+        return nullptr;
+
+    // Create cache key from layout and resource binding hash
+    // Use layout pointer as hash component (unique per layout)
+    uint64_t layoutHash = reinterpret_cast<uint64_t>(layout);
+    uint64_t cacheKey = layoutHash ^ resourceBindingHash;
+
+    // Check if descriptor set is already cached for this frame
+    auto it = frameDescriptorSetCache_.Find(cacheKey);
+    if (it != frameDescriptorSetCache_.End())
+    {
+        return it->second_;
+    }
+
+    // Allocate new descriptor set
+    VkDescriptorSet descriptorSet = AllocateDescriptorSet(layout);
+    if (!descriptorSet)
+        return nullptr;
+
+    // Cache it for frame reuse
+    frameDescriptorSetCache_[cacheKey] = descriptorSet;
+    activeDescriptorSets_.Push(descriptorSet);
+
+    URHO3D_LOGDEBUG("Cached descriptor set (total: " + String(frameDescriptorSetCache_.Size()) + ")");
+    return descriptorSet;
+}
+
+void VulkanDescriptorPool::ResetFrameCache()
+{
+    // Clear per-frame descriptor set cache
+    // Note: Sets are freed back to pool, reusable across frames if pool allows
+    frameDescriptorSetCache_.Clear();
+    activeDescriptorSets_.Clear();
+    URHO3D_LOGDEBUG("Frame descriptor set cache reset");
+}
+
 
 } // namespace Urho3D
 

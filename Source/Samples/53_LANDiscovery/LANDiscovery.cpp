@@ -3,6 +3,7 @@
 
 #include <Urho3D/Audio/Audio.h>
 #include <Urho3D/Audio/Sound.h>
+#include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Graphics/Graphics.h>
 #include <Urho3D/Graphics/Zone.h>
@@ -25,6 +26,7 @@
 #include "LANDiscovery.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // Undefine Windows macro, as our Connection class has a function called SendMessage
 #ifdef SendMessage
@@ -54,6 +56,13 @@ void LANDiscovery::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
 }
 
 void LANDiscovery::CreateUI()
@@ -84,6 +93,14 @@ void LANDiscovery::CreateUI()
 
     // No viewports or scene is defined. However, the default zone's fog color controls the fill color
     GetSubsystem<Renderer>()->GetDefaultZone()->SetFogColor(Color(0.0f, 0.0f, 0.1f));
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    root->AddChild(vulkanIndicator);
 }
 
 void LANDiscovery::SubscribeToEvents()
@@ -93,6 +110,9 @@ void LANDiscovery::SubscribeToEvents()
     SubscribeToEvent(startServer_, "Released", URHO3D_HANDLER(LANDiscovery, HandleStartServer));
     SubscribeToEvent(stopServer_, "Released", URHO3D_HANDLER(LANDiscovery, HandleStopServer));
     SubscribeToEvent(refreshServerList_, "Released", URHO3D_HANDLER(LANDiscovery, HandleDoNetworkDiscovery));
+
+    // Subscribe to update events
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(LANDiscovery, HandleUpdate));
 }
 
 Button* LANDiscovery::CreateButton(const String& text, int width, IntVector2 position)
@@ -162,4 +182,17 @@ void LANDiscovery::HandleDoNetworkDiscovery(StringHash eventType, VariantMap& ev
     /// Pass in the port that should be checked
     GetSubsystem<Network>()->DiscoverHosts(SERVER_PORT);
     serverList_->SetText("");
+}
+
+void LANDiscovery::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }

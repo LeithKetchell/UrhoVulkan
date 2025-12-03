@@ -4,10 +4,12 @@
 //
 // SPIR-V reflection utilities for descriptor set creation (Phase 7)
 
+#include "../../Precompiled.h"
+
 #ifdef URHO3D_VULKAN
 
 #include "VulkanSPIRVReflect.h"
-#include "../../Core/Log.h"
+#include "../../IO/Log.h"
 #include <cstring>
 
 namespace Urho3D
@@ -47,6 +49,13 @@ enum SPIRVDecoration
     DecorationBinding = 33,
 };
 
+// Storage classes for OpVariable
+enum SPIRVStorageClass
+{
+    StorageClassUniform = 0,
+    StorageClassUniformConstant = 0,
+};
+
 bool VulkanSPIRVReflect::ReflectShaderResources(
     const Vector<uint32_t>& spirvBytecode,
     VkShaderStageFlagBits shaderStage,
@@ -67,55 +76,33 @@ bool VulkanSPIRVReflect::ReflectShaderResources(
         return false;
     }
 
-    // Basic reflection: Find OpVariable instructions for resources
-    // This is a simplified reflection that identifies uniform buffers
-    size_t idx = 5;  // Skip header (5 words)
+    // Extract resource metadata from decorations and variable declarations
+    ExtractResourceMetadata(spirvBytecode, resources);
 
-    while (idx < spirvBytecode.Size())
+    // Set shader stage flags for all resources found
+    for (auto& res : resources)
     {
-        uint32_t word = spirvBytecode[idx];
-        uint16_t wordCount = word >> 16;
-        uint16_t opcode = word & 0xFFFF;
-
-        if (wordCount == 0)
-        {
-            URHO3D_LOGWARNING("Invalid SPIR-V instruction word count");
-            break;
-        }
-
-        // Handle Decorate instructions to extract binding info
-        if (opcode == OpDecorate && idx + 3 < spirvBytecode.Size())
-        {
-            uint32_t targetId = spirvBytecode[idx + 1];
-            uint32_t decoration = spirvBytecode[idx + 2];
-
-            // We parse decorations but simplified version doesn't fully decode them
-            // A complete implementation would track all decorations per variable
-        }
-
-        // Handle Variable instructions (resources)
-        if (opcode == OpVariable && idx + 3 < spirvBytecode.Size())
-        {
-            // Variable: result_type, result_id, storage_class, [initializer]
-            // For now, we create default resources as a framework
-            // Full reflection would require glslang or spirv-reflect library
-        }
-
-        idx += wordCount;
+        res.stageFlags = shaderStage;
     }
 
-    // Framework: Add default uniform buffer binding for now
-    // Real implementation would parse the SPIR-V instructions above
-    SPIRVResource uniformBuffer;
-    uniformBuffer.set = 0;
-    uniformBuffer.binding = 0;
-    uniformBuffer.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uniformBuffer.descriptorCount = 1;
-    uniformBuffer.stageFlags = shaderStage;
+    if (!resources.Empty())
+    {
+        URHO3D_LOGDEBUG("Reflected " + String((int)resources.Size()) + " resources from SPIR-V");
+    }
+    else
+    {
+        // Default fallback: Add standard uniform buffer binding
+        SPIRVResource uniformBuffer;
+        uniformBuffer.set = 0;
+        uniformBuffer.binding = 0;
+        uniformBuffer.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uniformBuffer.descriptorCount = 1;
+        uniformBuffer.stageFlags = shaderStage;
+        resources.Push(uniformBuffer);
 
-    resources.Push(uniformBuffer);
+        URHO3D_LOGDEBUG("No resources found in SPIR-V, using default uniform buffer binding");
+    }
 
-    URHO3D_LOGDEBUG("Reflected " + String(resources.Size()) + " resources from SPIR-V");
     return true;
 }
 
@@ -155,15 +142,99 @@ void VulkanSPIRVReflect::ExtractResourceMetadata(
     const Vector<uint32_t>& spirv,
     Vector<SPIRVResource>& resources)
 {
-    // This is a framework for more sophisticated reflection
-    // A full implementation would:
-    // 1. Parse OpVariable instructions
-    // 2. Match decorations with variable IDs
-    // 3. Determine descriptor types from OpTypePointer
-    // 4. Build complete descriptor set layouts
+    resources.Clear();
 
-    // For now, return empty - descriptor creation uses defaults
+    if (spirv.Size() < 5)
+        return;
+
+    // First pass: Collect all decorations (binding/set info)
+    // Map from variable ID to its binding/set decorations
+    HashMap<uint32_t, uint32_t> bindingMap;    // ID -> binding number
+    HashMap<uint32_t, uint32_t> descriptorSetMap;  // ID -> descriptor set
+    HashMap<uint32_t, VkDescriptorType> descriptorTypeMap;  // ID -> type
+
+    size_t idx = 5;  // Skip header
+
+    // First pass: extract decorations
+    while (idx < spirv.Size())
+    {
+        uint32_t word = spirv[idx];
+        uint16_t wordCount = word >> 16;
+        uint16_t opcode = word & 0xFFFF;
+
+        if (wordCount == 0)
+            break;
+
+        // OpDecorate: opcode, target_id, decoration, [literal arguments]
+        if (opcode == OpDecorate && wordCount >= 3)
+        {
+            uint32_t targetId = spirv[idx + 1];
+            uint32_t decoration = spirv[idx + 2];
+
+            // Extract binding number (Binding = 33)
+            if (decoration == DecorationBinding && wordCount >= 4)
+            {
+                uint32_t bindingValue = spirv[idx + 3];
+                bindingMap[targetId] = bindingValue;
+            }
+
+            // Extract descriptor set (DescriptorSet = 34)
+            if (decoration == DecorationDescriptorSet && wordCount >= 4)
+            {
+                uint32_t setNumber = spirv[idx + 3];
+                descriptorSetMap[targetId] = setNumber;
+            }
+        }
+
+        idx += wordCount;
+    }
+
+    // Second pass: extract variables with their storage class and type
+    idx = 5;
+
+    while (idx < spirv.Size())
+    {
+        uint32_t word = spirv[idx];
+        uint16_t wordCount = word >> 16;
+        uint16_t opcode = word & 0xFFFF;
+
+        if (wordCount == 0)
+            break;
+
+        // OpVariable: opcode, result_type, result_id, storage_class, [initializer]
+        if (opcode == OpVariable && wordCount >= 4)
+        {
+            uint32_t resultId = spirv[idx + 2];
+            uint32_t storageClass = spirv[idx + 3];
+
+            // Check if this variable has binding info (it's a resource)
+            if (bindingMap.Contains(resultId))
+            {
+                SPIRVResource resource;
+                resource.binding = bindingMap[resultId];
+                resource.set = descriptorSetMap.Contains(resultId) ? descriptorSetMap[resultId] : 0;
+                resource.descriptorCount = 1;
+
+                // Infer descriptor type from storage class
+                // StorageClass 0 = UniformConstant (typically samplers/sampled images)
+                // For now, default to uniform buffer - real implementation would analyze OpTypePointer
+                if (storageClass == 0)
+                {
+                    resource.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                }
+                else
+                {
+                    resource.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                }
+
+                resources.Push(resource);
+            }
+        }
+
+        idx += wordCount;
+    }
 }
+
 
 } // namespace Urho3D
 

@@ -5,6 +5,7 @@
 #include <Urho3D/Audio/AudioEvents.h>
 #include <Urho3D/Audio/Sound.h>
 #include <Urho3D/Audio/SoundSource.h>
+#include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/IO/Log.h>
@@ -20,6 +21,7 @@
 #include "SoundEffects.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 // Custom variable identifier for storing sound effect name within the UI element
 static const StringHash VAR_SOUNDRESOURCE("SoundResource");
@@ -73,6 +75,16 @@ void SoundEffects::Start()
 
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
+
+    // Initialize profiler UI
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* ui = GetSubsystem<UI>();
+    profilerUI_ = new ProfilerUI(context_);
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->SetVisible(true);
+
+    // Subscribe to update events
+    SubscribeToEvents();
 }
 
 void SoundEffects::CreateUI()
@@ -109,6 +121,14 @@ void SoundEffects::CreateUI()
     slider = CreateSlider(20, 200, 200, 20, "Music Volume");
     slider->SetValue(audio->GetMasterGain(SOUND_MUSIC));
     SubscribeToEvent(slider, E_SLIDERCHANGED, URHO3D_HANDLER(SoundEffects, HandleMusicVolume));
+
+    // Add Vulkan indicator in top-left corner
+    auto* vulkanIndicator = new Text(context_);
+    vulkanIndicator->SetText("Using: Vulkan");
+    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    vulkanIndicator->SetColor(Color::YELLOW);
+    vulkanIndicator->SetPosition(10, 10);
+    root->AddChild(vulkanIndicator);
 }
 
 Button* SoundEffects::CreateButton(int x, int y, int xSize, int ySize, const String& text)
@@ -206,4 +226,22 @@ void SoundEffects::HandleMusicVolume(StringHash eventType, VariantMap& eventData
 
     float newVolume = eventData[P_VALUE].GetFloat();
     GetSubsystem<Audio>()->SetMasterGain(SOUND_MUSIC, newVolume);
+}
+
+void SoundEffects::SubscribeToEvents()
+{
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(SoundEffects, HandleUpdate));
+}
+
+void SoundEffects::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }

@@ -3,11 +3,13 @@
 
 #include <Urho3D/Graphics/AnimatedModel.h>
 #include <Urho3D/Graphics/AnimationState.h>
+#include <Urho3D/Graphics/Graphics.h>
 #include <Urho3D/Scene/Scene.h>
 
 #include "Mover.h"
 
 #include <Urho3D/DebugNew.h>
+#include <Urho3D/Graphics/ProfilerUI.h>
 
 Mover::Mover(Context* context) :
     LogicComponent(context),
@@ -42,4 +44,12 @@ void Mover::Update(float timeStep)
         AnimationState* state = model->GetAnimationStates()[0];
         state->AddTime(timeStep);
     }
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
 }
+
