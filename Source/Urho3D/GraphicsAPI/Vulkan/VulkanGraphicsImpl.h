@@ -303,6 +303,20 @@ public:
     /// \returns VulkanStagingBufferManager* for asynchronous transfers (Phase 10)
     VulkanStagingBufferManager* GetStagingBufferManager() const { return stagingBufferManager_.Get(); }
 
+    /// \brief Get the actual MSAA sample count selected for current device
+    /// \returns VkSampleCountFlagBits clamped to device capabilities (1x, 2x, 4x, 8x, or 16x)
+    VkSampleCountFlagBits GetActualSampleCount() const { return actualSampleCount_; }
+
+    /// \brief Get bitmask of MSAA sample counts supported by physical device
+    /// \returns uint32_t bitmask of supported VkSampleCountFlagBits values
+    uint32_t GetSupportedSampleCountsMask() const { return supportedSampleCountsMask_; }
+
+    /// \brief Set user-requested MSAA sample count
+    /// \param sampleCount Requested sample count (1, 2, 4, 8, 16)
+    /// \details Actual sample count will be clamped to device capabilities.
+    /// Call before frame rendering to apply MSAA level.
+    void SetRequestedSampleCount(uint32_t sampleCount) { requestedSampleCount_ = SelectBestSampleCount(sampleCount); }
+
     /// \brief Get or create sampler for given filter and address modes
     /// \param filter VkFilter mode (NEAREST, LINEAR)
     /// \param addressMode VkSamplerAddressMode (CLAMP, REPEAT, MIRROR)
@@ -412,7 +426,7 @@ private:
     /// \details Allocates VkImage and VkImageView for depth attachment.
     /// Memory allocated via VMA for optimal performance.
     /// Layout initialized to VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL.
-    bool CreateDepthBuffer(VkFormat format, int width, int height);
+    bool CreateDepthBuffer(VkFormat format, int width, int height, VkSampleCountFlagBits sampleCount);
 
     /// \brief Create default render pass for single-pass rendering
     /// \returns True if render pass created successfully, false on error
@@ -503,6 +517,20 @@ private:
     /// All rendering operations submitted to graphics queue.
     bool FindQueueFamilies();
 
+    /// \brief Detect MSAA capabilities supported by physical device
+    /// \returns True if capable of detecting MSAA support, false on error
+    /// \details Queries physical device limits for supported sample counts.
+    /// Stores supported sample count bitmask and determines best available MSAA level.
+    /// Called during device selection to enable MSAA configuration.
+    bool DetectMSAACapabilities();
+
+    /// \brief Select best supported sample count for requested MSAA level
+    /// \param requestedCount User-requested sample count (1, 2, 4, 8, 16)
+    /// \returns VkSampleCountFlagBits for nearest supported count, fallback to 1x if none match
+    /// \details Maps requested MSAA level to nearest device-supported sample count.
+    /// Returns VK_SAMPLE_COUNT_1_BIT if requested count unavailable.
+    VkSampleCountFlagBits SelectBestSampleCount(uint32_t requestedCount);
+
     // Vulkan instance and device objects
     VkInstance instance_{};
     VkPhysicalDevice physicalDevice_{};
@@ -573,6 +601,11 @@ private:
 
     // Memory allocator (VMA)
     VmaAllocator allocator_{};
+
+    // MSAA (Multisample Anti-Aliasing) support
+    VkSampleCountFlagBits requestedSampleCount_{VK_SAMPLE_COUNT_1_BIT};  ///< User-requested sample count
+    VkSampleCountFlagBits actualSampleCount_{VK_SAMPLE_COUNT_1_BIT};     ///< Device-supported sample count (clamped)
+    uint32_t supportedSampleCountsMask_{VK_SAMPLE_COUNT_1_BIT};           ///< Bitmask of device-supported sample counts
 
     // Frame tracking
     uint32_t frameIndex_{0};

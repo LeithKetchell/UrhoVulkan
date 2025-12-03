@@ -77,10 +77,10 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         return false;
     }
 
-    if (!CreateDepthBuffer(VULKAN_PREFERRED_DEPTH_FORMAT, width, height))
+    if (!CreateDepthBuffer(VULKAN_PREFERRED_DEPTH_FORMAT, width, height, VK_SAMPLE_COUNT_1_BIT))
     {
         // Try fallback depth format
-        if (!CreateDepthBuffer(VULKAN_FALLBACK_DEPTH_FORMAT, width, height))
+        if (!CreateDepthBuffer(VULKAN_FALLBACK_DEPTH_FORMAT, width, height, VK_SAMPLE_COUNT_1_BIT))
         {
             URHO3D_LOGERROR("Failed to create depth buffer");
             return false;
@@ -717,6 +717,12 @@ bool VulkanGraphicsImpl::SelectPhysicalDevice()
     URHO3D_LOGINFO(String("Selected GPU: ") + deviceProperties_.deviceName +
                    " (" + getDeviceTypeName(deviceProperties_.deviceType) + ")");
 
+    // Detect MSAA capabilities for this device
+    if (!DetectMSAACapabilities())
+    {
+        URHO3D_LOGWARNING("Failed to detect MSAA capabilities, defaulting to 1x");
+    }
+
     return true;
 }
 
@@ -767,6 +773,77 @@ bool VulkanGraphicsImpl::FindQueueFamilies()
     }
 
     return true;
+}
+
+bool VulkanGraphicsImpl::DetectMSAACapabilities()
+{
+    // Query device limits for supported sample counts
+    // Both color and depth attachments must support the same sample count
+    VkSampleCountFlags colorSamples = deviceProperties_.limits.framebufferColorSampleCounts;
+    VkSampleCountFlags depthSamples = deviceProperties_.limits.framebufferDepthSampleCounts;
+
+    // Store the intersection of supported sample counts (both must support)
+    supportedSampleCountsMask_ = colorSamples & depthSamples;
+
+    // Log available MSAA levels
+    String msaaInfo = "Supported MSAA levels: ";
+    if (supportedSampleCountsMask_ & VK_SAMPLE_COUNT_1_BIT) msaaInfo += "1x ";
+    if (supportedSampleCountsMask_ & VK_SAMPLE_COUNT_2_BIT) msaaInfo += "2x ";
+    if (supportedSampleCountsMask_ & VK_SAMPLE_COUNT_4_BIT) msaaInfo += "4x ";
+    if (supportedSampleCountsMask_ & VK_SAMPLE_COUNT_8_BIT) msaaInfo += "8x ";
+    if (supportedSampleCountsMask_ & VK_SAMPLE_COUNT_16_BIT) msaaInfo += "16x ";
+
+    URHO3D_LOGINFO(msaaInfo);
+
+    // Default to 1x MSAA if nothing is supported (shouldn't happen)
+    if (!supportedSampleCountsMask_)
+    {
+        supportedSampleCountsMask_ = VK_SAMPLE_COUNT_1_BIT;
+        actualSampleCount_ = VK_SAMPLE_COUNT_1_BIT;
+        return false;
+    }
+
+    // Start with 1x MSAA as default (can be changed via SetRequestedSampleCount)
+    actualSampleCount_ = VK_SAMPLE_COUNT_1_BIT;
+    requestedSampleCount_ = VK_SAMPLE_COUNT_1_BIT;
+
+    return true;
+}
+
+VkSampleCountFlagBits VulkanGraphicsImpl::SelectBestSampleCount(uint32_t requestedCount)
+{
+    // If 1x requested or invalid count, return 1x
+    if (requestedCount <= 1)
+        return VK_SAMPLE_COUNT_1_BIT;
+
+    // Map requested count to VkSampleCountFlagBits and find best supported match
+    VkSampleCountFlagBits requested = VK_SAMPLE_COUNT_1_BIT;
+    if (requestedCount >= 2) requested = VK_SAMPLE_COUNT_2_BIT;
+    if (requestedCount >= 4) requested = VK_SAMPLE_COUNT_4_BIT;
+    if (requestedCount >= 8) requested = VK_SAMPLE_COUNT_8_BIT;
+    if (requestedCount >= 16) requested = VK_SAMPLE_COUNT_16_BIT;
+
+    // Check if requested sample count is supported
+    if (supportedSampleCountsMask_ & requested)
+    {
+        actualSampleCount_ = requested;
+        URHO3D_LOGINFO(String("MSAA set to ") + String((int)requestedCount) + "x");
+        return requested;
+    }
+
+    // If not supported, find best fallback (prefer higher MSAA)
+    if (requested > VK_SAMPLE_COUNT_8_BIT && (supportedSampleCountsMask_ & VK_SAMPLE_COUNT_8_BIT))
+        return (actualSampleCount_ = VK_SAMPLE_COUNT_8_BIT);
+    if (requested > VK_SAMPLE_COUNT_4_BIT && (supportedSampleCountsMask_ & VK_SAMPLE_COUNT_4_BIT))
+        return (actualSampleCount_ = VK_SAMPLE_COUNT_4_BIT);
+    if (requested > VK_SAMPLE_COUNT_2_BIT && (supportedSampleCountsMask_ & VK_SAMPLE_COUNT_2_BIT))
+        return (actualSampleCount_ = VK_SAMPLE_COUNT_2_BIT);
+
+    // Fallback to 1x
+    actualSampleCount_ = VK_SAMPLE_COUNT_1_BIT;
+    URHO3D_LOGWARNING(String("Requested MSAA ") + String((int)requestedCount) +
+                     "x not supported, falling back to 1x");
+    return VK_SAMPLE_COUNT_1_BIT;
 }
 
 bool VulkanGraphicsImpl::CreateLogicalDevice()
@@ -945,7 +1022,7 @@ bool VulkanGraphicsImpl::CreateSwapchain(int width, int height)
     return true;
 }
 
-bool VulkanGraphicsImpl::CreateDepthBuffer(VkFormat format, int width, int height)
+bool VulkanGraphicsImpl::CreateDepthBuffer(VkFormat format, int width, int height, VkSampleCountFlagBits sampleCount)
 {
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -959,7 +1036,7 @@ bool VulkanGraphicsImpl::CreateDepthBuffer(VkFormat format, int width, int heigh
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.samples = sampleCount;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateImage(device_, &imageInfo, nullptr, &depthImage_) != VK_SUCCESS)
@@ -1020,6 +1097,7 @@ bool VulkanGraphicsImpl::CreateRenderPass()
     attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     // Depth attachment
+    // Note: Must match color attachment sample count. Full MSAA (with resolve) is Phase 2 enhancement.
     attachments[1].format = VK_FORMAT_D32_SFLOAT;
     attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
