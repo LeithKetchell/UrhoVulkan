@@ -21,6 +21,24 @@ Build with `-DURHO3D_VULKAN=1` to enable. See [PROJECT_STATUS.md](PROJECT_STATUS
 
 **Status**: ✅ All 54 samples compile successfully | Production-Ready
 
+### 🔧 Future Vulkan Optimizations Roadmap
+
+**Tier 1 - High Impact (Next Priority):**
+- **MSAA (Multisample Anti-Aliasing)**: Framework ready in RenderPassDescriptor. Support 2x, 4x, 8x, 16x with device capability detection
+- **Instancing Optimization**: Leverage existing VulkanInstanceBufferManager for 10-100x perf improvement on repeated meshes
+- **Deferred Rendering**: Multi-subpass rendering support already architected, enables dynamic lighting with many light sources
+
+**Tier 2 - Medium Impact (Secondary Priority):**
+- **Staging Buffer Optimization**: Accelerate texture/buffer uploads via ring buffer patterns and frame-aligned scheduling
+- **Material Parameter Binding**: Dynamic material properties via VulkanMaterialDescriptorManager with SPIR-V reflection
+- **Compute Shaders**: GPU-driven rendering, particle systems, post-processing effects
+
+**Tier 3 - Advanced (Polish Phase):**
+- **Timeline Semaphores**: Enhanced GPU-CPU synchronization via VK_KHR_timeline_semaphore
+- **Shader Parameter Reflection**: Automatic descriptor set inference from SPIR-V bytecode
+
+See code documentation in `VulkanGraphicsImpl.h`, `VulkanInstanceBufferManager.cpp`, and `VulkanSPIRVReflect.cpp` for implementation details.
+
 ## License
 Licensed under the MIT license, see [LICENSE](licenses/urho3d/LICENSE) for details.
 
