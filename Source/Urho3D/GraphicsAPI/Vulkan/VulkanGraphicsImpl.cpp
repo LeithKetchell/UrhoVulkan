@@ -2162,11 +2162,13 @@ static VkStencilOp ConvertStencilOp(StencilOp op)
     }
 }
 
-// Phase 32 Step 3: Pipeline creation with graphics state
+// Phase 32 Step 3 & Phase 33 Step 2: Pipeline creation with graphics state and shader modules
 VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     VkPipelineLayout layout,
     VkRenderPass renderPass,
-    const VulkanPipelineState& state)
+    const VulkanPipelineState& state,
+    VkShaderModule vsModule,
+    VkShaderModule fsModule)
 {
     if (!pipelineCache_)
     {
@@ -2330,10 +2332,31 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
-    // Phase 33: Prepare shader stages (vertex and fragment shaders)
-    // Note: Shader stages will be populated from Graphics class via Draw_Vulkan methods
-    // For now, create empty pipeline - actual stages will be added in Phase 33 Step 2
-    // when Draw calls have full Graphics context access
+    // Phase 33 Step 2: Prepare shader stages (vertex and fragment shaders)
+    // Create VkPipelineShaderStageCreateInfo array from compiled shader modules
+    Vector<VkPipelineShaderStageCreateInfo> shaderStages;
+
+    // Add vertex shader stage if provided
+    if (vsModule != VK_NULL_HANDLE)
+    {
+        VkPipelineShaderStageCreateInfo vsStage{};
+        vsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vsStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vsStage.module = vsModule;
+        vsStage.pName = "main";  // GLSL entry point
+        shaderStages.Push(vsStage);
+    }
+
+    // Add fragment shader stage if provided
+    if (fsModule != VK_NULL_HANDLE)
+    {
+        VkPipelineShaderStageCreateInfo fsStage{};
+        fsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fsStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fsStage.module = fsModule;
+        fsStage.pName = "main";  // GLSL entry point
+        shaderStages.Push(fsStage);
+    }
 
     // Build graphics pipeline create info
     VkGraphicsPipelineCreateInfo pipelineInfo{};
@@ -2348,8 +2371,8 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     pipelineInfo.pMultisampleState = &multisampleState;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.stageCount = 0;        // Phase 33: Will be set by caller with shader stages
-    pipelineInfo.pStages = nullptr;     // Phase 33: Will be set by caller
+    pipelineInfo.stageCount = shaderStages.Size();        // Phase 33: Set from shader modules
+    pipelineInfo.pStages = shaderStages.Size() > 0 ? &shaderStages[0] : nullptr;  // Phase 33: Bind stages
 
     // Use pipeline cache for creation (handles memory + disk caching)
     VkPipeline pipeline = pipelineCache_->GetOrCreatePipeline(stateHash, pipelineInfo);
