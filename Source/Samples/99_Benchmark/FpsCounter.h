@@ -53,5 +53,7 @@ public:
     int GetCurrentFps() const { return currentFps_; }
 
     void Update(float timeStep);
+
+private:
     Urho3D::SharedPtr<Urho3D::ProfilerUI> profilerUI_;
 };
