@@ -1452,6 +1452,11 @@ void Graphics::SetBlendMode(BlendMode mode, bool alphaToCoverage)
     if (gapi == GAPI_D3D11)
         return SetBlendMode_D3D11(mode, alphaToCoverage);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetBlendMode_Vulkan(mode, alphaToCoverage);
+#endif
 }
 
 void Graphics::SetColorWrite(bool enable)
@@ -1466,6 +1471,11 @@ void Graphics::SetColorWrite(bool enable)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetColorWrite_D3D11(enable);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetColorWrite_Vulkan(enable);
 #endif
 }
 
@@ -1482,6 +1492,11 @@ void Graphics::SetCullMode(CullMode mode)
     if (gapi == GAPI_D3D11)
         return SetCullMode_D3D11(mode);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetCullMode_Vulkan(mode);
+#endif
 }
 
 void Graphics::SetDepthBias(float constantBias, float slopeScaledBias)
@@ -1497,6 +1512,7 @@ void Graphics::SetDepthBias(float constantBias, float slopeScaledBias)
     if (gapi == GAPI_D3D11)
         return SetDepthBias_D3D11(constantBias, slopeScaledBias);
 #endif
+    // TODO: Implement SetDepthBias_Vulkan (currently skipped)
 }
 
 void Graphics::SetDepthTest(CompareMode mode)
@@ -1511,6 +1527,11 @@ void Graphics::SetDepthTest(CompareMode mode)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetDepthTest_D3D11(mode);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDepthTest_Vulkan(mode);
 #endif
 }
 
@@ -1527,6 +1548,11 @@ void Graphics::SetDepthWrite(bool enable)
     if (gapi == GAPI_D3D11)
         return SetDepthWrite_D3D11(enable);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDepthWrite_Vulkan(enable);
+#endif
 }
 
 void Graphics::SetFillMode(FillMode mode)
@@ -1541,6 +1567,11 @@ void Graphics::SetFillMode(FillMode mode)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetFillMode_D3D11(mode);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetFillMode_Vulkan(mode);
 #endif
 }
 
@@ -1557,6 +1588,7 @@ void Graphics::SetLineAntiAlias(bool enable)
     if (gapi == GAPI_D3D11)
         return SetLineAntiAlias_D3D11(enable);
 #endif
+    // TODO: Implement SetLineAntiAlias_Vulkan (currently skipped)
 }
 
 void Graphics::SetScissorTest(bool enable, const Rect& rect, bool borderInclusive)
@@ -1572,6 +1604,7 @@ void Graphics::SetScissorTest(bool enable, const Rect& rect, bool borderInclusiv
     if (gapi == GAPI_D3D11)
         return SetScissorTest_D3D11(enable, rect, borderInclusive);
 #endif
+    // TODO: Implement SetScissorTest_Vulkan wrapper for Rect (currently skipped)
 }
 
 void Graphics::SetScissorTest(bool enable, const IntRect& rect)
@@ -1587,6 +1620,7 @@ void Graphics::SetScissorTest(bool enable, const IntRect& rect)
     if (gapi == GAPI_D3D11)
         return SetScissorTest_D3D11(enable, rect);
 #endif
+    // TODO: Implement SetScissorTest_Vulkan wrapper for IntRect (currently skipped)
 }
 
 void Graphics::SetClipPlane(bool enable, const Plane& clipPlane, const Matrix3x4& view, const Matrix4& projection)
@@ -1602,6 +1636,7 @@ void Graphics::SetClipPlane(bool enable, const Plane& clipPlane, const Matrix3x4
     if (gapi == GAPI_D3D11)
         return SetClipPlane_D3D11(enable, clipPlane, view, projection);
 #endif
+    // TODO: Implement SetClipPlane_Vulkan (currently skipped)
 }
 
 void Graphics::SetStencilTest(bool enable, CompareMode mode, StencilOp pass, StencilOp fail, StencilOp zFail, u32 stencilRef,
@@ -1617,6 +1652,11 @@ void Graphics::SetStencilTest(bool enable, CompareMode mode, StencilOp pass, Ste
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetStencilTest_D3D11(enable, mode, pass, fail, zFail, stencilRef, compareMask, writeMask);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetStencilTest_Vulkan(enable, mode, pass, fail, zFail, stencilRef, compareMask, writeMask);
 #endif
 }
 
