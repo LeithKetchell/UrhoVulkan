@@ -38,6 +38,11 @@ public:
     /// Set thread priority. The thread must have been started first.
     void SetPriority(int priority);
 
+    /// Set CPU affinity for this thread (Linux only via sched_setaffinity).
+    /// cpuIndex: CPU core number to pin to (0-based)
+    /// Returns true if successful
+    bool SetAffinity(int cpuIndex);
+
     /// Return whether thread exists.
     bool IsStarted() const { return handle_ != nullptr; }
 
@@ -48,6 +53,15 @@ public:
     static ThreadID GetCurrentThreadID();
     /// Return whether is executing in the main thread.
     static bool IsMainThread();
+
+    /// Get the number of logical CPU cores available
+    static int GetNumCores();
+
+    /// Get the number of NUMA nodes (1 if NUMA not available)
+    static int GetNumNumaNodes();
+
+    /// Get CPU core to NUMA node mapping (returns -1 if not available)
+    static int GetCoreNumaNode(int coreIndex);
 
 protected:
     /// Thread handle.

@@ -9,6 +9,7 @@
 #include "../Engine/WinWrapped.h"
 #else
 #include <pthread.h>
+#include <sched.h>
 #endif
 
 #include "../DebugNew.h"
@@ -134,6 +135,82 @@ bool Thread::IsMainThread()
     return GetCurrentThreadID() == mainThreadID;
 #else
     return true;
+#endif // URHO3D_THREADING
+}
+
+bool Thread::SetAffinity(int cpuIndex)
+{
+#ifdef URHO3D_THREADING
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+    if (!handle_)
+        return false;
+
+    // Phase 1.2: Set CPU affinity using sched_setaffinity
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpuIndex, &cpuset);
+
+    auto* thread = (pthread_t*)handle_;
+    if (pthread_setaffinity_np(*thread, sizeof(cpu_set_t), &cpuset) != 0)
+    {
+        return false;
+    }
+    return true;
+#else
+    // CPU affinity not supported on this platform
+    return false;
+#endif // __linux__
+#else
+    return false;
+#endif // URHO3D_THREADING
+}
+
+int Thread::GetNumCores()
+{
+#ifdef URHO3D_THREADING
+#ifdef _WIN32
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    return sysinfo.dwNumberOfProcessors;
+#elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
+    long numCores = sysconf(_SC_NPROCESSORS_ONLN);
+    return (numCores > 0) ? static_cast<int>(numCores) : 1;
+#else
+    return 1;
+#endif
+#else
+    return 1;
+#endif // URHO3D_THREADING
+}
+
+int Thread::GetNumNumaNodes()
+{
+#ifdef URHO3D_THREADING
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+    // Try to get NUMA nodes using libnuma if available
+    // For now, return 1 (single node) as fallback
+    // Full NUMA support would require linking against libnuma
+    return 1;
+#else
+    return 1;
+#endif
+#else
+    return 1;
+#endif // URHO3D_THREADING
+}
+
+int Thread::GetCoreNumaNode(int coreIndex)
+{
+#ifdef URHO3D_THREADING
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+    // Would require libnuma for actual implementation
+    // For now, return -1 (unknown)
+    return -1;
+#else
+    return -1;
+#endif
+#else
+    return -1;
 #endif // URHO3D_THREADING
 }
 
