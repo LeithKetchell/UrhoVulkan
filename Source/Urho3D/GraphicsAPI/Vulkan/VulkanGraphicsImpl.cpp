@@ -78,14 +78,22 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         return false;
     }
 
-    if (!CreateDepthBuffer(VULKAN_PREFERRED_DEPTH_FORMAT, width, height, VK_SAMPLE_COUNT_1_BIT))
+    // Phase 30: Use MSAA sample count for depth buffer
+    if (!CreateDepthBuffer(VULKAN_PREFERRED_DEPTH_FORMAT, width, height, actualSampleCount_))
     {
         // Try fallback depth format
-        if (!CreateDepthBuffer(VULKAN_FALLBACK_DEPTH_FORMAT, width, height, VK_SAMPLE_COUNT_1_BIT))
+        if (!CreateDepthBuffer(VULKAN_FALLBACK_DEPTH_FORMAT, width, height, actualSampleCount_))
         {
             URHO3D_LOGERROR("Failed to create depth buffer");
             return false;
         }
+    }
+
+    // Phase 30: Create MSAA color image if sample count > 1x
+    if (!CreateMSAAColorImage(width, height))
+    {
+        URHO3D_LOGWARNING("Failed to create MSAA color image, will use 1x MSAA");
+        actualSampleCount_ = VK_SAMPLE_COUNT_1_BIT;
     }
 
     if (!CreateRenderPass())
@@ -284,6 +292,19 @@ void VulkanGraphicsImpl::Shutdown()
     {
         vkFreeMemory(device_, depthImageMemory_, nullptr);
         depthImageMemory_ = nullptr;
+    }
+
+    // Phase 30: Destroy MSAA color buffer if present
+    if (msaaColorImageView_)
+    {
+        vkDestroyImageView(device_, msaaColorImageView_, nullptr);
+        msaaColorImageView_ = nullptr;
+    }
+    if (msaaColorImage_)
+    {
+        vmaDestroyImage(allocator_, msaaColorImage_, msaaColorAllocation_);
+        msaaColorImage_ = VK_NULL_HANDLE;
+        msaaColorAllocation_ = nullptr;
     }
 
     // Destroy swapchain image views
@@ -1258,30 +1279,105 @@ bool VulkanGraphicsImpl::CreateDepthBuffer(VkFormat format, int width, int heigh
     return true;
 }
 
+bool VulkanGraphicsImpl::CreateMSAAColorImage(int width, int height)
+{
+    // Phase 30: Only create MSAA color image if sample count > 1x
+    if (actualSampleCount_ == VK_SAMPLE_COUNT_1_BIT)
+    {
+        return true;  // No MSAA needed
+    }
+
+    // Create intermediate multi-sample color image
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = (uint32_t)width;
+    imageInfo.extent.height = (uint32_t)height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = swapchainFormat_;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;  // Render target only
+    imageInfo.samples = actualSampleCount_;  // Use MSAA sample count
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocCreateInfo{};
+    allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+    if (vmaCreateImage(allocator_, &imageInfo, &allocCreateInfo, &msaaColorImage_, &msaaColorAllocation_, nullptr) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR(String("Failed to create MSAA color image (") + String((int)actualSampleCount_) + "x)");
+        return false;
+    }
+
+    // Create image view for MSAA color attachment
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = msaaColorImage_;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = swapchainFormat_;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(device_, &viewInfo, nullptr, &msaaColorImageView_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create MSAA color image view");
+        vmaDestroyImage(allocator_, msaaColorImage_, msaaColorAllocation_);
+        msaaColorImage_ = VK_NULL_HANDLE;
+        return false;
+    }
+
+    URHO3D_LOGINFO(String("MSAA color image created (") + String((int)actualSampleCount_) + "x samples)");
+    return true;
+}
+
 bool VulkanGraphicsImpl::CreateRenderPass()
 {
-    VkAttachmentDescription attachments[2]{};
+    // Phase 30: Support MSAA with resolve attachments
+    // Layout: [0] = MSAA color (or swapchain if 1x), [1] = depth, [2] = resolve (if MSAA)
+    bool useMSAA = (actualSampleCount_ != VK_SAMPLE_COUNT_1_BIT);
+    int attachmentCount = useMSAA ? 3 : 2;
 
-    // Color attachment
+    Vector<VkAttachmentDescription> attachments;
+    attachments.Resize(attachmentCount);
+
+    // Attachment 0: Color attachment (MSAA if enabled, else swapchain)
     attachments[0].format = swapchainFormat_;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].samples = actualSampleCount_;  // Use MSAA sample count
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].storeOp = useMSAA ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    attachments[0].finalLayout = useMSAA ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-    // Depth attachment
-    // Note: Must match color attachment sample count. Full MSAA (with resolve) is Phase 2 enhancement.
+    // Attachment 1: Depth attachment
     attachments[1].format = VK_FORMAT_D32_SFLOAT;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].samples = actualSampleCount_;  // Must match color attachment
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    // Attachment 2: Resolve attachment (only if MSAA enabled)
+    if (useMSAA)
+    {
+        attachments[2].format = swapchainFormat_;
+        attachments[2].samples = VK_SAMPLE_COUNT_1_BIT;  // Resolve target is always 1x
+        attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[2].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    }
 
     VkAttachmentReference colorRef{};
     colorRef.attachment = 0;
@@ -1291,11 +1387,22 @@ bool VulkanGraphicsImpl::CreateRenderPass()
     depthRef.attachment = 1;
     depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+    VkAttachmentReference resolveRef{};
+    if (useMSAA)
+    {
+        resolveRef.attachment = 2;
+        resolveRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorRef;
     subpass.pDepthStencilAttachment = &depthRef;
+    if (useMSAA)
+    {
+        subpass.pResolveAttachments = &resolveRef;  // Resolve MSAA to swapchain
+    }
 
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -1307,8 +1414,8 @@ bool VulkanGraphicsImpl::CreateRenderPass()
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 2;
-    renderPassInfo.pAttachments = attachments;
+    renderPassInfo.attachmentCount = attachmentCount;
+    renderPassInfo.pAttachments = &attachments[0];
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
     renderPassInfo.dependencyCount = 1;
@@ -1320,7 +1427,14 @@ bool VulkanGraphicsImpl::CreateRenderPass()
         return false;
     }
 
-    URHO3D_LOGINFO("Render pass created");
+    if (useMSAA)
+    {
+        URHO3D_LOGINFO(String("Render pass created with MSAA (") + String((int)actualSampleCount_) + "x) and resolve");
+    }
+    else
+    {
+        URHO3D_LOGINFO("Render pass created (1x MSAA)");
+    }
     return true;
 }
 
@@ -1416,18 +1530,31 @@ bool VulkanGraphicsImpl::CreateFramebuffers()
 {
     framebuffers_.Resize(swapchainImageViews_.Size());
 
+    // Phase 30: Create framebuffers with MSAA support
+    bool useMSAA = (actualSampleCount_ != VK_SAMPLE_COUNT_1_BIT);
+
     for (size_t i = 0; i < swapchainImageViews_.Size(); ++i)
     {
-        VkImageView attachments[] = {
-            swapchainImageViews_[i],
-            depthImageView_
-        };
+        Vector<VkImageView> attachments;
+        if (useMSAA)
+        {
+            // MSAA: [0] = msaa color, [1] = depth, [2] = swapchain resolve
+            attachments.Push(msaaColorImageView_);
+            attachments.Push(depthImageView_);
+            attachments.Push(swapchainImageViews_[i]);
+        }
+        else
+        {
+            // 1x MSAA: [0] = swapchain color, [1] = depth
+            attachments.Push(swapchainImageViews_[i]);
+            attachments.Push(depthImageView_);
+        }
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = renderPass_;
-        framebufferInfo.attachmentCount = 2;
-        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.attachmentCount = (uint32_t)attachments.Size();
+        framebufferInfo.pAttachments = !attachments.Empty() ? &attachments[0] : nullptr;
         framebufferInfo.width = swapchainExtent_.width;
         framebufferInfo.height = swapchainExtent_.height;
         framebufferInfo.layers = 1;
@@ -1439,7 +1566,14 @@ bool VulkanGraphicsImpl::CreateFramebuffers()
         }
     }
 
-    URHO3D_LOGINFO("Framebuffers created");
+    if (useMSAA)
+    {
+        URHO3D_LOGINFO(String("Framebuffers created with MSAA (") + String((int)actualSampleCount_) + "x)");
+    }
+    else
+    {
+        URHO3D_LOGINFO("Framebuffers created (1x MSAA)");
+    }
     return true;
 }
 
