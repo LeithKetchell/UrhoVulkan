@@ -1435,6 +1435,78 @@ void VulkanGraphicsImpl::DestroyGBuffer()
     }
 }
 
+// Phase 34 Step 1: Build framebuffer for G-Buffer deferred rendering
+bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
+{
+    // Phase 34 Step 1: Create framebuffer for G-Buffer (4 color + depth attachments)
+    // This framebuffer is used for the geometry pass in deferred rendering
+
+    if (gBufferPositionImage_ == VK_NULL_HANDLE ||
+        gBufferNormalImage_ == VK_NULL_HANDLE ||
+        gBufferAlbedoImage_ == VK_NULL_HANDLE ||
+        gBufferSpecularImage_ == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: G-Buffer not initialized");
+        return false;
+    }
+
+    // Phase 34 Step 1: Create render pass descriptor for G-Buffer (4 color + depth)
+    RenderPassDescriptor descriptor;
+    descriptor.colorAttachmentCount = 4;
+    descriptor.colorFormats[0] = VK_FORMAT_R32G32B32A32_SFLOAT;  // Position
+    descriptor.colorFormats[1] = VK_FORMAT_R16G16B16A16_SFLOAT;  // Normal
+    descriptor.colorFormats[2] = VK_FORMAT_R8G8B8A8_UNORM;       // Albedo
+    descriptor.colorFormats[3] = VK_FORMAT_R8G8B8A8_UNORM;       // Specular
+    descriptor.depthFormat = VK_FORMAT_D32_SFLOAT;
+    descriptor.subpassCount = 1;                                 // Single subpass for geometry pass
+    descriptor.sampleCount = VK_SAMPLE_COUNT_1_BIT;              // No MSAA for G-Buffer
+
+    // Get or create the G-Buffer render pass
+    VkRenderPass gBufferRenderPass = GetOrCreateRenderPass(descriptor);
+    if (gBufferRenderPass == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create G-Buffer render pass");
+        return false;
+    }
+
+    // Phase 34 Step 1: Prepare attachment image views
+    VkImageView attachments[5] = {
+        gBufferPositionView_,       // [0] Position
+        gBufferNormalView_,         // [1] Normal
+        gBufferAlbedoView_,         // [2] Albedo
+        gBufferSpecularView_,       // [3] Specular
+        depthImageView_             // [4] Depth
+    };
+
+    // Create framebuffer with G-Buffer attachments
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = gBufferRenderPass;
+    framebufferInfo.attachmentCount = 5;
+    framebufferInfo.pAttachments = attachments;
+    framebufferInfo.width = swapchainExtent_.width;
+    framebufferInfo.height = swapchainExtent_.height;
+    framebufferInfo.layers = 1;
+
+    // Phase 34 Step 1: Destroy old framebuffer if it exists
+    if (renderTargetFramebuffer_ != VK_NULL_HANDLE)
+    {
+        vkDestroyFramebuffer(device_, renderTargetFramebuffer_, nullptr);
+    }
+
+    // Create new G-Buffer framebuffer
+    if (vkCreateFramebuffer(device_, &framebufferInfo, nullptr, &renderTargetFramebuffer_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create G-Buffer framebuffer");
+        renderTargetFramebuffer_ = VK_NULL_HANDLE;
+        return false;
+    }
+
+    renderTargetsDirty_ = false;
+    URHO3D_LOGDEBUG("RebuildRenderTargetFramebuffer: G-Buffer framebuffer created successfully");
+    return true;
+}
+
 bool VulkanGraphicsImpl::CreateRenderPass()
 {
     // Phase 30: Support MSAA with resolve attachments
