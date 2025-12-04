@@ -10,6 +10,7 @@
 #else
 #include <pthread.h>
 #include <sched.h>
+#include <unistd.h>
 #endif
 
 #include "../DebugNew.h"
