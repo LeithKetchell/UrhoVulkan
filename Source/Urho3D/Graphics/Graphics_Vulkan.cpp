@@ -351,24 +351,44 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
     if (!cmdBuffer)
         return;
 
-    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
+    // Phase 32 Step 3: Apply graphics state
     VulkanPipelineState pipelineState;
     ApplyGraphicsState_Vulkan(pipelineState);
 
-    // Get or create graphics pipeline from cached state
+    // Phase 33 Step 2: Compile and get shader modules
+    VkShaderModule vsModule = VK_NULL_HANDLE;
+    VkShaderModule fsModule = VK_NULL_HANDLE;
+
+    if (!vkImpl->CreateShaderModules(vertexShader_, pixelShader_, vsModule, fsModule))
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Failed to create shader modules");
+        return;
+    }
+
+    // Get or create graphics pipeline from cached state and shader modules
     VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
     VkRenderPass renderPass = vkImpl->GetRenderPass();
 
     if (!layout || !renderPass)
     {
         URHO3D_LOGWARNING("Draw_Vulkan: Invalid pipeline layout or render pass");
+        // Clean up shader modules on error
+        if (vsModule)
+            vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule)
+            vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
-    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState, vsModule, fsModule);
     if (!pipeline)
     {
         URHO3D_LOGWARNING("Draw_Vulkan: Failed to get or create graphics pipeline");
+        // Clean up shader modules on error
+        if (vsModule)
+            vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule)
+            vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
@@ -377,6 +397,12 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
 
     // Record draw command
     vkCmdDraw(cmdBuffer, vertexCount, 1, vertexStart, 0);
+
+    // Clean up shader modules after pipeline is created (pipeline retains a reference)
+    if (vsModule)
+        vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+    if (fsModule)
+        vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
 
     URHO3D_LOGDEBUG("Draw_Vulkan: vertexStart=" + String(vertexStart) + " vertexCount=" + String(vertexCount));
 }
@@ -394,24 +420,38 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     if (!cmdBuffer)
         return;
 
-    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
+    // Phase 32 Step 3: Apply graphics state
     VulkanPipelineState pipelineState;
     ApplyGraphicsState_Vulkan(pipelineState);
 
-    // Get or create graphics pipeline from cached state
+    // Phase 33 Step 2: Compile and get shader modules
+    VkShaderModule vsModule = VK_NULL_HANDLE;
+    VkShaderModule fsModule = VK_NULL_HANDLE;
+
+    if (!vkImpl->CreateShaderModules(vertexShader_, pixelShader_, vsModule, fsModule))
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Failed to create shader modules");
+        return;
+    }
+
+    // Get or create graphics pipeline from cached state and shader modules
     VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
     VkRenderPass renderPass = vkImpl->GetRenderPass();
 
     if (!layout || !renderPass)
     {
         URHO3D_LOGWARNING("Draw_Vulkan: Invalid pipeline layout or render pass");
+        if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
-    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState, vsModule, fsModule);
     if (!pipeline)
     {
         URHO3D_LOGWARNING("Draw_Vulkan: Failed to get or create graphics pipeline");
+        if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
@@ -420,6 +460,10 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
 
     // Record indexed draw command
     vkCmdDrawIndexed(cmdBuffer, indexCount, 1, indexStart, minVertex, 0);
+
+    // Clean up shader modules after pipeline is created
+    if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+    if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
 
     URHO3D_LOGDEBUG("Draw_Vulkan: indexStart=" + String(indexStart) + " indexCount=" + String(indexCount));
 }
@@ -437,24 +481,39 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     if (!cmdBuffer)
         return;
 
-    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
+    // Phase 32 Step 3: Apply graphics state
     VulkanPipelineState pipelineState;
     ApplyGraphicsState_Vulkan(pipelineState);
 
-    // Get or create graphics pipeline from cached state
+    // Phase 33 Step 2: Compile and get shader modules
+    VkShaderModule vsModule = VK_NULL_HANDLE;
+    VkShaderModule fsModule = VK_NULL_HANDLE;
+
+    if (!vkImpl->CreateShaderModules(vertexShader_, pixelShader_, vsModule, fsModule))
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Failed to create shader modules");
+        return;
+    }
+
+    // Get pipeline layout and render pass
     VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
     VkRenderPass renderPass = vkImpl->GetRenderPass();
 
     if (!layout || !renderPass)
     {
         URHO3D_LOGWARNING("Draw_Vulkan: Invalid pipeline layout or render pass");
+        if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
-    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    // Get or create graphics pipeline WITH shader modules
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState, vsModule, fsModule);
     if (!pipeline)
     {
         URHO3D_LOGWARNING("Draw_Vulkan: Failed to get or create graphics pipeline");
+        if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
@@ -463,6 +522,10 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
 
     // Record draw command with base vertex index
     vkCmdDrawIndexed(cmdBuffer, indexCount, 1, indexStart, baseVertexIndex, 0);
+
+    // Clean up shader modules after pipeline is created
+    if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+    if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
 
     URHO3D_LOGDEBUG("Draw_Vulkan: indexStart=" + String(indexStart) + " indexCount=" + String(indexCount) + " baseVertexIndex=" + String(baseVertexIndex));
 }
@@ -480,24 +543,39 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     if (!cmdBuffer)
         return;
 
-    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
+    // Phase 32 Step 3: Apply graphics state
     VulkanPipelineState pipelineState;
     ApplyGraphicsState_Vulkan(pipelineState);
 
-    // Get or create graphics pipeline from cached state
+    // Phase 33 Step 2: Compile and get shader modules
+    VkShaderModule vsModule = VK_NULL_HANDLE;
+    VkShaderModule fsModule = VK_NULL_HANDLE;
+
+    if (!vkImpl->CreateShaderModules(vertexShader_, pixelShader_, vsModule, fsModule))
+    {
+        URHO3D_LOGWARNING("DrawInstanced_Vulkan: Failed to create shader modules");
+        return;
+    }
+
+    // Get pipeline layout and render pass
     VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
     VkRenderPass renderPass = vkImpl->GetRenderPass();
 
     if (!layout || !renderPass)
     {
         URHO3D_LOGWARNING("DrawInstanced_Vulkan: Invalid pipeline layout or render pass");
+        if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
-    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    // Get or create graphics pipeline WITH shader modules
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState, vsModule, fsModule);
     if (!pipeline)
     {
         URHO3D_LOGWARNING("DrawInstanced_Vulkan: Failed to get or create graphics pipeline");
+        if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
@@ -506,6 +584,10 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
 
     // Record instanced draw command
     vkCmdDrawIndexed(cmdBuffer, indexCount, instanceCount, indexStart, minVertex, 0);
+
+    // Clean up shader modules after pipeline is created
+    if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+    if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
 
     URHO3D_LOGDEBUG("DrawInstanced_Vulkan: indexStart=" + String(indexStart) + " indexCount=" + String(indexCount) + " instances=" + String(instanceCount));
 }
@@ -523,24 +605,39 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     if (!cmdBuffer)
         return;
 
-    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
+    // Phase 32 Step 3: Apply graphics state
     VulkanPipelineState pipelineState;
     ApplyGraphicsState_Vulkan(pipelineState);
 
-    // Get or create graphics pipeline from cached state
+    // Phase 33 Step 2: Compile and get shader modules
+    VkShaderModule vsModule = VK_NULL_HANDLE;
+    VkShaderModule fsModule = VK_NULL_HANDLE;
+
+    if (!vkImpl->CreateShaderModules(vertexShader_, pixelShader_, vsModule, fsModule))
+    {
+        URHO3D_LOGWARNING("DrawInstanced_Vulkan: Failed to create shader modules");
+        return;
+    }
+
+    // Get pipeline layout and render pass
     VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
     VkRenderPass renderPass = vkImpl->GetRenderPass();
 
     if (!layout || !renderPass)
     {
         URHO3D_LOGWARNING("DrawInstanced_Vulkan: Invalid pipeline layout or render pass");
+        if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
-    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    // Get or create graphics pipeline WITH shader modules
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState, vsModule, fsModule);
     if (!pipeline)
     {
         URHO3D_LOGWARNING("DrawInstanced_Vulkan: Failed to get or create graphics pipeline");
+        if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+        if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
         return;
     }
 
@@ -549,6 +646,10 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
 
     // Record instanced draw command with base vertex index
     vkCmdDrawIndexed(cmdBuffer, indexCount, instanceCount, indexStart, baseVertexIndex, 0);
+
+    // Clean up shader modules after pipeline is created
+    if (vsModule) vkDestroyShaderModule(vkImpl->GetDevice(), vsModule, nullptr);
+    if (fsModule) vkDestroyShaderModule(vkImpl->GetDevice(), fsModule, nullptr);
 
     URHO3D_LOGDEBUG("DrawInstanced_Vulkan: indexStart=" + String(indexStart) + " indexCount=" + String(indexCount) + " instances=" + String(instanceCount) + " baseVertexIndex=" + String(baseVertexIndex));
 }

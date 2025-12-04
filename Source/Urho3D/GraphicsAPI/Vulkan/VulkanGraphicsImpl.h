@@ -508,16 +508,21 @@ private:
     /// Reduces compilation time on subsequent runs if disk cache available.
     bool CreatePipelineCache();
 
-    /// \brief Get or create graphics pipeline with given state (Phase 32)
+    /// \brief Get or create graphics pipeline with given state (Phase 32-33)
     /// \param layout Pipeline layout for descriptor sets
     /// \param renderPass Render pass the pipeline is compatible with
     /// \param state Pipeline state describing blend, depth, stencil, cull, etc.
+    /// \param vsModule Compiled vertex shader module (VK_NULL_HANDLE for none)
+    /// \param fsModule Compiled fragment shader module (VK_NULL_HANDLE for none)
     /// \returns VkPipeline handle for binding, or VK_NULL_HANDLE on failure
-    /// \details Checks pipelineCache_ for existing pipeline matching state hash.
-    /// If not found, creates new graphics pipeline with given state and caches it.
-    /// Supports shader modules, vertex input, and render pass compatibility.
+    /// \details Checks pipelineCache_ for existing pipeline matching state hash and shader modules.
+    /// If not found, creates new graphics pipeline with given state and shader stages, then caches it.
+    /// Phase 32: Supports graphics state (blend, depth, stencil, cull)
+    /// Phase 33: Supports shader module binding (vertex + fragment stages)
     VkPipeline GetOrCreateGraphicsPipeline(VkPipelineLayout layout, VkRenderPass renderPass,
-                                          const VulkanPipelineState& state);
+                                          const VulkanPipelineState& state,
+                                          VkShaderModule vsModule = VK_NULL_HANDLE,
+                                          VkShaderModule fsModule = VK_NULL_HANDLE);
 
     /// \brief Phase 33: Create shader modules from shader variations
     /// \param vertexShader Vertex shader variation (may be nullptr)
