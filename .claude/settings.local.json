@@ -10,7 +10,9 @@
       "Bash(do)",
       "Bash(if grep -q \"profilerUI_->Update\" $f)",
       "Bash(then)",
-      "Bash(else)"
+      "Bash(else)",
+      "Bash(make:*)",
+      "Bash(git reset:*)"
     ],
     "deny": [],
     "ask": []
