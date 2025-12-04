@@ -121,10 +121,12 @@ configure*
 Thumbs.db
 .directory
 
-# Markdown files (documentation) - except README and OPTIMIZATION_TRACKING
+# Markdown files (documentation) - except tracked documentation
 *.md
 !README.md
 !OPTIMIZATION_TRACKING.md
+!PHASE_*.md
+!Docs/**/*.md
 
 # Doxygen mess from absence of 'dot' dependency
 CMakeDoxyFile.in
