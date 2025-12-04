@@ -88,6 +88,16 @@ void WorkQueue::CreateThreads(i32 numThreads)
         SharedPtr<WorkerThread> thread(new WorkerThread(this, i + 1));
         thread->Run();
         threads_.Push(thread);
+
+        // Pin thread to CPU core for better cache locality
+        thread->SetAffinity(i);
+    }
+
+    // Initialize per-thread work-stealing deques for lock-free work distribution
+    workerDeques_.Clear();
+    for (i32 i = 0; i < numThreads; ++i)
+    {
+        workerDeques_.Push(WorkStealingDeque(256));
     }
 #else
     URHO3D_LOGERROR("Can not create worker threads as threading is disabled");
@@ -150,6 +160,13 @@ void WorkQueue::AddWorkItem(const SharedPtr<WorkItem>& item)
 
         if (!inserted)
             queue_.Push(item);
+    }
+
+    // Also add to work-stealing deques for lock-free distribution
+    // Start with deque 0, worker threads will use work-stealing to balance load
+    if (!workerDeques_.Empty())
+    {
+        workerDeques_[0].Push(item.Get());
     }
 
     if (threads_.Size())
@@ -310,23 +327,60 @@ void WorkQueue::ProcessItems(i32 threadIndex)
             Time::Sleep(0);
         else
         {
-            queueMutex_.Acquire();
-            if (!queue_.Empty())
-            {
-                wasActive = true;
+            WorkItem* item = nullptr;
 
-                WorkItem* item = queue_.Front();
-                queue_.PopFront();
-                queueMutex_.Release();
-                item->workFunction_(item, threadIndex);
-                item->completed_ = true;
+            // Try work-stealing first (lock-free)
+            if (threadIndex > 0 && threadIndex <= (i32)workerDeques_.Size())
+            {
+                i32 dequeIndex = threadIndex - 1;
+
+                // Try own deque first
+                item = (WorkItem*)workerDeques_[dequeIndex].Pop();
+
+                // Try stealing from neighbors if own deque empty
+                if (!item)
+                {
+                    for (i32 i = 1; i < (i32)workerDeques_.Size(); ++i)
+                    {
+                        i32 neighbor = (dequeIndex + i) % workerDeques_.Size();
+                        item = (WorkItem*)workerDeques_[neighbor].Steal();
+                        if (item)
+                            break;
+                    }
+                }
+            }
+
+            // Fall back to mutex-based queue if work-stealing didn't find anything
+            if (!item)
+            {
+                queueMutex_.Acquire();
+                if (!queue_.Empty())
+                {
+                    wasActive = true;
+
+                    item = queue_.Front();
+                    queue_.PopFront();
+                    queueMutex_.Release();
+                }
+                else
+                {
+                    wasActive = false;
+
+                    queueMutex_.Release();
+                    Time::Sleep(0);
+                    continue;
+                }
             }
             else
             {
-                wasActive = false;
+                wasActive = true;
+            }
 
-                queueMutex_.Release();
-                Time::Sleep(0);
+            // Execute the work item
+            if (item)
+            {
+                item->workFunction_(item, threadIndex);
+                item->completed_ = true;
             }
         }
     }

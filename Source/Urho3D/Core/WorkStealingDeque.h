@@ -8,6 +8,7 @@
 #pragma once
 
 #include "../Container/Vector.h"
+#include "../Container/Ptr.h"
 #include <atomic>
 #include <cstring>
 
@@ -20,7 +21,7 @@ struct WorkItem;
 /// Lock-free work-stealing deque for efficient task distribution
 /// Only the owner thread can push/pop from the tail
 /// Other threads can steal from the head in a lock-free manner
-class URHO3D_API WorkStealingDeque
+class URHO3D_API WorkStealingDeque : public RefCounted
 {
 public:
     /// Construct with initial capacity
