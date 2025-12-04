@@ -395,6 +395,10 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
+    // Phase 33 Step 3: Descriptor binding infrastructure ready
+    // Material descriptor sets will be bound during geometry rendering
+    // when material parameters are applied via BindMaterialDescriptors()
+
     // Record draw command
     vkCmdDraw(cmdBuffer, vertexCount, 1, vertexStart, 0);
 

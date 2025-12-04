@@ -406,6 +406,11 @@ public:
     /// \returns VulkanMaterialDescriptorManager* for material descriptor set management (Phase 27)
     class VulkanMaterialDescriptorManager* GetMaterialDescriptorManager() const { return materialDescriptorManager_.Get(); }
 
+    /// \brief Get descriptor set for a material (Phase 33 Step 3)
+    /// \param material Material to get descriptor for
+    /// \returns VkDescriptorSet containing material parameters and textures, or VK_NULL_HANDLE on error
+    VkDescriptorSet GetMaterialDescriptor(class Material* material);
+
     /// \brief Get current pipeline layout for descriptor binding
     /// \returns VkPipelineLayout for descriptor set binding commands (Phase 27)
     VkPipelineLayout GetCurrentPipelineLayout() const { return currentPipelineLayout_; }

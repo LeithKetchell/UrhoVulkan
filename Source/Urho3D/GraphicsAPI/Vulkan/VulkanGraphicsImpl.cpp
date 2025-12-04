@@ -2400,4 +2400,25 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     return pipeline;
 }
 
+// Phase 33 Step 3: Get material descriptor set for GPU binding
+VkDescriptorSet VulkanGraphicsImpl::GetMaterialDescriptor(Material* material)
+{
+    if (!material || !materialDescriptorManager_)
+    {
+        return VK_NULL_HANDLE;
+    }
+
+    // Get the descriptor set from the material descriptor manager
+    // This includes all material parameters and textures
+    VkDescriptorSet descriptorSet = materialDescriptorManager_->GetDescriptor(material);
+
+    if (descriptorSet == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGWARNING("GetMaterialDescriptor: Failed to get descriptor for material");
+        return VK_NULL_HANDLE;
+    }
+
+    return descriptorSet;
+}
+
 } // namespace Urho3D
