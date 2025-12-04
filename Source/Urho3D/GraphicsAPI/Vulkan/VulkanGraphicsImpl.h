@@ -519,6 +519,18 @@ private:
     VkPipeline GetOrCreateGraphicsPipeline(VkPipelineLayout layout, VkRenderPass renderPass,
                                           const VulkanPipelineState& state);
 
+    /// \brief Phase 33: Create shader modules from shader variations
+    /// \param vertexShader Vertex shader variation (may be nullptr)
+    /// \param pixelShader Pixel/fragment shader variation (may be nullptr)
+    /// \param vsModule Output: compiled vertex shader module (VK_NULL_HANDLE if nullptr input)
+    /// \param fsModule Output: compiled fragment shader module (VK_NULL_HANDLE if nullptr input)
+    /// \returns true if compilation successful (or shaders were nullptr), false on error
+    /// \details Compiles GLSL shaders to SPIR-V and creates VkShaderModule objects.
+    /// Uses VulkanShaderModule for compilation and caching. Caller is responsible
+    /// for destroying modules via vkDestroyShaderModule().
+    bool CreateShaderModules(class ShaderVariation* vertexShader, class ShaderVariation* pixelShader,
+                            VkShaderModule& vsModule, VkShaderModule& fsModule);
+
     /// \brief Find optimal surface format for swapchain
     /// \returns VkSurfaceFormatKHR with preferred color space and format
     /// \details Queries device surface capabilities and selects best format.
