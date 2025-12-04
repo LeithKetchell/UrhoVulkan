@@ -259,6 +259,11 @@ public:
     /// \details Finishes the current render pass. Must be called after all draw commands.
     void EndRenderPass();
 
+    /// \brief Transition to next subpass
+    /// \details Phase 36: Transitions from geometry pass (subpass 0) to lighting pass (subpass 1) in deferred rendering.
+    /// This must be called after all geometry rendering is complete and before lighting pass rendering begins.
+    void NextSubpass();
+
     /// \name Vulkan Object Accessors
     /// \brief Access to core Vulkan objects for direct usage
     /// @{
@@ -501,6 +506,16 @@ private:
     /// \details Releases all G-Buffer image resources and views
     void DestroyGBuffer();
 
+    /// \brief Create full-screen quad buffers for lighting pass
+    /// \details Phase 36: Creates vertex and index buffers for a full-screen triangle used in deferred lighting pass.
+    /// Stores buffers in fullScreenQuadVertexBuffer_ and fullScreenQuadIndexBuffer_.
+    /// \returns True if buffers created successfully
+    bool CreateFullScreenQuad();
+
+    /// \brief Destroy full-screen quad buffers
+    /// \details Phase 36: Releases full-screen quad vertex and index buffers via VMA
+    void DestroyFullScreenQuad();
+
     /// \brief Create default render pass for single-pass rendering
     /// \returns True if render pass created successfully, false on error
     /// \details Creates VkRenderPass with standard color and depth attachments.
@@ -703,6 +718,12 @@ private:
     VkImage gBufferSpecularImage_{};      ///< G-Buffer specular (specular properties) texture
     VmaAllocation gBufferSpecularAlloc_{}; ///< VMA allocation for specular G-Buffer
     VkImageView gBufferSpecularView_{};   ///< Image view for specular attachment
+
+    // Phase 36: Full-screen quad for lighting pass (deferred rendering)
+    VkBuffer fullScreenQuadVertexBuffer_{};      ///< Vertex buffer for full-screen quad
+    VmaAllocation fullScreenQuadVertexAlloc_{};  ///< VMA allocation for vertex buffer
+    VkBuffer fullScreenQuadIndexBuffer_{};       ///< Index buffer for full-screen quad
+    VmaAllocation fullScreenQuadIndexAlloc_{};   ///< VMA allocation for index buffer
 
     // Render pass and framebuffers
     VkRenderPass renderPass_{};
