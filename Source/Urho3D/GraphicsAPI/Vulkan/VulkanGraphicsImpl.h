@@ -22,6 +22,7 @@
 #include "VulkanStagingBufferManager.h"
 #include "VulkanMaterialDescriptorManager.h"
 #include "VulkanPipelineCache.h"
+#include "VulkanPipelineState.h"
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 
@@ -506,6 +507,23 @@ private:
     /// Caches compiled graphics pipelines by state hash for fast retrieval.
     /// Reduces compilation time on subsequent runs if disk cache available.
     bool CreatePipelineCache();
+
+    /// \brief Apply graphics state to pipeline state structure (Phase 32)
+    /// \param state VulkanPipelineState to populate from cached graphics state
+    /// \details Converts Graphics class cached state (blendMode_, depthTest_, etc.) to Vulkan pipeline state.
+    /// Called before GetOrCreateGraphicsPipeline to prepare pipeline creation.
+    void ApplyGraphicsState(VulkanPipelineState& state);
+
+    /// \brief Get or create graphics pipeline with given state (Phase 32)
+    /// \param layout Pipeline layout for descriptor sets
+    /// \param renderPass Render pass the pipeline is compatible with
+    /// \param state Pipeline state describing blend, depth, stencil, cull, etc.
+    /// \returns VkPipeline handle for binding, or VK_NULL_HANDLE on failure
+    /// \details Checks pipelineCache_ for existing pipeline matching state hash.
+    /// If not found, creates new graphics pipeline with given state and caches it.
+    /// Supports shader modules, vertex input, and render pass compatibility.
+    VkPipeline GetOrCreateGraphicsPipeline(VkPipelineLayout layout, VkRenderPass renderPass,
+                                          const VulkanPipelineState& state);
 
     /// \brief Find optimal surface format for swapchain
     /// \returns VkSurfaceFormatKHR with preferred color space and format
