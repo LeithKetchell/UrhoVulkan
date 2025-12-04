@@ -5,6 +5,7 @@
 
 #include "../Audio/Audio.h"
 #include "../Audio/AudioEvents.h"
+#include "../Audio/AudioMixing_SIMD.h"
 #include "../Audio/Sound.h"
 #include "../Audio/SoundSource.h"
 #include "../Audio/SoundStream.h"
