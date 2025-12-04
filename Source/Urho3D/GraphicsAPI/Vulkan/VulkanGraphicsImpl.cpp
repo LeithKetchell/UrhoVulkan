@@ -6,6 +6,7 @@
 #include "../../Graphics/Graphics.h"
 #include "VulkanGraphicsImpl.h"
 #include "VulkanShaderCompiler.h"
+#include "VulkanShaderModule.h"
 #include "VulkanConstantBufferPool.h"
 #include "../VulkanDefs.h"
 #include "../GraphicsDefs.h"
@@ -2051,6 +2052,71 @@ void VulkanGraphicsImpl::ReportPoolStatistics() const
 }
 
 // ============================================
+// Phase 33: Shader Module Creation from Variations
+// ============================================
+
+bool VulkanGraphicsImpl::CreateShaderModules(ShaderVariation* vertexShader, ShaderVariation* pixelShader,
+                                           VkShaderModule& vsModule, VkShaderModule& fsModule)
+{
+    vsModule = VK_NULL_HANDLE;
+    fsModule = VK_NULL_HANDLE;
+
+    // Compile vertex shader if provided
+    if (vertexShader)
+    {
+        Vector<uint32_t> spirvBytecode;
+        String errorOutput;
+
+        if (!VulkanShaderModule::GetOrCompileSPIRV(vertexShader, spirvBytecode, errorOutput))
+        {
+            URHO3D_LOGERROR("CreateShaderModules: Failed to compile vertex shader: " + errorOutput);
+            return false;
+        }
+
+        vsModule = VulkanShaderModule::CreateShaderModule(device_, spirvBytecode);
+        if (!vsModule)
+        {
+            URHO3D_LOGERROR("CreateShaderModules: Failed to create vertex shader module");
+            return false;
+        }
+    }
+
+    // Compile fragment/pixel shader if provided
+    if (pixelShader)
+    {
+        Vector<uint32_t> spirvBytecode;
+        String errorOutput;
+
+        if (!VulkanShaderModule::GetOrCompileSPIRV(pixelShader, spirvBytecode, errorOutput))
+        {
+            URHO3D_LOGERROR("CreateShaderModules: Failed to compile pixel shader: " + errorOutput);
+            // Clean up vertex shader module on failure
+            if (vsModule)
+            {
+                VulkanShaderModule::DestroyShaderModule(device_, vsModule);
+                vsModule = VK_NULL_HANDLE;
+            }
+            return false;
+        }
+
+        fsModule = VulkanShaderModule::CreateShaderModule(device_, spirvBytecode);
+        if (!fsModule)
+        {
+            URHO3D_LOGERROR("CreateShaderModules: Failed to create fragment shader module");
+            // Clean up vertex shader module on failure
+            if (vsModule)
+            {
+                VulkanShaderModule::DestroyShaderModule(device_, vsModule);
+                vsModule = VK_NULL_HANDLE;
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// ============================================
 // Phase 32 Helper Functions for State Conversion
 // ============================================
 
@@ -2264,6 +2330,11 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
+    // Phase 33: Prepare shader stages (vertex and fragment shaders)
+    // Note: Shader stages will be populated from Graphics class via Draw_Vulkan methods
+    // For now, create empty pipeline - actual stages will be added in Phase 33 Step 2
+    // when Draw calls have full Graphics context access
+
     // Build graphics pipeline create info
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -2277,8 +2348,8 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     pipelineInfo.pMultisampleState = &multisampleState;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.stageCount = 0;        // TODO: Set shader stages when available
-    pipelineInfo.pStages = nullptr;
+    pipelineInfo.stageCount = 0;        // Phase 33: Will be set by caller with shader stages
+    pipelineInfo.pStages = nullptr;     // Phase 33: Will be set by caller
 
     // Use pipeline cache for creation (handles memory + disk caching)
     VkPipeline pipeline = pipelineCache_->GetOrCreatePipeline(stateHash, pipelineInfo);
