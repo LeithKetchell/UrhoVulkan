@@ -1549,49 +1549,63 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     }
 
     // Need to create a new render pass for this descriptor
-    // For now, we support the standard color + depth configuration
+    // Phase 35: Support multiple color attachments for deferred rendering
 
-    if (descriptor.attachmentCount != 2)
+    // Validate attachment configuration
+    if (descriptor.colorAttachmentCount == 0 || descriptor.colorAttachmentCount > RenderPassDescriptor::MAX_COLOR_ATTACHMENTS)
     {
-        URHO3D_LOGERROR("GetOrCreateRenderPass: Currently only 2-attachment render passes are supported");
+        URHO3D_LOGERROR("GetOrCreateRenderPass: Invalid color attachment count " + String(descriptor.colorAttachmentCount));
         return VK_NULL_HANDLE;
     }
 
+    // Total attachments = color attachments + depth
+    uint32_t totalAttachmentCount = descriptor.colorAttachmentCount + 1;
+
     Vector<VkAttachmentDescription> attachments;
-    attachments.Resize(descriptor.attachmentCount);
+    attachments.Resize(totalAttachmentCount);
 
-    // Color attachment (index 0)
-    attachments[0].format = descriptor.colorFormat;
-    attachments[0].samples = descriptor.sampleCount;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    // Color attachments (indices 0 to colorAttachmentCount-1)
+    for (uint32_t i = 0; i < descriptor.colorAttachmentCount; ++i)
+    {
+        attachments[i].format = descriptor.colorFormats[i];
+        attachments[i].samples = descriptor.sampleCount;
+        attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        // Phase 35: First color attachment is presentation target, others are intermediate
+        attachments[i].finalLayout = (i == 0) ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
-    // Depth attachment (index 1)
-    attachments[1].format = descriptor.depthFormat;
-    attachments[1].samples = descriptor.sampleCount;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    // Depth attachment (after all color attachments)
+    uint32_t depthIndex = descriptor.colorAttachmentCount;
+    attachments[depthIndex].format = descriptor.depthFormat;
+    attachments[depthIndex].samples = descriptor.sampleCount;
+    attachments[depthIndex].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[depthIndex].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[depthIndex].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[depthIndex].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[depthIndex].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[depthIndex].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    VkAttachmentReference colorRef{};
-    colorRef.attachment = 0;
-    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // Color attachment references for all color attachments
+    Vector<VkAttachmentReference> colorRefs;
+    colorRefs.Resize(descriptor.colorAttachmentCount);
+    for (uint32_t i = 0; i < descriptor.colorAttachmentCount; ++i)
+    {
+        colorRefs[i].attachment = i;
+        colorRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
     VkAttachmentReference depthRef{};
-    depthRef.attachment = 1;
+    depthRef.attachment = depthIndex;
     depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
+    subpass.colorAttachmentCount = descriptor.colorAttachmentCount;
+    subpass.pColorAttachments = colorRefs.Buffer();
     subpass.pDepthStencilAttachment = &depthRef;
 
     VkSubpassDependency dependency{};
@@ -1604,7 +1618,7 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = descriptor.attachmentCount;
+    renderPassInfo.attachmentCount = totalAttachmentCount;
     renderPassInfo.pAttachments = attachments.Buffer();
     renderPassInfo.subpassCount = descriptor.subpassCount;
     renderPassInfo.pSubpasses = &subpass;
