@@ -435,6 +435,18 @@ private:
     /// Used as render target, resolved to swapchain before presentation.
     bool CreateMSAAColorImage(int width, int height);
 
+    /// \brief Create G-Buffer attachments for deferred rendering (Phase 31)
+    /// \param width Render target width
+    /// \param height Render target height
+    /// \returns True if G-Buffer created successfully, false on error
+    /// \details Creates 4 G-Buffer attachments: Position (RGBA32F), Normal (RGBA16F),
+    /// Albedo (RGBA8), Specular (RGBA8). Used for deferred rendering geometry pass output.
+    bool CreateGBuffer(int width, int height);
+
+    /// \brief Destroy G-Buffer attachments
+    /// \details Releases all G-Buffer image resources and views
+    void DestroyGBuffer();
+
     /// \brief Create default render pass for single-pass rendering
     /// \returns True if render pass created successfully, false on error
     /// \details Creates VkRenderPass with standard color and depth attachments.
@@ -592,6 +604,23 @@ private:
     VkImage msaaColorImage_{};            ///< Multi-sample color attachment image
     VmaAllocation msaaColorAllocation_{}; ///< VMA allocation for MSAA color image
     VkImageView msaaColorImageView_{};    ///< Image view for multi-sample color attachment
+
+    // G-Buffer for deferred rendering (Phase 31)
+    VkImage gBufferPositionImage_{};      ///< G-Buffer position (world position) texture
+    VmaAllocation gBufferPositionAlloc_{}; ///< VMA allocation for position G-Buffer
+    VkImageView gBufferPositionView_{};   ///< Image view for position attachment
+
+    VkImage gBufferNormalImage_{};        ///< G-Buffer normal (world normal) texture
+    VmaAllocation gBufferNormalAlloc_{};  ///< VMA allocation for normal G-Buffer
+    VkImageView gBufferNormalView_{};     ///< Image view for normal attachment
+
+    VkImage gBufferAlbedoImage_{};        ///< G-Buffer albedo (diffuse color) texture
+    VmaAllocation gBufferAlbedoAlloc_{};  ///< VMA allocation for albedo G-Buffer
+    VkImageView gBufferAlbedoView_{};     ///< Image view for albedo attachment
+
+    VkImage gBufferSpecularImage_{};      ///< G-Buffer specular (specular properties) texture
+    VmaAllocation gBufferSpecularAlloc_{}; ///< VMA allocation for specular G-Buffer
+    VkImageView gBufferSpecularView_{};   ///< Image view for specular attachment
 
     // Render pass and framebuffers
     VkRenderPass renderPass_{};

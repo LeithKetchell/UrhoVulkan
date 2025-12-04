@@ -1336,6 +1336,104 @@ bool VulkanGraphicsImpl::CreateMSAAColorImage(int width, int height)
     return true;
 }
 
+bool VulkanGraphicsImpl::CreateGBuffer(int width, int height)
+{
+    // Phase 31: Create G-Buffer attachments for deferred rendering
+    // G-Buffer layout: Position (RGBA32F), Normal (RGBA16F), Albedo (RGBA8), Specular (RGBA8)
+
+    struct GBufferAttachmentInfo
+    {
+        VkImage* image;
+        VmaAllocation* allocation;
+        VkImageView* view;
+        VkFormat format;
+        const char* name;
+    };
+
+    GBufferAttachmentInfo attachments[4] = {
+        {&gBufferPositionImage_, &gBufferPositionAlloc_, &gBufferPositionView_, VK_FORMAT_R32G32B32A32_SFLOAT, "Position"},
+        {&gBufferNormalImage_, &gBufferNormalAlloc_, &gBufferNormalView_, VK_FORMAT_R16G16B16A16_SFLOAT, "Normal"},
+        {&gBufferAlbedoImage_, &gBufferAlbedoAlloc_, &gBufferAlbedoView_, VK_FORMAT_R8G8B8A8_UNORM, "Albedo"},
+        {&gBufferSpecularImage_, &gBufferSpecularAlloc_, &gBufferSpecularView_, VK_FORMAT_R8G8B8A8_UNORM, "Specular"}
+    };
+
+    // Create each G-Buffer attachment
+    for (int i = 0; i < 4; ++i)
+    {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = (uint32_t)width;
+        imageInfo.extent.height = (uint32_t)height;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = attachments[i].format;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;  // G-Buffer always 1x sampled
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo allocCreateInfo{};
+        allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+        if (vmaCreateImage(allocator_, &imageInfo, &allocCreateInfo, attachments[i].image, attachments[i].allocation, nullptr) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR(String("Failed to create G-Buffer ") + attachments[i].name + " image");
+            DestroyGBuffer();
+            return false;
+        }
+
+        // Create image view for G-Buffer attachment
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = *attachments[i].image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = attachments[i].format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(device_, &viewInfo, nullptr, attachments[i].view) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR(String("Failed to create G-Buffer ") + attachments[i].name + " image view");
+            DestroyGBuffer();
+            return false;
+        }
+    }
+
+    URHO3D_LOGINFO("G-Buffer created (Position RGBA32F, Normal RGBA16F, Albedo RGBA8, Specular RGBA8)");
+    return true;
+}
+
+void VulkanGraphicsImpl::DestroyGBuffer()
+{
+    // Phase 31: Destroy G-Buffer attachments
+
+    VkImage* images[4] = {&gBufferPositionImage_, &gBufferNormalImage_, &gBufferAlbedoImage_, &gBufferSpecularImage_};
+    VmaAllocation* allocations[4] = {&gBufferPositionAlloc_, &gBufferNormalAlloc_, &gBufferAlbedoAlloc_, &gBufferSpecularAlloc_};
+    VkImageView* views[4] = {&gBufferPositionView_, &gBufferNormalView_, &gBufferAlbedoView_, &gBufferSpecularView_};
+
+    for (int i = 0; i < 4; ++i)
+    {
+        if (*views[i] != VK_NULL_HANDLE)
+        {
+            vkDestroyImageView(device_, *views[i], nullptr);
+            *views[i] = VK_NULL_HANDLE;
+        }
+
+        if (*images[i] != VK_NULL_HANDLE)
+        {
+            vmaDestroyImage(allocator_, *images[i], *allocations[i]);
+            *images[i] = VK_NULL_HANDLE;
+            *allocations[i] = nullptr;
+        }
+    }
+}
+
 bool VulkanGraphicsImpl::CreateRenderPass()
 {
     // Phase 30: Support MSAA with resolve attachments
