@@ -126,6 +126,9 @@ Thumbs.db
 !README.md
 !OPTIMIZATION_TRACKING.md
 !PHASE_*.md
+!ARCHITECTURE_PHASE1.md
+!API_REFERENCE_PHASE1.md
+!INTEGRATION_GUIDE_PHASE1.md
 !Docs/**/*.md
 
 # Doxygen mess from absence of 'dot' dependency
