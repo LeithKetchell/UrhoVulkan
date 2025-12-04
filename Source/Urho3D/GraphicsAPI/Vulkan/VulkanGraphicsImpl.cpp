@@ -109,6 +109,13 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         return false;
     }
 
+    // Phase 34: Initialize G-Buffer for deferred rendering
+    if (!CreateGBuffer(width, height))
+    {
+        URHO3D_LOGWARNING("Failed to create G-Buffer, deferred rendering unavailable");
+        // Not fatal - forward rendering will still work
+    }
+
     if (!CreateCommandBuffers())
     {
         URHO3D_LOGERROR("Failed to create command buffers");
@@ -307,6 +314,14 @@ void VulkanGraphicsImpl::Shutdown()
         msaaColorImage_ = VK_NULL_HANDLE;
         msaaColorAllocation_ = nullptr;
     }
+
+    // Phase 34: Destroy G-Buffer for deferred rendering
+    if (renderTargetFramebuffer_ != VK_NULL_HANDLE)
+    {
+        vkDestroyFramebuffer(device_, renderTargetFramebuffer_, nullptr);
+        renderTargetFramebuffer_ = VK_NULL_HANDLE;
+    }
+    DestroyGBuffer();
 
     // Destroy swapchain image views
     for (auto imageView : swapchainImageViews_)
