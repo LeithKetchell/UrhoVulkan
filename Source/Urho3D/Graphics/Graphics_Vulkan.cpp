@@ -712,12 +712,38 @@ void Graphics::SetTexture_Vulkan(unsigned index, Texture* texture)
 
 void Graphics::SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget)
 {
-    // Render target binding not yet implemented
+    // Phase 34 Step 2: Render target binding for deferred rendering framebuffers
+    if (index >= MAX_RENDERTARGETS)
+        return;
+
+    if (renderTarget != renderTargets_[index])
+    {
+        renderTargets_[index] = renderTarget;
+
+        // Mark render targets dirty to trigger framebuffer rebuild
+        // This will call RebuildRenderTargetFramebuffer() at the start of rendering
+        if (impl_)
+        {
+            VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+            vkImpl->renderTargetsDirty_ = true;
+        }
+    }
 }
 
 void Graphics::SetDepthStencil_Vulkan(RenderSurface* depthStencil)
 {
-    // Depth stencil binding not yet implemented
+    // Phase 34 Step 2: Depth stencil binding for deferred rendering
+    if (depthStencil != depthStencil_)
+    {
+        depthStencil_ = depthStencil;
+
+        // Mark render targets dirty to trigger framebuffer rebuild
+        if (impl_)
+        {
+            VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+            vkImpl->renderTargetsDirty_ = true;
+        }
+    }
 }
 
 // ============================================

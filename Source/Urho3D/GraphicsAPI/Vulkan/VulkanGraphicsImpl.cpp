@@ -591,17 +591,43 @@ void VulkanGraphicsImpl::BeginRenderPass()
     if (!cmdBuffer)
         return;
 
-    VkClearValue clearValues[2]{};
-    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};  // Color: black
-    clearValues[1].depthStencil = {1.0f, 0};              // Depth: 1.0
+    // Phase 34 Step 3: Handle deferred rendering framebuffer rebuild if needed
+    if (renderTargetsDirty_)
+    {
+        RebuildRenderTargetFramebuffer();
+        // If rebuild failed, fall back to swapchain rendering
+    }
+
+    // Phase 34 Step 3: Determine which framebuffer to use (deferred G-Buffer or forward swapchain)
+    VkFramebuffer currentFramebuffer = GetCurrentFramebuffer();
+    VkRenderPass currentRenderPass = renderPass_;
+    uint32_t clearValueCount = 2;  // Default: color + depth
+
+    // If we have a deferred framebuffer and render targets are set, use deferred pass
+    // (renderTargetFramebuffer_ is non-null when RebuildRenderTargetFramebuffer() succeeds)
+    if (renderTargetFramebuffer_ != VK_NULL_HANDLE)
+    {
+        currentFramebuffer = renderTargetFramebuffer_;
+        // G-Buffer has 4 color attachments + 1 depth = 5 attachments total
+        clearValueCount = 5;
+    }
+
+    // Prepare clear values for all attachments
+    // For deferred: RGBA positions, RGBA normals, RGBA albedo, RGBA specular, depth
+    VkClearValue clearValues[5]{};
+    for (uint32_t i = 0; i < clearValueCount - 1; ++i)
+    {
+        clearValues[i].color = {{0.0f, 0.0f, 0.0f, 1.0f}};  // Color attachments: clear to black
+    }
+    clearValues[clearValueCount - 1].depthStencil = {1.0f, 0};  // Depth: clear to 1.0
 
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = renderPass_;
-    renderPassInfo.framebuffer = GetCurrentFramebuffer();
+    renderPassInfo.renderPass = currentRenderPass;
+    renderPassInfo.framebuffer = currentFramebuffer;
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = swapchainExtent_;
-    renderPassInfo.clearValueCount = 2;
+    renderPassInfo.clearValueCount = clearValueCount;
     renderPassInfo.pClearValues = clearValues;
 
     vkCmdBeginRenderPass(cmdBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
