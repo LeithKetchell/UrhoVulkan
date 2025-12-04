@@ -136,6 +136,15 @@ void DatabaseDemo::HandleConsoleCommand(StringHash eventType, VariantMap& eventD
 
 void DatabaseDemo::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
+    using namespace Update;
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(eventData[P_TIMESTEP].GetFloat());
+        profilerUI_->Update();
+    }
+
     // Check if there is input from stdin
     String input = GetConsoleInput();
     if (input.Length())

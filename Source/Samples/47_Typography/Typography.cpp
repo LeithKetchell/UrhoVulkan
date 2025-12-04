@@ -118,6 +118,9 @@ void Typography::Start()
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
 
+    // Subscribe to update events
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(Typography, HandleUpdate));
+
     // Add Vulkan indicator in top-left corner
     auto* vulkanIndicator = new Text(context_);
     vulkanIndicator->SetText("Using: Vulkan");
@@ -272,4 +275,16 @@ void Typography::HandleFontOversampling(StringHash eventType, VariantMap& eventD
     auto* list = static_cast<DropDownList*>(eventData[Toggled::P_ELEMENT].GetPtr());
     unsigned i = list->GetSelection();
     GetSubsystem<UI>()->SetFontOversampling(i + 1);
+}
+
+void Typography::HandleUpdate(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Update;
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(eventData[P_TIMESTEP].GetFloat());
+        profilerUI_->Update();
+    }
 }
