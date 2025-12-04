@@ -43,33 +43,66 @@ class Texture2D;
 /// Contains all the information needed to create or retrieve a cached Vulkan render pass,
 /// including attachment formats, sample counts, and subpass information.
 /// Supports future MSAA and deferred rendering via configurable sample counts and subpass counts.
+/// Phase 35: Extended descriptor for multi-pass deferred rendering support
 struct RenderPassDescriptor
 {
-    /// Number of attachments (color, depth, etc.)
-    uint32_t attachmentCount{2};
+    /// Maximum color attachments (supports up to 8 for complex rendering passes)
+    static constexpr uint32_t MAX_COLOR_ATTACHMENTS = 8;
 
-    /// Color attachment format (typically swapchain format, default: VK_FORMAT_B8G8R8A8_SRGB)
-    VkFormat colorFormat{VK_FORMAT_B8G8R8A8_SRGB};
+    /// Maximum input attachments (for lighting pass reading G-Buffer)
+    static constexpr uint32_t MAX_INPUT_ATTACHMENTS = 8;
+
+    /// Number of color attachments (1 for forward, 4+ for deferred G-Buffer, default: 1)
+    uint32_t colorAttachmentCount{1};
+
+    /// Color attachment formats array (up to 8 attachments)
+    /// Default: [0] = swapchain format, [1-7] = unused
+    VkFormat colorFormats[MAX_COLOR_ATTACHMENTS]{
+        VK_FORMAT_B8G8R8A8_SRGB,  // [0] Swapchain/final color
+        VK_FORMAT_UNDEFINED,        // [1-7] Unused by default
+        VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED,
+        VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED
+    };
 
     /// Depth attachment format (default: VK_FORMAT_D32_SFLOAT for 32-bit depth)
     VkFormat depthFormat{VK_FORMAT_D32_SFLOAT};
 
-    /// Number of subpasses (default: 1 for single-pass rendering)
+    /// Number of subpasses (1 for forward rendering, 2+ for deferred rendering, default: 1)
+    /// Phase 35: Multiple subpasses for G-Buffer geometry pass + lighting pass
     uint32_t subpassCount{1};
+
+    /// Number of input attachments for lighting/composition passes
+    /// Phase 35: Used by lighting pass to read G-Buffer attachments
+    uint32_t inputAttachmentCount{0};
+
+    /// Input attachment indices (references to color attachments as input attachments)
+    /// Phase 35: For lighting pass to read G-Buffer data
+    uint32_t inputAttachmentIndices[MAX_INPUT_ATTACHMENTS]{};
 
     /// Sample count for MSAA support (default: VK_SAMPLE_COUNT_1_BIT, extensible for Issue #14A)
     VkSampleCountFlagBits sampleCount{VK_SAMPLE_COUNT_1_BIT};
 
     /// \brief Calculate hash for caching
     /// \returns Hash value computed from all descriptor fields using DJB2 algorithm
+    /// Phase 35: Updated to include all new multi-pass fields
     uint32_t Hash() const
     {
-        // Simple hash combining all descriptor fields
+        // Hash combining all descriptor fields
         uint32_t h = 5381;
-        h = ((h << 5) + h) + attachmentCount;
-        h = ((h << 5) + h) + colorFormat;
+        h = ((h << 5) + h) + colorAttachmentCount;
+
+        // Hash all color format entries
+        for (uint32_t i = 0; i < colorAttachmentCount; ++i)
+            h = ((h << 5) + h) + colorFormats[i];
+
         h = ((h << 5) + h) + depthFormat;
         h = ((h << 5) + h) + subpassCount;
+        h = ((h << 5) + h) + inputAttachmentCount;
+
+        // Hash input attachment indices
+        for (uint32_t i = 0; i < inputAttachmentCount; ++i)
+            h = ((h << 5) + h) + inputAttachmentIndices[i];
+
         h = ((h << 5) + h) + sampleCount;
         return h;
     }
@@ -77,13 +110,28 @@ struct RenderPassDescriptor
     /// \brief Equality comparison for caching
     /// \param other The descriptor to compare with
     /// \returns True if all fields match, false otherwise
+    /// Phase 35: Updated to compare all multi-pass fields
     bool operator==(const RenderPassDescriptor& other) const
     {
-        return attachmentCount == other.attachmentCount &&
-               colorFormat == other.colorFormat &&
-               depthFormat == other.depthFormat &&
-               subpassCount == other.subpassCount &&
-               sampleCount == other.sampleCount;
+        // Compare basic counts
+        if (colorAttachmentCount != other.colorAttachmentCount ||
+            depthFormat != other.depthFormat ||
+            subpassCount != other.subpassCount ||
+            inputAttachmentCount != other.inputAttachmentCount ||
+            sampleCount != other.sampleCount)
+            return false;
+
+        // Compare all color format entries
+        for (uint32_t i = 0; i < colorAttachmentCount; ++i)
+            if (colorFormats[i] != other.colorFormats[i])
+                return false;
+
+        // Compare all input attachment indices
+        for (uint32_t i = 0; i < inputAttachmentCount; ++i)
+            if (inputAttachmentIndices[i] != other.inputAttachmentIndices[i])
+                return false;
+
+        return true;
     }
 };
 
