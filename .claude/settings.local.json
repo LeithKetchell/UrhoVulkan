@@ -13,7 +13,11 @@
       "Bash(else)",
       "Bash(make:*)",
       "Bash(git reset:*)",
-      "Bash(pgrep:*)"
+      "Bash(pgrep:*)",
+      "Bash(ssh-keygen:*)",
+      "Bash(cat:*)",
+      "Bash(ssh:*)",
+      "Bash(cmake --build:*)"
     ],
     "deny": [],
     "ask": []

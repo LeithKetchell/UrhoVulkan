@@ -116,6 +116,13 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         // Not fatal - forward rendering will still work
     }
 
+    // Phase 36: Create full-screen quad for lighting pass
+    if (!CreateFullScreenQuad())
+    {
+        URHO3D_LOGWARNING("Failed to create full-screen quad, deferred lighting unavailable");
+        // Not fatal - forward rendering will still work
+    }
+
     if (!CreateCommandBuffers())
     {
         URHO3D_LOGERROR("Failed to create command buffers");
@@ -322,6 +329,9 @@ void VulkanGraphicsImpl::Shutdown()
         renderTargetFramebuffer_ = VK_NULL_HANDLE;
     }
     DestroyGBuffer();
+
+    // Phase 36: Destroy full-screen quad buffers
+    DestroyFullScreenQuad();
 
     // Destroy swapchain image views
     for (auto imageView : swapchainImageViews_)
@@ -654,6 +664,23 @@ void VulkanGraphicsImpl::EndRenderPass()
 {
     // Render pass is ended by the caller via vkCmdEndRenderPass
     renderPassActive_ = false;
+}
+
+void VulkanGraphicsImpl::NextSubpass()
+{
+    // Phase 36: Transition between subpasses (geometry to lighting in deferred rendering)
+    if (!renderPassActive_)
+    {
+        URHO3D_LOGWARNING("NextSubpass called outside of active render pass");
+        return;
+    }
+
+    VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
+    if (!cmdBuffer)
+        return;
+
+    // Transition from geometry pass (subpass 0) to lighting pass (subpass 1)
+    vkCmdNextSubpass(cmdBuffer, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 VkFramebuffer VulkanGraphicsImpl::GetCurrentFramebuffer() const
@@ -1476,6 +1503,103 @@ void VulkanGraphicsImpl::DestroyGBuffer()
     }
 }
 
+bool VulkanGraphicsImpl::CreateFullScreenQuad()
+{
+    // Phase 36: Create full-screen quad for lighting pass
+    // Using a single triangle that covers the entire screen via NDC coordinates
+
+    // Full-screen triangle vertices in NDC space (-1 to +1)
+    // Each vertex: 2D position (x, y) + 2D texture coordinate (u, v)
+    struct Vertex
+    {
+        float x, y;      // NDC position
+        float u, v;      // Texture coordinates
+    };
+
+    // Triangle covering full screen (CCW winding)
+    const Vertex vertices[] = {
+        {-1.0f, -1.0f, 0.0f, 1.0f},  // Bottom-left
+        { 3.0f, -1.0f, 2.0f, 1.0f},  // Bottom-right (extends off-screen)
+        {-1.0f,  3.0f, 0.0f,-1.0f},  // Top-left (extends off-screen)
+    };
+    const uint32_t vertexCount = 3;
+
+    // Indices for triangle
+    const uint16_t indices[] = {0, 1, 2};
+    const uint32_t indexCount = 3;
+
+    // Create vertex buffer
+    size_t vertexBufferSize = vertexCount * sizeof(Vertex);
+    VkBufferCreateInfo vertexBufferInfo{};
+    vertexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    vertexBufferInfo.size = vertexBufferSize;
+    vertexBufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+
+    VmaAllocationCreateInfo vertexAllocInfo{};
+    vertexAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+    if (vmaCreateBuffer(allocator_, &vertexBufferInfo, &vertexAllocInfo,
+                       &fullScreenQuadVertexBuffer_, &fullScreenQuadVertexAlloc_, nullptr) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("CreateFullScreenQuad: Failed to create vertex buffer");
+        return false;
+    }
+
+    // Copy vertex data to GPU
+    void* mappedVertexData = nullptr;
+    vmaMapMemory(allocator_, fullScreenQuadVertexAlloc_, &mappedVertexData);
+    memcpy(mappedVertexData, vertices, vertexBufferSize);
+    vmaUnmapMemory(allocator_, fullScreenQuadVertexAlloc_);
+
+    // Create index buffer
+    size_t indexBufferSize = indexCount * sizeof(uint16_t);
+    VkBufferCreateInfo indexBufferInfo{};
+    indexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    indexBufferInfo.size = indexBufferSize;
+    indexBufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+
+    VmaAllocationCreateInfo indexAllocInfo{};
+    indexAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+    if (vmaCreateBuffer(allocator_, &indexBufferInfo, &indexAllocInfo,
+                       &fullScreenQuadIndexBuffer_, &fullScreenQuadIndexAlloc_, nullptr) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("CreateFullScreenQuad: Failed to create index buffer");
+        vmaDestroyBuffer(allocator_, fullScreenQuadVertexBuffer_, fullScreenQuadVertexAlloc_);
+        fullScreenQuadVertexBuffer_ = VK_NULL_HANDLE;
+        fullScreenQuadVertexAlloc_ = nullptr;
+        return false;
+    }
+
+    // Copy index data to GPU
+    void* mappedIndexData = nullptr;
+    vmaMapMemory(allocator_, fullScreenQuadIndexAlloc_, &mappedIndexData);
+    memcpy(mappedIndexData, indices, indexBufferSize);
+    vmaUnmapMemory(allocator_, fullScreenQuadIndexAlloc_);
+
+    URHO3D_LOGINFO("CreateFullScreenQuad: Full-screen quad buffers created successfully");
+    return true;
+}
+
+void VulkanGraphicsImpl::DestroyFullScreenQuad()
+{
+    // Phase 36: Destroy full-screen quad buffers
+
+    if (fullScreenQuadIndexBuffer_ != VK_NULL_HANDLE)
+    {
+        vmaDestroyBuffer(allocator_, fullScreenQuadIndexBuffer_, fullScreenQuadIndexAlloc_);
+        fullScreenQuadIndexBuffer_ = VK_NULL_HANDLE;
+        fullScreenQuadIndexAlloc_ = nullptr;
+    }
+
+    if (fullScreenQuadVertexBuffer_ != VK_NULL_HANDLE)
+    {
+        vmaDestroyBuffer(allocator_, fullScreenQuadVertexBuffer_, fullScreenQuadVertexAlloc_);
+        fullScreenQuadVertexBuffer_ = VK_NULL_HANDLE;
+        fullScreenQuadVertexAlloc_ = nullptr;
+    }
+}
+
 // Phase 34 Step 1: Build framebuffer for G-Buffer deferred rendering
 bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
 {
@@ -1715,28 +1839,75 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     depthRef.attachment = depthIndex;
     depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = descriptor.colorAttachmentCount;
-    subpass.pColorAttachments = colorRefs.Buffer();
-    subpass.pDepthStencilAttachment = &depthRef;
+    // Phase 36: Input attachment references for lighting pass (deferred rendering)
+    Vector<VkAttachmentReference> inputRefs;
+    if (descriptor.inputAttachmentCount > 0)
+    {
+        inputRefs.Resize(descriptor.inputAttachmentCount);
+        for (uint32_t i = 0; i < descriptor.inputAttachmentCount; ++i)
+        {
+            // Map input attachment to G-Buffer color attachment index
+            uint32_t attachmentIndex = descriptor.inputAttachmentIndices[i];
+            inputRefs[i].attachment = attachmentIndex;
+            inputRefs[i].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+    }
 
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = 0;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // Create subpass descriptions (geometry + lighting for deferred rendering)
+    Vector<VkSubpassDescription> subpasses;
+    subpasses.Resize(descriptor.subpassCount);
+
+    // Subpass 0: Geometry pass (writes to color attachments)
+    subpasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpasses[0].colorAttachmentCount = descriptor.colorAttachmentCount;
+    subpasses[0].pColorAttachments = colorRefs.Buffer();
+    subpasses[0].pDepthStencilAttachment = &depthRef;
+    subpasses[0].inputAttachmentCount = 0;  // Geometry doesn't read inputs
+
+    // Subpass 1: Lighting pass (reads from input attachments, writes to color[0])
+    if (descriptor.subpassCount > 1)
+    {
+        subpasses[1].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        // Lighting pass only writes to first color attachment (final output)
+        subpasses[1].colorAttachmentCount = 1;
+        subpasses[1].pColorAttachments = colorRefs.Buffer();  // Points to first color attachment
+        subpasses[1].pDepthStencilAttachment = nullptr;       // No depth in lighting pass
+        subpasses[1].inputAttachmentCount = descriptor.inputAttachmentCount;
+        subpasses[1].pInputAttachments = !inputRefs.Empty() ? inputRefs.Buffer() : nullptr;
+    }
+
+    // Create subpass dependencies
+    Vector<VkSubpassDependency> dependencies;
+    dependencies.Resize(descriptor.subpassCount + 1);  // External -> subpass 0, and subpass 0 -> subpass 1
+
+    // Dependency: VK_SUBPASS_EXTERNAL -> Subpass 0 (geometry)
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependencies[0].srcAccessMask = 0;
+    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    // Dependency: Subpass 0 -> Subpass 1 (geometry to lighting)
+    if (descriptor.subpassCount > 1)
+    {
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = 1;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;  // Allow pixel-local optimization
+    }
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassInfo.attachmentCount = totalAttachmentCount;
     renderPassInfo.pAttachments = attachments.Buffer();
     renderPassInfo.subpassCount = descriptor.subpassCount;
-    renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
+    renderPassInfo.pSubpasses = subpasses.Buffer();
+    renderPassInfo.dependencyCount = descriptor.subpassCount + 1;
+    renderPassInfo.pDependencies = dependencies.Buffer();
 
     VkRenderPass renderPass = VK_NULL_HANDLE;
     if (vkCreateRenderPass(device_, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS)
