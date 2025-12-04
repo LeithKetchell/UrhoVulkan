@@ -26,6 +26,7 @@ extern const char* autoRemoveModeNames[];
 
 ParticleEmitter::ParticleEmitter(Context* context) :
     BillboardSet(context),
+    particleBuffer_(nullptr),
     periodTimer_(0.0f),
     emissionTimer_(0.0f),
     lastTimeStep_(0.0f),
@@ -39,7 +40,10 @@ ParticleEmitter::ParticleEmitter(Context* context) :
     SetNumParticles(DEFAULT_NUM_PARTICLES);
 }
 
-ParticleEmitter::~ParticleEmitter() = default;
+ParticleEmitter::~ParticleEmitter()
+{
+    delete particleBuffer_;
+}
 
 void ParticleEmitter::RegisterObject(Context* context)
 {
@@ -153,6 +157,26 @@ void ParticleEmitter::Update(const FrameInfo& frame)
     if (scaled_ && !relative_)
         scaleVector = node_->GetWorldScale();
 
+    // Phase 1.3: Use SIMD particle buffer for physics updates if available
+    if (particleBuffer_ && particleBuffer_->GetCount() > 0)
+    {
+        Vector3 effectConstantForce = effect_->GetConstantForce();
+        float dampingForce = effect_->GetDampingForce();
+        float sizeAdd = effect_->GetSizeAdd();
+        float sizeMul = effect_->GetSizeMul();
+
+        // Apply SIMD-optimized physics updates (4 particles per iteration)
+        if (relative_)
+            particleBuffer_->ApplyForces(lastTimeStep_, relativeConstantForce, dampingForce);
+        else
+            particleBuffer_->ApplyForces(lastTimeStep_, effectConstantForce, dampingForce);
+
+        particleBuffer_->UpdatePositions(lastTimeStep_);
+        particleBuffer_->UpdateLifetimes(lastTimeStep_);
+        particleBuffer_->UpdateScales(lastTimeStep_, sizeAdd, sizeMul);
+    }
+
+    // Update billboard positions, animations, and handle particle lifetime
     for (i32 i = 0; i < particles_.Size(); ++i)
     {
         Particle& particle = particles_[i];
@@ -252,10 +276,20 @@ void ParticleEmitter::SetEffect(ParticleEffect* effect)
     if (effect_)
         UnsubscribeFromEvent(effect_, E_RELOADFINISHED);
 
+    // Clean up old particle buffer
+    delete particleBuffer_;
+    particleBuffer_ = nullptr;
+
     effect_ = effect;
 
     if (effect_)
         SubscribeToEvent(effect_, E_RELOADFINISHED, URHO3D_HANDLER(ParticleEmitter, HandleEffectReloadFinished));
+
+    // Initialize SIMD particle buffer for Phase 1.3 optimization
+    if (effect_)
+    {
+        particleBuffer_ = new ParticleBuffer(effect_->GetNumParticles());
+    }
 
     ApplyEffect();
     MarkNetworkUpdate();
@@ -269,6 +303,12 @@ void ParticleEmitter::SetNumParticles(i32 num)
 
     particles_.Resize(num);
     SetNumBillboards(num);
+
+    // Resize particle buffer if available (Phase 1.3 optimization)
+    if (particleBuffer_)
+    {
+        particleBuffer_->Reserve((uint32_t)num);
+    }
 }
 
 void ParticleEmitter::SetEmitting(bool enable)
@@ -305,6 +345,12 @@ void ParticleEmitter::RemoveAllParticles()
 {
     for (Vector<Billboard>::Iterator i = billboards_.Begin(); i != billboards_.End(); ++i)
         i->enabled_ = false;
+
+    // Also clear SIMD particle buffer (Phase 1.3 optimization)
+    if (particleBuffer_)
+    {
+        particleBuffer_->Clear();
+    }
 
     Commit();
 }
@@ -524,6 +570,31 @@ bool ParticleEmitter::EmitNewParticle()
     billboard.color_ = colorFrames_.Size() ? colorFrames_[0].color_ : Color();
     billboard.enabled_ = true;
     billboard.direction_ = startDir;
+
+    // Also add to SIMD particle buffer for Phase 1.3 optimization
+    if (particleBuffer_)
+    {
+        uint32_t bufferIndex = particleBuffer_->AllocateParticle();
+        if (bufferIndex != NINDEX)
+        {
+            Vector<Vector3>& positions = particleBuffer_->GetPositions();
+            Vector<Vector3>& velocities = particleBuffer_->GetVelocities();
+            Vector<Vector2>& sizes = particleBuffer_->GetSizes();
+            Vector<Color>& colors = particleBuffer_->GetColors();
+            Vector<float>& lifetimes = particleBuffer_->GetLifetimes();
+            Vector<float>& rotationSpeeds = particleBuffer_->GetRotationSpeeds();
+
+            if (bufferIndex < positions.Size())
+            {
+                positions[bufferIndex] = billboard.position_;
+                velocities[bufferIndex] = particle.velocity_;
+                sizes[bufferIndex] = particle.size_;
+                colors[bufferIndex] = billboard.color_;
+                lifetimes[bufferIndex] = particle.timeToLive_;
+                rotationSpeeds[bufferIndex] = particle.rotationSpeed_;
+            }
+        }
+    }
 
     return true;
 }

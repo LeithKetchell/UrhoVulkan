@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../Graphics/BillboardSet.h"
+#include "../Graphics/ParticleBuffer.h"
 
 namespace Urho3D
 {
@@ -124,6 +125,8 @@ private:
 
     /// Particle effect.
     SharedPtr<ParticleEffect> effect_;
+    /// SIMD particle buffer for efficient updates (Phase 1.3 optimization)
+    ParticleBuffer* particleBuffer_;
     /// Particles.
     Vector<Particle> particles_;
     /// Active/inactive period timer.

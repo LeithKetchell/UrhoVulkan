@@ -114,7 +114,7 @@ private:
     /// Worker threads.
     Vector<SharedPtr<WorkerThread>> threads_;
     /// Per-thread work-stealing deques for lock-free work distribution.
-    Vector<WorkStealingDeque> workerDeques_;
+    Vector<SharedPtr<WorkStealingDeque>> workerDeques_;
     /// Work item pool for reuse to cut down on allocation. The bool is a flag for item pooling and whether it is available or not.
     List<SharedPtr<WorkItem>> poolItems_;
     /// Work item collection. Accessed only by the main thread.

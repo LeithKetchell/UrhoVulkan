@@ -94,10 +94,10 @@ void WorkQueue::CreateThreads(i32 numThreads)
     }
 
     // Initialize per-thread work-stealing deques for lock-free work distribution
-    workerDeques_.Clear();
+    workerDeques_.Resize(numThreads);
     for (i32 i = 0; i < numThreads; ++i)
     {
-        workerDeques_.Push(WorkStealingDeque(256));
+        workerDeques_[i] = new WorkStealingDeque(256);
     }
 #else
     URHO3D_LOGERROR("Can not create worker threads as threading is disabled");
@@ -164,9 +164,9 @@ void WorkQueue::AddWorkItem(const SharedPtr<WorkItem>& item)
 
     // Also add to work-stealing deques for lock-free distribution
     // Start with deque 0, worker threads will use work-stealing to balance load
-    if (!workerDeques_.Empty())
+    if (!workerDeques_.Empty() && workerDeques_[0])
     {
-        workerDeques_[0].Push(item.Get());
+        workerDeques_[0]->Push(item.Get());
     }
 
     if (threads_.Size())
@@ -335,7 +335,10 @@ void WorkQueue::ProcessItems(i32 threadIndex)
                 i32 dequeIndex = threadIndex - 1;
 
                 // Try own deque first
-                item = (WorkItem*)workerDeques_[dequeIndex].Pop();
+                if (workerDeques_[dequeIndex])
+                {
+                    item = (WorkItem*)workerDeques_[dequeIndex]->Pop();
+                }
 
                 // Try stealing from neighbors if own deque empty
                 if (!item)
@@ -343,9 +346,12 @@ void WorkQueue::ProcessItems(i32 threadIndex)
                     for (i32 i = 1; i < (i32)workerDeques_.Size(); ++i)
                     {
                         i32 neighbor = (dequeIndex + i) % workerDeques_.Size();
-                        item = (WorkItem*)workerDeques_[neighbor].Steal();
-                        if (item)
-                            break;
+                        if (workerDeques_[neighbor])
+                        {
+                            item = (WorkItem*)workerDeques_[neighbor]->Steal();
+                            if (item)
+                                break;
+                        }
                     }
                 }
             }
