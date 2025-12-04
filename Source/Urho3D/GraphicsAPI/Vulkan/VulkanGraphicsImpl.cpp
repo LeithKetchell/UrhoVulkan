@@ -2050,4 +2050,246 @@ void VulkanGraphicsImpl::ReportPoolStatistics() const
     URHO3D_LOGINFO("=== End Pool Statistics ===");
 }
 
+// ============================================
+// Phase 32 Helper Functions for State Conversion
+// ============================================
+
+/// \brief Convert Urho3D CullMode to Vulkan cull mode flags
+static VkCullModeFlags ConvertCullMode(CullMode mode)
+{
+    switch (mode)
+    {
+    case CULL_NONE: return VK_CULL_MODE_NONE;
+    case CULL_CCW:  return VK_CULL_MODE_BACK_BIT;
+    case CULL_CW:   return VK_CULL_MODE_FRONT_BIT;
+    default:        return VK_CULL_MODE_BACK_BIT;
+    }
+}
+
+/// \brief Convert Urho3D CompareMode to Vulkan comparison operator
+static VkCompareOp ConvertCompareMode(CompareMode mode)
+{
+    switch (mode)
+    {
+    case CMP_ALWAYS:       return VK_COMPARE_OP_ALWAYS;
+    case CMP_EQUAL:        return VK_COMPARE_OP_EQUAL;
+    case CMP_NOTEQUAL:     return VK_COMPARE_OP_NOT_EQUAL;
+    case CMP_LESS:         return VK_COMPARE_OP_LESS;
+    case CMP_LESSEQUAL:    return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case CMP_GREATER:      return VK_COMPARE_OP_GREATER;
+    case CMP_GREATEREQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    default:               return VK_COMPARE_OP_ALWAYS;
+    }
+}
+
+/// \brief Convert Urho3D StencilOp to Vulkan stencil operation
+static VkStencilOp ConvertStencilOp(StencilOp op)
+{
+    switch (op)
+    {
+    case OP_KEEP: return VK_STENCIL_OP_KEEP;
+    case OP_ZERO: return VK_STENCIL_OP_ZERO;
+    case OP_REF:  return VK_STENCIL_OP_REPLACE;
+    case OP_INCR: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+    case OP_DECR: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+    default:      return VK_STENCIL_OP_KEEP;
+    }
+}
+
+// Phase 32 Step 3: Pipeline creation with graphics state
+VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
+    VkPipelineLayout layout,
+    VkRenderPass renderPass,
+    const VulkanPipelineState& state)
+{
+    if (!pipelineCache_)
+    {
+        URHO3D_LOGERROR("GetOrCreateGraphicsPipeline: Pipeline cache not initialized");
+        return VK_NULL_HANDLE;
+    }
+
+    // Calculate hash of pipeline state for caching
+    uint64_t stateHash = state.Hash();
+
+    // Build rasterization state from CullMode and FillMode
+    VkPipelineRasterizationStateCreateInfo rasterizationState{};
+    rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizationState.polygonMode = (state.fillMode == FILL_WIREFRAME) ?
+        VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+    rasterizationState.cullMode = ConvertCullMode(state.cullMode);
+    rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizationState.lineWidth = 1.0f;
+
+    // Build color blend state from blend mode
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    // Map blend modes to Vulkan blend factors
+    switch (state.blendMode)
+    {
+    case BLEND_REPLACE:
+        blendAttachment.blendEnable = false;
+        break;
+    case BLEND_ADD:
+        blendAttachment.blendEnable = true;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        break;
+    case BLEND_SUBTRACT:
+        blendAttachment.blendEnable = true;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+        break;
+    case BLEND_MULTIPLY:
+        blendAttachment.blendEnable = true;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        break;
+    case BLEND_ALPHA:
+        blendAttachment.blendEnable = true;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        break;
+    case BLEND_ADDALPHA:
+        blendAttachment.blendEnable = true;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        break;
+    case BLEND_INVDESTALPHA:
+        blendAttachment.blendEnable = true;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        break;
+    default:
+        blendAttachment.blendEnable = false;
+        break;
+    }
+
+    VkPipelineColorBlendStateCreateInfo colorBlendState{};
+    colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlendState.attachmentCount = 1;
+    colorBlendState.pAttachments = &blendAttachment;
+    colorBlendState.logicOpEnable = false;
+
+    // Build depth-stencil state
+    VkPipelineDepthStencilStateCreateInfo depthStencilState{};
+    depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencilState.depthTestEnable = (state.depthTest != CMP_ALWAYS);
+    depthStencilState.depthWriteEnable = state.depthWrite;
+    depthStencilState.depthCompareOp = ConvertCompareMode(state.depthTest);
+
+    // Stencil state (front and back faces same)
+    if (state.stencilTest)
+    {
+        VkStencilOpState stencilOpState{};
+        stencilOpState.compareMask = state.stencilCompareMask;
+        stencilOpState.writeMask = state.stencilWriteMask;
+        stencilOpState.reference = state.stencilRef;
+        stencilOpState.compareOp = ConvertCompareMode(state.stencilTestMode);
+        stencilOpState.passOp = ConvertStencilOp(state.stencilPass);
+        stencilOpState.failOp = ConvertStencilOp(state.stencilFail);
+        stencilOpState.depthFailOp = ConvertStencilOp(state.stencilZFail);
+
+        depthStencilState.stencilTestEnable = true;
+        depthStencilState.front = stencilOpState;
+        depthStencilState.back = stencilOpState;
+    }
+
+    // Create minimal pipeline state structures for this frame
+    // Full structures would come from vertex/input assembly setup
+    VkPipelineInputAssemblyStateCreateInfo inputAssemblyState{};
+    inputAssemblyState.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssemblyState.primitiveRestartEnable = false;
+
+    VkPipelineVertexInputStateCreateInfo vertexInputState{};
+    vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputState.vertexBindingDescriptionCount = 0;
+    vertexInputState.pVertexBindingDescriptions = nullptr;
+    vertexInputState.vertexAttributeDescriptionCount = 0;
+    vertexInputState.pVertexAttributeDescriptions = nullptr;
+
+    VkPipelineMultisampleStateCreateInfo multisampleState{};
+    multisampleState.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampleState.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampleState.sampleShadingEnable = false;
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = 1920.0f;    // Default, will be updated by viewport calls
+    viewport.height = 1080.0f;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = {1920, 1080};
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+
+    // Build graphics pipeline create info
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.layout = layout;
+    pipelineInfo.renderPass = renderPass;
+    pipelineInfo.pRasterizationState = &rasterizationState;
+    pipelineInfo.pColorBlendState = &colorBlendState;
+    pipelineInfo.pDepthStencilState = &depthStencilState;
+    pipelineInfo.pInputAssemblyState = &inputAssemblyState;
+    pipelineInfo.pVertexInputState = &vertexInputState;
+    pipelineInfo.pMultisampleState = &multisampleState;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.stageCount = 0;        // TODO: Set shader stages when available
+    pipelineInfo.pStages = nullptr;
+
+    // Use pipeline cache for creation (handles memory + disk caching)
+    VkPipeline pipeline = pipelineCache_->GetOrCreatePipeline(stateHash, pipelineInfo);
+
+    if (pipeline == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("GetOrCreateGraphicsPipeline: Failed to create graphics pipeline");
+        return VK_NULL_HANDLE;
+    }
+
+    return pipeline;
+}
+
 } // namespace Urho3D

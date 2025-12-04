@@ -30,6 +30,13 @@ struct VulkanPipelineState
     CompareMode depthTest = CMP_LESSEQUAL;
     bool depthWrite = true;
     bool stencilTest = false;
+    CompareMode stencilTestMode = CMP_ALWAYS;
+    StencilOp stencilPass = OP_KEEP;
+    StencilOp stencilFail = OP_KEEP;
+    StencilOp stencilZFail = OP_KEEP;
+    unsigned stencilRef = 0;
+    unsigned stencilCompareMask = 0xFF;
+    unsigned stencilWriteMask = 0xFF;
 
     // Blend state
     BlendMode blendMode = BLEND_REPLACE;

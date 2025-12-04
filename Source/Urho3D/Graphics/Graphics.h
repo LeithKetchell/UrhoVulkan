@@ -19,6 +19,11 @@
 #include "VulkanProfiler.h"
 #endif
 
+#ifdef URHO3D_VULKAN
+// Forward declaration for Phase 32 GPU state application
+struct VulkanPipelineState;
+#endif
+
 struct SDL_Window;
 
 namespace Urho3D
@@ -1085,6 +1090,8 @@ private:
     void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps);
     void SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget);
     void SetDepthStencil_Vulkan(RenderSurface* depthStencil);
+    /// \brief Apply cached Graphics state to VulkanPipelineState (Phase 32)
+    void ApplyGraphicsState_Vulkan(VulkanPipelineState& state) const;
 #endif // def URHO3D_VULKAN
 
     /// Mutex for accessing the GPU objects vector from several threads.
