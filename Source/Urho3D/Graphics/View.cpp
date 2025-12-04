@@ -5,6 +5,7 @@
 
 #include "../Core/Profiler.h"
 #include "../Core/WorkQueue.h"
+#include "../Graphics/BatchSort_Parallel.h"
 #include "../Graphics/Camera.h"
 #include "../Graphics/DebugRenderer.h"
 #include "../Graphics/Geometry.h"
