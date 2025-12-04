@@ -12,7 +12,8 @@
       "Bash(then)",
       "Bash(else)",
       "Bash(make:*)",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "Bash(pgrep:*)"
     ],
     "deny": [],
     "ask": []
