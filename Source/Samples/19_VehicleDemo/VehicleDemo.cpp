@@ -264,6 +264,17 @@ void VehicleDemo::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
 void VehicleDemo::HandlePostUpdate(StringHash eventType, VariantMap& eventData)
 {
+    using namespace PostUpdate;
+
+    float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update();
+    }
+
     if (!vehicle_)
         return;
 
