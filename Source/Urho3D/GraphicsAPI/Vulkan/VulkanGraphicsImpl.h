@@ -508,12 +508,6 @@ private:
     /// Reduces compilation time on subsequent runs if disk cache available.
     bool CreatePipelineCache();
 
-    /// \brief Apply graphics state to pipeline state structure (Phase 32)
-    /// \param state VulkanPipelineState to populate from cached graphics state
-    /// \details Converts Graphics class cached state (blendMode_, depthTest_, etc.) to Vulkan pipeline state.
-    /// Called before GetOrCreateGraphicsPipeline to prepare pipeline creation.
-    void ApplyGraphicsState(VulkanPipelineState& state);
-
     /// \brief Get or create graphics pipeline with given state (Phase 32)
     /// \param layout Pipeline layout for descriptor sets
     /// \param renderPass Render pass the pipeline is compatible with

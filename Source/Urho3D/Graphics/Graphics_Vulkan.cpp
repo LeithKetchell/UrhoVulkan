@@ -351,21 +351,29 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
     if (!cmdBuffer)
         return;
 
-    // Create pipeline state from current graphics state
+    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
     VulkanPipelineState pipelineState;
-    pipelineState.cullMode = cullMode_;
-    pipelineState.fillMode = fillMode_;
-    pipelineState.blendMode = blendMode_;
-    pipelineState.alphaToCoverage = alphaToCoverage_;
-    pipelineState.depthTest = depthTestMode_;
-    pipelineState.depthWrite = depthWrite_;
-    pipelineState.stencilTest = stencilTest_;
-    pipelineState.colorWrite = colorWrite_;
+    ApplyGraphicsState_Vulkan(pipelineState);
 
-    // Get or create graphics pipeline (placeholder - full implementation requires shader program)
-    // TODO: Get shader program from current graphics state
-    // VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(pipelineState, ...);
-    // vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    // Get or create graphics pipeline from cached state
+    VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
+    VkRenderPass renderPass = vkImpl->GetRenderPass();
+
+    if (!layout || !renderPass)
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Invalid pipeline layout or render pass");
+        return;
+    }
+
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    if (!pipeline)
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Failed to get or create graphics pipeline");
+        return;
+    }
+
+    // Bind the graphics pipeline for this draw call
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     // Record draw command
     vkCmdDraw(cmdBuffer, vertexCount, 1, vertexStart, 0);
@@ -386,18 +394,31 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     if (!cmdBuffer)
         return;
 
-    // Create pipeline state from current graphics state
+    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
     VulkanPipelineState pipelineState;
-    pipelineState.cullMode = cullMode_;
-    pipelineState.fillMode = fillMode_;
-    pipelineState.blendMode = blendMode_;
-    pipelineState.alphaToCoverage = alphaToCoverage_;
-    pipelineState.depthTest = depthTestMode_;
-    pipelineState.depthWrite = depthWrite_;
-    pipelineState.stencilTest = stencilTest_;
-    pipelineState.colorWrite = colorWrite_;
+    ApplyGraphicsState_Vulkan(pipelineState);
 
-    // Record draw command
+    // Get or create graphics pipeline from cached state
+    VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
+    VkRenderPass renderPass = vkImpl->GetRenderPass();
+
+    if (!layout || !renderPass)
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Invalid pipeline layout or render pass");
+        return;
+    }
+
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    if (!pipeline)
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Failed to get or create graphics pipeline");
+        return;
+    }
+
+    // Bind the graphics pipeline for this draw call
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    // Record indexed draw command
     vkCmdDrawIndexed(cmdBuffer, indexCount, 1, indexStart, minVertex, 0);
 
     URHO3D_LOGDEBUG("Draw_Vulkan: indexStart=" + String(indexStart) + " indexCount=" + String(indexCount));
@@ -416,16 +437,29 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     if (!cmdBuffer)
         return;
 
-    // Create pipeline state from current graphics state
+    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
     VulkanPipelineState pipelineState;
-    pipelineState.cullMode = cullMode_;
-    pipelineState.fillMode = fillMode_;
-    pipelineState.blendMode = blendMode_;
-    pipelineState.alphaToCoverage = alphaToCoverage_;
-    pipelineState.depthTest = depthTestMode_;
-    pipelineState.depthWrite = depthWrite_;
-    pipelineState.stencilTest = stencilTest_;
-    pipelineState.colorWrite = colorWrite_;
+    ApplyGraphicsState_Vulkan(pipelineState);
+
+    // Get or create graphics pipeline from cached state
+    VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
+    VkRenderPass renderPass = vkImpl->GetRenderPass();
+
+    if (!layout || !renderPass)
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Invalid pipeline layout or render pass");
+        return;
+    }
+
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    if (!pipeline)
+    {
+        URHO3D_LOGWARNING("Draw_Vulkan: Failed to get or create graphics pipeline");
+        return;
+    }
+
+    // Bind the graphics pipeline for this draw call
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     // Record draw command with base vertex index
     vkCmdDrawIndexed(cmdBuffer, indexCount, 1, indexStart, baseVertexIndex, 0);
@@ -446,16 +480,29 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     if (!cmdBuffer)
         return;
 
-    // Create pipeline state from current graphics state
+    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
     VulkanPipelineState pipelineState;
-    pipelineState.cullMode = cullMode_;
-    pipelineState.fillMode = fillMode_;
-    pipelineState.blendMode = blendMode_;
-    pipelineState.alphaToCoverage = alphaToCoverage_;
-    pipelineState.depthTest = depthTestMode_;
-    pipelineState.depthWrite = depthWrite_;
-    pipelineState.stencilTest = stencilTest_;
-    pipelineState.colorWrite = colorWrite_;
+    ApplyGraphicsState_Vulkan(pipelineState);
+
+    // Get or create graphics pipeline from cached state
+    VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
+    VkRenderPass renderPass = vkImpl->GetRenderPass();
+
+    if (!layout || !renderPass)
+    {
+        URHO3D_LOGWARNING("DrawInstanced_Vulkan: Invalid pipeline layout or render pass");
+        return;
+    }
+
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    if (!pipeline)
+    {
+        URHO3D_LOGWARNING("DrawInstanced_Vulkan: Failed to get or create graphics pipeline");
+        return;
+    }
+
+    // Bind the graphics pipeline for this draw call
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     // Record instanced draw command
     vkCmdDrawIndexed(cmdBuffer, indexCount, instanceCount, indexStart, minVertex, 0);
@@ -476,16 +523,29 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     if (!cmdBuffer)
         return;
 
-    // Create pipeline state from current graphics state
+    // Phase 32 Step 3: Apply graphics state and create/bind pipeline
     VulkanPipelineState pipelineState;
-    pipelineState.cullMode = cullMode_;
-    pipelineState.fillMode = fillMode_;
-    pipelineState.blendMode = blendMode_;
-    pipelineState.alphaToCoverage = alphaToCoverage_;
-    pipelineState.depthTest = depthTestMode_;
-    pipelineState.depthWrite = depthWrite_;
-    pipelineState.stencilTest = stencilTest_;
-    pipelineState.colorWrite = colorWrite_;
+    ApplyGraphicsState_Vulkan(pipelineState);
+
+    // Get or create graphics pipeline from cached state
+    VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
+    VkRenderPass renderPass = vkImpl->GetRenderPass();
+
+    if (!layout || !renderPass)
+    {
+        URHO3D_LOGWARNING("DrawInstanced_Vulkan: Invalid pipeline layout or render pass");
+        return;
+    }
+
+    VkPipeline pipeline = vkImpl->GetOrCreateGraphicsPipeline(layout, renderPass, pipelineState);
+    if (!pipeline)
+    {
+        URHO3D_LOGWARNING("DrawInstanced_Vulkan: Failed to get or create graphics pipeline");
+        return;
+    }
+
+    // Bind the graphics pipeline for this draw call
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     // Record instanced draw command with base vertex index
     vkCmdDrawIndexed(cmdBuffer, indexCount, instanceCount, indexStart, baseVertexIndex, 0);
@@ -553,6 +613,41 @@ void Graphics::SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarge
 void Graphics::SetDepthStencil_Vulkan(RenderSurface* depthStencil)
 {
     // Depth stencil binding not yet implemented
+}
+
+// ============================================
+// Phase 32: GPU State Application - Convert to Pipeline State
+// ============================================
+
+/// \brief Apply cached Graphics state to VulkanPipelineState
+/// \details Converts all cached graphics state from Graphics class members
+/// to VulkanPipelineState structure for pipeline creation (Phase 32 Step 2).
+/// This prepares the graphics state for GetOrCreateGraphicsPipeline().
+void Graphics::ApplyGraphicsState_Vulkan(VulkanPipelineState& state) const
+{
+    // Blend state
+    state.blendMode = blendMode_;
+    state.alphaToCoverage = alphaToCoverage_;
+
+    // Depth state
+    state.depthTest = depthTestMode_;
+    state.depthWrite = depthWrite_;
+
+    // Cull state
+    state.cullMode = cullMode_;
+
+    // Fill mode (solid vs wireframe)
+    state.fillMode = fillMode_;
+
+    // Stencil state (full stencil parameters for future enhancement)
+    state.stencilTest = stencilTest_;
+    state.stencilTestMode = stencilTestMode_;
+    state.stencilPass = stencilPass_;
+    state.stencilFail = stencilFail_;
+    state.stencilZFail = stencilZFail_;
+    state.stencilRef = stencilRef_;
+    state.stencilCompareMask = stencilCompareMask_;
+    state.stencilWriteMask = stencilWriteMask_;
 }
 
 } // namespace Urho3D
