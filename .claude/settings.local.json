@@ -6,7 +6,11 @@
       "Bash(git commit:*)",
       "Bash(git remote:*)",
       "Bash(git push:*)",
-      "Bash(git ls-tree:*)"
+      "Bash(git ls-tree:*)",
+      "Bash(do)",
+      "Bash(if grep -q \"profilerUI_->Update\" $f)",
+      "Bash(then)",
+      "Bash(else)"
     ],
     "deny": [],
     "ask": []

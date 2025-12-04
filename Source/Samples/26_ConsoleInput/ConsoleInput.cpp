@@ -121,6 +121,13 @@ void ConsoleInput::HandleConsoleCommand(StringHash eventType, VariantMap& eventD
 
 void ConsoleInput::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(eventData[Update::P_TIMESTEP].GetFloat());
+        profilerUI_->Update();
+    }
+
     // Check if there is input from stdin
     String input = GetConsoleInput();
     if (input.Length())

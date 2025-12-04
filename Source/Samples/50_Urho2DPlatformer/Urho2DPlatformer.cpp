@@ -345,6 +345,13 @@ void Urho2DPlatformer::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
     using namespace Update;
 
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(eventData[P_TIMESTEP].GetFloat());
+        profilerUI_->Update();
+    }
+
     // Zoom in/out
     if (cameraNode_)
         sample2D_->Zoom(cameraNode_->GetComponent<Camera>());

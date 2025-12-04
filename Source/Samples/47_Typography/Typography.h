@@ -42,5 +42,6 @@ private:
     void HandleFontHintLevel(StringHash eventType, VariantMap& eventData);
     void HandleFontSubpixel(StringHash eventType, VariantMap& eventData);
     void HandleFontOversampling(StringHash eventType, VariantMap& eventData);
+    void HandleUpdate(StringHash eventType, VariantMap& eventData);
     SharedPtr<ProfilerUI> profilerUI_;
 };

@@ -183,6 +183,15 @@ void UIDrag::HandleDragCancel(StringHash eventType, VariantMap& eventData)
 
 void UIDrag::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
+    using namespace Update;
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(eventData[P_TIMESTEP].GetFloat());
+        profilerUI_->Update();
+    }
+
     auto* ui = GetSubsystem<UI>();
     UIElement* root = ui->GetRoot();
 

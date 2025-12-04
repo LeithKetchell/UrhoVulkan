@@ -193,6 +193,14 @@ void RaycastVehicleDemo::HandleUpdate(StringHash eventType,
                                  VariantMap& eventData)
 {
     using namespace Update;
+
+    // Update profiler display
+    if (profilerUI_)
+    {
+        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(eventData[P_TIMESTEP].GetFloat());
+        profilerUI_->Update();
+    }
+
     auto* input = GetSubsystem<Input>();
     if (vehicle_)
     {
