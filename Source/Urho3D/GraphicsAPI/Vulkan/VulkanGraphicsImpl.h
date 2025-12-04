@@ -428,6 +428,13 @@ private:
     /// Layout initialized to VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL.
     bool CreateDepthBuffer(VkFormat format, int width, int height, VkSampleCountFlagBits sampleCount);
 
+    /// \brief Create MSAA color image for multi-sample rendering (Phase 30)
+    /// \returns True if MSAA color image created successfully, false on error
+    /// \details Creates intermediate VkImage for MSAA rendering when sampleCount > 1x.
+    /// Allocates via VMA and creates corresponding VkImageView.
+    /// Used as render target, resolved to swapchain before presentation.
+    bool CreateMSAAColorImage(int width, int height);
+
     /// \brief Create default render pass for single-pass rendering
     /// \returns True if render pass created successfully, false on error
     /// \details Creates VkRenderPass with standard color and depth attachments.
@@ -580,6 +587,11 @@ private:
     VkImage depthImage_{};
     VkDeviceMemory depthImageMemory_{};
     VkImageView depthImageView_{};
+
+    // MSAA color buffer (Phase 30) - used when sample count > 1x
+    VkImage msaaColorImage_{};            ///< Multi-sample color attachment image
+    VmaAllocation msaaColorAllocation_{}; ///< VMA allocation for MSAA color image
+    VkImageView msaaColorImageView_{};    ///< Image view for multi-sample color attachment
 
     // Render pass and framebuffers
     VkRenderPass renderPass_{};
