@@ -6,6 +6,7 @@
 #include "../Precompiled.h"
 #include "WorkStealingDeque.h"
 #include "WorkQueue.h"
+#include <cstdio>
 
 namespace Urho3D
 {
@@ -39,6 +40,15 @@ void WorkStealingDeque::Push(WorkItem* item)
 
     // Update size for lock-free reads
     size_.store(tail_ - head_.load(std::memory_order_acquire), std::memory_order_release);
+
+    // Phase 4 Instrumentation: Track push operations
+    static thread_local bool logged_push = false;
+    if (!logged_push && t < 10)  // Log first few pushes per thread
+    {
+        fprintf(stderr, "[Phase4] WorkStealingDeque::Push called (verification that queue is used)\n");
+        fflush(stderr);
+        logged_push = true;
+    }
 }
 
 WorkItem* WorkStealingDeque::Pop()
@@ -103,6 +113,15 @@ WorkItem* WorkStealingDeque::Steal()
         // Steal succeeded
         steals_++;
 
+        // Phase 4 Instrumentation: Log first successful steal
+        static thread_local bool logged_steal = false;
+        if (!logged_steal)
+        {
+            fprintf(stderr, "[Phase4] WorkStealingDeque::Steal SUCCEEDED (work-stealing is active)\n");
+            fflush(stderr);
+            logged_steal = true;
+        }
+
         // Update size
         size_.store(t - (h + 1), std::memory_order_release);
 
@@ -121,7 +140,8 @@ void WorkStealingDeque::Grow()
 
     if (newCapacity > MAX_CAPACITY)
     {
-        URHO3D_LOGERROR("WorkStealingDeque: Maximum capacity exceeded");
+        fprintf(stderr, "[ERROR] WorkStealingDeque: Maximum capacity exceeded\n");
+        fflush(stderr);
         return;
     }
 
