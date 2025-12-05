@@ -46,13 +46,27 @@ void BatchSort_Parallel::MergeSortParallel(
     Vector<SortedBatch>& batches,
     uint32_t numThreads)
 {
-    // For now, use sequential sort
-    // True parallel implementation would use:
-    // - Thread pool from WorkQueue
-    // - Task-based divide-and-conquer
-    // - Synchronization points between phases
-    // Placeholder: sequential sort with framework
-    std::sort(batches.Begin(), batches.End(), BatchComparator);
+    if (batches.Size() <= MIN_PARTITION_SIZE)
+    {
+        // Sequential sort for small arrays
+        std::sort(batches.Begin(), batches.End(), BatchComparator);
+        return;
+    }
+
+    // Create temporary buffer for merging
+    Vector<SortedBatch> temp(batches.Size());
+
+    // Calculate max recursion depth for parallelization
+    uint32_t maxDepth = 0;
+    uint32_t checkSize = batches.Size();
+    while (checkSize > MIN_PARTITION_SIZE)
+    {
+        checkSize >>= 1;
+        maxDepth++;
+    }
+
+    // Run parallel merge-sort with depth-limited parallelism
+    MergeSortKernel(batches, 0, batches.Size() - 1, temp, 0, numThreads > 1 ? maxDepth - 1 : 0);
 }
 
 void BatchSort_Parallel::Merge(
