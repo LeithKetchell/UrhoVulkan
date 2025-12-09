@@ -9,6 +9,7 @@
 #include "../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h"
 #include "Graphics.h"
 #include "Geometry.h"
+#include "../GraphicsAPI/Texture.h"
 #include "../IO/Log.h"
 
 #ifdef URHO3D_VULKAN
@@ -867,6 +868,207 @@ void Graphics::SetShaderParameter_Vulkan(StringHash param, const Variant& value)
 
     // TODO Phase 36 Step 3.3: Create constant buffer descriptor sets
     // TODO Phase 36 Step 3.4: Bind constant buffers before draw calls
+}
+
+// ============================================
+// Phase 36 Step 3: Constant Buffer Parameter Helpers
+// ============================================
+
+size_t Graphics::CalculateParameterBufferSize(const HashMap<StringHash, Variant>& parameters)
+{
+    // Phase 36 Step 3.2.1: Calculate total buffer size for shader parameters
+    // Uses std140 layout rules: all types aligned to 16 bytes (vec4 alignment)
+    // This ensures compatibility with GLSL uniform buffer layout
+
+    size_t totalSize = 0;
+
+    for (auto it = parameters.Begin(); it != parameters.End(); ++it)
+    {
+        const Variant& value = it->second_;
+
+        // Calculate size based on Variant type, aligned to 16 bytes (std140 layout)
+        // std140 rules: scalars and vectors use vec4 alignment (16 bytes)
+        switch (value.GetType())
+        {
+            case VAR_FLOAT:
+            case VAR_INT:
+            case VAR_BOOL:
+                totalSize += 16;  // Scalar in std140 (aligned to vec4)
+                break;
+
+            case VAR_VECTOR2:
+                totalSize += 16;  // vec2 in std140 (aligned to vec4)
+                break;
+
+            case VAR_VECTOR3:
+                totalSize += 16;  // vec3 in std140 (padded to vec4)
+                break;
+
+            case VAR_VECTOR4:
+            case VAR_COLOR:
+                totalSize += 16;  // vec4 in std140
+                break;
+
+            case VAR_MATRIX3:
+                totalSize += 48;  // mat3 in std140 (3 vec4s, row-major)
+                break;
+
+            case VAR_MATRIX3X4:
+                totalSize += 64;  // mat3x4 in std140 (3 vec4s + padding)
+                break;
+
+            case VAR_MATRIX4:
+                totalSize += 64;  // mat4 in std140 (4 vec4s)
+                break;
+
+            default:
+                URHO3D_LOGWARNING("CalculateParameterBufferSize: Unsupported parameter type " +
+                                  String((int)value.GetType()));
+                break;
+        }
+    }
+
+    URHO3D_LOGDEBUG("CalculateParameterBufferSize: Total size = " + String(totalSize) +
+                    " bytes for " + String(parameters.Size()) + " parameters");
+
+    return totalSize;
+}
+
+void Graphics::PackShaderParameters(
+    const HashMap<StringHash, Variant>& parameters,
+    void* buffer,
+    size_t bufferSize)
+{
+    // Phase 36 Step 3.2.2: Pack shader parameters into GPU buffer
+    // Uses std140 layout rules for GLSL uniform buffer compatibility
+    // All parameters aligned to 16-byte boundaries
+
+    if (!buffer)
+    {
+        URHO3D_LOGERROR("PackShaderParameters: Null buffer pointer");
+        return;
+    }
+
+    unsigned char* dst = (unsigned char*)buffer;
+    size_t offset = 0;
+
+    for (auto it = parameters.Begin(); it != parameters.End(); ++it)
+    {
+        const Variant& value = it->second_;
+
+        // Ensure we don't overflow the buffer
+        if (offset >= bufferSize)
+        {
+            URHO3D_LOGERROR("PackShaderParameters: Buffer overflow at offset " + String(offset));
+            break;
+        }
+
+        // Pack parameter based on type with std140 alignment
+        switch (value.GetType())
+        {
+            case VAR_FLOAT:
+            {
+                float f = value.GetFloat();
+                memcpy(dst + offset, &f, sizeof(float));
+                offset += 16;  // std140 alignment
+                break;
+            }
+
+            case VAR_INT:
+            {
+                int i = value.GetI32();
+                memcpy(dst + offset, &i, sizeof(int));
+                offset += 16;  // std140 alignment
+                break;
+            }
+
+            case VAR_BOOL:
+            {
+                int b = value.GetBool() ? 1 : 0;
+                memcpy(dst + offset, &b, sizeof(int));  // bool as int in GLSL
+                offset += 16;  // std140 alignment
+                break;
+            }
+
+            case VAR_VECTOR2:
+            {
+                const Vector2& v = value.GetVector2();
+                memcpy(dst + offset, &v, sizeof(Vector2));
+                offset += 16;  // std140 alignment (vec2 → vec4 with padding)
+                break;
+            }
+
+            case VAR_VECTOR3:
+            {
+                const Vector3& v = value.GetVector3();
+                memcpy(dst + offset, &v, sizeof(Vector3));
+                offset += 16;  // std140 alignment (vec3 → vec4 with padding)
+                break;
+            }
+
+            case VAR_VECTOR4:
+            {
+                const Vector4& v = value.GetVector4();
+                memcpy(dst + offset, &v, sizeof(Vector4));
+                offset += 16;  // std140 alignment
+                break;
+            }
+
+            case VAR_COLOR:
+            {
+                const Color& c = value.GetColor();
+                memcpy(dst + offset, &c, sizeof(Color));  // Color is vec4
+                offset += 16;  // std140 alignment
+                break;
+            }
+
+            case VAR_MATRIX3:
+            {
+                const Matrix3& m = value.GetMatrix3();
+                // mat3 in std140: 3 vec4s (row-major with padding)
+                // Row 0
+                float row0[3] = {m.m00_, m.m01_, m.m02_};
+                memcpy(dst + offset, row0, sizeof(float) * 3);
+                offset += 16;
+                // Row 1
+                float row1[3] = {m.m10_, m.m11_, m.m12_};
+                memcpy(dst + offset, row1, sizeof(float) * 3);
+                offset += 16;
+                // Row 2
+                float row2[3] = {m.m20_, m.m21_, m.m22_};
+                memcpy(dst + offset, row2, sizeof(float) * 3);
+                offset += 16;
+                break;
+            }
+
+            case VAR_MATRIX3X4:
+            {
+                const Matrix3x4& m = value.GetMatrix3x4();
+                // mat3x4 in std140: 3 vec4s
+                memcpy(dst + offset, &m, sizeof(Matrix3x4));
+                offset += 64;  // 3 vec4s + padding
+                break;
+            }
+
+            case VAR_MATRIX4:
+            {
+                const Matrix4& m = value.GetMatrix4();
+                // mat4 in std140: 4 vec4s
+                memcpy(dst + offset, &m, sizeof(Matrix4));
+                offset += 64;  // 4 vec4s
+                break;
+            }
+
+            default:
+                URHO3D_LOGWARNING("PackShaderParameters: Unsupported parameter type " +
+                                  String((int)value.GetType()) + " for parameter " +
+                                  it->first_.ToString());
+                break;
+        }
+    }
+
+    URHO3D_LOGDEBUG("PackShaderParameters: Packed " + String(parameters.Size()) +
+                    " parameters, total offset = " + String(offset) + " bytes");
 }
 
 // ============================================
