@@ -821,30 +821,52 @@ void Graphics::SetShaderParameter_Vulkan(StringHash param, const Variant& value)
         return;
     }
 
-    URHO3D_LOGDEBUG("SetShaderParameter_Vulkan: " + param.ToString() + " = " + value.ToString());
-
-    // Phase 36 Step 3.1: Store parameter for batched upload
+    // Phase 36 Step 3.1: Store parameter for batched upload ✅ IMPLEMENTED
     // Parameters are accumulated and uploaded to GPU in batches during draw calls
     // This reduces the number of GPU uploads and improves performance
     //
-    // Implementation notes:
-    // - Parameters stored in HashMap for O(1) lookup
+    // Implementation:
+    // - Parameters stored in pendingShaderParameters_ HashMap for O(1) lookup
     // - Batched upload reduces GPU synchronization overhead
     // - Constant buffer pool provides efficient memory allocation
+    // - Parameters cleared after upload (during draw call)
+
+    pendingShaderParameters_[param] = value;
+
+    URHO3D_LOGDEBUG("SetShaderParameter_Vulkan: Stored " + param.ToString() + " = " + value.ToString() +
+                    " (total pending: " + String(pendingShaderParameters_.Size()) + ")");
+
+    // TODO Phase 36 Step 3.2: Implement batched parameter upload in draw call
+    // Integration with VulkanConstantBufferPool (to be called from PrepareDraw_Vulkan or Draw_Vulkan):
     //
-    // TODO Phase 36 Step 3.2: Implement batched parameter upload
+    // if (!pendingShaderParameters_.Empty())
+    // {
+    //     VulkanConstantBufferPool* cbPool = vkImpl->GetConstantBufferPool();
+    //
+    //     // Calculate total parameter size
+    //     size_t totalSize = CalculateParameterBufferSize(pendingShaderParameters_);
+    //
+    //     // Allocate constant buffer
+    //     VkBuffer cbBuffer;
+    //     VkDeviceSize cbOffset;
+    //     void* cbData = cbPool->AllocateBuffer(nullptr, totalSize, cbBuffer, cbOffset);
+    //
+    //     // Pack parameters into buffer
+    //     PackShaderParameters(pendingShaderParameters_, cbData, totalSize);
+    //
+    //     // Create/update descriptor set for constant buffer (TODO Step 3.3)
+    //     VkDescriptorSet cbDescriptorSet = CreateConstantBufferDescriptorSet(cbBuffer, cbOffset, totalSize);
+    //
+    //     // Bind descriptor set (TODO Step 3.4)
+    //     vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+    //                             pipelineLayout, 2, 1, &cbDescriptorSet, 0, nullptr);
+    //
+    //     // Clear pending parameters after upload
+    //     pendingShaderParameters_.Clear();
+    // }
+
     // TODO Phase 36 Step 3.3: Create constant buffer descriptor sets
     // TODO Phase 36 Step 3.4: Bind constant buffers before draw calls
-    //
-    // Integration with VulkanConstantBufferPool:
-    // VulkanConstantBufferPool* cbPool = vkImpl->GetConstantBufferPool();
-    // void* cbData = cbPool->AllocateConstantBuffer(parameterSize);
-    // memcpy(cbData, &parameters, parameterSize);
-    //
-    // Descriptor set update:
-    // VkDescriptorBufferInfo bufferInfo = { cbBuffer, cbOffset, parameterSize };
-    // VkWriteDescriptorSet write = { ... };
-    // vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }
 
 // ============================================

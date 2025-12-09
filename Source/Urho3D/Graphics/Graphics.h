@@ -1256,6 +1256,9 @@ private:
 #ifdef URHO3D_VULKAN
     /// Vulkan profiler utility.
     SharedPtr<VulkanProfiler> vulkanProfiler_;
+    /// Phase 36: Pending shader parameters for batched upload to constant buffers
+    /// Accumulated during SetShaderParameter_Vulkan() calls, uploaded during draw calls
+    HashMap<StringHash, Variant> pendingShaderParameters_;
 #endif
     /// Allowed screen orientations.
     String orientations_;
