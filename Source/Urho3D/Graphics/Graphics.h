@@ -1086,6 +1086,9 @@ private:
     void PrepareDraw_Vulkan();
     void SetTexture_Vulkan(unsigned index, Texture* texture);
     void SetShaderParameter_Vulkan(StringHash param, const Variant& value);
+    /// Phase 36 Step 2: Texture descriptor set management for deferred rendering
+    VkDescriptorSet CreateTextureDescriptorSet_Vulkan();
+    bool BindTextureDescriptors_Vulkan(VkDescriptorSet descriptorSet);
     bool NeedParameterUpdate_Vulkan(ShaderParameterGroup group, const void* source);
     void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps);
     void SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget);
