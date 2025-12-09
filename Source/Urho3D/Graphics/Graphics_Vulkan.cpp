@@ -856,8 +856,8 @@ VkDescriptorSet Graphics::CreateTextureDescriptorSet_Vulkan()
     // Phase 36 Step 2.1: Create descriptor set for currently bound textures
     // This enables deferred lighting shaders to read from G-Buffer textures
     //
-    // Current implementation: Simplified approach for deferred rendering
-    // Creates a descriptor set with sampled image descriptors for bound textures
+    // Implementation: Creates descriptor set with sampled image descriptors for bound textures
+    // Supports up to 4 G-Buffer textures (albedo, normal, depth, position)
     //
     // TODO Phase 36 Step 2.2: Cache descriptor sets to avoid recreation
     // TODO Phase 36 Step 2.3: Handle descriptor pool exhaustion
@@ -870,16 +870,132 @@ VkDescriptorSet Graphics::CreateTextureDescriptorSet_Vulkan()
     if (!vkImpl)
         return VK_NULL_HANDLE;
 
-    // For now, return null handle - descriptor set creation requires:
-    // 1. Descriptor set layout definition (texture slots)
-    // 2. Descriptor pool allocation
-    // 3. vkAllocateDescriptorSets call
-    // 4. vkUpdateDescriptorSets with texture image views
-    //
-    // This will be implemented when integrating with full deferred rendering pipeline
+    VkDevice device = vkImpl->GetDevice();
+    if (!device)
+        return VK_NULL_HANDLE;
 
-    URHO3D_LOGDEBUG("CreateTextureDescriptorSet_Vulkan: Descriptor set creation not yet implemented");
-    return VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = vkImpl->GetDescriptorPool();
+    if (!descriptorPool)
+        return VK_NULL_HANDLE;
+
+    VulkanSamplerCache* samplerCache = vkImpl->GetSamplerCache();
+    if (!samplerCache)
+        return VK_NULL_HANDLE;
+
+    // Phase 36 Step 2.1.1: Create descriptor set layout (cached statically)
+    // Layout: 4 combined image samplers for G-Buffer textures
+    static VkDescriptorSetLayout textureDescriptorLayout = VK_NULL_HANDLE;
+
+    if (textureDescriptorLayout == VK_NULL_HANDLE)
+    {
+        VkDescriptorSetLayoutBinding bindings[4];
+        for (uint32_t i = 0; i < 4; ++i)
+        {
+            bindings[i].binding = i;
+            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;  // Used in fragment/pixel shaders
+            bindings[i].pImmutableSamplers = nullptr;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 4;
+        layoutInfo.pBindings = bindings;
+
+        VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &textureDescriptorLayout);
+        if (result != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("CreateTextureDescriptorSet_Vulkan: Failed to create descriptor set layout");
+            return VK_NULL_HANDLE;
+        }
+
+        URHO3D_LOGINFO("CreateTextureDescriptorSet_Vulkan: Created G-Buffer texture descriptor set layout");
+    }
+
+    // Phase 36 Step 2.1.2: Allocate descriptor set from pool
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &textureDescriptorLayout;
+
+    VkDescriptorSet descriptorSet;
+    VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
+    if (result != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("CreateTextureDescriptorSet_Vulkan: Failed to allocate descriptor set (pool may be exhausted)");
+        return VK_NULL_HANDLE;
+    }
+
+    // Phase 36 Step 2.1.3: Update descriptor set with currently bound textures
+    // Collect texture bindings for up to 4 G-Buffer textures
+    Vector<VkWriteDescriptorSet> writes;
+    Vector<VkDescriptorImageInfo> imageInfos;
+
+    const uint32_t maxGBufferTextures = 4;  // albedo, normal, depth, position
+    for (uint32_t i = 0; i < maxGBufferTextures; ++i)
+    {
+        Texture* texture = textures_[i];
+        if (!texture)
+        {
+            URHO3D_LOGDEBUG("CreateTextureDescriptorSet_Vulkan: Texture unit " + String(i) + " is null, skipping");
+            continue;
+        }
+
+        VkImageView imageView = texture->GetVkImageView();
+        if (!imageView)
+        {
+            URHO3D_LOGWARNING("CreateTextureDescriptorSet_Vulkan: Texture " + String(i) + " has no image view");
+            continue;
+        }
+
+        // Get sampler from cache based on texture filter/address modes
+        VkSampler sampler = samplerCache->GetSampler(
+            texture->GetFilterMode(),
+            texture->GetAddressMode(COORD_U),
+            texture->GetAnisotropy()
+        );
+
+        if (!sampler)
+        {
+            URHO3D_LOGWARNING("CreateTextureDescriptorSet_Vulkan: Failed to get sampler for texture " + String(i));
+            continue;
+        }
+
+        // Create descriptor image info
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.sampler = sampler;
+        imageInfo.imageView = imageView;
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfos.Push(imageInfo);
+
+        // Create write descriptor set
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet;
+        write.dstBinding = i;
+        write.dstArrayElement = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &imageInfos[imageInfos.Size() - 1];  // Point to last pushed element
+        writes.Push(write);
+    }
+
+    if (writes.Empty())
+    {
+        URHO3D_LOGWARNING("CreateTextureDescriptorSet_Vulkan: No valid textures to bind");
+        // Still return the descriptor set - it may be updated later
+        return descriptorSet;
+    }
+
+    // Phase 36 Step 2.1.4: Update descriptor sets with texture bindings (batched)
+    vkUpdateDescriptorSets(device, writes.Size(), &writes[0], 0, nullptr);
+
+    URHO3D_LOGDEBUG("CreateTextureDescriptorSet_Vulkan: Created and updated descriptor set with " +
+                    String(writes.Size()) + " texture bindings");
+
+    return descriptorSet;
 }
 
 bool Graphics::BindTextureDescriptors_Vulkan(VkDescriptorSet descriptorSet)

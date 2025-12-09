@@ -22,6 +22,9 @@
 #ifdef URHO3D_VULKAN
 // Forward declaration for Phase 32 GPU state application
 struct VulkanPipelineState;
+// Forward declaration for Phase 36 texture descriptor management
+struct VkDescriptorSet_T;
+typedef struct VkDescriptorSet_T* VkDescriptorSet;
 #endif
 
 struct SDL_Window;
