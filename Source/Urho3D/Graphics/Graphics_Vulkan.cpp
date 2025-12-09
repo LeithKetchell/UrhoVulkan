@@ -707,7 +707,24 @@ void Graphics::SetColorWrite_Vulkan(bool enable)
 
 void Graphics::SetTexture_Vulkan(unsigned index, Texture* texture)
 {
-    // Texture binding not yet implemented
+    // Phase 36 Step 1: Texture binding for deferred lighting G-Buffer inputs
+    // Stores texture in texture unit array for later descriptor set creation
+    // Critical for deferred rendering where lighting pass reads from G-Buffer textures
+    //
+    // Descriptor sets will be created/updated on draw calls based on current textures_[] state
+    // No explicit dirty tracking needed - Vulkan descriptor manager handles caching
+
+    if (index >= MAX_TEXTURE_UNITS)
+    {
+        URHO3D_LOGERROR("SetTexture_Vulkan: Texture unit index out of range: " + String(index));
+        return;
+    }
+
+    // Update texture binding state
+    textures_[index] = texture;
+
+    URHO3D_LOGDEBUG("SetTexture_Vulkan: Bound texture to unit " + String(index) +
+                    (texture ? " (texture set)" : " (null)"));
 }
 
 void Graphics::SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget)
@@ -779,6 +796,37 @@ void Graphics::ApplyGraphicsState_Vulkan(VulkanPipelineState& state) const
     state.stencilRef = stencilRef_;
     state.stencilCompareMask = stencilCompareMask_;
     state.stencilWriteMask = stencilWriteMask_;
+}
+
+// ============================================
+// Phase 36: Shader Parameters for Deferred Lighting
+// ============================================
+
+void Graphics::SetShaderParameter_Vulkan(StringHash param, const Variant& value)
+{
+    // Phase 36 Step 2: Shader parameter binding for deferred lighting
+    // Handles shader parameters (light position, color, matrices, etc.) for deferred lighting shaders
+    // Critical for passing light data from CPU to GPU
+    //
+    // Current implementation: Basic stub for compatibility
+    // TODO Phase 36 Step 3: Implement constant buffer updates via VulkanConstantBufferPool
+    // TODO Phase 36 Step 4: Upload parameters to GPU uniform buffers
+    // TODO Phase 36 Step 5: Bind constant buffer descriptors before draw calls
+    //
+    // For now, this provides API compatibility. Actual parameter upload will be implemented
+    // when integrating with VulkanConstantBufferPool and descriptor set management.
+
+    if (!vertexShader_ && !pixelShader_)
+    {
+        // No active shaders, nothing to bind parameters to
+        return;
+    }
+
+    URHO3D_LOGDEBUG("SetShaderParameter_Vulkan: " + param.ToString() + " = " + value.ToString());
+
+    // Parameter handling will be implemented in Phase 36 Step 3+
+    // Will use VulkanConstantBufferPool to allocate uniform buffer regions
+    // and update descriptor sets to bind constant buffers to shader inputs
 }
 
 } // namespace Urho3D

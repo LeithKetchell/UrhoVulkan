@@ -10,6 +10,7 @@
 #include "VulkanSPIRVReflect.h"
 #include "../../Graphics/Material.h"
 #include "../../GraphicsAPI/Texture2D.h"
+#include "../../GraphicsAPI/GraphicsDefs.h"
 #include "../../Graphics/Graphics.h"
 #include "../../Math/Color.h"
 #include "../../Math/Vector3.h"
@@ -469,12 +470,25 @@ uint32_t VulkanMaterialDescriptorManager::CalculateTextureHash(Material* materia
     // Hash changes when textures are modified, invalidating cached descriptors
     uint32_t hash = (uint32_t)(size_t)material;
 
-    // TODO: Phase 15.2.5 - Include texture pointers in hash
-    // Get textures from material and include in hash:
-    // - Diffuse texture pointer
-    // - Normal texture pointer
-    // - Specular texture pointer
-    // - Other textures as applicable
+    // Phase 15.2.5: Include texture pointers in hash for robust dirty detection
+    // This ensures descriptor sets are regenerated when textures change
+    Texture* diffuse = material->GetTexture(TU_DIFFUSE);
+    Texture* normal = material->GetTexture(TU_NORMAL);
+    Texture* specular = material->GetTexture(TU_SPECULAR);
+    Texture* emissive = material->GetTexture(TU_EMISSIVE);
+    Texture* environment = material->GetTexture(TU_ENVIRONMENT);
+
+    // Combine texture pointers into hash
+    if (diffuse)
+        hash ^= ((uint32_t)(size_t)diffuse) << 1;
+    if (normal)
+        hash ^= ((uint32_t)(size_t)normal) << 2;
+    if (specular)
+        hash ^= ((uint32_t)(size_t)specular) << 3;
+    if (emissive)
+        hash ^= ((uint32_t)(size_t)emissive) << 4;
+    if (environment)
+        hash ^= ((uint32_t)(size_t)environment) << 5;
 
     // Include material parameter hash for robustness
     hash ^= material->GetShaderParameterHash();
