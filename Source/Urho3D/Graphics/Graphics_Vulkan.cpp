@@ -1515,6 +1515,152 @@ void Graphics::UploadPendingShaderParameters_Vulkan()
                     " bytes of shader parameters to GPU");
 }
 
+/// Input Attachments: Create descriptor set for G-Buffer input attachments
+/// ============================================
+/// Vulkan-specific optimization for deferred lighting
+/// ============================================
+///
+/// **Purpose**: Creates descriptor set for G-Buffer input attachments in lighting subpass
+///
+/// **Optimization**: Input attachments use tile-local memory on mobile GPUs (faster than texture sampling)
+///
+/// **G-Buffer Layout**:
+/// - Input 0: Albedo (from color attachment 0)
+/// - Input 1: Normal (from color attachment 1)
+/// - Input 2: Depth (from color attachment 2)
+/// - Input 3: Position (from color attachment 3)
+///
+/// **Usage**: Called during lighting subpass setup, binds G-Buffer for efficient reads
+VkDescriptorSet Graphics::CreateInputAttachmentDescriptorSet_Vulkan()
+{
+    VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+    if (!vkImpl)
+    {
+        URHO3D_LOGWARNING("CreateInputAttachmentDescriptorSet_Vulkan: Graphics implementation not initialized");
+        return VK_NULL_HANDLE;
+    }
+
+    VkDevice device = vkImpl->GetDevice();
+    if (!device)
+        return VK_NULL_HANDLE;
+
+    // Static cached descriptor set layout for input attachments
+    static VkDescriptorSetLayout inputAttachmentLayout = VK_NULL_HANDLE;
+
+    if (inputAttachmentLayout == VK_NULL_HANDLE)
+    {
+        // Create layout with 4 input attachment bindings (G-Buffer)
+        VkDescriptorSetLayoutBinding bindings[4];
+        for (uint32_t i = 0; i < 4; ++i)
+        {
+            bindings[i].binding = i;
+            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings[i].pImmutableSamplers = nullptr;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 4;
+        layoutInfo.pBindings = bindings;
+
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &inputAttachmentLayout) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("CreateInputAttachmentDescriptorSet_Vulkan: Failed to create descriptor set layout");
+            return VK_NULL_HANDLE;
+        }
+    }
+
+    // Allocate descriptor set from pool
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = vkImpl->GetDescriptorPool();
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &inputAttachmentLayout;
+
+    if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("CreateInputAttachmentDescriptorSet_Vulkan: Failed to allocate descriptor set");
+        return VK_NULL_HANDLE;
+    }
+
+    // Get G-Buffer image views from current render targets
+    Vector<VkDescriptorImageInfo> imageInfos;
+    Vector<VkWriteDescriptorSet> writes;
+
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        RenderSurface* rt = GetRenderTarget(i);
+        if (!rt || !rt->GetParentTexture())
+            continue;
+
+        Texture* texture = rt->GetParentTexture();
+        VkImageView imageView = texture->GetVkImageView();
+        if (!imageView)
+            continue;
+
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageView = imageView;
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.sampler = VK_NULL_HANDLE;  // Input attachments don't use samplers
+        imageInfos.Push(imageInfo);
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet;
+        write.dstBinding = i;
+        write.dstArrayElement = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        write.descriptorCount = 1;
+        write.pImageInfo = &imageInfos.Back();
+        writes.Push(write);
+    }
+
+    // Update descriptor set with G-Buffer attachments
+    if (!writes.Empty())
+    {
+        vkUpdateDescriptorSets(device, writes.Size(), &writes[0], 0, nullptr);
+        URHO3D_LOGDEBUG("CreateInputAttachmentDescriptorSet_Vulkan: Bound " + String(writes.Size()) + " input attachments");
+    }
+
+    return descriptorSet;
+}
+
+bool Graphics::BindInputAttachmentDescriptors_Vulkan(VkDescriptorSet descriptorSet)
+{
+    if (descriptorSet == VK_NULL_HANDLE)
+        return false;
+
+    VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+    if (!vkImpl)
+        return false;
+
+    VkCommandBuffer cmdBuffer = vkImpl->GetFrameCommandBuffer();
+    VkPipelineLayout pipelineLayout = vkImpl->GetCurrentPipelineLayout();
+
+    if (!cmdBuffer || !pipelineLayout)
+    {
+        URHO3D_LOGWARNING("BindInputAttachmentDescriptors_Vulkan: Command buffer or pipeline layout not available");
+        return false;
+    }
+
+    // Bind to descriptor set slot 3 (after materials at 0, G-Buffer textures at 1, light params at 2)
+    vkCmdBindDescriptorSets(
+        cmdBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pipelineLayout,
+        3,  // Set slot 3 for input attachments
+        1,
+        &descriptorSet,
+        0, nullptr
+    );
+
+    URHO3D_LOGDEBUG("BindInputAttachmentDescriptors_Vulkan: Input attachment descriptors bound to set 3");
+    return true;
+}
+
 } // namespace Urho3D
 
 #endif  // URHO3D_VULKAN

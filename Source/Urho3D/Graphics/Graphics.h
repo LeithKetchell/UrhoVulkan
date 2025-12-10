@@ -1101,6 +1101,9 @@ private:
     bool BindConstantBufferDescriptors_Vulkan(VkDescriptorSet descriptorSet);
     /// Phase 36 Step 4: Upload pending shader parameters to GPU
     void UploadPendingShaderParameters_Vulkan();
+    /// Input Attachments: Create descriptor set for G-Buffer input attachments (deferred lighting optimization)
+    VkDescriptorSet CreateInputAttachmentDescriptorSet_Vulkan();
+    bool BindInputAttachmentDescriptors_Vulkan(VkDescriptorSet descriptorSet);
     bool NeedParameterUpdate_Vulkan(ShaderParameterGroup group, const void* source);
     void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps);
     void SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget);
