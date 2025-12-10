@@ -22,9 +22,11 @@
 #ifdef URHO3D_VULKAN
 // Forward declaration for Phase 32 GPU state application
 struct VulkanPipelineState;
-// Forward declaration for Phase 36 texture descriptor management
+// Forward declarations for Phase 36 texture and constant buffer descriptor management
 struct VkDescriptorSet_T;
 typedef struct VkDescriptorSet_T* VkDescriptorSet;
+struct VkBuffer_T;
+typedef struct VkBuffer_T* VkBuffer;
 #endif
 
 struct SDL_Window;
@@ -1095,6 +1097,8 @@ private:
     /// Phase 36 Step 3: Constant buffer parameter helpers
     size_t CalculateParameterBufferSize(const HashMap<StringHash, Variant>& parameters);
     void PackShaderParameters(const HashMap<StringHash, Variant>& parameters, void* buffer, size_t bufferSize);
+    VkDescriptorSet CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buffer, size_t size);
+    bool BindConstantBufferDescriptors_Vulkan(VkDescriptorSet descriptorSet);
     bool NeedParameterUpdate_Vulkan(ShaderParameterGroup group, const void* source);
     void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps);
     void SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget);
