@@ -10,6 +10,7 @@
 #include "Graphics.h"
 #include "Geometry.h"
 #include "../GraphicsAPI/Texture.h"
+#include "../GraphicsAPI/RenderSurface.h"
 #include "../IO/Log.h"
 
 #ifdef URHO3D_VULKAN
@@ -1478,14 +1479,14 @@ void Graphics::UploadPendingShaderParameters_Vulkan()
     }
 
     // Step 2: Allocate staging buffer and pack parameters
-    PODVector<unsigned char> stagingBuffer(totalSize);
-    PackShaderParameters(pendingShaderParameters_, stagingBuffer.Buffer(), totalSize);
+    Vector<unsigned char> stagingBuffer(totalSize);
+    PackShaderParameters(pendingShaderParameters_, &stagingBuffer[0], totalSize);
 
     // Step 3: Allocate GPU buffer from pool
     VkBuffer gpuBuffer = VK_NULL_HANDLE;
     VkDeviceSize bufferOffset = 0;
 
-    if (!cbPool->AllocateBuffer(stagingBuffer.Buffer(), (uint32_t)totalSize, gpuBuffer, bufferOffset))
+    if (!cbPool->AllocateBuffer(&stagingBuffer[0], (uint32_t)totalSize, gpuBuffer, bufferOffset))
     {
         URHO3D_LOGERROR("UploadPendingShaderParameters_Vulkan: Failed to allocate constant buffer from pool");
         pendingShaderParameters_.Clear();
