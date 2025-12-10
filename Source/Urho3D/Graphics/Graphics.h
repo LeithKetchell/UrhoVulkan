@@ -1099,6 +1099,8 @@ private:
     void PackShaderParameters(const HashMap<StringHash, Variant>& parameters, void* buffer, size_t bufferSize);
     VkDescriptorSet CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buffer, size_t size);
     bool BindConstantBufferDescriptors_Vulkan(VkDescriptorSet descriptorSet);
+    /// Phase 36 Step 4: Upload pending shader parameters to GPU
+    void UploadPendingShaderParameters_Vulkan();
     bool NeedParameterUpdate_Vulkan(ShaderParameterGroup group, const void* source);
     void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps);
     void SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget);

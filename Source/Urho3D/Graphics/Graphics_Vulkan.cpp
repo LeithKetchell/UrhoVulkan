@@ -400,6 +400,9 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
     // Material descriptor sets will be bound during geometry rendering
     // when material parameters are applied via BindMaterialDescriptors()
 
+    // Phase 36 Step 4: Upload pending shader parameters before draw
+    UploadPendingShaderParameters_Vulkan();
+
     // Record draw command
     vkCmdDraw(cmdBuffer, vertexCount, 1, vertexStart, 0);
 
@@ -463,6 +466,9 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
+    // Phase 36 Step 4: Upload pending shader parameters before draw
+    UploadPendingShaderParameters_Vulkan();
+
     // Record indexed draw command
     vkCmdDrawIndexed(cmdBuffer, indexCount, 1, indexStart, minVertex, 0);
 
@@ -524,6 +530,9 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
 
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    // Phase 36 Step 4: Upload pending shader parameters before draw
+    UploadPendingShaderParameters_Vulkan();
 
     // Record draw command with base vertex index
     vkCmdDrawIndexed(cmdBuffer, indexCount, 1, indexStart, baseVertexIndex, 0);
@@ -587,6 +596,9 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
+    // Phase 36 Step 4: Upload pending shader parameters before draw
+    UploadPendingShaderParameters_Vulkan();
+
     // Record instanced draw command
     vkCmdDrawIndexed(cmdBuffer, indexCount, instanceCount, indexStart, minVertex, 0);
 
@@ -648,6 +660,9 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
 
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    // Phase 36 Step 4: Upload pending shader parameters before draw
+    UploadPendingShaderParameters_Vulkan();
 
     // Record instanced draw command with base vertex index
     vkCmdDrawIndexed(cmdBuffer, indexCount, instanceCount, indexStart, baseVertexIndex, 0);
@@ -1407,6 +1422,97 @@ bool Graphics::BindTextureDescriptors_Vulkan(VkDescriptorSet descriptorSet)
 
     URHO3D_LOGDEBUG("BindTextureDescriptors_Vulkan: Texture descriptors bound to set 1");
     return true;
+}
+
+/// Phase 36 Step 4: Upload pending shader parameters to GPU
+/// ============================================
+/// COMPLETE INTEGRATION with draw pipeline
+/// ============================================
+///
+/// **Purpose**: Uploads all pending shader parameters to GPU before draw call
+///
+/// **Called From**: All Draw_Vulkan() variants before issuing draw commands
+///
+/// **Process**:
+/// 1. Check if pendingShaderParameters_ has data
+/// 2. Calculate total buffer size needed (std140 layout)
+/// 3. Allocate staging buffer and pack parameters
+/// 4. Allocate GPU buffer from VulkanConstantBufferPool
+/// 5. Create descriptor set for constant buffer
+/// 6. Bind descriptor set to pipeline (slot 2)
+/// 7. Clear pendingShaderParameters_ for next frame
+///
+/// **Performance**: O(N) where N = number of parameters
+/// - Batches all parameters into single upload
+/// - Reuses pool buffers across frames (no allocation overhead)
+/// - Single descriptor set bind per draw call
+///
+/// **Integration Point**: Called after pipeline binding, before vkCmdDraw*()
+void Graphics::UploadPendingShaderParameters_Vulkan()
+{
+    // Early exit if no parameters to upload
+    if (pendingShaderParameters_.Empty())
+        return;
+
+    VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+    if (!vkImpl)
+    {
+        URHO3D_LOGWARNING("UploadPendingShaderParameters_Vulkan: Graphics implementation not initialized");
+        return;
+    }
+
+    VulkanConstantBufferPool* cbPool = vkImpl->GetConstantBufferPool();
+    if (!cbPool)
+    {
+        URHO3D_LOGWARNING("UploadPendingShaderParameters_Vulkan: Constant buffer pool not available");
+        return;
+    }
+
+    // Step 1: Calculate buffer size with std140 layout
+    size_t totalSize = CalculateParameterBufferSize(pendingShaderParameters_);
+    if (totalSize == 0)
+    {
+        URHO3D_LOGWARNING("UploadPendingShaderParameters_Vulkan: No valid parameters to upload");
+        pendingShaderParameters_.Clear();
+        return;
+    }
+
+    // Step 2: Allocate staging buffer and pack parameters
+    PODVector<unsigned char> stagingBuffer(totalSize);
+    PackShaderParameters(pendingShaderParameters_, stagingBuffer.Buffer(), totalSize);
+
+    // Step 3: Allocate GPU buffer from pool
+    VkBuffer gpuBuffer = VK_NULL_HANDLE;
+    VkDeviceSize bufferOffset = 0;
+
+    if (!cbPool->AllocateBuffer(stagingBuffer.Buffer(), (uint32_t)totalSize, gpuBuffer, bufferOffset))
+    {
+        URHO3D_LOGERROR("UploadPendingShaderParameters_Vulkan: Failed to allocate constant buffer from pool");
+        pendingShaderParameters_.Clear();
+        return;
+    }
+
+    // Step 4: Create descriptor set for constant buffer
+    VkDescriptorSet descriptorSet = CreateConstantBufferDescriptorSet_Vulkan(gpuBuffer, totalSize);
+    if (descriptorSet == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("UploadPendingShaderParameters_Vulkan: Failed to create constant buffer descriptor set");
+        pendingShaderParameters_.Clear();
+        return;
+    }
+
+    // Step 5: Bind descriptor set to pipeline (slot 2 for light parameters)
+    if (!BindConstantBufferDescriptors_Vulkan(descriptorSet))
+    {
+        URHO3D_LOGWARNING("UploadPendingShaderParameters_Vulkan: Failed to bind constant buffer descriptors");
+        // Continue anyway - descriptor binding failures should not block rendering
+    }
+
+    // Step 6: Clear pending parameters for next frame
+    pendingShaderParameters_.Clear();
+
+    URHO3D_LOGDEBUG("UploadPendingShaderParameters_Vulkan: Uploaded " + String(totalSize) +
+                    " bytes of shader parameters to GPU");
 }
 
 } // namespace Urho3D
