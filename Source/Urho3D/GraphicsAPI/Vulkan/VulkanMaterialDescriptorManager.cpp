@@ -351,16 +351,19 @@ VkDescriptorSet VulkanMaterialDescriptorManager::CreateDescriptorSet(Material* m
         Texture2D* diffuseTexture = dynamic_cast<Texture2D*>(material->GetTexture(TU_DIFFUSE));
         Texture2D* normalTexture = dynamic_cast<Texture2D*>(material->GetTexture(TU_NORMAL));
         Texture2D* specularTexture = dynamic_cast<Texture2D*>(material->GetTexture(TU_SPECULAR));
+        Texture2D* emissiveTexture = dynamic_cast<Texture2D*>(material->GetTexture(TU_EMISSIVE));
+        Texture2D* environmentTexture = dynamic_cast<Texture2D*>(material->GetTexture(TU_ENVIRONMENT));
 
         // Fallback to default textures
         if (!diffuseTexture) diffuseTexture = graphics_->GetDefaultDiffuseTexture();
         if (!normalTexture) normalTexture = graphics_->GetDefaultNormalTexture();
         if (!specularTexture) specularTexture = graphics_->GetDefaultSpecularTexture();
+        // No defaults for emissive/environment - use null if not provided
 
-        Texture2D* textures[] = {diffuseTexture, normalTexture, specularTexture};
-        const uint32_t bindingOffsets[] = {1, 2, 3};
+        Texture2D* textures[] = {diffuseTexture, normalTexture, specularTexture, emissiveTexture, environmentTexture};
+        const uint32_t bindingOffsets[] = {1, 2, 3, 4, 5};
 
-        for (uint32_t i = 0; i < 3; ++i)
+        for (uint32_t i = 0; i < 5; ++i)
         {
             if (!textures[i]) continue;
 
