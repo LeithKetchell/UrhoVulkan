@@ -1027,7 +1027,7 @@ void Graphics::SetShaders(ShaderVariation* vs, ShaderVariation* ps)
 
 #ifdef URHO3D_VULKAN
     if (gapi == GAPI_VULKAN)
-        return SetShaders_Vulkan(vs, ps);
+        return SetShaders_Vulkan(vs, ps, nullptr);
 #endif
 }
 

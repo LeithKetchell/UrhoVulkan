@@ -1,0 +1,2075 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CodeBlocks_project_file>
+	<FileVersion major="1" minor="6"/>
+	<Project>
+		<Option title="Assimp"/>
+		<Option makefile_is_custom="1"/>
+		<Option compiler="gcc"/>
+		<Option virtualFolders="CMake Files\;CMake Files\Source\;CMake Files\Source\ThirdParty\;CMake Files\Source\ThirdParty\Assimp\;CMake Files\Source\ThirdParty\Assimp\include\;CMake Files\Source\ThirdParty\Assimp\include\assimp\;CMake Files\Source\ThirdParty\Assimp\contrib\;CMake Files\Source\ThirdParty\Assimp\contrib\zlib\;CMake Files\Source\ThirdParty\Assimp\code\;CMake Files\Source\ThirdParty\Assimp\cmake-modules\;CMake Files\Source\ThirdParty\ETCPACK\;CMake Files\Source\ThirdParty\FreeType\;CMake Files\Source\ThirdParty\LZ4\;CMake Files\Source\ThirdParty\PugiXml\;CMake Files\Source\ThirdParty\rapidjson\;CMake Files\Source\ThirdParty\SDL\;CMake Files\Source\ThirdParty\SDL\cmake\;CMake Files\Source\ThirdParty\SDL\include\;CMake Files\Source\ThirdParty\StanHull\;CMake Files\Source\ThirdParty\STB\;CMake Files\Source\ThirdParty\Civetweb\;CMake Files\Source\ThirdParty\SLikeNet\;CMake Files\Source\ThirdParty\ik\;CMake Files\Source\ThirdParty\ik\include\;CMake Files\Source\ThirdParty\ik\include\ik\;CMake Files\Source\ThirdParty\Detour\;CMake Files\Source\ThirdParty\DetourCrowd\;CMake Files\Source\ThirdParty\DetourTileCache\;CMake Files\Source\ThirdParty\Recast\;CMake Files\Source\ThirdParty\WebP\;CMake Files\Source\ThirdParty\Bullet\;CMake Files\Source\ThirdParty\Box2D\;CMake Files\Source\ThirdParty\GLEW\;CMake Files\Source\ThirdParty\VMA\;CMake Files\Source\Urho3D\;CMake Files\Source\Tools\;CMake Files\Source\Tools\AssetImporter\;CMake Files\Source\Tools\OgreImporter\;CMake Files\Source\Tools\PackageTool\;CMake Files\Source\Tools\RampGenerator\;CMake Files\Source\Tools\SpritePacker\;CMake Files\Source\Tools\Tests\;CMake Files\Source\Samples\;CMake Files\Source\Samples\01_HelloWorld\;CMake Files\Source\Samples\02_HelloGUI\;CMake Files\Source\Samples\03_Sprites\;CMake Files\Source\Samples\04_StaticScene\;CMake Files\Source\Samples\05_AnimatingScene\;CMake Files\Source\Samples\06_SkeletalAnimation\;CMake Files\Source\Samples\07_Billboards\;CMake Files\Source\Samples\08_Decals\;CMake Files\Source\Samples\09_MultipleViewports\;CMake Files\Source\Samples\10_RenderToTexture\;CMake Files\Source\Samples\11_Physics\;CMake Files\Source\Samples\12_PhysicsStressTest\;CMake Files\Source\Samples\13_Ragdolls\;CMake Files\Source\Samples\14_SoundEffects\;CMake Files\Source\Samples\15_Navigation\;CMake Files\Source\Samples\16_Chat\;CMake Files\Source\Samples\17_SceneReplication\;CMake Files\Source\Samples\18_CharacterDemo\;CMake Files\Source\Samples\19_VehicleDemo\;CMake Files\Source\Samples\20_HugeObjectCount\;CMake Files\Source\Samples\21_AngelScriptIntegration\;CMake Files\Source\Samples\22_LuaIntegration\;CMake Files\Source\Samples\23_Water\;CMake Files\Source\Samples\24_Urho2DSprite\;CMake Files\Source\Samples\25_Urho2DParticle\;CMake Files\Source\Samples\26_ConsoleInput\;CMake Files\Source\Samples\27_Physics2D\;CMake Files\Source\Samples\28_Physics2DRope\;CMake Files\Source\Samples\29_SoundSynthesis\;CMake Files\Source\Samples\30_LightAnimation\;CMake Files\Source\Samples\31_MaterialAnimation\;CMake Files\Source\Samples\32_Physics2DConstraints\;CMake Files\Source\Samples\33_Urho2DSpriterAnimation\;CMake Files\Source\Samples\34_DynamicGeometry\;CMake Files\Source\Samples\35_SignedDistanceFieldText\;CMake Files\Source\Samples\36_Urho2DTileMap\;CMake Files\Source\Samples\37_UIDrag\;CMake Files\Source\Samples\38_SceneAndUILoad\;CMake Files\Source\Samples\39_CrowdNavigation\;CMake Files\Source\Samples\40_Localization\;CMake Files\Source\Samples\41_DatabaseDemo\;CMake Files\Source\Samples\42_PBRMaterials\;CMake Files\Source\Samples\43_HttpRequestDemo\;CMake Files\Source\Samples\44_RibbonTrailDemo\;CMake Files\Source\Samples\45_InverseKinematics\;CMake Files\Source\Samples\46_RaycastVehicle\;CMake Files\Source\Samples\47_Typography\;CMake Files\Source\Samples\48_Hello3DUI\;CMake Files\Source\Samples\49_Urho2DIsometricDemo\;CMake Files\Source\Samples\50_Urho2DPlatformer\;CMake Files\Source\Samples\51_Urho2DStretchableSprite\;CMake Files\Source\Samples\52_NATPunchtrough\;CMake Files\Source\Samples\53_LANDiscovery\;CMake Files\Source\Samples\54_WindowSettingsDemo\;CMake Files\Source\Samples\55_Clicker\;CMake Files\Source\Samples\56_DeferredRendering\;CMake Files\Source\Samples\99_Benchmark\;CMake Files\Source\Samples\Phase27_DescriptorBindingTest\;CMake Files\cmake\;CMake Files\cmake\Modules\;CMake Files\Docs\;"/>
+		<Build>
+			<Target title="all">
+				<Option working_dir="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp"/>
+				<Option type="4"/>
+				<MakeCommands>
+					<Build command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/Makefile&quot;  VERBOSE=1 all"/>
+					<CompileFile command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/Makefile&quot;  VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/Makefile&quot;  VERBOSE=1 clean"/>
+					<DistClean command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/Makefile&quot;  VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="Assimp">
+				<Option output="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/libAssimp.a" prefix_auto="0" extension_auto="0"/>
+				<Option working_dir="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code"/>
+				<Option object_output="./"/>
+				<Option type="2"/>
+				<Option compiler="gcc"/>
+				<Compiler>
+					<Add option="-DVK_USE_PLATFORM_XCLIB_KHR"/>
+					<Add option="-DVK_USE_PLATFORM_WAYLAND_KHR"/>
+					<Add option="-DURHO3D_STATIC_DEFINE"/>
+					<Add option="-DURHO3D_FILEWATCHER"/>
+					<Add option="-DURHO3D_IK"/>
+					<Add option="-DURHO3D_LOGGING"/>
+					<Add option="-DURHO3D_NAVIGATION"/>
+					<Add option="-DURHO3D_NETWORK"/>
+					<Add option="-DURHO3D_PHYSICS"/>
+					<Add option="-DURHO3D_PHYSICS2D"/>
+					<Add option="-DURHO3D_PROFILING"/>
+					<Add option="-DURHO3D_THREADING"/>
+					<Add option="-DURHO3D_URHO2D"/>
+					<Add option="-DURHO3D_WEBP"/>
+					<Add option="-DOPENDDL_NO_USE_CPP11"/>
+					<Add option="-DASSIMP_BUILD_NO_C4D_IMPORTER"/>
+					<Add option="-DASSIMP_IMPORTER_GLTF_USE_OPEN3DGC=1"/>
+					<Add option="-DOPENDDLPARSER_BUILD"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/VMA/include"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/include"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/include/Urho3D/ThirdParty"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/include/Urho3D/ThirdParty/Bullet"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/."/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/zlib"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/rapidjson/include"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/unzip"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/irrXML"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/openddlparser/include"/>
+					<Add directory="/home/leith/Desktop/1.4.313.0/x86_64/include"/>
+				</Compiler>
+				<MakeCommands>
+					<Build command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Makefile&quot;  VERBOSE=1 Assimp"/>
+					<CompileFile command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Makefile&quot;  VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Makefile&quot;  VERBOSE=1 clean"/>
+					<DistClean command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Makefile&quot;  VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="Assimp/fast">
+				<Option output="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/libAssimp.a" prefix_auto="0" extension_auto="0"/>
+				<Option working_dir="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code"/>
+				<Option object_output="./"/>
+				<Option type="2"/>
+				<Option compiler="gcc"/>
+				<Compiler>
+					<Add option="-DVK_USE_PLATFORM_XCLIB_KHR"/>
+					<Add option="-DVK_USE_PLATFORM_WAYLAND_KHR"/>
+					<Add option="-DURHO3D_STATIC_DEFINE"/>
+					<Add option="-DURHO3D_FILEWATCHER"/>
+					<Add option="-DURHO3D_IK"/>
+					<Add option="-DURHO3D_LOGGING"/>
+					<Add option="-DURHO3D_NAVIGATION"/>
+					<Add option="-DURHO3D_NETWORK"/>
+					<Add option="-DURHO3D_PHYSICS"/>
+					<Add option="-DURHO3D_PHYSICS2D"/>
+					<Add option="-DURHO3D_PROFILING"/>
+					<Add option="-DURHO3D_THREADING"/>
+					<Add option="-DURHO3D_URHO2D"/>
+					<Add option="-DURHO3D_WEBP"/>
+					<Add option="-DOPENDDL_NO_USE_CPP11"/>
+					<Add option="-DASSIMP_BUILD_NO_C4D_IMPORTER"/>
+					<Add option="-DASSIMP_IMPORTER_GLTF_USE_OPEN3DGC=1"/>
+					<Add option="-DOPENDDLPARSER_BUILD"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/VMA/include"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/include"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/include/Urho3D/ThirdParty"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/include/Urho3D/ThirdParty/Bullet"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/."/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/zlib"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/rapidjson/include"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/unzip"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/irrXML"/>
+					<Add directory="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/../contrib/openddlparser/include"/>
+					<Add directory="/home/leith/Desktop/1.4.313.0/x86_64/include"/>
+				</Compiler>
+				<MakeCommands>
+					<Build command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Makefile&quot;  VERBOSE=1 Assimp/fast"/>
+					<CompileFile command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Makefile&quot;  VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Makefile&quot;  VERBOSE=1 clean"/>
+					<DistClean command="/usr/bin/gmake -f &quot;/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Makefile&quot;  VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+		</Build>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/3DSConverter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/3DSExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/3DSExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/3DSHelper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/3DSLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/3DSLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/3MFXmlTags.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ACLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ACLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AMFImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AMFImporter.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AMFImporter_Geometry.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AMFImporter_Macro.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AMFImporter_Material.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AMFImporter_Node.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AMFImporter_Postprocess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ASELoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ASELoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ASEParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ASEParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AssbinExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AssbinExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AssbinLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AssbinLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Assimp.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AssimpCExport.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AssxmlExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/AssxmlExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/B3DImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/B3DImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BVHLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BVHLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BaseImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BaseImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BaseProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BaseProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Bitmap.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Bitmap.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderBMesh.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderBMesh.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderDNA.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderDNA.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderDNA.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderIntermediate.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderModifier.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderModifier.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderScene.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderScene.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderSceneGen.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderTessellator.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlenderTessellator.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/BlobIOSystem.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ByteSwapper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CInterfaceIOWrapper.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CInterfaceIOWrapper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/COBLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/COBLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/COBScene.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CSMLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CSMLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CalcTangentsProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CalcTangentsProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ColladaExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ColladaExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ColladaHelper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ColladaLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ColladaLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ColladaParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ColladaParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ComputeUVMappingProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ComputeUVMappingProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ConvertToLHProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ConvertToLHProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CreateAnimMesh.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CreateAnimMesh.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/D3MFExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/D3MFExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/D3MFImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/D3MFImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/D3MFOpcPackage.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/D3MFOpcPackage.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DXFHelper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DXFLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DXFLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DeboneProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DeboneProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DefaultIOStream.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DefaultIOSystem.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DefaultLogger.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/DefaultProgressHandler.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Exporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXAnimation.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXBinaryTokenizer.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXCompileConfig.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXConverter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXConverter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXDeformer.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXDocument.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXDocument.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXDocumentUtil.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXDocumentUtil.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXImportSettings.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXMaterial.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXMeshGeometry.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXMeshGeometry.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXModel.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXNodeAttribute.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXProperties.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXProperties.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXTokenizer.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXTokenizer.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXUtil.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FBXUtil.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FIReader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FIReader.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FileLogStream.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FindDegenerates.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FindDegenerates.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FindInstancesProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FindInstancesProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FindInvalidDataProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FindInvalidDataProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FixNormalsStep.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/FixNormalsStep.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/GenFaceNormalsProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/GenFaceNormalsProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/GenVertexNormalsProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/GenVertexNormalsProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/GenericProperty.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/HMPFileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/HMPLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/HMPLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/HalfLifeFileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Hash.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCBoolean.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCCurve.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCGeometry.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCMaterial.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCOpenings.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCProfile.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCReaderGen.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCReaderGen1.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCReaderGen2.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCUtil.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFCUtil.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IFF.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IOStreamBuffer.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IRRLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IRRLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IRRMeshLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IRRMeshLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IRRShared.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/IRRShared.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Importer.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Importer.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ImporterRegistry.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ImproveCacheLocality.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ImproveCacheLocality.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/JoinVerticesProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/JoinVerticesProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWOAnimation.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWOAnimation.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWOBLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWOFileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWOLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWOLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWOMaterial.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWSLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LWSLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LimitBoneWeightsProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LimitBoneWeightsProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LineSplitter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/LogAux.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD2FileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD2Loader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD2Loader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD2NormalTable.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD3FileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD3Loader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD3Loader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD5Loader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD5Loader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD5Parser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MD5Parser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDCFileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDCLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDCLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDCNormalTable.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDLDefaultColorMap.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDLFileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDLLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDLLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MDLMaterialLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MMDCpp14.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MMDImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MMDImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MMDPmdParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MMDPmxParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MMDPmxParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MMDVmdParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MS3DLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MS3DLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MakeVerboseFormat.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MakeVerboseFormat.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MaterialSystem.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MaterialSystem.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/MemoryIOWrapper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/NDOLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/NDOLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/NFFLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/NFFLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OFFLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OFFLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjFileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjFileImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjFileImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjFileMtlImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjFileMtlImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjFileParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjFileParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ObjTools.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreBinarySerializer.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreBinarySerializer.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreMaterial.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreParsingUtils.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreStructs.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreStructs.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreXmlSerializer.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OgreXmlSerializer.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OpenGEXExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OpenGEXExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OpenGEXImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OpenGEXImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OpenGEXStructs.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OptimizeGraph.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OptimizeGraph.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OptimizeMeshes.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/OptimizeMeshes.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ParsingUtils.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PlyExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PlyExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PlyLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PlyLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PlyParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PlyParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PolyTools.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PostStepRegistry.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PretransformVertices.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/PretransformVertices.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ProcessHelper.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ProcessHelper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Profiler.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3BSPFileData.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3BSPFileImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3BSPFileImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3BSPFileParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3BSPFileParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3BSPZipArchive.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3BSPZipArchive.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3DLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Q3DLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/RawLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/RawLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/RemoveComments.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/RemoveComments.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/RemoveRedundantMaterials.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/RemoveRedundantMaterials.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/RemoveVCProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/RemoveVCProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SGSpatialSort.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SGSpatialSort.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SIBImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SIBImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SMDLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SMDLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STEPFile.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STEPFileEncoding.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STEPFileEncoding.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STEPFileReader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STEPFileReader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STLExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STLExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STLLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/STLLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ScaleProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ScaleProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SceneCombiner.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ScenePreprocessor.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ScenePreprocessor.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ScenePrivate.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SkeletonMeshBuilder.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SkeletonMeshBuilder.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SmoothingGroups.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SortByPTypeProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SortByPTypeProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SpatialSort.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SpatialSort.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SplitByBoneCountProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SplitByBoneCountProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SplitLargeMeshes.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/SplitLargeMeshes.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StandardShapes.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StandardShapes.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StdOStreamLogStream.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StepExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StepExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StreamReader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StreamWriter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StringComparison.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/StringUtils.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Subdivision.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Subdivision.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TargetAnimation.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TargetAnimation.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TerragenLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TerragenLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TextureTransform.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TextureTransform.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TinyFormatter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TriangulateProcess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/TriangulateProcess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/UnrealLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/UnrealLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ValidateDataStructure.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/ValidateDataStructure.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Version.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Vertex.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/VertexTriangleAdjacency.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/VertexTriangleAdjacency.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/Win32DebugLogStream.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DExporter.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Geometry2D.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Geometry3D.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Group.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Light.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Macro.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Metadata.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Networking.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Node.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Postprocess.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Rendering.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Shape.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DImporter_Texturing.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/X3DVocabulary.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XFileExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XFileExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XFileHelper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XFileImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XFileImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XFileParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XFileParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XGLLoader.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XGLLoader.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/XMLTools.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/fast_atof.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTF2Asset.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTF2Asset.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTF2AssetWriter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTF2AssetWriter.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTF2Exporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTF2Exporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTF2Importer.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTF2Importer.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTFAsset.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTFAsset.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTFAssetWriter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTFAssetWriter.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTFExporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTFExporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTFImporter.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/glTFImporter.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/irrXMLWrapper.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/qnan.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/scene.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcAdjacencyInfo.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcArithmeticCodec.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcArithmeticCodec.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcBinaryStream.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcCommon.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcDVEncodeParams.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcDynamicVector.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcDynamicVectorDecoder.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcDynamicVectorDecoder.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcDynamicVectorEncoder.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcDynamicVectorEncoder.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcFIFO.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcIndexedFaceSet.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcIndexedFaceSet.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcSC3DMCDecoder.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcSC3DMCDecoder.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcSC3DMCEncodeParams.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcSC3DMCEncoder.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcSC3DMCEncoder.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcTimer.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcTools.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcTriangleFans.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcTriangleFans.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcTriangleListDecoder.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcTriangleListDecoder.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcTriangleListEncoder.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcTriangleListEncoder.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcVector.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/Open3DGC/o3dgcVector.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/clipper/clipper.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/clipper/clipper.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/irrXML/CXMLReaderImpl.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/irrXML/heapsort.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/irrXML/irrArray.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/irrXML/irrString.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/irrXML/irrTypes.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/irrXML/irrXML.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/irrXML/irrXML.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/code/DDLNode.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/code/OpenDDLCommon.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/code/OpenDDLExport.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/code/OpenDDLParser.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/code/OpenDDLStream.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/code/Value.cpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/include/openddlparser/DDLNode.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/include/openddlparser/OpenDDLCommon.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/include/openddlparser/OpenDDLExport.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/include/openddlparser/OpenDDLParser.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/include/openddlparser/OpenDDLParserUtils.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/include/openddlparser/OpenDDLStream.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/openddlparser/include/openddlparser/Value.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/common/shapes.cc">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/common/shapes.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/common/utils.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/sweep/advancing_front.cc">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/sweep/advancing_front.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/sweep/cdt.cc">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/sweep/cdt.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/sweep/sweep.cc">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/sweep/sweep.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/sweep/sweep_context.cc">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/poly2tri/poly2tri/sweep/sweep_context.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/unzip/crypt.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/unzip/ioapi.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/unzip/ioapi.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/unzip/unzip.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/unzip/unzip.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zip/src/miniz.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zip/src/zip.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zip/src/zip.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/adler32.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/compress.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/crc32.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/crc32.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/deflate.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/deflate.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/gzclose.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/gzguts.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/gzlib.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/gzread.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/gzwrite.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/infback.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/inffast.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/inffast.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/inffixed.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/inflate.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/inflate.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/inftrees.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/inftrees.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/trees.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/trees.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/uncompr.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/zconf.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/zlib.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/zutil.c">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/zutil.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/Compiler/poppack1.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/Compiler/pstdint.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/Compiler/pushpack1.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/DefaultIOStream.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/DefaultIOSystem.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/DefaultLogger.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/Defines.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/Exporter.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/IOStream.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/IOSystem.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/Importer.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/LogStream.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/Logger.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/NullLogger.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/ProgressHandler.hpp">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/SceneCombiner.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/ai_assert.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/anim.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/camera.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/cexport.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/cfileio.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/cimport.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/color4.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/color4.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/config.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/defs.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/importerdesc.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/light.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/material.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/material.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/matrix3x3.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/matrix3x3.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/matrix4x4.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/matrix4x4.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/mesh.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/metadata.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/postprocess.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/quaternion.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/quaternion.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/scene.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/texture.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/types.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/vector2.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/vector2.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/vector3.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/vector3.inl">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/version.h">
+			<Option target="Assimp"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Assimp\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/revision.h.in">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Assimp\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/include/assimp/config.h.in">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Assimp\include\assimp\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/contrib/zlib/zconf.h.cmakein">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Assimp\contrib\zlib\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/code/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Assimp\code\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Assimp/cmake-modules/Findrt.cmake">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Assimp\cmake-modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/ETCPACK/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\ETCPACK\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/FreeType/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\FreeType\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/LZ4/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\LZ4\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/PugiXml/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\PugiXml\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/rapidjson/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\rapidjson\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/SDL/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\SDL\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/SDL/cmake/macros.cmake">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\SDL\cmake\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/SDL/cmake/sdlchecks.cmake">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\SDL\cmake\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/SDL/include/SDL_config.h.cmake">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\SDL\include\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/StanHull/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\StanHull\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/STB/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\STB\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Civetweb/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Civetweb\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/SLikeNet/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\SLikeNet\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/ik/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\ik\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/ik/include/ik/config.h.in">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\ik\include\ik\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/ik/include/ik/export.h.in">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\ik\include\ik\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Detour/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Detour\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/DetourCrowd/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\DetourCrowd\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/DetourTileCache/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\DetourTileCache\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Recast/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Recast\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/WebP/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\WebP\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Bullet/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Bullet\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/Box2D/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\Box2D\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/GLEW/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\GLEW\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/ThirdParty/VMA/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\ThirdParty\VMA\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Urho3D/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Urho3D\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Urho3D/Urho3D.pc.in">
+			<Option virtualFolder="CMake Files\Source\Urho3D\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Urho3D/Urho3DAll.h.in">
+			<Option virtualFolder="CMake Files\Source\Urho3D\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Tools/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Tools\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Tools/AssetImporter/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Tools\AssetImporter\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Tools/OgreImporter/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Tools\OgreImporter\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Tools/PackageTool/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Tools\PackageTool\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Tools/RampGenerator/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Tools\RampGenerator\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Tools/SpritePacker/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Tools\SpritePacker\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Tools/Tests/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Tools\Tests\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/01_HelloWorld/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\01_HelloWorld\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/02_HelloGUI/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\02_HelloGUI\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/03_Sprites/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\03_Sprites\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/04_StaticScene/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\04_StaticScene\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/05_AnimatingScene/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\05_AnimatingScene\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/06_SkeletalAnimation/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\06_SkeletalAnimation\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/07_Billboards/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\07_Billboards\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/08_Decals/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\08_Decals\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/09_MultipleViewports/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\09_MultipleViewports\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/10_RenderToTexture/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\10_RenderToTexture\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/11_Physics/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\11_Physics\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/12_PhysicsStressTest/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\12_PhysicsStressTest\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/13_Ragdolls/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\13_Ragdolls\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/14_SoundEffects/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\14_SoundEffects\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/15_Navigation/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\15_Navigation\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/16_Chat/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\16_Chat\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/17_SceneReplication/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\17_SceneReplication\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/18_CharacterDemo/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\18_CharacterDemo\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/19_VehicleDemo/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\19_VehicleDemo\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/20_HugeObjectCount/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\20_HugeObjectCount\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/21_AngelScriptIntegration/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\21_AngelScriptIntegration\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/22_LuaIntegration/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\22_LuaIntegration\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/23_Water/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\23_Water\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/24_Urho2DSprite/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\24_Urho2DSprite\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/25_Urho2DParticle/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\25_Urho2DParticle\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/26_ConsoleInput/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\26_ConsoleInput\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/27_Physics2D/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\27_Physics2D\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/28_Physics2DRope/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\28_Physics2DRope\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/29_SoundSynthesis/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\29_SoundSynthesis\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/30_LightAnimation/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\30_LightAnimation\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/31_MaterialAnimation/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\31_MaterialAnimation\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/32_Physics2DConstraints/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\32_Physics2DConstraints\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/33_Urho2DSpriterAnimation/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\33_Urho2DSpriterAnimation\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/34_DynamicGeometry/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\34_DynamicGeometry\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/35_SignedDistanceFieldText/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\35_SignedDistanceFieldText\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/36_Urho2DTileMap/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\36_Urho2DTileMap\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/37_UIDrag/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\37_UIDrag\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/38_SceneAndUILoad/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\38_SceneAndUILoad\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/39_CrowdNavigation/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\39_CrowdNavigation\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/40_Localization/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\40_Localization\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/41_DatabaseDemo/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\41_DatabaseDemo\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/42_PBRMaterials/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\42_PBRMaterials\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/43_HttpRequestDemo/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\43_HttpRequestDemo\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/44_RibbonTrailDemo/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\44_RibbonTrailDemo\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/45_InverseKinematics/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\45_InverseKinematics\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/46_RaycastVehicle/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\46_RaycastVehicle\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/47_Typography/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\47_Typography\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/48_Hello3DUI/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\48_Hello3DUI\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/49_Urho2DIsometricDemo/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\49_Urho2DIsometricDemo\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/50_Urho2DPlatformer/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\50_Urho2DPlatformer\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/51_Urho2DStretchableSprite/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\51_Urho2DStretchableSprite\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/52_NATPunchtrough/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\52_NATPunchtrough\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/53_LANDiscovery/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\53_LANDiscovery\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/54_WindowSettingsDemo/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\54_WindowSettingsDemo\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/55_Clicker/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\55_Clicker\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/56_DeferredRendering/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\56_DeferredRendering\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/99_Benchmark/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\99_Benchmark\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Source/Samples/Phase27_DescriptorBindingTest/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Source\Samples\Phase27_DescriptorBindingTest\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/CheckCompilerToolchain.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/CheckHost.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindDRM.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindEsound.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindFusionSound.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindGBM.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindJack.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindNAS.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindOSS.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindPulseAudio.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindSNDIO.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindSecretRabbitCode.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindUrho3D.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindWayland.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/FindaRts.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/UrhoCommon.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/cmake/Modules/UrhoVulkan.cmake">
+			<Option virtualFolder="CMake Files\cmake\Modules\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Docs/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\Docs\"/>
+		</Unit>
+		<Unit filename="/home/leith/Desktop/URHO/New/urho3d-2.0.1/Docs/Doxyfile.in">
+			<Option virtualFolder="CMake Files\Docs\"/>
+		</Unit>
+	</Project>
+</CodeBlocks_project_file>
