@@ -233,6 +233,13 @@ public:
     /// Draw indexed, instanced geometry with vertex index offset.
     void DrawInstanced(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned baseVertexIndex, unsigned minVertex,
         unsigned vertexCount, unsigned instanceCount);
+
+    /// Dispatch compute shader with specified work group counts (Vulkan only).
+    /// @param groupCountX Number of work groups in X dimension
+    /// @param groupCountY Number of work groups in Y dimension
+    /// @param groupCountZ Number of work groups in Z dimension
+    void DispatchCompute(unsigned groupCountX, unsigned groupCountY = 1, unsigned groupCountZ = 1);
+
     /// Set vertex buffer.
     void SetVertexBuffer(VertexBuffer* buffer);
     /// Set multiple vertex buffers.
@@ -1088,12 +1095,15 @@ private:
     void Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned baseVertexIndex, unsigned minVertex, unsigned vertexCount);
     void DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount, unsigned instanceCount);
     void DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned baseVertexIndex, unsigned minVertex, unsigned vertexCount, unsigned instanceCount);
+    void DispatchCompute_Vulkan(unsigned groupCountX, unsigned groupCountY, unsigned groupCountZ);
     void PrepareDraw_Vulkan();
     void SetTexture_Vulkan(unsigned index, Texture* texture);
+    void SetComputeShader_Vulkan(ShaderVariation* shader);
+    void SetStorageBuffer_Vulkan(unsigned index, VertexBuffer* buffer);
     void SetShaderParameter_Vulkan(StringHash param, const Variant& value);
-    /// Phase 36 Step 2: Texture descriptor set management for deferred rendering
-    VkDescriptorSet CreateTextureDescriptorSet_Vulkan();
-    bool BindTextureDescriptors_Vulkan(VkDescriptorSet descriptorSet);
+    /// Phase 36 Step 2: G-Buffer texture descriptor set management for deferred rendering
+    VkDescriptorSet CreateGBufferTextureDescriptorSet_Vulkan();
+    bool BindGBufferTextureDescriptors_Vulkan();
     /// Phase 36 Step 3: Constant buffer parameter helpers
     size_t CalculateParameterBufferSize(const HashMap<StringHash, Variant>& parameters);
     void PackShaderParameters(const HashMap<StringHash, Variant>& parameters, void* buffer, size_t bufferSize);
@@ -1105,7 +1115,7 @@ private:
     VkDescriptorSet CreateInputAttachmentDescriptorSet_Vulkan();
     bool BindInputAttachmentDescriptors_Vulkan(VkDescriptorSet descriptorSet);
     bool NeedParameterUpdate_Vulkan(ShaderParameterGroup group, const void* source);
-    void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps);
+    void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps, ShaderVariation* gs = nullptr);
     void SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget);
     void SetDepthStencil_Vulkan(RenderSurface* depthStencil);
     /// \brief Apply cached Graphics state to VulkanPipelineState (Phase 32)
@@ -1193,6 +1203,12 @@ private:
     ShaderVariation* vertexShader_{};
     /// Pixel shader in use.
     ShaderVariation* pixelShader_{};
+    /// Geometry shader in use (optional, Vulkan only).
+    ShaderVariation* geometryShader_{};
+    /// Compute shader in use (Vulkan only).
+    ShaderVariation* computeShader_{};
+    /// Storage buffers in use (SSBOs, Vulkan compute only).
+    VertexBuffer* storageBuffers_[MAX_TEXTURE_UNITS]{};
     /// Textures in use.
     Texture* textures_[MAX_TEXTURE_UNITS]{};
     /// Texture unit mappings.

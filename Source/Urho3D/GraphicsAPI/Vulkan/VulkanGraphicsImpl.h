@@ -23,6 +23,7 @@
 #include "VulkanMaterialDescriptorManager.h"
 #include "VulkanPipelineCache.h"
 #include "VulkanPipelineState.h"
+#include "VulkanComputePipeline.h"
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 
@@ -337,6 +338,10 @@ public:
     /// \returns VulkanPipelineCache* for compiled pipeline disk persistence (Phase B Quick Win #10)
     VulkanPipelineCache* GetPipelineCache() const { return pipelineCache_.Get(); }
 
+    /// \brief Get compute pipeline manager
+    /// \returns VulkanComputePipeline* for compute shader pipeline management (Phase 36+)
+    VulkanComputePipeline* GetComputePipeline() const { return computePipeline_; }
+
     /// \brief Get constant buffer pool
     /// \returns VulkanConstantBufferPool* for efficient uniform buffer management (Quick Win #6)
     VulkanConstantBufferPool* GetConstantBufferPool() const { return constantBufferPool_.Get(); }
@@ -587,10 +592,12 @@ private:
     /// If not found, creates new graphics pipeline with given state and shader stages, then caches it.
     /// Phase 32: Supports graphics state (blend, depth, stencil, cull)
     /// Phase 33: Supports shader module binding (vertex + fragment stages)
+    /// Phase 36+: Supports geometry shader stage
     VkPipeline GetOrCreateGraphicsPipeline(VkPipelineLayout layout, VkRenderPass renderPass,
                                           const VulkanPipelineState& state,
                                           VkShaderModule vsModule = VK_NULL_HANDLE,
-                                          VkShaderModule fsModule = VK_NULL_HANDLE);
+                                          VkShaderModule fsModule = VK_NULL_HANDLE,
+                                          VkShaderModule gsModule = VK_NULL_HANDLE);
 
     /// \brief Phase 33: Create shader modules from shader variations
     /// \param vertexShader Vertex shader variation (may be nullptr)
@@ -601,8 +608,10 @@ private:
     /// \details Compiles GLSL shaders to SPIR-V and creates VkShaderModule objects.
     /// Uses VulkanShaderModule for compilation and caching. Caller is responsible
     /// for destroying modules via vkDestroyShaderModule().
+    /// \param geometryShader Optional geometry shader (nullptr if not used)
     bool CreateShaderModules(class ShaderVariation* vertexShader, class ShaderVariation* pixelShader,
-                            VkShaderModule& vsModule, VkShaderModule& fsModule);
+                            VkShaderModule& vsModule, VkShaderModule& fsModule,
+                            class ShaderVariation* geometryShader = nullptr, VkShaderModule* gsModule = nullptr);
 
     /// \brief Find optimal surface format for swapchain
     /// \returns VkSurfaceFormatKHR with preferred color space and format
@@ -671,6 +680,20 @@ private:
     /// \details Increments timelineRenderCounter_ after vkQueueSubmit().
     /// Called from Present() to mark frame as GPU-complete.
     void SignalTimelineRenderSemaphore();
+
+    /// \brief Insert pipeline barrier for compute-to-graphics or graphics-to-compute synchronization (Phase 36+)
+    /// \param cmdBuffer Command buffer to record barrier into
+    /// \param srcStage Source pipeline stage (e.g., VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+    /// \param dstStage Destination pipeline stage (e.g., VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
+    /// \param srcAccess Source access mask (e.g., VK_ACCESS_SHADER_WRITE_BIT)
+    /// \param dstAccess Destination access mask (e.g., VK_ACCESS_SHADER_READ_BIT)
+    /// \details Inserts vkCmdPipelineBarrier to prevent race conditions between compute and graphics work.
+    /// Essential for compute shaders writing to buffers/textures read by graphics pipeline.
+    void InsertPipelineBarrier(VkCommandBuffer cmdBuffer,
+                              VkPipelineStageFlags srcStage,
+                              VkPipelineStageFlags dstStage,
+                              VkAccessFlags srcAccess,
+                              VkAccessFlags dstAccess);
 
     // Vulkan instance and device objects
     VkInstance instance_{};
@@ -752,6 +775,9 @@ private:
 
     // Pipeline disk persistence cache (Phase B Quick Win #10)
     SharedPtr<VulkanPipelineCache> pipelineCache_;
+
+    // Compute pipeline cache (Phase 36+: Compute shader support)
+    VulkanComputePipeline* computePipeline_;
 
     // Constant buffer pooling (Quick Win #6)
     SharedPtr<VulkanConstantBufferPool> constantBufferPool_;

@@ -201,6 +201,13 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         stagingBufferManager_ = nullptr;
     }
 
+    // Initialize compute pipeline manager (Phase 36+: Compute Shader Support)
+    computePipeline_ = new VulkanComputePipeline(device_);
+    if (!computePipeline_)
+    {
+        URHO3D_LOGWARNING("Failed to initialize compute pipeline - compute shaders disabled");
+    }
+
     // Phase 22A: Create default placeholder textures
     // These are used when materials don't have textures assigned
     // Diffuse: 1x1 white texture (255, 255, 255, 255)
@@ -390,6 +397,13 @@ void VulkanGraphicsImpl::Shutdown()
     {
         pipelineCache_->Release();
         pipelineCache_ = nullptr;
+    }
+
+    // Destroy compute pipeline (Phase 36+: Compute Shader Support)
+    if (computePipeline_)
+    {
+        delete computePipeline_;
+        computePipeline_ = nullptr;
     }
 
     // Destroy sampler cache (SharedPtr auto-cleanup)
@@ -1110,6 +1124,43 @@ void VulkanGraphicsImpl::SignalTimelineRenderSemaphore()
         // Increment timeline counter after frame submission
         timelineRenderCounter_++;
     }
+}
+
+void VulkanGraphicsImpl::InsertPipelineBarrier(VkCommandBuffer cmdBuffer,
+                                              VkPipelineStageFlags srcStage,
+                                              VkPipelineStageFlags dstStage,
+                                              VkAccessFlags srcAccess,
+                                              VkAccessFlags dstAccess)
+{
+    if (!cmdBuffer)
+    {
+        URHO3D_LOGWARNING("InsertPipelineBarrier: Invalid command buffer");
+        return;
+    }
+
+    // Memory barrier for global synchronization
+    VkMemoryBarrier memoryBarrier{};
+    memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    memoryBarrier.srcAccessMask = srcAccess;
+    memoryBarrier.dstAccessMask = dstAccess;
+
+    vkCmdPipelineBarrier(
+        cmdBuffer,
+        srcStage,  // srcStageMask: stage that must complete before barrier
+        dstStage,  // dstStageMask: stage that waits on barrier
+        0,         // dependencyFlags (0 = default)
+        1,         // memoryBarrierCount
+        &memoryBarrier,
+        0,         // bufferMemoryBarrierCount
+        nullptr,   // pBufferMemoryBarriers
+        0,         // imageMemoryBarrierCount
+        nullptr    // pImageMemoryBarriers
+    );
+
+    URHO3D_LOGDEBUG("InsertPipelineBarrier: srcStage=0x" + String((unsigned)srcStage) +
+                    " dstStage=0x" + String((unsigned)dstStage) +
+                    " srcAccess=0x" + String((unsigned)srcAccess) +
+                    " dstAccess=0x" + String((unsigned)dstAccess));
 }
 
 bool VulkanGraphicsImpl::CreateLogicalDevice()
@@ -2354,10 +2405,13 @@ void VulkanGraphicsImpl::ReportPoolStatistics() const
 // ============================================
 
 bool VulkanGraphicsImpl::CreateShaderModules(ShaderVariation* vertexShader, ShaderVariation* pixelShader,
-                                           VkShaderModule& vsModule, VkShaderModule& fsModule)
+                                           VkShaderModule& vsModule, VkShaderModule& fsModule,
+                                           ShaderVariation* geometryShader, VkShaderModule* gsModule)
 {
     vsModule = VK_NULL_HANDLE;
     fsModule = VK_NULL_HANDLE;
+    if (gsModule)
+        *gsModule = VK_NULL_HANDLE;
 
     // Compile vertex shader if provided
     if (vertexShader)
@@ -2406,6 +2460,48 @@ bool VulkanGraphicsImpl::CreateShaderModules(ShaderVariation* vertexShader, Shad
             {
                 VulkanShaderModule::DestroyShaderModule(device_, vsModule);
                 vsModule = VK_NULL_HANDLE;
+            }
+            return false;
+        }
+    }
+
+    // Compile geometry shader if provided (Phase 36+: Geometry Shader Support)
+    if (geometryShader && gsModule)
+    {
+        Vector<uint32_t> spirvBytecode;
+        String errorOutput;
+
+        if (!VulkanShaderModule::GetOrCompileSPIRV(geometryShader, spirvBytecode, errorOutput))
+        {
+            URHO3D_LOGERROR("CreateShaderModules: Failed to compile geometry shader: " + errorOutput);
+            // Clean up previous shader modules on failure
+            if (vsModule)
+            {
+                VulkanShaderModule::DestroyShaderModule(device_, vsModule);
+                vsModule = VK_NULL_HANDLE;
+            }
+            if (fsModule)
+            {
+                VulkanShaderModule::DestroyShaderModule(device_, fsModule);
+                fsModule = VK_NULL_HANDLE;
+            }
+            return false;
+        }
+
+        *gsModule = VulkanShaderModule::CreateShaderModule(device_, spirvBytecode);
+        if (!(*gsModule))
+        {
+            URHO3D_LOGERROR("CreateShaderModules: Failed to create geometry shader module");
+            // Clean up previous shader modules on failure
+            if (vsModule)
+            {
+                VulkanShaderModule::DestroyShaderModule(device_, vsModule);
+                vsModule = VK_NULL_HANDLE;
+            }
+            if (fsModule)
+            {
+                VulkanShaderModule::DestroyShaderModule(device_, fsModule);
+                fsModule = VK_NULL_HANDLE;
             }
             return false;
         }
@@ -2466,7 +2562,8 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     VkRenderPass renderPass,
     const VulkanPipelineState& state,
     VkShaderModule vsModule,
-    VkShaderModule fsModule)
+    VkShaderModule fsModule,
+    VkShaderModule gsModule)
 {
     if (!pipelineCache_)
     {
@@ -2630,8 +2727,9 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
-    // Phase 33 Step 2: Prepare shader stages (vertex and fragment shaders)
+    // Phase 33 Step 2: Prepare shader stages (vertex, geometry, and fragment shaders)
     // Create VkPipelineShaderStageCreateInfo array from compiled shader modules
+    // Phase 36+: Added geometry shader support
     Vector<VkPipelineShaderStageCreateInfo> shaderStages;
 
     // Add vertex shader stage if provided
@@ -2643,6 +2741,17 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
         vsStage.module = vsModule;
         vsStage.pName = "main";  // GLSL entry point
         shaderStages.Push(vsStage);
+    }
+
+    // Add geometry shader stage if provided (Phase 36+: Geometry Shader Support)
+    if (gsModule != VK_NULL_HANDLE)
+    {
+        VkPipelineShaderStageCreateInfo gsStage{};
+        gsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        gsStage.stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+        gsStage.module = gsModule;
+        gsStage.pName = "main";  // GLSL entry point
+        shaderStages.Push(gsStage);
     }
 
     // Add fragment shader stage if provided

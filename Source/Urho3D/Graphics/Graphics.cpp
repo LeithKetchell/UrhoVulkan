@@ -934,6 +934,19 @@ void Graphics::DrawInstanced(PrimitiveType type, unsigned indexStart, unsigned i
 #endif
 }
 
+void Graphics::DispatchCompute(unsigned groupCountX, unsigned groupCountY, unsigned groupCountZ)
+{
+    GAPI gapi = Graphics::GetGAPI();
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return DispatchCompute_Vulkan(groupCountX, groupCountY, groupCountZ);
+#endif
+
+    // Compute shaders only supported on Vulkan currently
+    URHO3D_LOGWARNING("DispatchCompute: Compute shaders only supported on Vulkan backend");
+}
+
 void Graphics::SetVertexBuffer(VertexBuffer* buffer)
 {
     GAPI gapi = Graphics::GetGAPI();
@@ -1010,6 +1023,11 @@ void Graphics::SetShaders(ShaderVariation* vs, ShaderVariation* ps)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetShaders_D3D11(vs, ps);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaders_Vulkan(vs, ps);
 #endif
 }
 
