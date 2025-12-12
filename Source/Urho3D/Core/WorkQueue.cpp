@@ -188,16 +188,6 @@ void WorkQueue::AddWorkItem(const SharedPtr<WorkItem>& item)
         queueMutex_.Release();
         paused_ = false;
     }
-
-    // DEBUG: Log item addition
-    char ptrBuf[32];
-    sprintf(ptrBuf, "%p", (void*)item.Get());
-    char funcBuf[32];
-    sprintf(funcBuf, "%p", (void*)item->workFunction_);
-    URHO3D_LOGDEBUG("ADDED work item " + String(ptrBuf) +
-                   " (priority=" + String(item->priority_) +
-                   ", workFunction=" + String(funcBuf) +
-                   ") to queue and deque. Queue size: " + String(queue_.Size()));
 }
 
 bool WorkQueue::RemoveWorkItem(SharedPtr<WorkItem> item)
@@ -278,7 +268,6 @@ void WorkQueue::Complete(i32 priority)
 
     if (threads_.Size())
     {
-        URHO3D_LOGDEBUG("Complete() called with priority " + String(priority) + ", queue size: " + String(queue_.Size()) + ", workItems: " + String(workItems_.Size()));
         Resume();
 
         // Take work items also in the main thread until queue empty or no high-priority items anymore
@@ -307,7 +296,6 @@ void WorkQueue::Complete(i32 priority)
                 else
                 {
                     // Already claimed by worker thread - remove from queue since it's being handled elsewhere
-                    URHO3D_LOGDEBUG("Complete(): Item already claimed by worker, removing from queue. Queue size: " + String(queue_.Size()));
                     queue_.PopFront();
                     queueMutex_.Release();
                     skips++;
@@ -322,18 +310,10 @@ void WorkQueue::Complete(i32 priority)
         }
 
         // Wait for threaded work to complete
-        URHO3D_LOGDEBUG("Complete(): Entering wait loop. Queue size: " + String(queue_.Size()) + ", workItems: " + String(workItems_.Size()));
-        i32 waitIterations = 0;
         while (!IsCompleted(priority))
         {
             Time::Sleep(0);  // Yield CPU to worker threads
-            waitIterations++;
-            if (waitIterations % 1000 == 0)
-            {
-                URHO3D_LOGWARNING("Complete(): Still waiting after " + String(waitIterations) + " iterations. Queue: " + String(queue_.Size()) + ", workItems: " + String(workItems_.Size()));
-            }
         }
-        URHO3D_LOGDEBUG("Complete(): Work completed after " + String(waitIterations) + " iterations");
 
         // If no work at all remaining, pause worker threads by leaving the mutex locked
         if (queue_.Empty())
@@ -374,32 +354,7 @@ bool WorkQueue::IsCompleted(i32 priority) const
     }
 
     if (incompleteCount > 0)
-    {
-        // Only log periodically to avoid spam
-        static i32 logCounter = 0;
-        if (++logCounter % 1000 == 0)
-        {
-            URHO3D_LOGDEBUG("IsCompleted(): " + String(incompleteCount) + " items still incomplete (priority >= " + String(priority) + ")");
-
-            // Log details about first incomplete item for debugging
-            for (List<SharedPtr<WorkItem>>::ConstIterator i = workItems_.Begin(); i != workItems_.End(); ++i)
-            {
-                if ((*i)->priority_ >= priority && !(*i)->completed_)
-                {
-                    char itemBuf[32], funcBuf[32];
-                    sprintf(itemBuf, "%p", (void*)i->Get());
-                    sprintf(funcBuf, "%p", (void*)(*i)->workFunction_);
-                    URHO3D_LOGDEBUG("  Incomplete item: " + String(itemBuf) +
-                                   " (priority=" + String((*i)->priority_) +
-                                   ", claimed=" + String((*i)->claimed_.load()) +
-                                   ", completed=" + String((*i)->completed_.load()) +
-                                   ", workFunction=" + String(funcBuf) + ")");
-                    break;  // Only log first item to avoid spam
-                }
-            }
-        }
         return false;
-    }
 
     return true;
 }
@@ -408,16 +363,12 @@ void WorkQueue::ProcessItems(i32 threadIndex)
 {
     assert(threadIndex >= 0);
 
-    // DEBUG: Log thread start
-    URHO3D_LOGDEBUG("Worker thread " + String(threadIndex) + " STARTED ProcessItems()");
-
     bool wasActive = false;
 
     for (;;)
     {
         if (shutDown_)
         {
-            URHO3D_LOGDEBUG("Worker thread " + String(threadIndex) + " shutting down");
             return;
         }
 
