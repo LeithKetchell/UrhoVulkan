@@ -41,14 +41,14 @@ void WorkStealingDeque::Push(WorkItem* item)
     // Update size for lock-free reads
     size_.store(tail_ - head_.load(std::memory_order_acquire), std::memory_order_release);
 
-    // Phase 4 Instrumentation: Track push operations
-    static thread_local bool logged_push = false;
-    if (!logged_push && t < 10)  // Log first few pushes per thread
-    {
-        fprintf(stderr, "[Phase4] WorkStealingDeque::Push called (verification that queue is used)\n");
-        fflush(stderr);
-        logged_push = true;
-    }
+    // Phase 4 Instrumentation: REMOVED - was causing performance issues
+    // static thread_local bool logged_push = false;
+    // if (!logged_push && t < 10)  // Log first few pushes per thread
+    // {
+    //     fprintf(stderr, "[Phase4] WorkStealingDeque::Push called (verification that queue is used)\n");
+    //     fflush(stderr);
+    //     logged_push = true;
+    // }
 }
 
 WorkItem* WorkStealingDeque::Pop()
@@ -84,6 +84,14 @@ WorkItem* WorkStealingDeque::Pop()
     // Update size
     size_.store(tail_ - head_.load(std::memory_order_acquire), std::memory_order_release);
 
+    // BUGFIX: Never return null items from buffer
+    if (!item)
+    {
+        fprintf(stderr, "[ERROR] WorkStealingDeque::Pop() returned null item from buffer at position %llu\n",
+                (unsigned long long)(t & (capacity_ - 1)));
+        fflush(stderr);
+    }
+
     return item;
 }
 
@@ -107,20 +115,28 @@ WorkItem* WorkStealingDeque::Steal()
     // Try to steal the item at head
     WorkItem* item = buffer_[h & (capacity_ - 1)];
 
+    // BUGFIX: Don't steal null items
+    if (!item)
+    {
+        // Buffer position is null - this shouldn't happen but can occur during initialization
+        failedSteals_++;
+        return nullptr;
+    }
+
     // Try to increment head atomically
     if (head_.compare_exchange_strong(h, h + 1, std::memory_order_seq_cst, std::memory_order_seq_cst))
     {
         // Steal succeeded
         steals_++;
 
-        // Phase 4 Instrumentation: Log first successful steal
-        static thread_local bool logged_steal = false;
-        if (!logged_steal)
-        {
-            fprintf(stderr, "[Phase4] WorkStealingDeque::Steal SUCCEEDED (work-stealing is active)\n");
-            fflush(stderr);
-            logged_steal = true;
-        }
+        // Phase 4 Instrumentation: REMOVED - was causing performance issues
+        // static thread_local bool logged_steal = false;
+        // if (!logged_steal)
+        // {
+        //     fprintf(stderr, "[Phase4] WorkStealingDeque::Steal SUCCEEDED (work-stealing is active)\n");
+        //     fflush(stderr);
+        //     logged_steal = true;
+        // }
 
         // Update size
         size_.store(t - (h + 1), std::memory_order_release);

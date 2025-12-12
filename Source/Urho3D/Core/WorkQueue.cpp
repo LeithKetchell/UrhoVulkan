@@ -110,6 +110,13 @@ SharedPtr<WorkItem> WorkQueue::GetFreeItem()
     {
         SharedPtr<WorkItem> item = poolItems_.Front();
         poolItems_.PopFront();
+
+        // BUGFIX: Reset claimed_ flag when reusing item from pool
+        // This was deferred from ReturnToPool() to prevent recycled items
+        // still in work-stealing deques from being re-executed
+        item->claimed_ = false;
+        item->completed_ = false;
+
         return item;
     }
     else
@@ -126,6 +133,13 @@ void WorkQueue::AddWorkItem(const SharedPtr<WorkItem>& item)
     if (!item)
     {
         URHO3D_LOGERROR("Null work item submitted to the work queue");
+        return;
+    }
+
+    // BUGFIX: Validate that work function is set
+    if (!item->workFunction_)
+    {
+        URHO3D_LOGERROR("Work item submitted with null work function");
         return;
     }
 
@@ -174,6 +188,16 @@ void WorkQueue::AddWorkItem(const SharedPtr<WorkItem>& item)
         queueMutex_.Release();
         paused_ = false;
     }
+
+    // DEBUG: Log item addition
+    char ptrBuf[32];
+    sprintf(ptrBuf, "%p", (void*)item.Get());
+    char funcBuf[32];
+    sprintf(funcBuf, "%p", (void*)item->workFunction_);
+    URHO3D_LOGDEBUG("ADDED work item " + String(ptrBuf) +
+                   " (priority=" + String(item->priority_) +
+                   ", workFunction=" + String(funcBuf) +
+                   ") to queue and deque. Queue size: " + String(queue_.Size()));
 }
 
 bool WorkQueue::RemoveWorkItem(SharedPtr<WorkItem> item)
@@ -254,19 +278,41 @@ void WorkQueue::Complete(i32 priority)
 
     if (threads_.Size())
     {
+        URHO3D_LOGDEBUG("Complete() called with priority " + String(priority) + ", queue size: " + String(queue_.Size()) + ", workItems: " + String(workItems_.Size()));
         Resume();
 
         // Take work items also in the main thread until queue empty or no high-priority items anymore
-        while (!queue_.Empty())
+        i32 maxSkips = queue_.Size() + 10;  // Prevent infinite loop if all items are claimed
+        i32 skips = 0;
+        while (!queue_.Empty() && skips < maxSkips)
         {
             queueMutex_.Acquire();
             if (!queue_.Empty() && queue_.Front()->priority_ >= priority)
             {
                 WorkItem* item = queue_.Front();
-                queue_.PopFront();
-                queueMutex_.Release();
-                item->workFunction_(item, 0);
-                item->completed_ = true;
+
+                // Try to claim the item BEFORE removing from queue
+                bool expected = false;
+                bool claimed = item->claimed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+
+                if (claimed)
+                {
+                    // We claimed it - now remove from queue and execute
+                    queue_.PopFront();
+                    queueMutex_.Release();
+                    item->workFunction_(item, 0);
+                    item->completed_ = true;
+                    skips = 0;  // Reset skip counter since we made progress
+                }
+                else
+                {
+                    // Already claimed by worker thread - remove from queue since it's being handled elsewhere
+                    URHO3D_LOGDEBUG("Complete(): Item already claimed by worker, removing from queue. Queue size: " + String(queue_.Size()));
+                    queue_.PopFront();
+                    queueMutex_.Release();
+                    skips++;
+                    Time::Sleep(0);  // Yield to let worker threads make progress
+                }
             }
             else
             {
@@ -276,9 +322,18 @@ void WorkQueue::Complete(i32 priority)
         }
 
         // Wait for threaded work to complete
+        URHO3D_LOGDEBUG("Complete(): Entering wait loop. Queue size: " + String(queue_.Size()) + ", workItems: " + String(workItems_.Size()));
+        i32 waitIterations = 0;
         while (!IsCompleted(priority))
         {
+            Time::Sleep(0);  // Yield CPU to worker threads
+            waitIterations++;
+            if (waitIterations % 1000 == 0)
+            {
+                URHO3D_LOGWARNING("Complete(): Still waiting after " + String(waitIterations) + " iterations. Queue: " + String(queue_.Size()) + ", workItems: " + String(workItems_.Size()));
+            }
         }
+        URHO3D_LOGDEBUG("Complete(): Work completed after " + String(waitIterations) + " iterations");
 
         // If no work at all remaining, pause worker threads by leaving the mutex locked
         if (queue_.Empty())
@@ -291,8 +346,14 @@ void WorkQueue::Complete(i32 priority)
         {
             WorkItem* item = queue_.Front();
             queue_.PopFront();
-            item->workFunction_(item, 0);
-            item->completed_ = true;
+
+            // Atomically claim the item (shouldn't be necessary without threads, but safe)
+            bool alreadyClaimed = item->claimed_.exchange(true, std::memory_order_acq_rel);
+            if (!alreadyClaimed)
+            {
+                item->workFunction_(item, 0);
+                item->completed_ = true;
+            }
         }
     }
 
@@ -303,10 +364,41 @@ void WorkQueue::Complete(i32 priority)
 bool WorkQueue::IsCompleted(i32 priority) const
 {
     assert(priority >= 0);
+    i32 incompleteCount = 0;
     for (List<SharedPtr<WorkItem>>::ConstIterator i = workItems_.Begin(); i != workItems_.End(); ++i)
     {
         if ((*i)->priority_ >= priority && !(*i)->completed_)
-            return false;
+        {
+            incompleteCount++;
+        }
+    }
+
+    if (incompleteCount > 0)
+    {
+        // Only log periodically to avoid spam
+        static i32 logCounter = 0;
+        if (++logCounter % 1000 == 0)
+        {
+            URHO3D_LOGDEBUG("IsCompleted(): " + String(incompleteCount) + " items still incomplete (priority >= " + String(priority) + ")");
+
+            // Log details about first incomplete item for debugging
+            for (List<SharedPtr<WorkItem>>::ConstIterator i = workItems_.Begin(); i != workItems_.End(); ++i)
+            {
+                if ((*i)->priority_ >= priority && !(*i)->completed_)
+                {
+                    char itemBuf[32], funcBuf[32];
+                    sprintf(itemBuf, "%p", (void*)i->Get());
+                    sprintf(funcBuf, "%p", (void*)(*i)->workFunction_);
+                    URHO3D_LOGDEBUG("  Incomplete item: " + String(itemBuf) +
+                                   " (priority=" + String((*i)->priority_) +
+                                   ", claimed=" + String((*i)->claimed_.load()) +
+                                   ", completed=" + String((*i)->completed_.load()) +
+                                   ", workFunction=" + String(funcBuf) + ")");
+                    break;  // Only log first item to avoid spam
+                }
+            }
+        }
+        return false;
     }
 
     return true;
@@ -316,18 +408,25 @@ void WorkQueue::ProcessItems(i32 threadIndex)
 {
     assert(threadIndex >= 0);
 
+    // DEBUG: Log thread start
+    URHO3D_LOGDEBUG("Worker thread " + String(threadIndex) + " STARTED ProcessItems()");
+
     bool wasActive = false;
 
     for (;;)
     {
         if (shutDown_)
+        {
+            URHO3D_LOGDEBUG("Worker thread " + String(threadIndex) + " shutting down");
             return;
+        }
 
         if (pausing_ && !wasActive)
             Time::Sleep(0);
         else
         {
             WorkItem* item = nullptr;
+            bool itemAlreadyClaimed = false;  // Track if we pre-claimed this item
 
             // Try work-stealing first (lock-free)
             if (threadIndex > 0 && threadIndex <= (i32)workerDeques_.Size())
@@ -338,6 +437,8 @@ void WorkQueue::ProcessItems(i32 threadIndex)
                 if (workerDeques_[dequeIndex])
                 {
                     item = (WorkItem*)workerDeques_[dequeIndex]->Pop();
+                    if (item)
+                        wasActive = true;  // BUGFIX: Mark as active when work found
                 }
 
                 // Try stealing from neighbors if own deque empty
@@ -350,7 +451,10 @@ void WorkQueue::ProcessItems(i32 threadIndex)
                         {
                             item = (WorkItem*)workerDeques_[neighbor]->Steal();
                             if (item)
+                            {
+                                wasActive = true;  // BUGFIX: Mark as active when work stolen
                                 break;
+                            }
                         }
                     }
                 }
@@ -362,11 +466,34 @@ void WorkQueue::ProcessItems(i32 threadIndex)
                 queueMutex_.Acquire();
                 if (!queue_.Empty())
                 {
-                    wasActive = true;
+                    WorkItem* candidateItem = queue_.Front();
 
-                    item = queue_.Front();
-                    queue_.PopFront();
-                    queueMutex_.Release();
+                    // Try to claim BEFORE removing from queue
+                    bool expected = false;
+                    bool claimed = candidateItem->claimed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+
+                    if (claimed)
+                    {
+                        // Successfully claimed - remove from queue
+                        item = candidateItem;
+                        itemAlreadyClaimed = true;  // Mark as already claimed
+                        queue_.PopFront();
+                        wasActive = true;
+                        queueMutex_.Release();
+
+                        // DEBUG: Log successful claim from mutex queue (DISABLED - too verbose)
+                        // char itemBuf[32];
+                        // sprintf(itemBuf, "%p", (void*)item);
+                        // URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " CLAIMED item " +
+                        //                String(itemBuf) + " from mutex queue (priority=" + String(item->priority_) + ")");
+                    }
+                    else
+                    {
+                        // Already claimed - leave in queue, continue searching
+                        queueMutex_.Release();
+                        Time::Sleep(0);
+                        continue;
+                    }
                 }
                 else
                 {
@@ -385,8 +512,64 @@ void WorkQueue::ProcessItems(i32 threadIndex)
             // Execute the work item
             if (item)
             {
-                item->workFunction_(item, threadIndex);
-                item->completed_ = true;
+                bool shouldExecute = false;
+
+                if (itemAlreadyClaimed)
+                {
+                    // Item was pre-claimed from mutex queue - execute directly
+                    shouldExecute = true;
+                }
+                else
+                {
+                    // Item from work-stealing deque - need to claim it first
+                    // BUGFIX: Atomically claim to prevent double-execution (item might be in both queue_ and workerDeques_)
+                    bool alreadyClaimed = item->claimed_.exchange(true, std::memory_order_acq_rel);
+                    shouldExecute = !alreadyClaimed;
+
+                    // DEBUG: Logging disabled - too verbose
+                    // char itemBuf[32];
+                    // sprintf(itemBuf, "%p", (void*)item);
+                    // if (shouldExecute)
+                    // {
+                    //     URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " CLAIMED item " +
+                    //                    String(itemBuf) + " from deque (priority=" + String(item->priority_) + ")");
+                    // }
+                    // else
+                    // {
+                    //     URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " SKIPPED item " +
+                    //                    String(itemBuf) + " from deque (already claimed)");
+                    // }
+                }
+
+                if (shouldExecute)
+                {
+                    // DEBUG: Execution logging disabled - too verbose
+                    // char itemBuf[32], funcBuf[32];
+                    // sprintf(itemBuf, "%p", (void*)item);
+                    // sprintf(funcBuf, "%p", (void*)item->workFunction_);
+                    // URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " EXECUTING item " +
+                    //                String(itemBuf) + " (priority=" + String(item->priority_) +
+                    //                ", workFunction=" + String(funcBuf) + ")");
+
+                    // Execute the work item
+                    // BUGFIX: Defensive check for null work function
+                    if (item->workFunction_)
+                    {
+                        item->workFunction_(item, threadIndex);
+                    }
+                    else
+                    {
+                        // Null work function - this shouldn't happen but defensive check prevents crash
+                        URHO3D_LOGWARNING("Work item has null work function - marking completed to prevent leak");
+                    }
+                    // Always mark as completed to ensure proper cleanup
+                    item->completed_ = true;
+
+                    // DEBUG: Completion logging disabled - too verbose
+                    // URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " COMPLETED item " +
+                    //                String(itemBuf) + " (priority=" + String(item->priority_) + ")");
+                }
+                // else: Another thread already claimed and is executing this item, skip it
             }
         }
     }
@@ -410,6 +593,25 @@ void WorkQueue::PurgeCompleted(i32 priority)
                 VariantMap& eventData = GetEventDataMap();
                 eventData[P_ITEM] = i->Get();
                 SendEvent(E_WORKITEMCOMPLETED, eventData);
+            }
+
+            // BUGFIX: Remove from queue_ before returning to pool
+            // Items were being returned to pool (workFunction_=nullptr, claimed_=false)
+            // but staying in queue_, causing worker threads to try to execute them again
+            WorkItem* itemPtr = i->Get();
+            if (threads_.Size())
+            {
+                queueMutex_.Acquire();
+                List<WorkItem*>::Iterator queueIter = queue_.Find(itemPtr);
+                if (queueIter != queue_.End())
+                    queue_.Erase(queueIter);
+                queueMutex_.Release();
+            }
+            else
+            {
+                List<WorkItem*>::Iterator queueIter = queue_.Find(itemPtr);
+                if (queueIter != queue_.End())
+                    queue_.Erase(queueIter);
             }
 
             ReturnToPool(*i);
@@ -448,6 +650,10 @@ void WorkQueue::ReturnToPool(SharedPtr<WorkItem>& item)
         item->priority_ = WI_MAX_PRIORITY;
         item->sendEvent_ = false;
         item->completed_ = false;
+        // BUGFIX: Don't reset claimed_ here! Item pointer may still be in work-stealing deques.
+        // If we reset claimed_, worker threads could retrieve and try to execute it again.
+        // claimed_ will be reset when item is actually reused from pool in GetFreeItem().
+        // item->claimed_ = false;
 
         poolItems_.Push(item);
     }
@@ -466,8 +672,14 @@ void WorkQueue::HandleBeginFrame(StringHash eventType, VariantMap& eventData)
         {
             WorkItem* item = queue_.Front();
             queue_.PopFront();
-            item->workFunction_(item, 0);
-            item->completed_ = true;
+
+            // Atomically claim the item (shouldn't be necessary without threads, but safe)
+            bool alreadyClaimed = item->claimed_.exchange(true, std::memory_order_acq_rel);
+            if (!alreadyClaimed)
+            {
+                item->workFunction_(item, 0);
+                item->completed_ = true;
+            }
         }
     }
 

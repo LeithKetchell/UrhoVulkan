@@ -44,6 +44,8 @@ public:
     bool sendEvent_{};
     /// Completed flag.
     std::atomic<bool> completed_{};
+    /// Claimed flag to prevent double-execution when item is in both queue_ and workerDeques_.
+    std::atomic<bool> claimed_{};
 
 private:
     bool pooled_{};
