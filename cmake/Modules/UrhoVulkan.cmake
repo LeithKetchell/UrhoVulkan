@@ -91,13 +91,73 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux|Unix")
 elseif(WIN32)
     set(VULKAN_PLATFORM_DEFINES VK_USE_PLATFORM_WIN32_KHR)
 elseif(APPLE)
-    set(VULKAN_PLATFORM_DEFINES VK_USE_PLATFORM_METAL_EXT)
+    # MoltenVK support for Apple platforms
+    if(IOS OR TVOS)
+        set(VULKAN_PLATFORM_DEFINES
+            VK_USE_PLATFORM_IOS_MVK
+            VK_USE_PLATFORM_METAL_EXT
+        )
+    else()
+        set(VULKAN_PLATFORM_DEFINES
+            VK_USE_PLATFORM_MACOS_MVK
+            VK_USE_PLATFORM_METAL_EXT
+        )
+    endif()
+elseif(ANDROID)
+    # Native Android Vulkan support (API 24+)
+    set(VULKAN_PLATFORM_DEFINES VK_USE_PLATFORM_ANDROID_KHR)
 endif()
 
 # Add Vulkan compiler definitions with proper -D prefix
 foreach(_define ${VULKAN_PLATFORM_DEFINES})
     add_definitions(-D${_define})
 endforeach()
+
+# MoltenVK library detection for Apple platforms
+if(APPLE AND URHO3D_VULKAN)
+    # Search for MoltenVK in common installation locations
+    find_library(MOLTENVK_LIBRARY
+        NAMES MoltenVK
+        PATHS
+            /usr/local/lib
+            $ENV{VULKAN_SDK}/lib
+            $ENV{VULKAN_SDK}/MoltenVK/dylib/macOS
+            $ENV{VULKAN_SDK}/MoltenVK/dylib/iOS
+            ~/VulkanSDK/*/MoltenVK/dylib/macOS
+        PATH_SUFFIXES MoltenVK
+        NO_DEFAULT_PATH
+    )
+
+    # Also try system paths as fallback
+    find_library(MOLTENVK_LIBRARY NAMES MoltenVK)
+
+    if(MOLTENVK_LIBRARY)
+        message(STATUS "MoltenVK found: ${MOLTENVK_LIBRARY}")
+        # Link MoltenVK library
+        link_libraries(${MOLTENVK_LIBRARY})
+
+        # Add MoltenVK include path if available
+        get_filename_component(MOLTENVK_LIB_DIR ${MOLTENVK_LIBRARY} DIRECTORY)
+        get_filename_component(MOLTENVK_SDK_DIR ${MOLTENVK_LIB_DIR}/../.. ABSOLUTE)
+        if(EXISTS "${MOLTENVK_SDK_DIR}/include")
+            include_directories(${MOLTENVK_SDK_DIR}/include)
+            message(STATUS "MoltenVK headers: ${MOLTENVK_SDK_DIR}/include")
+        endif()
+    else()
+        message(WARNING "MoltenVK library not found. Vulkan support will be unavailable on this Apple platform.\n"
+                        "Install via: brew install molten-vk\n"
+                        "Or download from: https://github.com/KhronosGroup/MoltenVK")
+        set(URHO3D_VULKAN OFF CACHE BOOL "Vulkan disabled - MoltenVK not found" FORCE)
+    endif()
+endif()
+
+# Android Vulkan library linking
+if(ANDROID AND URHO3D_VULKAN)
+    # Android has native Vulkan support starting from API 24
+    # The vulkan library is provided by the system
+    link_libraries(vulkan)
+    message(STATUS "Android native Vulkan support enabled (requires API 24+)")
+endif()
 
 # Function to compile GLSL shaders to SPIR-V
 function(compile_glsl_to_spirv GLSL_SOURCE SPIRV_OUTPUT)
