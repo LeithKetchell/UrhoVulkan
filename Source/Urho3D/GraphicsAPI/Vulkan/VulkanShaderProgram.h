@@ -46,8 +46,12 @@ public:
     /// Get pipeline layout
     VkPipelineLayout GetPipelineLayout() const { return pipelineLayout_; }
 
-    /// Create pipeline layout with descriptor set layout
+    /// Create pipeline layout with descriptor set layout (single set, legacy)
     bool CreatePipelineLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout);
+
+    /// Create pipeline layout with multiple descriptor set layouts (Phase 36: Multi-set support)
+    /// Supports up to 3 descriptor sets: Set 0 (materials), Set 1 (textures), Set 2 (constants)
+    bool CreatePipelineLayout(VkDevice device, const Vector<VkDescriptorSetLayout>& descriptorSetLayouts);
 
     /// Destroy pipeline layout
     void DestroyPipelineLayout(VkDevice device);

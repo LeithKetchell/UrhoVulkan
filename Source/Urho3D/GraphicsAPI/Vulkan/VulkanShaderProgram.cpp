@@ -108,6 +108,47 @@ bool VulkanShaderProgram::CreatePipelineLayout(VkDevice device, VkDescriptorSetL
     return true;
 }
 
+bool VulkanShaderProgram::CreatePipelineLayout(VkDevice device, const Vector<VkDescriptorSetLayout>& descriptorSetLayouts)
+{
+    // Phase 36: Multi-set pipeline layout creation for deferred rendering
+    // Supports up to 3 descriptor sets:
+    //   Set 0: Material descriptors (textures, samplers from material)
+    //   Set 1: G-Buffer texture descriptors (for lighting pass)
+    //   Set 2: Constant buffer descriptors (light parameters)
+
+    if (!device)
+        return false;
+
+    // Create pipeline layout with push constants and multiple descriptor sets
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+    // Add all descriptor set layouts
+    if (!descriptorSetLayouts.Empty())
+    {
+        layoutInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.Size());
+        layoutInfo.pSetLayouts = &descriptorSetLayouts[0];
+    }
+
+    // Add push constants for fast-changing data (Phase 9)
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = 128;  // 104 bytes for VulkanBatchPushConstants + padding
+
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create pipeline layout with " + String(descriptorSetLayouts.Size()) + " descriptor sets");
+        return false;
+    }
+
+    URHO3D_LOGDEBUG("Created pipeline layout with " + String(descriptorSetLayouts.Size()) + " descriptor set(s)");
+    return true;
+}
+
 void VulkanShaderProgram::DestroyPipelineLayout(VkDevice device)
 {
     if (device && pipelineLayout_)
