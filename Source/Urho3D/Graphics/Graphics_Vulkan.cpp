@@ -561,9 +561,12 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-    // Phase 33 Step 3: Descriptor binding infrastructure ready
-    // Material descriptor sets will be bound during geometry rendering
-    // when material parameters are applied via BindMaterialDescriptors()
+    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
+    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
+    if (textureDescriptorSet != VK_NULL_HANDLE)
+    {
+        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
+    }
 
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
@@ -633,6 +636,13 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
+    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
+    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
+    if (textureDescriptorSet != VK_NULL_HANDLE)
+    {
+        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
+    }
+
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
 
@@ -699,6 +709,13 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
 
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
+    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
+    if (textureDescriptorSet != VK_NULL_HANDLE)
+    {
+        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
+    }
 
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
@@ -767,6 +784,13 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
+    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
+    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
+    if (textureDescriptorSet != VK_NULL_HANDLE)
+    {
+        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
+    }
+
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
 
@@ -833,6 +857,13 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
 
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
+    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
+    if (textureDescriptorSet != VK_NULL_HANDLE)
+    {
+        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
+    }
 
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();

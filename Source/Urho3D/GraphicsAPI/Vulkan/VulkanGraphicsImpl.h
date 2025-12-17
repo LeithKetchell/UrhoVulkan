@@ -445,6 +445,18 @@ public:
     /// \param layout VkPipelineLayout to use for subsequent descriptor bindings
     void SetCurrentPipelineLayout(VkPipelineLayout layout) { currentPipelineLayout_ = layout; }
 
+    /// \brief Create texture descriptor set for currently bound textures (Phase 36B)
+    /// \returns VkDescriptorSet for Set 1 containing texture bindings, or VK_NULL_HANDLE on error
+    /// \details Creates descriptor set with currently bound textures from textures_[] array.
+    /// Used for deferred lighting G-Buffer texture access (albedo, normal, depth).
+    VkDescriptorSet CreateTextureDescriptorSet();
+
+    /// \brief Bind texture descriptor set to Set 1 (Phase 36B)
+    /// \param descriptorSet VkDescriptorSet containing texture bindings
+    /// \details Binds texture descriptor set to Set 1 for shader access to G-Buffer textures.
+    /// Must be called before draw commands that need texture access.
+    void BindTextureDescriptorSet(VkDescriptorSet descriptorSet);
+
     /// \brief Transition image layout for texture operations
     /// \param image VkImage to transition
     /// \param format VkFormat of the image

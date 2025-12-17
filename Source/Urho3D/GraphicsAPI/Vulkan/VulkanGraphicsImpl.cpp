@@ -2955,4 +2955,123 @@ VkDescriptorSet VulkanGraphicsImpl::GetMaterialDescriptor(Material* material)
     return descriptorSet;
 }
 
+// Phase 36B: Texture Descriptor Management
+VkDescriptorSet VulkanGraphicsImpl::CreateTextureDescriptorSet()
+{
+    if (!device_ || !descriptorPool_ || gbufferTextureLayout_ == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("CreateTextureDescriptorSet: Invalid state (device, pool, or layout is null)");
+        return VK_NULL_HANDLE;
+    }
+
+    // Allocate descriptor set from pool using G-Buffer texture layout (Set 1)
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &gbufferTextureLayout_;
+
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkResult result = vkAllocateDescriptorSets(device_, &allocInfo, &descriptorSet);
+    if (result != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("CreateTextureDescriptorSet: Failed to allocate descriptor set");
+        return VK_NULL_HANDLE;
+    }
+
+    // Get currently bound textures from Graphics instance
+    // Access graphics_->textures_[] to get texture bindings
+    if (!graphics_)
+    {
+        URHO3D_LOGERROR("CreateTextureDescriptorSet: Graphics instance is null");
+        return VK_NULL_HANDLE;
+    }
+
+    // Create descriptor writes for each bound texture
+    Vector<VkDescriptorImageInfo> imageInfos;
+    Vector<VkWriteDescriptorSet> descriptorWrites;
+
+    // Phase 36B: Iterate through texture units and create descriptor writes
+    for (unsigned i = 0; i < MAX_TEXTURE_UNITS; ++i)
+    {
+        Texture* texture = graphics_->GetTexture(i);
+        if (!texture)
+            continue;
+
+        // Get Vulkan image view and sampler from texture
+        VkImageView imageView = reinterpret_cast<VkImageView>(texture->GetGPUObjectName());
+        if (!imageView)
+            continue;
+
+        // Get sampler from sampler cache
+        VkSampler sampler = GetSampler(texture->GetFilterMode(), texture->GetAddressMode(COORD_U),
+                                        texture->GetAddressMode(COORD_V), texture->GetAddressMode(COORD_W),
+                                        texture->GetBorderColor());
+        if (!sampler)
+            continue;
+
+        // Create image info for this texture binding
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = imageView;
+        imageInfo.sampler = sampler;
+        imageInfos.Push(imageInfo);
+
+        // Create write descriptor for this binding
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet;
+        write.dstBinding = i;  // Binding matches texture unit index
+        write.dstArrayElement = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &imageInfos[imageInfos.Size() - 1];  // Point to last added image info
+        descriptorWrites.Push(write);
+    }
+
+    // Update descriptor set with all texture bindings
+    if (!descriptorWrites.Empty())
+    {
+        vkUpdateDescriptorSets(device_, descriptorWrites.Size(), descriptorWrites.Buffer(), 0, nullptr);
+        URHO3D_LOGDEBUG(String("CreateTextureDescriptorSet: Updated descriptor set with ") +
+                        String(descriptorWrites.Size()) + " texture bindings");
+    }
+    else
+    {
+        URHO3D_LOGDEBUG("CreateTextureDescriptorSet: No textures bound, descriptor set is empty");
+    }
+
+    return descriptorSet;
+}
+
+void VulkanGraphicsImpl::BindTextureDescriptorSet(VkDescriptorSet descriptorSet)
+{
+    if (!descriptorSet || currentPipelineLayout_ == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGWARNING("BindTextureDescriptorSet: Invalid descriptor set or pipeline layout");
+        return;
+    }
+
+    VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
+    if (!cmdBuffer)
+    {
+        URHO3D_LOGERROR("BindTextureDescriptorSet: No command buffer available");
+        return;
+    }
+
+    // Bind texture descriptor set to Set 1 (G-Buffer textures for deferred lighting)
+    vkCmdBindDescriptorSets(
+        cmdBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        currentPipelineLayout_,
+        1,  // Set 1 (Set 0 is materials, Set 1 is G-Buffer textures)
+        1,  // Bind 1 descriptor set
+        &descriptorSet,
+        0,  // No dynamic offsets
+        nullptr
+    );
+
+    URHO3D_LOGDEBUG("BindTextureDescriptorSet: Bound texture descriptor set to Set 1");
+}
+
 } // namespace Urho3D
