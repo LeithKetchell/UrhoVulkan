@@ -1561,31 +1561,13 @@ VkDescriptorSet Graphics::CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buff
         return VK_NULL_HANDLE;
     }
 
-    // Phase 36 Step 3.3.1: Create descriptor set layout (cached statically)
-    static VkDescriptorSetLayout constantBufferDescriptorLayout = VK_NULL_HANDLE;
-
-    if (constantBufferDescriptorLayout == VK_NULL_HANDLE)
+    // Phase 36C: Use existing constant buffer layout from VulkanGraphicsImpl
+    // This avoids creating a duplicate static layout and reuses the properly initialized constantBufferLayout_
+    VkDescriptorSetLayout constantBufferLayout = vkImpl->GetConstantBufferLayout();
+    if (constantBufferLayout == VK_NULL_HANDLE)
     {
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding = 0;
-        binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        binding.descriptorCount = 1;
-        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
-        binding.pImmutableSamplers = nullptr;
-
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &binding;
-
-        VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &constantBufferDescriptorLayout);
-        if (result != VK_SUCCESS)
-        {
-            URHO3D_LOGERROR("CreateConstantBufferDescriptorSet_Vulkan: Failed to create descriptor set layout");
-            return VK_NULL_HANDLE;
-        }
-
-        URHO3D_LOGDEBUG("CreateConstantBufferDescriptorSet_Vulkan: Created static descriptor set layout");
+        URHO3D_LOGERROR("CreateConstantBufferDescriptorSet_Vulkan: Constant buffer layout not initialized");
+        return VK_NULL_HANDLE;
     }
 
     // Phase 36 Step 3.3.2: Allocate descriptor set from pool
@@ -1595,7 +1577,7 @@ VkDescriptorSet Graphics::CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buff
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = vkImpl->GetDescriptorPool();
     allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &constantBufferDescriptorLayout;
+    allocInfo.pSetLayouts = &constantBufferLayout;
 
     VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
     if (result != VK_SUCCESS)
@@ -1642,27 +1624,10 @@ bool Graphics::BindConstantBufferDescriptors_Vulkan(VkDescriptorSet descriptorSe
         return false;
 
     VulkanGraphicsImpl* vkImpl = static_cast<VulkanGraphicsImpl*>(impl_);
-    VkCommandBuffer cmdBuffer = vkImpl->GetFrameCommandBuffer();
-    VkPipelineLayout pipelineLayout = vkImpl->GetCurrentPipelineLayout();
 
-    if (!cmdBuffer || !pipelineLayout)
-    {
-        URHO3D_LOGWARNING("BindConstantBufferDescriptors_Vulkan: Command buffer or pipeline layout not available");
-        return false;
-    }
+    // Phase 36C: Use VulkanGraphicsImpl method for consistent descriptor binding
+    vkImpl->BindConstantBufferDescriptorSet(descriptorSet);
 
-    // Bind to descriptor set slot 2 (after materials at 0 and G-Buffer textures at 1)
-    vkCmdBindDescriptorSets(
-        cmdBuffer,
-        VK_PIPELINE_BIND_POINT_GRAPHICS,
-        pipelineLayout,
-        2,  // Set slot 2 for light parameters
-        1,
-        &descriptorSet,
-        0, nullptr
-    );
-
-    URHO3D_LOGDEBUG("BindConstantBufferDescriptors_Vulkan: Bound constant buffer descriptor set to slot 2");
     return true;
 }
 

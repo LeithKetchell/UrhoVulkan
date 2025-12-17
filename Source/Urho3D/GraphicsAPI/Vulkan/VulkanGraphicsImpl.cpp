@@ -3074,4 +3074,104 @@ void VulkanGraphicsImpl::BindTextureDescriptorSet(VkDescriptorSet descriptorSet)
     URHO3D_LOGDEBUG("BindTextureDescriptorSet: Bound texture descriptor set to Set 1");
 }
 
+// Phase 36C: Constant Buffer Descriptor Management
+VkDescriptorSet VulkanGraphicsImpl::CreateConstantBufferDescriptorSet(const void* data, uint32_t dataSize)
+{
+    if (!device_ || !descriptorPool_ || constantBufferLayout_ == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("CreateConstantBufferDescriptorSet: Invalid state (device, pool, or layout is null)");
+        return VK_NULL_HANDLE;
+    }
+
+    if (!data || dataSize == 0)
+    {
+        URHO3D_LOGDEBUG("CreateConstantBufferDescriptorSet: No data provided, skipping");
+        return VK_NULL_HANDLE;
+    }
+
+    // Allocate constant buffer from pool and upload data
+    if (!constantBufferPool_)
+    {
+        URHO3D_LOGERROR("CreateConstantBufferDescriptorSet: Constant buffer pool is null");
+        return VK_NULL_HANDLE;
+    }
+
+    VkBuffer constantBuffer = VK_NULL_HANDLE;
+    VkDeviceSize bufferOffset = 0;
+    if (!constantBufferPool_->AllocateBuffer(data, dataSize, constantBuffer, bufferOffset))
+    {
+        URHO3D_LOGERROR("CreateConstantBufferDescriptorSet: Failed to allocate constant buffer from pool");
+        return VK_NULL_HANDLE;
+    }
+
+    // Allocate descriptor set from pool using constant buffer layout (Set 2)
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &constantBufferLayout_;
+
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkResult result = vkAllocateDescriptorSets(device_, &allocInfo, &descriptorSet);
+    if (result != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("CreateConstantBufferDescriptorSet: Failed to allocate descriptor set");
+        return VK_NULL_HANDLE;
+    }
+
+    // Create descriptor buffer info for constant buffer binding
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = constantBuffer;
+    bufferInfo.offset = bufferOffset;
+    bufferInfo.range = dataSize;
+
+    // Create write descriptor for uniform buffer binding
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = descriptorSet;
+    write.dstBinding = 0;  // Binding 0 in constant buffer layout
+    write.dstArrayElement = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.descriptorCount = 1;
+    write.pBufferInfo = &bufferInfo;
+
+    // Update descriptor set with constant buffer binding
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+
+    URHO3D_LOGDEBUG(String("CreateConstantBufferDescriptorSet: Created descriptor set with ") +
+                    String(dataSize) + " bytes at offset " + String((unsigned)bufferOffset));
+
+    return descriptorSet;
+}
+
+void VulkanGraphicsImpl::BindConstantBufferDescriptorSet(VkDescriptorSet descriptorSet)
+{
+    if (!descriptorSet || currentPipelineLayout_ == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGWARNING("BindConstantBufferDescriptorSet: Invalid descriptor set or pipeline layout");
+        return;
+    }
+
+    VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
+    if (!cmdBuffer)
+    {
+        URHO3D_LOGERROR("BindConstantBufferDescriptorSet: No command buffer available");
+        return;
+    }
+
+    // Bind constant buffer descriptor set to Set 2 (light/material parameters for shaders)
+    vkCmdBindDescriptorSets(
+        cmdBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        currentPipelineLayout_,
+        2,  // Set 2 (Set 0 is materials, Set 1 is textures, Set 2 is constant buffers)
+        1,  // Bind 1 descriptor set
+        &descriptorSet,
+        0,  // No dynamic offsets
+        nullptr
+    );
+
+    URHO3D_LOGDEBUG("BindConstantBufferDescriptorSet: Bound constant buffer descriptor set to Set 2");
+}
+
 } // namespace Urho3D

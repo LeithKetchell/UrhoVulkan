@@ -457,6 +457,20 @@ public:
     /// Must be called before draw commands that need texture access.
     void BindTextureDescriptorSet(VkDescriptorSet descriptorSet);
 
+    /// \brief Create constant buffer descriptor set for shader parameters (Phase 36C)
+    /// \param data Constant buffer data to upload
+    /// \param dataSize Size of data in bytes
+    /// \returns VkDescriptorSet for Set 2 containing uniform buffer binding, or VK_NULL_HANDLE on error
+    /// \details Allocates constant buffer from pool, uploads data, and creates descriptor set.
+    /// Used for light parameters, material properties, and other per-draw uniform data.
+    VkDescriptorSet CreateConstantBufferDescriptorSet(const void* data, uint32_t dataSize);
+
+    /// \brief Bind constant buffer descriptor set to Set 2 (Phase 36C)
+    /// \param descriptorSet VkDescriptorSet containing uniform buffer binding
+    /// \details Binds constant buffer descriptor set to Set 2 for shader parameter access.
+    /// Must be called before draw commands that need constant buffer access.
+    void BindConstantBufferDescriptorSet(VkDescriptorSet descriptorSet);
+
     /// \brief Transition image layout for texture operations
     /// \param image VkImage to transition
     /// \param format VkFormat of the image
