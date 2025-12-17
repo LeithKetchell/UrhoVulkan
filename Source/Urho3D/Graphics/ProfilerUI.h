@@ -47,6 +47,12 @@ private:
     /// Text element for average frame time
     SharedPtr<Text> avgFrameTimeText_;
 
+    /// Text element for Phase 36A pipeline layout timing
+    SharedPtr<Text> pipelineLayoutText_;
+
+    /// Text element for Phase 36A descriptor set layout timing
+    SharedPtr<Text> descriptorSetLayoutText_;
+
     /// Profiler reference
     VulkanProfiler* profiler_;
 };

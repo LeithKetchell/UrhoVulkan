@@ -150,6 +150,26 @@ public:
         frameTime_ = 0.0f;
         frameCount_ = 0;
         totalTime_ = 0.0f;
+        counters_.Clear();
+    }
+
+    /// Phase 36A: Increment a counter (for tracking descriptor set operations)
+    void IncrementCounter(const String& counterName)
+    {
+        counters_[counterName]++;
+    }
+
+    /// Phase 36A: Get counter value
+    unsigned GetCounter(const String& counterName) const
+    {
+        auto it = counters_.Find(counterName);
+        return (it != counters_.End()) ? it->second_ : 0;
+    }
+
+    /// Phase 36A: Reset a specific counter
+    void ResetCounter(const String& counterName)
+    {
+        counters_[counterName] = 0;
     }
 
 private:
@@ -168,6 +188,9 @@ private:
     unsigned frameCount_ = 0;
     float totalTime_ = 0.0f;
     Vector<float> frameTimes_;
+
+    /// Phase 36A: Operation counters (e.g., descriptor set bindings, pipeline layout creations)
+    HashMap<String, unsigned> counters_;
 };
 
 } // namespace Urho3D

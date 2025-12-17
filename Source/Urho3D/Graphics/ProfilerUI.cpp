@@ -20,10 +20,10 @@ void ProfilerUI::Initialize(UI* ui, VulkanProfiler* profiler)
     if (!ui)
         return;
 
-    // Create root window - larger to fit all metrics
+    // Create root window - larger to fit all metrics (Phase 36A: Added space for profiler metrics)
     window_ = ui->GetRoot()->CreateChild<Window>();
     window_->SetStyleAuto();
-    window_->SetSize(250, 130);
+    window_->SetSize(280, 190);  // Expanded to fit Phase 36A metrics
     window_->SetPosition(10, 10);
     window_->SetOpacity(0.9f);
     window_->SetMovable(true);
@@ -57,6 +57,20 @@ void ProfilerUI::Initialize(UI* ui, VulkanProfiler* profiler)
     avgFrameTimeText_->SetFontSize(12);
     avgFrameTimeText_->SetPosition(5, 65);
     avgFrameTimeText_->SetText("Avg: 0.00ms");
+
+    // Phase 36A: Pipeline layout timing
+    pipelineLayoutText_ = window_->CreateChild<Text>();
+    pipelineLayoutText_->SetStyleAuto();
+    pipelineLayoutText_->SetFontSize(10);
+    pipelineLayoutText_->SetPosition(5, 90);
+    pipelineLayoutText_->SetText("Pipeline Layout: N/A");
+
+    // Phase 36A: Descriptor set layout timing
+    descriptorSetLayoutText_ = window_->CreateChild<Text>();
+    descriptorSetLayoutText_->SetStyleAuto();
+    descriptorSetLayoutText_->SetFontSize(10);
+    descriptorSetLayoutText_->SetPosition(5, 110);
+    descriptorSetLayoutText_->SetText("Descriptor Layout: N/A");
 }
 
 void ProfilerUI::Update()
@@ -76,6 +90,26 @@ void ProfilerUI::Update()
 
     if (avgFrameTimeText_)
         avgFrameTimeText_->SetText(String("Avg: ") + String(avgFrameTime, 2) + "ms");
+
+    // Phase 36A: Display pipeline layout creation time
+    if (pipelineLayoutText_)
+    {
+        float pipelineLayoutTime = profiler_->GetAveragePhaseTime("Phase36A: Pipeline Layout Creation");
+        if (pipelineLayoutTime > 0.0f)
+            pipelineLayoutText_->SetText(String("Pipeline: ") + String(pipelineLayoutTime, 3) + "ms");
+        else
+            pipelineLayoutText_->SetText("Pipeline: N/A");
+    }
+
+    // Phase 36A: Display descriptor set layout creation time
+    if (descriptorSetLayoutText_)
+    {
+        float descriptorLayoutTime = profiler_->GetAveragePhaseTime("Phase36A: Descriptor Set Layout Creation");
+        if (descriptorLayoutTime > 0.0f)
+            descriptorSetLayoutText_->SetText(String("Descriptor: ") + String(descriptorLayoutTime, 3) + "ms");
+        else
+            descriptorSetLayoutText_->SetText("Descriptor: N/A");
+    }
 }
 
 void ProfilerUI::SetVisible(bool visible)

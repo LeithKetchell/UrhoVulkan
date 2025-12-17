@@ -8,6 +8,7 @@
 #include "../GraphicsAPI/Vulkan/VulkanGraphicsImpl.h"
 #include "../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h"
 #include "../GraphicsAPI/Vulkan/VulkanShaderModule.h"
+#include "../GraphicsAPI/Vulkan/VulkanShaderProgram.h"
 #include "Graphics.h"
 #include "Geometry.h"
 #include "../GraphicsAPI/Texture.h"
@@ -1385,16 +1386,111 @@ void Graphics::PackShaderParameters(
 
 void Graphics::SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps, ShaderVariation* gs)
 {
+    // Phase 36A: Create multi-set pipeline layouts for deferred rendering
     // Store shader pointers for pipeline creation
     vertexShader_ = vs;
     pixelShader_ = ps;
     geometryShader_ = gs;
 
-    // Pipeline will be recreated with new shader configuration on next draw call
-
     URHO3D_LOGDEBUG("SetShaders_Vulkan: VS=" + String(vs ? vs->GetFullName() : "null") +
                     " PS=" + String(ps ? ps->GetFullName() : "null") +
                     " GS=" + String(gs ? gs->GetFullName() : "null"));
+
+    // Phase 36A: Create or retrieve shader program with multi-set pipeline layout
+    if (vs && ps)
+    {
+        VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+        if (!vkImpl)
+            return;
+
+        VkDevice device = vkImpl->GetDevice();
+        if (!device)
+            return;
+
+        // Create shader program (combines VS and PS parameters)
+        VulkanShaderProgram* program = new VulkanShaderProgram(vs, ps);
+        if (!program)
+        {
+            URHO3D_LOGERROR("SetShaders_Vulkan: Failed to create shader program");
+            return;
+        }
+
+        // Create multi-set pipeline layout if not already created
+        if (program->GetPipelineLayout() == VK_NULL_HANDLE)
+        {
+            // Phase 36A Profiler Integration: Track pipeline layout creation time
+            VulkanProfiler* profiler = GetVulkanProfiler();
+            if (profiler)
+                profiler->StartPhase("Phase36A: Pipeline Layout Creation");
+
+            // Build descriptor set layout array for multi-set binding
+            // Set 0: Material descriptors (textures, samplers, material parameters)
+            // Set 1: G-Buffer texture descriptors (for deferred lighting pass)
+            // Set 2: Constant buffer descriptors (light parameters)
+            Vector<VkDescriptorSetLayout> layouts;
+
+            // Always include material descriptor layout (Set 0)
+            VkDescriptorSetLayout materialLayout = vkImpl->GetMaterialDescriptorLayout();
+            if (materialLayout != VK_NULL_HANDLE)
+            {
+                layouts.Push(materialLayout);
+                URHO3D_LOGDEBUG("SetShaders_Vulkan: Added material descriptor layout (Set 0)");
+            }
+
+            // Include G-Buffer texture layout for deferred rendering (Set 1)
+            VkDescriptorSetLayout gbufferLayout = vkImpl->GetGBufferTextureLayout();
+            if (gbufferLayout != VK_NULL_HANDLE)
+            {
+                layouts.Push(gbufferLayout);
+                URHO3D_LOGDEBUG("SetShaders_Vulkan: Added G-Buffer texture layout (Set 1)");
+            }
+
+            // Include constant buffer layout for light parameters (Set 2)
+            VkDescriptorSetLayout constantLayout = vkImpl->GetConstantBufferLayout();
+            if (constantLayout != VK_NULL_HANDLE)
+            {
+                layouts.Push(constantLayout);
+                URHO3D_LOGDEBUG("SetShaders_Vulkan: Added constant buffer layout (Set 2)");
+            }
+
+            // Create multi-set pipeline layout
+            if (!layouts.Empty())
+            {
+                if (program->CreatePipelineLayout(device, layouts))
+                {
+                    URHO3D_LOGDEBUG(String("SetShaders_Vulkan: Created pipeline layout with ") + String(layouts.Size()) + " descriptor set(s)");
+                }
+                else
+                {
+                    URHO3D_LOGERROR("SetShaders_Vulkan: Failed to create pipeline layout");
+                    delete program;
+                    return;
+                }
+            }
+            else
+            {
+                URHO3D_LOGWARNING("SetShaders_Vulkan: No descriptor set layouts available");
+            }
+
+            // Phase 36A Profiler Integration: End tracking
+            if (profiler)
+                profiler->EndPhase();
+        }
+
+        // Store pipeline layout in graphics impl for descriptor binding
+        VkPipelineLayout pipelineLayout = program->GetPipelineLayout();
+        if (pipelineLayout != VK_NULL_HANDLE)
+        {
+            vkImpl->SetCurrentPipelineLayout(pipelineLayout);
+            URHO3D_LOGDEBUG("SetShaders_Vulkan: Pipeline layout set successfully");
+        }
+
+        // Clean up temporary shader program (layout is now cached)
+        // TODO: Cache shader programs for reuse instead of recreating
+        delete program;
+    }
+
+    // Pipeline will be recreated with new shader configuration on next draw call
 }
 
 // ============================================

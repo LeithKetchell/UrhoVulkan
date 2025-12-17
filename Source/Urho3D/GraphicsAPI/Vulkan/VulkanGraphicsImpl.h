@@ -425,6 +425,26 @@ public:
     /// \returns VkPipelineLayout for descriptor set binding commands (Phase 27)
     VkPipelineLayout GetCurrentPipelineLayout() const { return currentPipelineLayout_; }
 
+    /// \brief Get material descriptor set layout (Phase 36A)
+    /// \returns VkDescriptorSetLayout for Set 0 (materials: textures, samplers, parameters)
+    VkDescriptorSetLayout GetMaterialDescriptorLayout() const { return materialDescriptorLayout_; }
+
+    /// \brief Get G-Buffer texture descriptor set layout (Phase 36A)
+    /// \returns VkDescriptorSetLayout for Set 1 (G-Buffer textures for deferred lighting)
+    VkDescriptorSetLayout GetGBufferTextureLayout() const { return gbufferTextureLayout_; }
+
+    /// \brief Get constant buffer descriptor set layout (Phase 36A)
+    /// \returns VkDescriptorSetLayout for Set 2 (light parameters for deferred lighting)
+    VkDescriptorSetLayout GetConstantBufferLayout() const { return constantBufferLayout_; }
+
+    /// \brief Get input attachment descriptor set layout (Phase 36A)
+    /// \returns VkDescriptorSetLayout for Set 3 (tile-local G-Buffer optimization)
+    VkDescriptorSetLayout GetInputAttachmentLayout() const { return inputAttachmentLayout_; }
+
+    /// \brief Set current pipeline layout (Phase 36A)
+    /// \param layout VkPipelineLayout to use for subsequent descriptor bindings
+    void SetCurrentPipelineLayout(VkPipelineLayout layout) { currentPipelineLayout_ = layout; }
+
     /// \brief Transition image layout for texture operations
     /// \param image VkImage to transition
     /// \param format VkFormat of the image
@@ -573,6 +593,15 @@ private:
     /// - Storage images (compute/UAV operations)
     /// Pool size determined by expected descriptor set count.
     bool CreateDescriptorPool();
+
+    /// \brief Create descriptor set layouts for multi-set binding (Phase 36A)
+    /// \returns True if layouts created successfully, false on error
+    /// \details Creates descriptor set layouts for:
+    /// - Set 0: Material descriptors (textures, samplers, material parameters)
+    /// - Set 1: G-Buffer textures (albedo, normal, depth for deferred lighting)
+    /// - Set 2: Constant buffers (light parameters for deferred lighting)
+    /// - Set 3: Input attachments (tile-local G-Buffer optimization)
+    bool CreateDescriptorSetLayouts();
 
     /// \brief Create pipeline cache for persistent pipeline storage
     /// \returns True if cache created successfully, false on error
@@ -842,6 +871,16 @@ private:
     SharedPtr<class VulkanMaterialDescriptorManager> materialDescriptorManager_;
     /// Current pipeline layout for descriptor set binding
     VkPipelineLayout currentPipelineLayout_{};
+
+    // Phase 36A: Descriptor set layouts for multi-set binding
+    /// Descriptor set layout for material descriptors (Set 0: textures, samplers, material params)
+    VkDescriptorSetLayout materialDescriptorLayout_{VK_NULL_HANDLE};
+    /// Descriptor set layout for G-Buffer textures (Set 1: albedo, normal, depth for deferred lighting)
+    VkDescriptorSetLayout gbufferTextureLayout_{VK_NULL_HANDLE};
+    /// Descriptor set layout for constant buffers (Set 2: light parameters for deferred lighting)
+    VkDescriptorSetLayout constantBufferLayout_{VK_NULL_HANDLE};
+    /// Descriptor set layout for input attachments (Set 3: tile-local G-Buffer optimization)
+    VkDescriptorSetLayout inputAttachmentLayout_{VK_NULL_HANDLE};
 
     // Graphics context for resource management
     Graphics* graphics_{nullptr};

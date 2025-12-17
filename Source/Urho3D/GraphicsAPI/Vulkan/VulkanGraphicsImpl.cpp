@@ -147,6 +147,13 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         return false;
     }
 
+    // Phase 36A: Create descriptor set layouts for multi-set binding
+    if (!CreateDescriptorSetLayouts())
+    {
+        URHO3D_LOGERROR("Failed to create descriptor set layouts");
+        return false;
+    }
+
     if (!CreatePipelineCache())
     {
         URHO3D_LOGERROR("Failed to create pipeline cache");
@@ -390,6 +397,28 @@ void VulkanGraphicsImpl::Shutdown()
     {
         vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
         descriptorPool_ = nullptr;
+    }
+
+    // Phase 36A: Destroy descriptor set layouts
+    if (materialDescriptorLayout_)
+    {
+        vkDestroyDescriptorSetLayout(device_, materialDescriptorLayout_, nullptr);
+        materialDescriptorLayout_ = VK_NULL_HANDLE;
+    }
+    if (gbufferTextureLayout_)
+    {
+        vkDestroyDescriptorSetLayout(device_, gbufferTextureLayout_, nullptr);
+        gbufferTextureLayout_ = VK_NULL_HANDLE;
+    }
+    if (constantBufferLayout_)
+    {
+        vkDestroyDescriptorSetLayout(device_, constantBufferLayout_, nullptr);
+        constantBufferLayout_ = VK_NULL_HANDLE;
+    }
+    if (inputAttachmentLayout_)
+    {
+        vkDestroyDescriptorSetLayout(device_, inputAttachmentLayout_, nullptr);
+        inputAttachmentLayout_ = VK_NULL_HANDLE;
     }
 
     // Destroy pipeline cache (SharedPtr auto-cleanup)
@@ -2127,6 +2156,118 @@ bool VulkanGraphicsImpl::CreateDescriptorPool()
     }
 
     URHO3D_LOGINFO("Descriptor pool created");
+    return true;
+}
+
+bool VulkanGraphicsImpl::CreateDescriptorSetLayouts()
+{
+    // Phase 36A: Create descriptor set layouts for multi-set binding
+    // These layouts define the structure of descriptor sets that can be bound simultaneously
+
+    // Phase 36A Profiler Integration: Track descriptor set layout creation time
+    VulkanProfiler* profiler = graphics_ ? graphics_->GetVulkanProfiler() : nullptr;
+    if (profiler)
+        profiler->StartPhase("Phase36A: Descriptor Set Layout Creation");
+
+    // Set 0: Material descriptor layout (textures, samplers, material parameters)
+    // Bindings: 8 combined image samplers for textures
+    VkDescriptorSetLayoutBinding materialBindings[MAX_TEXTURE_UNITS];
+    for (unsigned i = 0; i < MAX_TEXTURE_UNITS; ++i)
+    {
+        materialBindings[i].binding = i;
+        materialBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        materialBindings[i].descriptorCount = 1;
+        materialBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        materialBindings[i].pImmutableSamplers = nullptr;
+    }
+
+    VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
+    materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    materialLayoutInfo.bindingCount = MAX_TEXTURE_UNITS;
+    materialLayoutInfo.pBindings = materialBindings;
+
+    if (vkCreateDescriptorSetLayout(device_, &materialLayoutInfo, nullptr, &materialDescriptorLayout_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create material descriptor set layout");
+        return false;
+    }
+    URHO3D_LOGDEBUG("Created material descriptor set layout (Set 0)");
+
+    // Set 1: G-Buffer texture layout (albedo, normal, depth for deferred lighting)
+    // Bindings: 8 combined image samplers for G-Buffer textures
+    VkDescriptorSetLayoutBinding gbufferBindings[MAX_TEXTURE_UNITS];
+    for (unsigned i = 0; i < MAX_TEXTURE_UNITS; ++i)
+    {
+        gbufferBindings[i].binding = i;
+        gbufferBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        gbufferBindings[i].descriptorCount = 1;
+        gbufferBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        gbufferBindings[i].pImmutableSamplers = nullptr;
+    }
+
+    VkDescriptorSetLayoutCreateInfo gbufferLayoutInfo{};
+    gbufferLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    gbufferLayoutInfo.bindingCount = MAX_TEXTURE_UNITS;
+    gbufferLayoutInfo.pBindings = gbufferBindings;
+
+    if (vkCreateDescriptorSetLayout(device_, &gbufferLayoutInfo, nullptr, &gbufferTextureLayout_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create G-Buffer texture descriptor set layout");
+        return false;
+    }
+    URHO3D_LOGDEBUG("Created G-Buffer texture descriptor set layout (Set 1)");
+
+    // Set 2: Constant buffer layout (light parameters for deferred lighting)
+    // Binding: 1 uniform buffer for light data
+    VkDescriptorSetLayoutBinding constantBufferBinding{};
+    constantBufferBinding.binding = 0;
+    constantBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBinding.descriptorCount = 1;
+    constantBufferBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
+    constantBufferBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutCreateInfo constantBufferLayoutInfo{};
+    constantBufferLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    constantBufferLayoutInfo.bindingCount = 1;
+    constantBufferLayoutInfo.pBindings = &constantBufferBinding;
+
+    if (vkCreateDescriptorSetLayout(device_, &constantBufferLayoutInfo, nullptr, &constantBufferLayout_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create constant buffer descriptor set layout");
+        return false;
+    }
+    URHO3D_LOGDEBUG("Created constant buffer descriptor set layout (Set 2)");
+
+    // Set 3: Input attachment layout (tile-local G-Buffer optimization)
+    // Bindings: 4 input attachments for G-Buffer (albedo, normal, depth, specular)
+    VkDescriptorSetLayoutBinding inputAttachmentBindings[4];
+    for (unsigned i = 0; i < 4; ++i)
+    {
+        inputAttachmentBindings[i].binding = i;
+        inputAttachmentBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        inputAttachmentBindings[i].descriptorCount = 1;
+        inputAttachmentBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        inputAttachmentBindings[i].pImmutableSamplers = nullptr;
+    }
+
+    VkDescriptorSetLayoutCreateInfo inputAttachmentLayoutInfo{};
+    inputAttachmentLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    inputAttachmentLayoutInfo.bindingCount = 4;
+    inputAttachmentLayoutInfo.pBindings = inputAttachmentBindings;
+
+    if (vkCreateDescriptorSetLayout(device_, &inputAttachmentLayoutInfo, nullptr, &inputAttachmentLayout_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create input attachment descriptor set layout");
+        return false;
+    }
+    URHO3D_LOGDEBUG("Created input attachment descriptor set layout (Set 3)");
+
+    URHO3D_LOGINFO("All descriptor set layouts created successfully");
+
+    // Phase 36A Profiler Integration: End tracking
+    if (profiler)
+        profiler->EndPhase();
+
     return true;
 }
 
