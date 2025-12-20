@@ -603,6 +603,14 @@ Graphics::Graphics(Context* context, GAPI gapi)
         return;
     }
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+    {
+        Constructor_Vulkan();
+        return;
+    }
+#endif
 }
 
 Graphics::~Graphics()
@@ -638,6 +646,11 @@ bool Graphics::SetScreenMode(int width, int height, const ScreenModeParams& para
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetScreenMode_D3D11(width, height, params, maximize);;
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetScreenMode_Vulkan(width, height, params, maximize);
 #endif
 
     return {}; // Prevent warning

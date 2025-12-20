@@ -33,27 +33,36 @@ VulkanGraphicsImpl::~VulkanGraphicsImpl()
 
 bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int width, int height)
 {
+    URHO3D_LOGDEBUG("[VULKAN] ========== Beginning Vulkan Initialization ==========");
+    URHO3D_LOGDEBUG(String("[VULKAN] Window size: ") + String(width) + "x" + String(height));
+
     // Store Graphics pointer for context access throughout initialization
     graphics_ = graphics;
 
     // Check shader compiler availability early - prevents silent failures later
+    URHO3D_LOGDEBUG("[VULKAN] Checking shader compiler availability");
     if (!VulkanShaderCompiler::CheckCompilerAvailability())
     {
         URHO3D_LOGERROR("Vulkan initialization aborted: No shader compiler available");
         return false;
     }
+    URHO3D_LOGDEBUG("[VULKAN] Shader compiler check passed");
 
+    URHO3D_LOGDEBUG("[VULKAN] Creating Vulkan instance");
     if (!CreateInstance())
     {
         URHO3D_LOGERROR("Failed to create Vulkan instance");
         return false;
     }
+    URHO3D_LOGDEBUG("[VULKAN] Instance created successfully");
 
+    URHO3D_LOGDEBUG("[VULKAN] Selecting physical device");
     if (!SelectPhysicalDevice())
     {
         URHO3D_LOGERROR("Failed to select physical device");
         return false;
     }
+    URHO3D_LOGDEBUG("[VULKAN] Physical device selected successfully");
 
     if (!FindQueueFamilies())
     {
@@ -103,6 +112,13 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         return false;
     }
 
+    // Create memory allocator BEFORE any image/buffer creation
+    if (!CreateMemoryAllocator())
+    {
+        URHO3D_LOGERROR("Failed to create memory allocator");
+        return false;
+    }
+
     if (!CreateFramebuffers())
     {
         URHO3D_LOGERROR("Failed to create framebuffers");
@@ -132,12 +148,6 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
     if (!CreateSynchronizationPrimitives())
     {
         URHO3D_LOGERROR("Failed to create synchronization primitives");
-        return false;
-    }
-
-    if (!CreateMemoryAllocator())
-    {
-        URHO3D_LOGERROR("Failed to create memory allocator");
         return false;
     }
 
@@ -759,6 +769,7 @@ VkPipeline VulkanGraphicsImpl::GetGraphicsPipeline(const VkGraphicsPipelineCreat
 
 bool VulkanGraphicsImpl::CreateInstance()
 {
+    URHO3D_LOGDEBUG("[VULKAN] CreateInstance: Getting required extensions from SDL");
     // Get required extensions from SDL
     unsigned int extensionCount = 0;
     const char** extensionNames = nullptr;
@@ -768,6 +779,7 @@ bool VulkanGraphicsImpl::CreateInstance()
         URHO3D_LOGERROR("Failed to get Vulkan instance extension count");
         return false;
     }
+    URHO3D_LOGDEBUG(String("[VULKAN] SDL requires ") + String(extensionCount) + " Vulkan extensions");
 
     Vector<const char*> extensions(extensionCount);
     if (!SDL_Vulkan_GetInstanceExtensions(nullptr, &extensionCount, !extensions.Empty() ? &extensions[0] : nullptr))
@@ -775,6 +787,7 @@ bool VulkanGraphicsImpl::CreateInstance()
         URHO3D_LOGERROR("Failed to get Vulkan instance extensions");
         return false;
     }
+    URHO3D_LOGDEBUG("[VULKAN] SDL extension names retrieved");
 
     // Add validation layer extension if available
     const char* validationLayerName = "VK_LAYER_KHRONOS_validation";
@@ -820,20 +833,38 @@ bool VulkanGraphicsImpl::CreateInstance()
     createInfo.enabledLayerCount = layers.Size();
     createInfo.ppEnabledLayerNames = !layers.Empty() ? &layers[0] : nullptr;
 
-    if (vkCreateInstance(&createInfo, nullptr, &instance_) != VK_SUCCESS)
+    URHO3D_LOGDEBUG(String("[VULKAN] Calling vkCreateInstance with ") + String(extensionCount) +
+                    " extensions and " + String((unsigned)layers.Size()) + " layers");
+    VkResult result = vkCreateInstance(&createInfo, nullptr, &instance_);
+    URHO3D_LOGDEBUG(String("[VULKAN] vkCreateInstance returned: ") + String((int)result) + " (VK_SUCCESS=0)");
+
+    if (result != VK_SUCCESS)
     {
-        URHO3D_LOGERROR("Failed to create Vulkan instance");
+        URHO3D_LOGERROR(String("Failed to create Vulkan instance (error code: ") + String((int)result) + ")");
         return false;
     }
 
     URHO3D_LOGINFO("Vulkan instance created successfully");
+    URHO3D_LOGDEBUG(String("[VULKAN] Instance handle: ") + String((unsigned long long)instance_));
     return true;
 }
 
 bool VulkanGraphicsImpl::SelectPhysicalDevice()
 {
+    URHO3D_LOGDEBUG("[VULKAN] Entering SelectPhysicalDevice()");
+    URHO3D_LOGDEBUG(String("[VULKAN] Instance handle: ") + String((unsigned long long)instance_));
+
     uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance_, &deviceCount, nullptr);
+    URHO3D_LOGDEBUG("[VULKAN] Calling vkEnumeratePhysicalDevices (first call to get count)");
+    VkResult result = vkEnumeratePhysicalDevices(instance_, &deviceCount, nullptr);
+    URHO3D_LOGDEBUG(String("[VULKAN] vkEnumeratePhysicalDevices returned: ") + String((int)result) +
+                    " (VK_SUCCESS=0), deviceCount=" + String(deviceCount));
+
+    if (result != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR(String("vkEnumeratePhysicalDevices failed with error code: ") + String((int)result));
+        return false;
+    }
 
     if (deviceCount == 0)
     {
@@ -841,8 +872,11 @@ bool VulkanGraphicsImpl::SelectPhysicalDevice()
         return false;
     }
 
+    URHO3D_LOGDEBUG(String("[VULKAN] Found ") + String(deviceCount) + " physical device(s)");
     Vector<VkPhysicalDevice> devices(deviceCount);
-    vkEnumeratePhysicalDevices(instance_, &deviceCount, !devices.Empty() ? &devices[0] : nullptr);
+    URHO3D_LOGDEBUG("[VULKAN] Calling vkEnumeratePhysicalDevices (second call to get devices)");
+    result = vkEnumeratePhysicalDevices(instance_, &deviceCount, !devices.Empty() ? &devices[0] : nullptr);
+    URHO3D_LOGDEBUG(String("[VULKAN] vkEnumeratePhysicalDevices (2nd call) returned: ") + String((int)result));
 
     // Priority: discrete GPU > integrated GPU > virtual GPU > CPU
     int selectedIndex = -1;
@@ -867,10 +901,16 @@ bool VulkanGraphicsImpl::SelectPhysicalDevice()
     };
 
     // First pass: Try to find the best match (discrete GPU preferred)
+    URHO3D_LOGDEBUG(String("[VULKAN] Iterating through ") + String(deviceCount) + " device(s)");
     for (uint32_t i = 0; i < deviceCount; ++i)
     {
+        URHO3D_LOGDEBUG(String("[VULKAN] Processing device ") + String(i) + " / " + String(deviceCount - 1));
+        URHO3D_LOGDEBUG(String("[VULKAN] Device handle: ") + String((unsigned long long)devices[i]));
+
         VkPhysicalDeviceProperties properties;
+        URHO3D_LOGDEBUG(String("[VULKAN] Calling vkGetPhysicalDeviceProperties for device ") + String(i));
         vkGetPhysicalDeviceProperties(devices[i], &properties);
+        URHO3D_LOGDEBUG("[VULKAN] vkGetPhysicalDeviceProperties returned successfully");
 
         URHO3D_LOGINFO(String("GPU ") + String((int)i) + ": " + properties.deviceName +
                       " (" + getDeviceTypeName(properties.deviceType) + ")");
@@ -1323,6 +1363,7 @@ bool VulkanGraphicsImpl::CreateSwapchain(int width, int height)
     createInfo.preTransform = capabilities.currentTransform;
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
+    URHO3D_LOGDEBUG("[VULKAN] Calling vkCreateSwapchainKHR");
     if (vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapchain_) != VK_SUCCESS)
     {
         URHO3D_LOGERROR("Failed to create swapchain");
@@ -1370,6 +1411,13 @@ bool VulkanGraphicsImpl::CreateSwapchain(int width, int height)
 
 bool VulkanGraphicsImpl::CreateDepthBuffer(VkFormat format, int width, int height, VkSampleCountFlagBits sampleCount)
 {
+    // Validate dimensions
+    if (width <= 0 || height <= 0)
+    {
+        URHO3D_LOGWARNING("CreateDepthBuffer called with invalid dimensions: " + String(width) + "x" + String(height));
+        return false;
+    }
+
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -1616,7 +1664,7 @@ bool VulkanGraphicsImpl::CreateFullScreenQuad()
     vertexBufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 
     VmaAllocationCreateInfo vertexAllocInfo{};
-    vertexAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    vertexAllocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;  // Allow CPU mapping for initial upload
 
     if (vmaCreateBuffer(allocator_, &vertexBufferInfo, &vertexAllocInfo,
                        &fullScreenQuadVertexBuffer_, &fullScreenQuadVertexAlloc_, nullptr) != VK_SUCCESS)
@@ -1639,7 +1687,7 @@ bool VulkanGraphicsImpl::CreateFullScreenQuad()
     indexBufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 
     VmaAllocationCreateInfo indexAllocInfo{};
-    indexAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    indexAllocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;  // Allow CPU mapping for initial upload
 
     if (vmaCreateBuffer(allocator_, &indexBufferInfo, &indexAllocInfo,
                        &fullScreenQuadIndexBuffer_, &fullScreenQuadIndexAlloc_, nullptr) != VK_SUCCESS)
@@ -3004,9 +3052,8 @@ VkDescriptorSet VulkanGraphicsImpl::CreateTextureDescriptorSet()
             continue;
 
         // Get sampler from sampler cache
-        VkSampler sampler = GetSampler(texture->GetFilterMode(), texture->GetAddressMode(COORD_U),
-                                        texture->GetAddressMode(COORD_V), texture->GetAddressMode(COORD_W),
-                                        texture->GetBorderColor());
+        // TODO: Use full sampler parameters (U/V/W address modes, border color) when available
+        VkSampler sampler = samplerCache_->GetSampler(texture->GetFilterMode(), texture->GetAddressMode(COORD_U), 1);
         if (!sampler)
             continue;
 
@@ -3172,6 +3219,115 @@ void VulkanGraphicsImpl::BindConstantBufferDescriptorSet(VkDescriptorSet descrip
     );
 
     URHO3D_LOGDEBUG("BindConstantBufferDescriptorSet: Bound constant buffer descriptor set to Set 2");
+}
+
+// Phase 36D: Input Attachment Descriptor Management
+VkDescriptorSet VulkanGraphicsImpl::CreateInputAttachmentDescriptorSet()
+{
+    if (!device_ || !descriptorPool_ || inputAttachmentLayout_ == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("CreateInputAttachmentDescriptorSet: Invalid state (device, pool, or layout is null)");
+        return VK_NULL_HANDLE;
+    }
+
+    // Validate G-Buffer image views exist
+    if (gBufferAlbedoView_ == VK_NULL_HANDLE || gBufferNormalView_ == VK_NULL_HANDLE ||
+        depthImageView_ == VK_NULL_HANDLE || gBufferSpecularView_ == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGWARNING("CreateInputAttachmentDescriptorSet: G-Buffer views not initialized");
+        return VK_NULL_HANDLE;
+    }
+
+    // Allocate descriptor set from pool using input attachment layout (Set 3)
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &inputAttachmentLayout_;
+
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkResult result = vkAllocateDescriptorSets(device_, &allocInfo, &descriptorSet);
+    if (result != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("CreateInputAttachmentDescriptorSet: Failed to allocate descriptor set");
+        return VK_NULL_HANDLE;
+    }
+
+    // Create descriptor writes for G-Buffer input attachments
+    VkDescriptorImageInfo imageInfos[4];
+
+    // Binding 0: Albedo (diffuse color)
+    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[0].imageView = gBufferAlbedoView_;
+    imageInfos[0].sampler = VK_NULL_HANDLE;  // Input attachments don't use samplers
+
+    // Binding 1: Normal (world space normals)
+    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[1].imageView = gBufferNormalView_;
+    imageInfos[1].sampler = VK_NULL_HANDLE;
+
+    // Binding 2: Depth (scene depth for lighting calculations)
+    imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    imageInfos[2].imageView = depthImageView_;
+    imageInfos[2].sampler = VK_NULL_HANDLE;
+
+    // Binding 3: Specular (specular properties)
+    imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[3].imageView = gBufferSpecularView_;
+    imageInfos[3].sampler = VK_NULL_HANDLE;
+
+    // Create write descriptors for all 4 input attachments
+    VkWriteDescriptorSet writes[4];
+    for (unsigned i = 0; i < 4; ++i)
+    {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].pNext = nullptr;
+        writes[i].dstSet = descriptorSet;
+        writes[i].dstBinding = i;
+        writes[i].dstArrayElement = 0;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        writes[i].descriptorCount = 1;
+        writes[i].pImageInfo = &imageInfos[i];
+        writes[i].pBufferInfo = nullptr;
+        writes[i].pTexelBufferView = nullptr;
+    }
+
+    // Update descriptor set with all input attachment bindings
+    vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
+
+    URHO3D_LOGDEBUG("CreateInputAttachmentDescriptorSet: Created descriptor set with 4 G-Buffer input attachments");
+
+    return descriptorSet;
+}
+
+void VulkanGraphicsImpl::BindInputAttachmentDescriptorSet(VkDescriptorSet descriptorSet)
+{
+    if (!descriptorSet || currentPipelineLayout_ == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGWARNING("BindInputAttachmentDescriptorSet: Invalid descriptor set or pipeline layout");
+        return;
+    }
+
+    VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
+    if (!cmdBuffer)
+    {
+        URHO3D_LOGERROR("BindInputAttachmentDescriptorSet: No command buffer available");
+        return;
+    }
+
+    // Bind input attachment descriptor set to Set 3 (tile-local G-Buffer for deferred lighting)
+    vkCmdBindDescriptorSets(
+        cmdBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        currentPipelineLayout_,
+        3,  // Set 3 (Set 0: materials, Set 1: textures, Set 2: constants, Set 3: input attachments)
+        1,  // Bind 1 descriptor set
+        &descriptorSet,
+        0,  // No dynamic offsets
+        nullptr
+    );
+
+    URHO3D_LOGDEBUG("BindInputAttachmentDescriptorSet: Bound input attachment descriptor set to Set 3");
 }
 
 } // namespace Urho3D

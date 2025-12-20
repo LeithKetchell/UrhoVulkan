@@ -154,18 +154,31 @@ if (RPI)
 endif ()
 if (CMAKE_PROJECT_NAME STREQUAL Urho3D)
     set (URHO3D_LIB_TYPE STATIC CACHE STRING "Specify Urho3D library type, possible values are STATIC (default) and SHARED (not available for Emscripten)")
-    # Non-Windows platforms always use OpenGL, the URHO3D_OPENGL variable will always be forced to TRUE, i.e. it is not an option at all
+
+    # Vulkan support is enabled by default on Linux, Windows, and via MoltenVK on Apple platforms
+    # Also supported natively on Android (API 24+). Not available on Web (Emscripten)
+    # Define Vulkan FIRST so we can use it to determine OpenGL default
+    cmake_dependent_option (URHO3D_VULKAN "Use Vulkan (Linux, Windows, macOS, iOS, tvOS, Android)" TRUE "NOT WEB" FALSE)
+
+    # On non-Windows platforms, default to OpenGL ONLY if Vulkan is not enabled
     # Windows platform has URHO3D_OPENGL as an option, MSVC compiler default to FALSE (i.e. prefers Direct3D) while MinGW compiler default to TRUE
     if (MINGW)
         set (DEFAULT_OPENGL TRUE)
     endif ()
-    cmake_dependent_option (URHO3D_OPENGL "Use OpenGL (Windows platform only)" "${DEFAULT_OPENGL}" WIN32 TRUE)
+
+    # On non-Windows: Use OpenGL as fallback only if Vulkan is disabled
+    # On Windows: Use explicit DEFAULT_OPENGL value
+    if (NOT WIN32 AND NOT URHO3D_VULKAN)
+        set (DEFAULT_OPENGL_FALLBACK TRUE)
+    else()
+        set (DEFAULT_OPENGL_FALLBACK "${DEFAULT_OPENGL}")
+    endif()
+
+    cmake_dependent_option (URHO3D_OPENGL "Use OpenGL" "${DEFAULT_OPENGL_FALLBACK}" "WIN32 OR NOT URHO3D_VULKAN" FALSE)
+
     # On Windows platform Direct3D11 can be optionally chosen
     # Using Direct3D11 on non-MSVC compiler may require copying and renaming Microsoft official libraries (.lib to .a), else link failures or non-functioning graphics may result
     cmake_dependent_option (URHO3D_D3D11 "Use Direct3D11 (Windows platform only)" TRUE "WIN32" FALSE)
-    # Vulkan support is enabled by default on Linux, Windows, and via MoltenVK on Apple platforms
-    # Also supported natively on Android (API 24+). Not available on Web (Emscripten)
-    cmake_dependent_option (URHO3D_VULKAN "Use Vulkan (Linux, Windows, macOS, iOS, tvOS, Android)" TRUE "NOT WEB" FALSE)
     if (X86 OR E2K OR WEB)
         # TODO: Rename URHO3D_SSE to URHO3D_SIMD
         if (MINGW AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.9.1)

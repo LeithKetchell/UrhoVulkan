@@ -4,6 +4,7 @@
 
 #include "../Audio/Audio.h"
 #include "../Audio/AudioDefs.h"
+#include "../Audio/AudioMixing_SIMD.h"
 #include "../Audio/BufferedSoundStream.h"
 #include "../Audio/OggVorbisSoundStream.h"
 #include "../Audio/Sound.h"
@@ -35,6 +36,7 @@
 #include "../Core/Timer.h"
 #include "../Core/Variant.h"
 #include "../Core/WorkQueue.h"
+#include "../Core/WorkStealingDeque.h"
 
 #ifdef URHO3D_DATABASE
 #include "../Database/Database.h"
@@ -49,6 +51,7 @@
 #include "../Graphics/AnimationController.h"
 #include "../Graphics/AnimationState.h"
 #include "../Graphics/Batch.h"
+#include "../Graphics/BatchSort_Parallel.h"
 #include "../Graphics/BillboardSet.h"
 #include "../Graphics/Camera.h"
 #include "../Graphics/CustomGeometry.h"
@@ -63,8 +66,10 @@
 #include "../Graphics/OcclusionBuffer.h"
 #include "../Graphics/Octree.h"
 #include "../Graphics/OctreeQuery.h"
+#include "../Graphics/ParticleBuffer.h"
 #include "../Graphics/ParticleEffect.h"
 #include "../Graphics/ParticleEmitter.h"
+#include "../Graphics/ProfilerUI.h"
 #include "../Graphics/RenderPath.h"
 #include "../Graphics/Renderer.h"
 #include "../Graphics/RibbonTrail.h"
@@ -93,6 +98,12 @@
 #include "../GraphicsAPI/Texture3D.h"
 #include "../GraphicsAPI/TextureCube.h"
 #include "../GraphicsAPI/VertexBuffer.h"
+#include "../GraphicsAPI/Vulkan/VulkanBatchDispatcher.h"
+#include "../GraphicsAPI/Vulkan/VulkanIndirectDrawManager.h"
+#include "../GraphicsAPI/Vulkan/VulkanInstanceBufferManager.h"
+#include "../GraphicsAPI/Vulkan/VulkanInstanceData.h"
+#include "../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h"
+#include "../GraphicsAPI/Vulkan/VulkanSamplerCache.h"
 
 #ifdef URHO3D_IK
 #include "../IK/IK.h"

@@ -1070,6 +1070,7 @@ private:
 #ifdef URHO3D_VULKAN
     // Vulkan graphics API proxy functions
     void Constructor_Vulkan();
+    bool SetScreenMode_Vulkan(int width, int height, const ScreenModeParams& params, bool maximize);
     bool BeginFrame_Vulkan();
     void EndFrame_Vulkan();
     void Clear_Vulkan(ClearTargetFlags flags, const Color& color = Color(0.0f, 0.0f, 0.0f, 0.0f), float depth = 1.0f, u32 stencil = 0);

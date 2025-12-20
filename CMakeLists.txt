@@ -33,15 +33,17 @@ if (URHO3D_VULKAN)
     message(STATUS "Vulkan support: ENABLED")
     # Note: URHO3D_VULKAN is defined in the generated Urho3D.h header (Source/Urho3D/CMakeLists.txt)
     # No need to add it as a compiler definition here to avoid redefinition warnings
-    # Disable SDL Vulkan detection to avoid configuration issues
-    # Urho3D handles Vulkan integration separately
-    set(VIDEO_VULKAN OFF CACHE BOOL "Disable SDL Vulkan" FORCE)
+    # Enable SDL Vulkan support for window creation
+    set(VIDEO_VULKAN ON CACHE BOOL "Enable SDL Vulkan" FORCE)
 else()
     message(STATUS "Vulkan support: DISABLED")
     set(VIDEO_VULKAN OFF CACHE BOOL "Disable SDL Vulkan" FORCE)
 endif()
 
-# Ensure only one graphics backend is enabled per build
+# Include UrhoCommon.cmake module after setting project name
+include (UrhoCommon)
+
+# Ensure only one graphics backend is enabled per build (MUST be after UrhoCommon include)
 set(_BACKEND_COUNT 0)
 if (URHO3D_OPENGL)
     math(EXPR _BACKEND_COUNT "${_BACKEND_COUNT} + 1")
@@ -56,9 +58,6 @@ endif()
 if (_BACKEND_COUNT GREATER 1)
     message(FATAL_ERROR "Only one graphics backend (URHO3D_OPENGL, URHO3D_D3D11, URHO3D_VULKAN) can be enabled per build")
 endif()
-
-# Include UrhoCommon.cmake module after setting project name
-include (UrhoCommon)
 
 # Setup SDK install destinations
 set (PATH_SUFFIX Urho3D)

@@ -172,6 +172,10 @@ bool Engine::Initialize(const VariantMap& parameters)
     gapi = GAPI_D3D11;
 #endif
 
+#ifdef URHO3D_VULKAN
+    gapi = GAPI_VULKAN;
+#endif
+
     // Use command line parameters
 
 #ifdef URHO3D_OPENGL
@@ -184,6 +188,12 @@ bool Engine::Initialize(const VariantMap& parameters)
     bool gapi_d3d11 = GetParameter(parameters, EP_DIRECT3D11, false).GetBool();
     if (gapi_d3d11)
         gapi = GAPI_D3D11;
+#endif
+
+#ifdef URHO3D_VULKAN
+    bool gapi_vulkan = GetParameter(parameters, EP_VULKAN, false).GetBool();
+    if (gapi_vulkan)
+        gapi = GAPI_VULKAN;
 #endif
 
     if (gapi == GAPI_NONE)

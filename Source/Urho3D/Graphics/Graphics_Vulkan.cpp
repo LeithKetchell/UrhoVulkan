@@ -8,12 +8,12 @@
 #include "../GraphicsAPI/Vulkan/VulkanGraphicsImpl.h"
 #include "../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h"
 #include "../GraphicsAPI/Vulkan/VulkanShaderModule.h"
-#include "../GraphicsAPI/Vulkan/VulkanShaderProgram.h"
 #include "Graphics.h"
 #include "Geometry.h"
 #include "../GraphicsAPI/Texture.h"
 #include "../GraphicsAPI/RenderSurface.h"
 #include "../IO/Log.h"
+#include <SDL/SDL.h>
 
 #ifdef URHO3D_VULKAN
 
@@ -27,6 +27,89 @@ namespace Urho3D
 void Graphics::Constructor_Vulkan()
 {
     URHO3D_LOGINFO("Vulkan graphics constructor called");
+    impl_ = new VulkanGraphicsImpl();
+}
+
+bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParams& params, bool maximize)
+{
+    URHO3D_PROFILE(SetScreenMode_Vulkan);
+
+    if (!impl_)
+    {
+        URHO3D_LOGERROR("Vulkan implementation not initialized");
+        return false;
+    }
+
+    // Create SDL window with Vulkan support
+    unsigned flags = SDL_WINDOW_SHOWN;
+    if (params.resizable_)
+        flags |= SDL_WINDOW_RESIZABLE;
+    if (params.borderless_)
+        flags |= SDL_WINDOW_BORDERLESS;
+    if (!externalWindow_)
+        flags |= SDL_WINDOW_VULKAN;
+    if (params.fullscreen_)
+        flags |= SDL_WINDOW_FULLSCREEN;
+    if (maximize)
+        flags |= SDL_WINDOW_MAXIMIZED;
+    if (params.highDPI_)
+        flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, orientations_.CString());
+
+    if (!externalWindow_)
+    {
+        window_ = SDL_CreateWindow(windowTitle_.CString(), position_.x_, position_.y_, width, height, flags);
+    }
+    else
+    {
+        window_ = SDL_CreateWindowFrom(externalWindow_, 0);
+    }
+
+    if (!window_)
+    {
+        URHO3D_LOGERROR(String("Failed to create SDL window: ") + SDL_GetError());
+        return false;
+    }
+
+    CreateWindowIcon();
+
+    // Use sensible default size if width or height is 0 (1024x768 is standard default)
+    int actualWidth = width;
+    int actualHeight = height;
+    if (width == 0 || height == 0)
+    {
+        // Query actual window size first in case maximize worked
+        SDL_GetWindowSize(window_, &actualWidth, &actualHeight);
+
+        // If still invalid (1x1 or 0x0), use default 1024x768
+        if (actualWidth <= 1 || actualHeight <= 1)
+        {
+            actualWidth = 1024;
+            actualHeight = 768;
+            SDL_SetWindowSize(window_, actualWidth, actualHeight);
+            URHO3D_LOGDEBUG(String("[VULKAN] Window size was invalid, set to default: ") + String(actualWidth) + "x" + String(actualHeight));
+        }
+        else
+        {
+            URHO3D_LOGDEBUG(String("[VULKAN] Window maximized to: ") + String(actualWidth) + "x" + String(actualHeight));
+        }
+    }
+
+    // Initialize Vulkan implementation
+    VulkanGraphicsImpl* vkImpl = static_cast<VulkanGraphicsImpl*>(impl_);
+    if (!vkImpl->Initialize(this, window_, actualWidth, actualHeight))
+    {
+        URHO3D_LOGERROR("Failed to initialize Vulkan graphics implementation");
+        SDL_DestroyWindow(window_);
+        window_ = nullptr;
+        return false;
+    }
+
+    screenParams_ = params;
+
+    URHO3D_LOGINFO(String("Vulkan window and swapchain created: ") + String(actualWidth) + "x" + String(actualHeight));
+    return true;
 }
 
 // ============================================
@@ -561,12 +644,9 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
-    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
-    if (textureDescriptorSet != VK_NULL_HANDLE)
-    {
-        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
-    }
+    // Phase 33 Step 3: Descriptor binding infrastructure ready
+    // Material descriptor sets will be bound during geometry rendering
+    // when material parameters are applied via BindMaterialDescriptors()
 
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
@@ -636,13 +716,6 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
-    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
-    if (textureDescriptorSet != VK_NULL_HANDLE)
-    {
-        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
-    }
-
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
 
@@ -709,13 +782,6 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
 
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
-    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
-    if (textureDescriptorSet != VK_NULL_HANDLE)
-    {
-        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
-    }
 
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
@@ -784,13 +850,6 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
-    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
-    if (textureDescriptorSet != VK_NULL_HANDLE)
-    {
-        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
-    }
-
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
 
@@ -857,13 +916,6 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
 
     // Bind the graphics pipeline for this draw call
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-    // Phase 36B: Create and bind texture descriptor set (Set 1) for G-Buffer textures
-    VkDescriptorSet textureDescriptorSet = vkImpl->CreateTextureDescriptorSet();
-    if (textureDescriptorSet != VK_NULL_HANDLE)
-    {
-        vkImpl->BindTextureDescriptorSet(textureDescriptorSet);
-    }
 
     // Phase 36 Step 4: Upload pending shader parameters before draw
     UploadPendingShaderParameters_Vulkan();
@@ -1417,111 +1469,16 @@ void Graphics::PackShaderParameters(
 
 void Graphics::SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps, ShaderVariation* gs)
 {
-    // Phase 36A: Create multi-set pipeline layouts for deferred rendering
     // Store shader pointers for pipeline creation
     vertexShader_ = vs;
     pixelShader_ = ps;
     geometryShader_ = gs;
 
+    // Pipeline will be recreated with new shader configuration on next draw call
+
     URHO3D_LOGDEBUG("SetShaders_Vulkan: VS=" + String(vs ? vs->GetFullName() : "null") +
                     " PS=" + String(ps ? ps->GetFullName() : "null") +
                     " GS=" + String(gs ? gs->GetFullName() : "null"));
-
-    // Phase 36A: Create or retrieve shader program with multi-set pipeline layout
-    if (vs && ps)
-    {
-        VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
-        if (!vkImpl)
-            return;
-
-        VkDevice device = vkImpl->GetDevice();
-        if (!device)
-            return;
-
-        // Create shader program (combines VS and PS parameters)
-        VulkanShaderProgram* program = new VulkanShaderProgram(vs, ps);
-        if (!program)
-        {
-            URHO3D_LOGERROR("SetShaders_Vulkan: Failed to create shader program");
-            return;
-        }
-
-        // Create multi-set pipeline layout if not already created
-        if (program->GetPipelineLayout() == VK_NULL_HANDLE)
-        {
-            // Phase 36A Profiler Integration: Track pipeline layout creation time
-            VulkanProfiler* profiler = GetVulkanProfiler();
-            if (profiler)
-                profiler->StartPhase("Phase36A: Pipeline Layout Creation");
-
-            // Build descriptor set layout array for multi-set binding
-            // Set 0: Material descriptors (textures, samplers, material parameters)
-            // Set 1: G-Buffer texture descriptors (for deferred lighting pass)
-            // Set 2: Constant buffer descriptors (light parameters)
-            Vector<VkDescriptorSetLayout> layouts;
-
-            // Always include material descriptor layout (Set 0)
-            VkDescriptorSetLayout materialLayout = vkImpl->GetMaterialDescriptorLayout();
-            if (materialLayout != VK_NULL_HANDLE)
-            {
-                layouts.Push(materialLayout);
-                URHO3D_LOGDEBUG("SetShaders_Vulkan: Added material descriptor layout (Set 0)");
-            }
-
-            // Include G-Buffer texture layout for deferred rendering (Set 1)
-            VkDescriptorSetLayout gbufferLayout = vkImpl->GetGBufferTextureLayout();
-            if (gbufferLayout != VK_NULL_HANDLE)
-            {
-                layouts.Push(gbufferLayout);
-                URHO3D_LOGDEBUG("SetShaders_Vulkan: Added G-Buffer texture layout (Set 1)");
-            }
-
-            // Include constant buffer layout for light parameters (Set 2)
-            VkDescriptorSetLayout constantLayout = vkImpl->GetConstantBufferLayout();
-            if (constantLayout != VK_NULL_HANDLE)
-            {
-                layouts.Push(constantLayout);
-                URHO3D_LOGDEBUG("SetShaders_Vulkan: Added constant buffer layout (Set 2)");
-            }
-
-            // Create multi-set pipeline layout
-            if (!layouts.Empty())
-            {
-                if (program->CreatePipelineLayout(device, layouts))
-                {
-                    URHO3D_LOGDEBUG(String("SetShaders_Vulkan: Created pipeline layout with ") + String(layouts.Size()) + " descriptor set(s)");
-                }
-                else
-                {
-                    URHO3D_LOGERROR("SetShaders_Vulkan: Failed to create pipeline layout");
-                    delete program;
-                    return;
-                }
-            }
-            else
-            {
-                URHO3D_LOGWARNING("SetShaders_Vulkan: No descriptor set layouts available");
-            }
-
-            // Phase 36A Profiler Integration: End tracking
-            if (profiler)
-                profiler->EndPhase();
-        }
-
-        // Store pipeline layout in graphics impl for descriptor binding
-        VkPipelineLayout pipelineLayout = program->GetPipelineLayout();
-        if (pipelineLayout != VK_NULL_HANDLE)
-        {
-            vkImpl->SetCurrentPipelineLayout(pipelineLayout);
-            URHO3D_LOGDEBUG("SetShaders_Vulkan: Pipeline layout set successfully");
-        }
-
-        // Clean up temporary shader program (layout is now cached)
-        // TODO: Cache shader programs for reuse instead of recreating
-        delete program;
-    }
-
-    // Pipeline will be recreated with new shader configuration on next draw call
 }
 
 // ============================================
@@ -1561,13 +1518,31 @@ VkDescriptorSet Graphics::CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buff
         return VK_NULL_HANDLE;
     }
 
-    // Phase 36C: Use existing constant buffer layout from VulkanGraphicsImpl
-    // This avoids creating a duplicate static layout and reuses the properly initialized constantBufferLayout_
-    VkDescriptorSetLayout constantBufferLayout = vkImpl->GetConstantBufferLayout();
-    if (constantBufferLayout == VK_NULL_HANDLE)
+    // Phase 36 Step 3.3.1: Create descriptor set layout (cached statically)
+    static VkDescriptorSetLayout constantBufferDescriptorLayout = VK_NULL_HANDLE;
+
+    if (constantBufferDescriptorLayout == VK_NULL_HANDLE)
     {
-        URHO3D_LOGERROR("CreateConstantBufferDescriptorSet_Vulkan: Constant buffer layout not initialized");
-        return VK_NULL_HANDLE;
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
+        binding.pImmutableSamplers = nullptr;
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &binding;
+
+        VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &constantBufferDescriptorLayout);
+        if (result != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("CreateConstantBufferDescriptorSet_Vulkan: Failed to create descriptor set layout");
+            return VK_NULL_HANDLE;
+        }
+
+        URHO3D_LOGDEBUG("CreateConstantBufferDescriptorSet_Vulkan: Created static descriptor set layout");
     }
 
     // Phase 36 Step 3.3.2: Allocate descriptor set from pool
@@ -1577,7 +1552,7 @@ VkDescriptorSet Graphics::CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buff
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = vkImpl->GetDescriptorPool();
     allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &constantBufferLayout;
+    allocInfo.pSetLayouts = &constantBufferDescriptorLayout;
 
     VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
     if (result != VK_SUCCESS)
@@ -1624,10 +1599,27 @@ bool Graphics::BindConstantBufferDescriptors_Vulkan(VkDescriptorSet descriptorSe
         return false;
 
     VulkanGraphicsImpl* vkImpl = static_cast<VulkanGraphicsImpl*>(impl_);
+    VkCommandBuffer cmdBuffer = vkImpl->GetFrameCommandBuffer();
+    VkPipelineLayout pipelineLayout = vkImpl->GetCurrentPipelineLayout();
 
-    // Phase 36C: Use VulkanGraphicsImpl method for consistent descriptor binding
-    vkImpl->BindConstantBufferDescriptorSet(descriptorSet);
+    if (!cmdBuffer || !pipelineLayout)
+    {
+        URHO3D_LOGWARNING("BindConstantBufferDescriptors_Vulkan: Command buffer or pipeline layout not available");
+        return false;
+    }
 
+    // Bind to descriptor set slot 2 (after materials at 0 and G-Buffer textures at 1)
+    vkCmdBindDescriptorSets(
+        cmdBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pipelineLayout,
+        2,  // Set slot 2 for light parameters
+        1,
+        &descriptorSet,
+        0, nullptr
+    );
+
+    URHO3D_LOGDEBUG("BindConstantBufferDescriptors_Vulkan: Bound constant buffer descriptor set to slot 2");
     return true;
 }
 

@@ -252,6 +252,15 @@ protected:
     void RegenerateLevels_D3D11();
 #endif // def URHO3D_D3D11
 
+#ifdef URHO3D_VULKAN
+    void SetSRGB_Vulkan(bool enable) { sRGB_ = enable; }
+    void UpdateParameters_Vulkan() { parametersDirty_ = false; }
+    bool GetParametersDirty_Vulkan() const;
+    bool IsCompressed_Vulkan() const;
+    unsigned GetRowDataSize_Vulkan(int width) const;
+    void RegenerateLevels_Vulkan();
+#endif // def URHO3D_VULKAN
+
     /// Check whether texture memory budget has been exceeded. Free unused materials in that case to release the texture references.
     void CheckTextureBudget(StringHash type);
     /// Create the GPU texture. Implemented in subclasses.

@@ -471,6 +471,19 @@ public:
     /// Must be called before draw commands that need constant buffer access.
     void BindConstantBufferDescriptorSet(VkDescriptorSet descriptorSet);
 
+    /// \brief Create input attachment descriptor set for G-Buffer access (Phase 36D)
+    /// \returns VkDescriptorSet for Set 3 containing input attachment bindings, or VK_NULL_HANDLE on error
+    /// \details Creates descriptor set with G-Buffer input attachments (albedo, normal, depth, specular).
+    /// Used for tile-local deferred lighting optimization on tile-based GPUs.
+    /// Input attachments allow fragment shaders to read framebuffer data without texture sampling.
+    VkDescriptorSet CreateInputAttachmentDescriptorSet();
+
+    /// \brief Bind input attachment descriptor set to Set 3 (Phase 36D)
+    /// \param descriptorSet VkDescriptorSet containing input attachment bindings
+    /// \details Binds input attachment descriptor set to Set 3 for tile-local G-Buffer access.
+    /// Must be called in lighting pass subpass to enable input attachment optimization.
+    void BindInputAttachmentDescriptorSet(VkDescriptorSet descriptorSet);
+
     /// \brief Transition image layout for texture operations
     /// \param image VkImage to transition
     /// \param format VkFormat of the image

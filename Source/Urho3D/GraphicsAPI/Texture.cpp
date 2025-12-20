@@ -326,6 +326,11 @@ bool Texture::IsCompressed() const
         return IsCompressed_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return IsCompressed_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -341,6 +346,11 @@ unsigned Texture::GetRowDataSize(int width) const
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetRowDataSize_D3D11(width);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRowDataSize_Vulkan(width);
 #endif
 
     return {}; // Prevent warning

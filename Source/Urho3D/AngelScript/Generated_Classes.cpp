@@ -143,7 +143,7 @@ static void Register_AsyncProgress(asIScriptEngine* engine)
 static void Register_AttributeInfo(asIScriptEngine* engine)
 {
     // AttributeInfo::AttributeInfo(VariantType type, const char* name, const SharedPtr<AttributeAccessor>& accessor, const char** enumNames, const Variant& defaultValue, AttributeModeFlags mode)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
 
     // AttributeInfo::~AttributeInfo() | Implicitly-declared
     engine->RegisterObjectBehaviour("AttributeInfo", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(AttributeInfo), AS_CALL_CDECL_OBJFIRST);
@@ -156,6 +156,19 @@ static void Register_AttributeInfo(asIScriptEngine* engine)
 
     // AttributeInfo& AttributeInfo::operator =(const AttributeInfo&) | Possible implicitly-declared
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<AttributeInfo>(engine, "AttributeInfo");
+}
+
+// class AudioMixing_SIMD | File: ../Audio/AudioMixing_SIMD.h
+static void Register_AudioMixing_SIMD(asIScriptEngine* engine)
+{
+    RegisterMembers_AudioMixing_SIMD<AudioMixing_SIMD>(engine, "AudioMixing_SIMD");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_AudioMixing_SIMD
+        REGISTER_CLASS_MANUAL_PART_AudioMixing_SIMD();
+    #endif
+
+    // AudioMixing_SIMD& AudioMixing_SIMD::operator =(const AudioMixing_SIMD&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<AudioMixing_SIMD>(engine, "AudioMixing_SIMD");
 }
 
 // struct BackgroundLoadItem | File: ../Resource/BackgroundLoader.h
@@ -174,17 +187,11 @@ static void Register_BackgroundLoadItem(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<BackgroundLoadItem>(engine, "BackgroundLoadItem");
 }
 
-// explicit Batch::Batch(const SourceBatch& rhs)
-static void Batch__Batch_constspSourceBatchamp(Batch* _ptr, const SourceBatch& rhs)
-{
-    new(_ptr) Batch(rhs);
-}
-
 // struct Batch | File: ../Graphics/Batch.h
 static void Register_Batch(asIScriptEngine* engine)
 {
     // explicit Batch::Batch(const SourceBatch& rhs)
-    engine->RegisterObjectBehaviour("Batch", asBEHAVE_CONSTRUCT, "void f(const SourceBatch&in)", AS_FUNCTION_OBJFIRST(Batch__Batch_constspSourceBatchamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constSourceBatch&" can not automatically bind
 
     // Batch::~Batch() | Implicitly-declared
     engine->RegisterObjectBehaviour("Batch", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(Batch), AS_CALL_CDECL_OBJFIRST);
@@ -199,17 +206,11 @@ static void Register_Batch(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<Batch>(engine, "Batch");
 }
 
-// explicit BatchGroupKey::BatchGroupKey(const Batch& batch)
-static void BatchGroupKey__BatchGroupKey_constspBatchamp(BatchGroupKey* _ptr, const Batch& batch)
-{
-    new(_ptr) BatchGroupKey(batch);
-}
-
 // struct BatchGroupKey | File: ../Graphics/Batch.h
 static void Register_BatchGroupKey(asIScriptEngine* engine)
 {
     // explicit BatchGroupKey::BatchGroupKey(const Batch& batch)
-    engine->RegisterObjectBehaviour("BatchGroupKey", asBEHAVE_CONSTRUCT, "void f(const Batch&in)", AS_FUNCTION_OBJFIRST(BatchGroupKey__BatchGroupKey_constspBatchamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constBatch&" can not automatically bind
 
     // BatchGroupKey::~BatchGroupKey() | Implicitly-declared
     engine->RegisterObjectBehaviour("BatchGroupKey", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(BatchGroupKey), AS_CALL_CDECL_OBJFIRST);
@@ -240,6 +241,19 @@ static void Register_BatchQueue(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<BatchQueue>(engine, "BatchQueue");
 }
 
+// class BatchSort_Parallel | File: ../Graphics/BatchSort_Parallel.h
+static void Register_BatchSort_Parallel(asIScriptEngine* engine)
+{
+    RegisterMembers_BatchSort_Parallel<BatchSort_Parallel>(engine, "BatchSort_Parallel");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_BatchSort_Parallel
+        REGISTER_CLASS_MANUAL_PART_BatchSort_Parallel();
+    #endif
+
+    // BatchSort_Parallel& BatchSort_Parallel::operator =(const BatchSort_Parallel&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<BatchSort_Parallel>(engine, "BatchSort_Parallel");
+}
+
 // BiasParameters::BiasParameters(float constantBias, float slopeScaledBias, float normalOffset = 0.0f)
 static void BiasParameters__BiasParameters_float_float_float(BiasParameters* _ptr, float constantBias, float slopeScaledBias, float normalOffset)
 {
@@ -260,12 +274,6 @@ static void Register_BiasParameters(asIScriptEngine* engine)
 
     // BiasParameters& BiasParameters::operator =(const BiasParameters&) | Possible implicitly-declared
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<BiasParameters>(engine, "BiasParameters");
-}
-
-// BigInt::BigInt(const String& str)
-static void BigInt__BigInt_constspStringamp(BigInt* _ptr, const String& str)
-{
-    new(_ptr) BigInt(str);
 }
 
 // BigInt::BigInt(i32 value)
@@ -296,7 +304,8 @@ static void BigInt__BigInt_u64(BigInt* _ptr, u64 value)
 static void Register_BigInt(asIScriptEngine* engine)
 {
     // BigInt::BigInt(const String& str)
-    engine->RegisterObjectBehaviour("BigInt", asBEHAVE_CONSTRUCT, "void f(const String&in)", AS_FUNCTION_OBJFIRST(BigInt__BigInt_constspStringamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constString&" can not automatically bind
+
     // BigInt::BigInt(i32 value)
     engine->RegisterObjectBehaviour("BigInt", asBEHAVE_CONSTRUCT, "void f(int)", AS_FUNCTION_OBJFIRST(BigInt__BigInt_i32), AS_CALL_CDECL_OBJFIRST);
     // BigInt::BigInt(i64 value)
@@ -348,68 +357,32 @@ static void Register_Bone(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<Bone>(engine, "Bone");
 }
 
-// BoundingBox::BoundingBox(const BoundingBox& box) noexcept
-static void BoundingBox__BoundingBox_constspBoundingBoxamp(BoundingBox* _ptr, const BoundingBox& box)
-{
-    new(_ptr) BoundingBox(box);
-}
-
-// explicit BoundingBox::BoundingBox(const Rect& rect) noexcept
-static void BoundingBox__BoundingBox_constspRectamp(BoundingBox* _ptr, const Rect& rect)
-{
-    new(_ptr) BoundingBox(rect);
-}
-
-// BoundingBox::BoundingBox(const Vector3& min, const Vector3& max) noexcept
-static void BoundingBox__BoundingBox_constspVector3amp_constspVector3amp(BoundingBox* _ptr, const Vector3& min, const Vector3& max)
-{
-    new(_ptr) BoundingBox(min, max);
-}
-
 // BoundingBox::BoundingBox(float min, float max) noexcept
 static void BoundingBox__BoundingBox_float_float(BoundingBox* _ptr, float min, float max)
 {
     new(_ptr) BoundingBox(min, max);
 }
 
-// explicit BoundingBox::BoundingBox(const Frustum& frustum)
-static void BoundingBox__BoundingBox_constspFrustumamp(BoundingBox* _ptr, const Frustum& frustum)
-{
-    new(_ptr) BoundingBox(frustum);
-}
-
-// explicit BoundingBox::BoundingBox(const Polyhedron& poly)
-static void BoundingBox__BoundingBox_constspPolyhedronamp(BoundingBox* _ptr, const Polyhedron& poly)
-{
-    new(_ptr) BoundingBox(poly);
-}
-
-// explicit BoundingBox::BoundingBox(const Sphere& sphere)
-static void BoundingBox__BoundingBox_constspSphereamp(BoundingBox* _ptr, const Sphere& sphere)
-{
-    new(_ptr) BoundingBox(sphere);
-}
-
 // class BoundingBox | File: ../Math/BoundingBox.h
 static void Register_BoundingBox(asIScriptEngine* engine)
 {
-    // BoundingBox::BoundingBox(const Vector3* vertices, unsigned count)
-    // Error: type "const Vector3*" can not automatically bind
-
     // BoundingBox::BoundingBox(const BoundingBox& box) noexcept
-    engine->RegisterObjectBehaviour("BoundingBox", asBEHAVE_CONSTRUCT, "void f(const BoundingBox&in)", AS_FUNCTION_OBJFIRST(BoundingBox__BoundingBox_constspBoundingBoxamp), AS_CALL_CDECL_OBJFIRST);
-    // explicit BoundingBox::BoundingBox(const Rect& rect) noexcept
-    engine->RegisterObjectBehaviour("BoundingBox", asBEHAVE_CONSTRUCT, "void f(const Rect&in)", AS_FUNCTION_OBJFIRST(BoundingBox__BoundingBox_constspRectamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constBoundingBox&" can not automatically bind
     // BoundingBox::BoundingBox(const Vector3& min, const Vector3& max) noexcept
-    engine->RegisterObjectBehaviour("BoundingBox", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(BoundingBox__BoundingBox_constspVector3amp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector3&" can not automatically bind
+    // BoundingBox::BoundingBox(const Vector3* vertices, unsigned count)
+    // Error: type "constVector3*" can not automatically bind
+    // explicit BoundingBox::BoundingBox(const Frustum& frustum)
+    // Error: type "constFrustum&" can not automatically bind
+    // explicit BoundingBox::BoundingBox(const Polyhedron& poly)
+    // Error: type "constPolyhedron&" can not automatically bind
+    // explicit BoundingBox::BoundingBox(const Rect& rect) noexcept
+    // Error: type "constRect&" can not automatically bind
+    // explicit BoundingBox::BoundingBox(const Sphere& sphere)
+    // Error: type "constSphere&" can not automatically bind
+
     // BoundingBox::BoundingBox(float min, float max) noexcept
     engine->RegisterObjectBehaviour("BoundingBox", asBEHAVE_CONSTRUCT, "void f(float, float)", AS_FUNCTION_OBJFIRST(BoundingBox__BoundingBox_float_float), AS_CALL_CDECL_OBJFIRST);
-    // explicit BoundingBox::BoundingBox(const Frustum& frustum)
-    engine->RegisterObjectBehaviour("BoundingBox", asBEHAVE_CONSTRUCT, "void f(const Frustum&in)", AS_FUNCTION_OBJFIRST(BoundingBox__BoundingBox_constspFrustumamp), AS_CALL_CDECL_OBJFIRST);
-    // explicit BoundingBox::BoundingBox(const Polyhedron& poly)
-    engine->RegisterObjectBehaviour("BoundingBox", asBEHAVE_CONSTRUCT, "void f(const Polyhedron&in)", AS_FUNCTION_OBJFIRST(BoundingBox__BoundingBox_constspPolyhedronamp), AS_CALL_CDECL_OBJFIRST);
-    // explicit BoundingBox::BoundingBox(const Sphere& sphere)
-    engine->RegisterObjectBehaviour("BoundingBox", asBEHAVE_CONSTRUCT, "void f(const Sphere&in)", AS_FUNCTION_OBJFIRST(BoundingBox__BoundingBox_constspSphereamp), AS_CALL_CDECL_OBJFIRST);
 
     RegisterMembers_BoundingBox<BoundingBox>(engine, "BoundingBox");
 
@@ -456,18 +429,6 @@ static void Register_CharLocation(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<CharLocation>(engine, "CharLocation");
 }
 
-// Color::Color(const Color& color) noexcept = default
-static void Color__Color_constspColoramp(Color* _ptr, const Color& color)
-{
-    new(_ptr) Color(color);
-}
-
-// Color::Color(const Color& color, float a) noexcept
-static void Color__Color_constspColoramp_float(Color* _ptr, const Color& color, float a)
-{
-    new(_ptr) Color(color, a);
-}
-
 // Color::Color(float r, float g, float b) noexcept
 static void Color__Color_float_float_float(Color* _ptr, float r, float g, float b)
 {
@@ -480,38 +441,26 @@ static void Color__Color_float_float_float_float(Color* _ptr, float r, float g, 
     new(_ptr) Color(r, g, b, a);
 }
 
-// explicit Color::Color(const Vector3& color)
-static void Color__Color_constspVector3amp(Color* _ptr, const Vector3& color)
-{
-    new(_ptr) Color(color);
-}
-
-// explicit Color::Color(const Vector4& color)
-static void Color__Color_constspVector4amp(Color* _ptr, const Vector4& color)
-{
-    new(_ptr) Color(color);
-}
-
 // class Color | File: ../Math/Color.h
 static void Register_Color(asIScriptEngine* engine)
 {
-    // explicit Color::Color(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-    // explicit Color::Color(unsigned color, const ChannelMask& mask = ABGR)
-    // Error: type "const ChannelMask&" can not automatically bind
-
     // Color::Color(const Color& color) noexcept = default
-    engine->RegisterObjectBehaviour("Color", asBEHAVE_CONSTRUCT, "void f(const Color&in)", AS_FUNCTION_OBJFIRST(Color__Color_constspColoramp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constColor&" can not automatically bind
     // Color::Color(const Color& color, float a) noexcept
-    engine->RegisterObjectBehaviour("Color", asBEHAVE_CONSTRUCT, "void f(const Color&in, float)", AS_FUNCTION_OBJFIRST(Color__Color_constspColoramp_float), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constColor&" can not automatically bind
+    // explicit Color::Color(const Vector3& color)
+    // Error: type "constVector3&" can not automatically bind
+    // explicit Color::Color(const Vector4& color)
+    // Error: type "constVector4&" can not automatically bind
+    // explicit Color::Color(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+    // explicit Color::Color(unsigned color, const ChannelMask& mask = ABGR)
+    // Error: type "constChannelMask&" can not automatically bind
+
     // Color::Color(float r, float g, float b) noexcept
     engine->RegisterObjectBehaviour("Color", asBEHAVE_CONSTRUCT, "void f(float, float, float)", AS_FUNCTION_OBJFIRST(Color__Color_float_float_float), AS_CALL_CDECL_OBJFIRST);
     // Color::Color(float r, float g, float b, float a) noexcept
     engine->RegisterObjectBehaviour("Color", asBEHAVE_CONSTRUCT, "void f(float, float, float, float)", AS_FUNCTION_OBJFIRST(Color__Color_float_float_float_float), AS_CALL_CDECL_OBJFIRST);
-    // explicit Color::Color(const Vector3& color)
-    engine->RegisterObjectBehaviour("Color", asBEHAVE_CONSTRUCT, "void f(const Vector3&in)", AS_FUNCTION_OBJFIRST(Color__Color_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
-    // explicit Color::Color(const Vector4& color)
-    engine->RegisterObjectBehaviour("Color", asBEHAVE_CONSTRUCT, "void f(const Vector4&in)", AS_FUNCTION_OBJFIRST(Color__Color_constspVector4amp), AS_CALL_CDECL_OBJFIRST);
 
     RegisterMembers_Color<Color>(engine, "Color");
 
@@ -626,17 +575,11 @@ static void Register_CustomGeometryVertex(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<CustomGeometryVertex>(engine, "CustomGeometryVertex");
 }
 
-// DebugLine::DebugLine(const Vector3& start, const Vector3& end, unsigned color)
-static void DebugLine__DebugLine_constspVector3amp_constspVector3amp_unsigned(DebugLine* _ptr, const Vector3& start, const Vector3& end, unsigned color)
-{
-    new(_ptr) DebugLine(start, end, color);
-}
-
 // struct DebugLine | File: ../Graphics/DebugRenderer.h
 static void Register_DebugLine(asIScriptEngine* engine)
 {
     // DebugLine::DebugLine(const Vector3& start, const Vector3& end, unsigned color)
-    engine->RegisterObjectBehaviour("DebugLine", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in, uint)", AS_FUNCTION_OBJFIRST(DebugLine__DebugLine_constspVector3amp_constspVector3amp_unsigned), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector3&" can not automatically bind
 
     // DebugLine::~DebugLine() | Implicitly-declared
     engine->RegisterObjectBehaviour("DebugLine", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(DebugLine), AS_CALL_CDECL_OBJFIRST);
@@ -651,17 +594,11 @@ static void Register_DebugLine(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<DebugLine>(engine, "DebugLine");
 }
 
-// DebugTriangle::DebugTriangle(const Vector3& v1, const Vector3& v2, const Vector3& v3, unsigned color)
-static void DebugTriangle__DebugTriangle_constspVector3amp_constspVector3amp_constspVector3amp_unsigned(DebugTriangle* _ptr, const Vector3& v1, const Vector3& v2, const Vector3& v3, unsigned color)
-{
-    new(_ptr) DebugTriangle(v1, v2, v3, color);
-}
-
 // struct DebugTriangle | File: ../Graphics/DebugRenderer.h
 static void Register_DebugTriangle(asIScriptEngine* engine)
 {
     // DebugTriangle::DebugTriangle(const Vector3& v1, const Vector3& v2, const Vector3& v3, unsigned color)
-    engine->RegisterObjectBehaviour("DebugTriangle", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in, const Vector3&in, uint)", AS_FUNCTION_OBJFIRST(DebugTriangle__DebugTriangle_constspVector3amp_constspVector3amp_constspVector3amp_unsigned), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector3&" can not automatically bind
 
     // DebugTriangle::~DebugTriangle() | Implicitly-declared
     engine->RegisterObjectBehaviour("DebugTriangle", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(DebugTriangle), AS_CALL_CDECL_OBJFIRST);
@@ -692,20 +629,13 @@ static void Register_Decal(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<Decal>(engine, "Decal");
 }
 
-// DecalVertex::DecalVertex(const Vector3& position, const Vector3& normal)
-static void DecalVertex__DecalVertex_constspVector3amp_constspVector3amp(DecalVertex* _ptr, const Vector3& position, const Vector3& normal)
-{
-    new(_ptr) DecalVertex(position, normal);
-}
-
 // struct DecalVertex | File: ../Graphics/DecalSet.h
 static void Register_DecalVertex(asIScriptEngine* engine)
 {
-    // DecalVertex::DecalVertex(const Vector3& position, const Vector3& normal, const float* blendWeights, const unsigned char* blendIndices)
-    // Error: type "const float*" can not automatically bind
-
     // DecalVertex::DecalVertex(const Vector3& position, const Vector3& normal)
-    engine->RegisterObjectBehaviour("DecalVertex", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(DecalVertex__DecalVertex_constspVector3amp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector3&" can not automatically bind
+    // DecalVertex::DecalVertex(const Vector3& position, const Vector3& normal, const float* blendWeights, const unsigned char* blendIndices)
+    // Error: type "constVector3&" can not automatically bind
 
     // DecalVertex::~DecalVertex() | Implicitly-declared
     engine->RegisterObjectBehaviour("DecalVertex", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(DecalVertex), AS_CALL_CDECL_OBJFIRST);
@@ -746,17 +676,11 @@ static void Register_Deserializer(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<Deserializer>(engine, "Deserializer");
 }
 
-// DirtyBits::DirtyBits(const DirtyBits& bits)
-static void DirtyBits__DirtyBits_constspDirtyBitsamp(DirtyBits* _ptr, const DirtyBits& bits)
-{
-    new(_ptr) DirtyBits(bits);
-}
-
 // struct DirtyBits | File: ../Scene/ReplicationState.h
 static void Register_DirtyBits(asIScriptEngine* engine)
 {
     // DirtyBits::DirtyBits(const DirtyBits& bits)
-    engine->RegisterObjectBehaviour("DirtyBits", asBEHAVE_CONSTRUCT, "void f(const DirtyBits&in)", AS_FUNCTION_OBJFIRST(DirtyBits__DirtyBits_constspDirtyBitsamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constDirtyBits&" can not automatically bind
 
     // DirtyBits::~DirtyBits() | Implicitly-declared
     engine->RegisterObjectBehaviour("DirtyBits", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(DirtyBits), AS_CALL_CDECL_OBJFIRST);
@@ -841,17 +765,11 @@ static void Register_FrameInfo(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<FrameInfo>(engine, "FrameInfo");
 }
 
-// Frustum::Frustum(const Frustum& frustum) noexcept
-static void Frustum__Frustum_constspFrustumamp(Frustum* _ptr, const Frustum& frustum)
-{
-    new(_ptr) Frustum(frustum);
-}
-
 // class Frustum | File: ../Math/Frustum.h
 static void Register_Frustum(asIScriptEngine* engine)
 {
     // Frustum::Frustum(const Frustum& frustum) noexcept
-    engine->RegisterObjectBehaviour("Frustum", asBEHAVE_CONSTRUCT, "void f(const Frustum&in)", AS_FUNCTION_OBJFIRST(Frustum__Frustum_constspFrustumamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constFrustum&" can not automatically bind
 
     // Frustum::~Frustum() | Implicitly-declared
     engine->RegisterObjectBehaviour("Frustum", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(Frustum), AS_CALL_CDECL_OBJFIRST);
@@ -991,7 +909,7 @@ static void Register_IndexBufferDesc(asIScriptEngine* engine)
 static void Register_InstanceData(asIScriptEngine* engine)
 {
     // InstanceData::InstanceData(const Matrix3x4* worldTransform, const void* instancingData, float distance)
-    // Error: type "const Matrix3x4*" can not automatically bind
+    // Error: type "constMatrix3x4*" can not automatically bind
 
     // InstanceData::~InstanceData() | Implicitly-declared
     engine->RegisterObjectBehaviour("InstanceData", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(InstanceData), AS_CALL_CDECL_OBJFIRST);
@@ -1006,12 +924,6 @@ static void Register_InstanceData(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<InstanceData>(engine, "InstanceData");
 }
 
-// IntRect::IntRect(const IntVector2& min, const IntVector2& max) noexcept
-static void IntRect__IntRect_constspIntVector2amp_constspIntVector2amp(IntRect* _ptr, const IntVector2& min, const IntVector2& max)
-{
-    new(_ptr) IntRect(min, max);
-}
-
 // IntRect::IntRect(int left, int top, int right, int bottom) noexcept
 static void IntRect__IntRect_int_int_int_int(IntRect* _ptr, int left, int top, int right, int bottom)
 {
@@ -1021,11 +933,11 @@ static void IntRect__IntRect_int_int_int_int(IntRect* _ptr, int left, int top, i
 // class IntRect | File: ../Math/Rect.h
 static void Register_IntRect(asIScriptEngine* engine)
 {
-    // explicit IntRect::IntRect(const int* data) noexcept
-    // Error: type "const int*" can not automatically bind
-
     // IntRect::IntRect(const IntVector2& min, const IntVector2& max) noexcept
-    engine->RegisterObjectBehaviour("IntRect", asBEHAVE_CONSTRUCT, "void f(const IntVector2&in, const IntVector2&in)", AS_FUNCTION_OBJFIRST(IntRect__IntRect_constspIntVector2amp_constspIntVector2amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constIntVector2&" can not automatically bind
+    // explicit IntRect::IntRect(const int* data) noexcept
+    // Error: type "constint*" can not automatically bind
+
     // IntRect::IntRect(int left, int top, int right, int bottom) noexcept
     engine->RegisterObjectBehaviour("IntRect", asBEHAVE_CONSTRUCT, "void f(int, int, int, int)", AS_FUNCTION_OBJFIRST(IntRect__IntRect_int_int_int_int), AS_CALL_CDECL_OBJFIRST);
 
@@ -1045,24 +957,18 @@ static void IntVector2__IntVector2_int_int(IntVector2* _ptr, int x, int y)
     new(_ptr) IntVector2(x, y);
 }
 
-// IntVector2::IntVector2(const IntVector2& rhs) noexcept = default
-static void IntVector2__IntVector2_constspIntVector2amp(IntVector2* _ptr, const IntVector2& rhs)
-{
-    new(_ptr) IntVector2(rhs);
-}
-
 // class IntVector2 | File: ../Math/Vector2.h
 static void Register_IntVector2(asIScriptEngine* engine)
 {
+    // IntVector2::IntVector2(const IntVector2& rhs) noexcept = default
+    // Error: type "constIntVector2&" can not automatically bind
     // explicit IntVector2::IntVector2(const float* data)
-    // Error: type "const float*" can not automatically bind
+    // Error: type "constfloat*" can not automatically bind
     // explicit IntVector2::IntVector2(const int* data) noexcept
-    // Error: type "const int*" can not automatically bind
+    // Error: type "constint*" can not automatically bind
 
     // IntVector2::IntVector2(int x, int y) noexcept
     engine->RegisterObjectBehaviour("IntVector2", asBEHAVE_CONSTRUCT, "void f(int, int)", AS_FUNCTION_OBJFIRST(IntVector2__IntVector2_int_int), AS_CALL_CDECL_OBJFIRST);
-    // IntVector2::IntVector2(const IntVector2& rhs) noexcept = default
-    engine->RegisterObjectBehaviour("IntVector2", asBEHAVE_CONSTRUCT, "void f(const IntVector2&in)", AS_FUNCTION_OBJFIRST(IntVector2__IntVector2_constspIntVector2amp), AS_CALL_CDECL_OBJFIRST);
 
     RegisterMembers_IntVector2<IntVector2>(engine, "IntVector2");
 
@@ -1077,22 +983,16 @@ static void IntVector3__IntVector3_int_int_int(IntVector3* _ptr, int x, int y, i
     new(_ptr) IntVector3(x, y, z);
 }
 
-// IntVector3::IntVector3(const IntVector3& rhs) noexcept = default
-static void IntVector3__IntVector3_constspIntVector3amp(IntVector3* _ptr, const IntVector3& rhs)
-{
-    new(_ptr) IntVector3(rhs);
-}
-
 // class IntVector3 | File: ../Math/Vector3.h
 static void Register_IntVector3(asIScriptEngine* engine)
 {
+    // IntVector3::IntVector3(const IntVector3& rhs) noexcept = default
+    // Error: type "constIntVector3&" can not automatically bind
     // explicit IntVector3::IntVector3(const int* data) noexcept
-    // Error: type "const int*" can not automatically bind
+    // Error: type "constint*" can not automatically bind
 
     // IntVector3::IntVector3(int x, int y, int z) noexcept
     engine->RegisterObjectBehaviour("IntVector3", asBEHAVE_CONSTRUCT, "void f(int, int, int)", AS_FUNCTION_OBJFIRST(IntVector3__IntVector3_int_int_int), AS_CALL_CDECL_OBJFIRST);
-    // IntVector3::IntVector3(const IntVector3& rhs) noexcept = default
-    engine->RegisterObjectBehaviour("IntVector3", asBEHAVE_CONSTRUCT, "void f(const IntVector3&in)", AS_FUNCTION_OBJFIRST(IntVector3__IntVector3_constspIntVector3amp), AS_CALL_CDECL_OBJFIRST);
 
     RegisterMembers_IntVector3<IntVector3>(engine, "IntVector3");
 
@@ -1131,27 +1031,19 @@ static void JSONValue__JSONValue_double(JSONValue* _ptr, double value)
     new(_ptr) JSONValue(value);
 }
 
-// JSONValue::JSONValue(const String& value)
-static void JSONValue__JSONValue_constspStringamp(JSONValue* _ptr, const String& value)
-{
-    new(_ptr) JSONValue(value);
-}
-
-// JSONValue::JSONValue(const JSONValue& value)
-static void JSONValue__JSONValue_constspJSONValueamp(JSONValue* _ptr, const JSONValue& value)
-{
-    new(_ptr) JSONValue(value);
-}
-
 // class JSONValue | File: ../Resource/JSONValue.h
 static void Register_JSONValue(asIScriptEngine* engine)
 {
     // JSONValue::JSONValue(const JSONArray& value)
-    // Error: type "const JSONArray&" can not automatically bind
+    // Error: type "constJSONArray&" can not automatically bind
     // JSONValue::JSONValue(const JSONObject& value)
-    // Error: type "const JSONObject&" can not automatically bind
+    // Error: type "constJSONObject&" can not automatically bind
+    // JSONValue::JSONValue(const JSONValue& value)
+    // Error: type "constJSONValue&" can not automatically bind
+    // JSONValue::JSONValue(const String& value)
+    // Error: type "constString&" can not automatically bind
     // JSONValue::JSONValue(const char* value)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
 
     // JSONValue::JSONValue(bool value)
     engine->RegisterObjectBehaviour("JSONValue", asBEHAVE_CONSTRUCT, "void f(bool)", AS_FUNCTION_OBJFIRST(JSONValue__JSONValue_bool), AS_CALL_CDECL_OBJFIRST);
@@ -1163,10 +1055,6 @@ static void Register_JSONValue(asIScriptEngine* engine)
     engine->RegisterObjectBehaviour("JSONValue", asBEHAVE_CONSTRUCT, "void f(float)", AS_FUNCTION_OBJFIRST(JSONValue__JSONValue_float), AS_CALL_CDECL_OBJFIRST);
     // JSONValue::JSONValue(double value)
     engine->RegisterObjectBehaviour("JSONValue", asBEHAVE_CONSTRUCT, "void f(double)", AS_FUNCTION_OBJFIRST(JSONValue__JSONValue_double), AS_CALL_CDECL_OBJFIRST);
-    // JSONValue::JSONValue(const String& value)
-    engine->RegisterObjectBehaviour("JSONValue", asBEHAVE_CONSTRUCT, "void f(const String&in)", AS_FUNCTION_OBJFIRST(JSONValue__JSONValue_constspStringamp), AS_CALL_CDECL_OBJFIRST);
-    // JSONValue::JSONValue(const JSONValue& value)
-    engine->RegisterObjectBehaviour("JSONValue", asBEHAVE_CONSTRUCT, "void f(const JSONValue&in)", AS_FUNCTION_OBJFIRST(JSONValue__JSONValue_constspJSONValueamp), AS_CALL_CDECL_OBJFIRST);
 
     // JSONValue::~JSONValue()
     engine->RegisterObjectBehaviour("JSONValue", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(JSONValue), AS_CALL_CDECL_OBJFIRST);
@@ -1290,6 +1178,22 @@ static void Register_ListNodeBase(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<ListNodeBase>(engine, "ListNodeBase");
 }
 
+// struct MaterialDescriptorKey | File: ../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h
+static void Register_MaterialDescriptorKey(asIScriptEngine* engine)
+{
+    // MaterialDescriptorKey::~MaterialDescriptorKey() | Implicitly-declared
+    engine->RegisterObjectBehaviour("MaterialDescriptorKey", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(MaterialDescriptorKey), AS_CALL_CDECL_OBJFIRST);
+
+    RegisterMembers_MaterialDescriptorKey<MaterialDescriptorKey>(engine, "MaterialDescriptorKey");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_MaterialDescriptorKey
+        REGISTER_CLASS_MANUAL_PART_MaterialDescriptorKey();
+    #endif
+
+    // MaterialDescriptorKey& MaterialDescriptorKey::operator =(const MaterialDescriptorKey&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<MaterialDescriptorKey>(engine, "MaterialDescriptorKey");
+}
+
 // struct MaterialShaderParameter | File: ../Graphics/Material.h
 static void Register_MaterialShaderParameter(asIScriptEngine* engine)
 {
@@ -1306,12 +1210,6 @@ static void Register_MaterialShaderParameter(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<MaterialShaderParameter>(engine, "MaterialShaderParameter");
 }
 
-// Matrix2::Matrix2(const Matrix2& matrix) noexcept = default
-static void Matrix2__Matrix2_constspMatrix2amp(Matrix2* _ptr, const Matrix2& matrix)
-{
-    new(_ptr) Matrix2(matrix);
-}
-
 // Matrix2::Matrix2(float v00, float v01, float v10, float v11) noexcept
 static void Matrix2__Matrix2_float_float_float_float(Matrix2* _ptr, float v00, float v01, float v10, float v11)
 {
@@ -1321,11 +1219,11 @@ static void Matrix2__Matrix2_float_float_float_float(Matrix2* _ptr, float v00, f
 // class Matrix2 | File: ../Math/Matrix2.h
 static void Register_Matrix2(asIScriptEngine* engine)
 {
-    // explicit Matrix2::Matrix2(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
     // Matrix2::Matrix2(const Matrix2& matrix) noexcept = default
-    engine->RegisterObjectBehaviour("Matrix2", asBEHAVE_CONSTRUCT, "void f(const Matrix2&in)", AS_FUNCTION_OBJFIRST(Matrix2__Matrix2_constspMatrix2amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constMatrix2&" can not automatically bind
+    // explicit Matrix2::Matrix2(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Matrix2::Matrix2(float v00, float v01, float v10, float v11) noexcept
     engine->RegisterObjectBehaviour("Matrix2", asBEHAVE_CONSTRUCT, "void f(float, float, float, float)", AS_FUNCTION_OBJFIRST(Matrix2__Matrix2_float_float_float_float), AS_CALL_CDECL_OBJFIRST);
 
@@ -1334,12 +1232,6 @@ static void Register_Matrix2(asIScriptEngine* engine)
     #ifdef REGISTER_CLASS_MANUAL_PART_Matrix2
         REGISTER_CLASS_MANUAL_PART_Matrix2();
     #endif
-}
-
-// Matrix3::Matrix3(const Matrix3& matrix) noexcept = default
-static void Matrix3__Matrix3_constspMatrix3amp(Matrix3* _ptr, const Matrix3& matrix)
-{
-    new(_ptr) Matrix3(matrix);
 }
 
 // Matrix3::Matrix3(float v00, float v01, float v02, float v10, float v11, float v12, float v20, float v21, float v22) noexcept
@@ -1351,11 +1243,11 @@ static void Matrix3__Matrix3_float_float_float_float_float_float_float_float_flo
 // class Matrix3 | File: ../Math/Matrix3.h
 static void Register_Matrix3(asIScriptEngine* engine)
 {
-    // explicit Matrix3::Matrix3(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
     // Matrix3::Matrix3(const Matrix3& matrix) noexcept = default
-    engine->RegisterObjectBehaviour("Matrix3", asBEHAVE_CONSTRUCT, "void f(const Matrix3&in)", AS_FUNCTION_OBJFIRST(Matrix3__Matrix3_constspMatrix3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constMatrix3&" can not automatically bind
+    // explicit Matrix3::Matrix3(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Matrix3::Matrix3(float v00, float v01, float v02, float v10, float v11, float v12, float v20, float v21, float v22) noexcept
     engine->RegisterObjectBehaviour("Matrix3", asBEHAVE_CONSTRUCT, "void f(float, float, float, float, float, float, float, float, float)", AS_FUNCTION_OBJFIRST(Matrix3__Matrix3_float_float_float_float_float_float_float_float_float), AS_CALL_CDECL_OBJFIRST);
 
@@ -1366,78 +1258,36 @@ static void Register_Matrix3(asIScriptEngine* engine)
     #endif
 }
 
-// Matrix3x4::Matrix3x4(const Matrix3x4& matrix) noexcept = default
-static void Matrix3x4__Matrix3x4_constspMatrix3x4amp(Matrix3x4* _ptr, const Matrix3x4& matrix)
-{
-    new(_ptr) Matrix3x4(matrix);
-}
-
-// explicit Matrix3x4::Matrix3x4(const Matrix3& matrix) noexcept
-static void Matrix3x4__Matrix3x4_constspMatrix3amp(Matrix3x4* _ptr, const Matrix3& matrix)
-{
-    new(_ptr) Matrix3x4(matrix);
-}
-
-// explicit Matrix3x4::Matrix3x4(const Matrix4& matrix) noexcept
-static void Matrix3x4__Matrix3x4_constspMatrix4amp(Matrix3x4* _ptr, const Matrix4& matrix)
-{
-    new(_ptr) Matrix3x4(matrix);
-}
-
 // Matrix3x4::Matrix3x4(float v00, float v01, float v02, float v03, float v10, float v11, float v12, float v13, float v20, float v21, float v22, float v23) noexcept
 static void Matrix3x4__Matrix3x4_float_float_float_float_float_float_float_float_float_float_float_float(Matrix3x4* _ptr, float v00, float v01, float v02, float v03, float v10, float v11, float v12, float v13, float v20, float v21, float v22, float v23)
 {
     new(_ptr) Matrix3x4(v00, v01, v02, v03, v10, v11, v12, v13, v20, v21, v22, v23);
 }
 
-// Matrix3x4::Matrix3x4(const Vector3& translation, const Quaternion& rotation, float scale) noexcept
-static void Matrix3x4__Matrix3x4_constspVector3amp_constspQuaternionamp_float(Matrix3x4* _ptr, const Vector3& translation, const Quaternion& rotation, float scale)
-{
-    new(_ptr) Matrix3x4(translation, rotation, scale);
-}
-
-// Matrix3x4::Matrix3x4(const Vector3& translation, const Quaternion& rotation, const Vector3& scale) noexcept
-static void Matrix3x4__Matrix3x4_constspVector3amp_constspQuaternionamp_constspVector3amp(Matrix3x4* _ptr, const Vector3& translation, const Quaternion& rotation, const Vector3& scale)
-{
-    new(_ptr) Matrix3x4(translation, rotation, scale);
-}
-
 // class Matrix3x4 | File: ../Math/Matrix3x4.h
 static void Register_Matrix3x4(asIScriptEngine* engine)
 {
-    // explicit Matrix3x4::Matrix3x4(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
     // Matrix3x4::Matrix3x4(const Matrix3x4& matrix) noexcept = default
-    engine->RegisterObjectBehaviour("Matrix3x4", asBEHAVE_CONSTRUCT, "void f(const Matrix3x4&in)", AS_FUNCTION_OBJFIRST(Matrix3x4__Matrix3x4_constspMatrix3x4amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constMatrix3x4&" can not automatically bind
+    // Matrix3x4::Matrix3x4(const Vector3& translation, const Quaternion& rotation, const Vector3& scale) noexcept
+    // Error: type "constVector3&" can not automatically bind
+    // Matrix3x4::Matrix3x4(const Vector3& translation, const Quaternion& rotation, float scale) noexcept
+    // Error: type "constVector3&" can not automatically bind
     // explicit Matrix3x4::Matrix3x4(const Matrix3& matrix) noexcept
-    engine->RegisterObjectBehaviour("Matrix3x4", asBEHAVE_CONSTRUCT, "void f(const Matrix3&in)", AS_FUNCTION_OBJFIRST(Matrix3x4__Matrix3x4_constspMatrix3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constMatrix3&" can not automatically bind
     // explicit Matrix3x4::Matrix3x4(const Matrix4& matrix) noexcept
-    engine->RegisterObjectBehaviour("Matrix3x4", asBEHAVE_CONSTRUCT, "void f(const Matrix4&in)", AS_FUNCTION_OBJFIRST(Matrix3x4__Matrix3x4_constspMatrix4amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constMatrix4&" can not automatically bind
+    // explicit Matrix3x4::Matrix3x4(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Matrix3x4::Matrix3x4(float v00, float v01, float v02, float v03, float v10, float v11, float v12, float v13, float v20, float v21, float v22, float v23) noexcept
     engine->RegisterObjectBehaviour("Matrix3x4", asBEHAVE_CONSTRUCT, "void f(float, float, float, float, float, float, float, float, float, float, float, float)", AS_FUNCTION_OBJFIRST(Matrix3x4__Matrix3x4_float_float_float_float_float_float_float_float_float_float_float_float), AS_CALL_CDECL_OBJFIRST);
-    // Matrix3x4::Matrix3x4(const Vector3& translation, const Quaternion& rotation, float scale) noexcept
-    engine->RegisterObjectBehaviour("Matrix3x4", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Quaternion&in, float)", AS_FUNCTION_OBJFIRST(Matrix3x4__Matrix3x4_constspVector3amp_constspQuaternionamp_float), AS_CALL_CDECL_OBJFIRST);
-    // Matrix3x4::Matrix3x4(const Vector3& translation, const Quaternion& rotation, const Vector3& scale) noexcept
-    engine->RegisterObjectBehaviour("Matrix3x4", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Quaternion&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(Matrix3x4__Matrix3x4_constspVector3amp_constspQuaternionamp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
 
     RegisterMembers_Matrix3x4<Matrix3x4>(engine, "Matrix3x4");
 
     #ifdef REGISTER_CLASS_MANUAL_PART_Matrix3x4
         REGISTER_CLASS_MANUAL_PART_Matrix3x4();
     #endif
-}
-
-// Matrix4::Matrix4(const Matrix4& matrix) noexcept
-static void Matrix4__Matrix4_constspMatrix4amp(Matrix4* _ptr, const Matrix4& matrix)
-{
-    new(_ptr) Matrix4(matrix);
-}
-
-// explicit Matrix4::Matrix4(const Matrix3& matrix) noexcept
-static void Matrix4__Matrix4_constspMatrix3amp(Matrix4* _ptr, const Matrix3& matrix)
-{
-    new(_ptr) Matrix4(matrix);
 }
 
 // Matrix4::Matrix4(float v00, float v01, float v02, float v03, float v10, float v11, float v12, float v13, float v20, float v21, float v22, float v23, float v30, float v31, float v32, float v33) noexcept
@@ -1449,13 +1299,13 @@ static void Matrix4__Matrix4_float_float_float_float_float_float_float_float_flo
 // class Matrix4 | File: ../Math/Matrix4.h
 static void Register_Matrix4(asIScriptEngine* engine)
 {
-    // explicit Matrix4::Matrix4(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
     // Matrix4::Matrix4(const Matrix4& matrix) noexcept
-    engine->RegisterObjectBehaviour("Matrix4", asBEHAVE_CONSTRUCT, "void f(const Matrix4&in)", AS_FUNCTION_OBJFIRST(Matrix4__Matrix4_constspMatrix4amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constMatrix4&" can not automatically bind
     // explicit Matrix4::Matrix4(const Matrix3& matrix) noexcept
-    engine->RegisterObjectBehaviour("Matrix4", asBEHAVE_CONSTRUCT, "void f(const Matrix3&in)", AS_FUNCTION_OBJFIRST(Matrix4__Matrix4_constspMatrix3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constMatrix3&" can not automatically bind
+    // explicit Matrix4::Matrix4(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Matrix4::Matrix4(float v00, float v01, float v02, float v03, float v10, float v11, float v12, float v13, float v20, float v21, float v22, float v23, float v30, float v31, float v32, float v33) noexcept
     engine->RegisterObjectBehaviour("Matrix4", asBEHAVE_CONSTRUCT, "void f(float, float, float, float, float, float, float, float, float, float, float, float, float, float, float, float)", AS_FUNCTION_OBJFIRST(Matrix4__Matrix4_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float), AS_CALL_CDECL_OBJFIRST);
 
@@ -1632,6 +1482,25 @@ static void Register_Particle(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<Particle>(engine, "Particle");
 }
 
+// class ParticleBuffer | File: ../Graphics/ParticleBuffer.h
+static void Register_ParticleBuffer(asIScriptEngine* engine)
+{
+    // explicit ParticleBuffer::ParticleBuffer(uint32_t initialCapacity = 256)
+    // Error: type "uint32_t" can not automatically bind
+
+    // ParticleBuffer::~ParticleBuffer() = default
+    engine->RegisterObjectBehaviour("ParticleBuffer", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(ParticleBuffer), AS_CALL_CDECL_OBJFIRST);
+
+    RegisterMembers_ParticleBuffer<ParticleBuffer>(engine, "ParticleBuffer");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_ParticleBuffer
+        REGISTER_CLASS_MANUAL_PART_ParticleBuffer();
+    #endif
+
+    // ParticleBuffer& ParticleBuffer::operator =(const ParticleBuffer&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<ParticleBuffer>(engine, "ParticleBuffer");
+}
+
 // struct PerThreadSceneResult | File: ../Graphics/View.h
 static void Register_PerThreadSceneResult(asIScriptEngine* engine)
 {
@@ -1648,41 +1517,17 @@ static void Register_PerThreadSceneResult(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<PerThreadSceneResult>(engine, "PerThreadSceneResult");
 }
 
-// Plane::Plane(const Plane& plane) noexcept = default
-static void Plane__Plane_constspPlaneamp(Plane* _ptr, const Plane& plane)
-{
-    new(_ptr) Plane(plane);
-}
-
-// Plane::Plane(const Vector3& v0, const Vector3& v1, const Vector3& v2) noexcept
-static void Plane__Plane_constspVector3amp_constspVector3amp_constspVector3amp(Plane* _ptr, const Vector3& v0, const Vector3& v1, const Vector3& v2)
-{
-    new(_ptr) Plane(v0, v1, v2);
-}
-
-// Plane::Plane(const Vector3& normal, const Vector3& point) noexcept
-static void Plane__Plane_constspVector3amp_constspVector3amp(Plane* _ptr, const Vector3& normal, const Vector3& point)
-{
-    new(_ptr) Plane(normal, point);
-}
-
-// explicit Plane::Plane(const Vector4& plane) noexcept
-static void Plane__Plane_constspVector4amp(Plane* _ptr, const Vector4& plane)
-{
-    new(_ptr) Plane(plane);
-}
-
 // class Plane | File: ../Math/Plane.h
 static void Register_Plane(asIScriptEngine* engine)
 {
     // Plane::Plane(const Plane& plane) noexcept = default
-    engine->RegisterObjectBehaviour("Plane", asBEHAVE_CONSTRUCT, "void f(const Plane&in)", AS_FUNCTION_OBJFIRST(Plane__Plane_constspPlaneamp), AS_CALL_CDECL_OBJFIRST);
-    // Plane::Plane(const Vector3& v0, const Vector3& v1, const Vector3& v2) noexcept
-    engine->RegisterObjectBehaviour("Plane", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(Plane__Plane_constspVector3amp_constspVector3amp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constPlane&" can not automatically bind
     // Plane::Plane(const Vector3& normal, const Vector3& point) noexcept
-    engine->RegisterObjectBehaviour("Plane", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(Plane__Plane_constspVector3amp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector3&" can not automatically bind
+    // Plane::Plane(const Vector3& v0, const Vector3& v1, const Vector3& v2) noexcept
+    // Error: type "constVector3&" can not automatically bind
     // explicit Plane::Plane(const Vector4& plane) noexcept
-    engine->RegisterObjectBehaviour("Plane", asBEHAVE_CONSTRUCT, "void f(const Vector4&in)", AS_FUNCTION_OBJFIRST(Plane__Plane_constspVector4amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector4&" can not automatically bind
 
     RegisterMembers_Plane<Plane>(engine, "Plane");
 
@@ -1691,36 +1536,17 @@ static void Register_Plane(asIScriptEngine* engine)
     #endif
 }
 
-// Polyhedron::Polyhedron(const Polyhedron& polyhedron)
-static void Polyhedron__Polyhedron_constspPolyhedronamp(Polyhedron* _ptr, const Polyhedron& polyhedron)
-{
-    new(_ptr) Polyhedron(polyhedron);
-}
-
-// explicit Polyhedron::Polyhedron(const BoundingBox& box)
-static void Polyhedron__Polyhedron_constspBoundingBoxamp(Polyhedron* _ptr, const BoundingBox& box)
-{
-    new(_ptr) Polyhedron(box);
-}
-
-// explicit Polyhedron::Polyhedron(const Frustum& frustum)
-static void Polyhedron__Polyhedron_constspFrustumamp(Polyhedron* _ptr, const Frustum& frustum)
-{
-    new(_ptr) Polyhedron(frustum);
-}
-
 // class Polyhedron | File: ../Math/Polyhedron.h
 static void Register_Polyhedron(asIScriptEngine* engine)
 {
-    // explicit Polyhedron::Polyhedron(const Vector<Vector<Vector3>>& faces)
-    // Error: type "const Vector<Vector<Vector3>>&" can not automatically bind
-
     // Polyhedron::Polyhedron(const Polyhedron& polyhedron)
-    engine->RegisterObjectBehaviour("Polyhedron", asBEHAVE_CONSTRUCT, "void f(const Polyhedron&in)", AS_FUNCTION_OBJFIRST(Polyhedron__Polyhedron_constspPolyhedronamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constPolyhedron&" can not automatically bind
     // explicit Polyhedron::Polyhedron(const BoundingBox& box)
-    engine->RegisterObjectBehaviour("Polyhedron", asBEHAVE_CONSTRUCT, "void f(const BoundingBox&in)", AS_FUNCTION_OBJFIRST(Polyhedron__Polyhedron_constspBoundingBoxamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constBoundingBox&" can not automatically bind
     // explicit Polyhedron::Polyhedron(const Frustum& frustum)
-    engine->RegisterObjectBehaviour("Polyhedron", asBEHAVE_CONSTRUCT, "void f(const Frustum&in)", AS_FUNCTION_OBJFIRST(Polyhedron__Polyhedron_constspFrustumamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constFrustum&" can not automatically bind
+    // explicit Polyhedron::Polyhedron(const Vector<Vector<Vector3>>& faces)
+    // Error: type "constVector<Vector<Vector3>>&" can not automatically bind
 
     // Polyhedron::~Polyhedron() noexcept = default
     engine->RegisterObjectBehaviour("Polyhedron", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(Polyhedron), AS_CALL_CDECL_OBJFIRST);
@@ -1732,22 +1558,10 @@ static void Register_Polyhedron(asIScriptEngine* engine)
     #endif
 }
 
-// Quaternion::Quaternion(const Quaternion& quat) noexcept
-static void Quaternion__Quaternion_constspQuaternionamp(Quaternion* _ptr, const Quaternion& quat)
-{
-    new(_ptr) Quaternion(quat);
-}
-
 // Quaternion::Quaternion(float w, float x, float y, float z) noexcept
 static void Quaternion__Quaternion_float_float_float_float(Quaternion* _ptr, float w, float x, float y, float z)
 {
     new(_ptr) Quaternion(w, x, y, z);
-}
-
-// Quaternion::Quaternion(float angle, const Vector3& axis) noexcept
-static void Quaternion__Quaternion_float_constspVector3amp(Quaternion* _ptr, float angle, const Vector3& axis)
-{
-    new(_ptr) Quaternion(angle, axis);
 }
 
 // explicit Quaternion::Quaternion(float angle) noexcept
@@ -1762,54 +1576,30 @@ static void Quaternion__Quaternion_float_float_float(Quaternion* _ptr, float x, 
     new(_ptr) Quaternion(x, y, z);
 }
 
-// explicit Quaternion::Quaternion(const Vector3& angles) noexcept
-static void Quaternion__Quaternion_constspVector3amp(Quaternion* _ptr, const Vector3& angles)
-{
-    new(_ptr) Quaternion(angles);
-}
-
-// Quaternion::Quaternion(const Vector3& start, const Vector3& end) noexcept
-static void Quaternion__Quaternion_constspVector3amp_constspVector3amp(Quaternion* _ptr, const Vector3& start, const Vector3& end)
-{
-    new(_ptr) Quaternion(start, end);
-}
-
-// Quaternion::Quaternion(const Vector3& xAxis, const Vector3& yAxis, const Vector3& zAxis) noexcept
-static void Quaternion__Quaternion_constspVector3amp_constspVector3amp_constspVector3amp(Quaternion* _ptr, const Vector3& xAxis, const Vector3& yAxis, const Vector3& zAxis)
-{
-    new(_ptr) Quaternion(xAxis, yAxis, zAxis);
-}
-
-// explicit Quaternion::Quaternion(const Matrix3& matrix) noexcept
-static void Quaternion__Quaternion_constspMatrix3amp(Quaternion* _ptr, const Matrix3& matrix)
-{
-    new(_ptr) Quaternion(matrix);
-}
-
 // class Quaternion | File: ../Math/Quaternion.h
 static void Register_Quaternion(asIScriptEngine* engine)
 {
-    // explicit Quaternion::Quaternion(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
     // Quaternion::Quaternion(const Quaternion& quat) noexcept
-    engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(const Quaternion&in)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_constspQuaternionamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constQuaternion&" can not automatically bind
+    // Quaternion::Quaternion(const Vector3& start, const Vector3& end) noexcept
+    // Error: type "constVector3&" can not automatically bind
+    // Quaternion::Quaternion(const Vector3& xAxis, const Vector3& yAxis, const Vector3& zAxis) noexcept
+    // Error: type "constVector3&" can not automatically bind
+    // Quaternion::Quaternion(float angle, const Vector3& axis) noexcept
+    // Error: type "constVector3&" can not automatically bind
+    // explicit Quaternion::Quaternion(const Matrix3& matrix) noexcept
+    // Error: type "constMatrix3&" can not automatically bind
+    // explicit Quaternion::Quaternion(const Vector3& angles) noexcept
+    // Error: type "constVector3&" can not automatically bind
+    // explicit Quaternion::Quaternion(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Quaternion::Quaternion(float w, float x, float y, float z) noexcept
     engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(float, float, float, float)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_float_float_float_float), AS_CALL_CDECL_OBJFIRST);
-    // Quaternion::Quaternion(float angle, const Vector3& axis) noexcept
-    engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(float, const Vector3&in)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_float_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
     // explicit Quaternion::Quaternion(float angle) noexcept
     engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(float)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_float), AS_CALL_CDECL_OBJFIRST);
     // Quaternion::Quaternion(float x, float y, float z) noexcept
     engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(float, float, float)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_float_float_float), AS_CALL_CDECL_OBJFIRST);
-    // explicit Quaternion::Quaternion(const Vector3& angles) noexcept
-    engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(const Vector3&in)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
-    // Quaternion::Quaternion(const Vector3& start, const Vector3& end) noexcept
-    engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_constspVector3amp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
-    // Quaternion::Quaternion(const Vector3& xAxis, const Vector3& yAxis, const Vector3& zAxis) noexcept
-    engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_constspVector3amp_constspVector3amp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
-    // explicit Quaternion::Quaternion(const Matrix3& matrix) noexcept
-    engine->RegisterObjectBehaviour("Quaternion", asBEHAVE_CONSTRUCT, "void f(const Matrix3&in)", AS_FUNCTION_OBJFIRST(Quaternion__Quaternion_constspMatrix3amp), AS_CALL_CDECL_OBJFIRST);
 
     RegisterMembers_Quaternion<Quaternion>(engine, "Quaternion");
 
@@ -1818,25 +1608,13 @@ static void Register_Quaternion(asIScriptEngine* engine)
     #endif
 }
 
-// Ray::Ray(const Vector3& origin, const Vector3& direction) noexcept
-static void Ray__Ray_constspVector3amp_constspVector3amp(Ray* _ptr, const Vector3& origin, const Vector3& direction)
-{
-    new(_ptr) Ray(origin, direction);
-}
-
-// Ray::Ray(const Ray& ray) noexcept = default
-static void Ray__Ray_constspRayamp(Ray* _ptr, const Ray& ray)
-{
-    new(_ptr) Ray(ray);
-}
-
 // class Ray | File: ../Math/Ray.h
 static void Register_Ray(asIScriptEngine* engine)
 {
-    // Ray::Ray(const Vector3& origin, const Vector3& direction) noexcept
-    engine->RegisterObjectBehaviour("Ray", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(Ray__Ray_constspVector3amp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
     // Ray::Ray(const Ray& ray) noexcept = default
-    engine->RegisterObjectBehaviour("Ray", asBEHAVE_CONSTRUCT, "void f(const Ray&in)", AS_FUNCTION_OBJFIRST(Ray__Ray_constspRayamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constRay&" can not automatically bind
+    // Ray::Ray(const Vector3& origin, const Vector3& direction) noexcept
+    // Error: type "constVector3&" can not automatically bind
 
     RegisterMembers_Ray<Ray>(engine, "Ray");
 
@@ -1861,44 +1639,26 @@ static void Register_RayQueryResult(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<RayQueryResult>(engine, "RayQueryResult");
 }
 
-// Rect::Rect(const Vector2& min, const Vector2& max) noexcept
-static void Rect__Rect_constspVector2amp_constspVector2amp(Rect* _ptr, const Vector2& min, const Vector2& max)
-{
-    new(_ptr) Rect(min, max);
-}
-
 // Rect::Rect(float left, float top, float right, float bottom) noexcept
 static void Rect__Rect_float_float_float_float(Rect* _ptr, float left, float top, float right, float bottom)
 {
     new(_ptr) Rect(left, top, right, bottom);
 }
 
-// explicit Rect::Rect(const Vector4& vector) noexcept
-static void Rect__Rect_constspVector4amp(Rect* _ptr, const Vector4& vector)
-{
-    new(_ptr) Rect(vector);
-}
-
-// Rect::Rect(const Rect& rect) noexcept = default
-static void Rect__Rect_constspRectamp(Rect* _ptr, const Rect& rect)
-{
-    new(_ptr) Rect(rect);
-}
-
 // class Rect | File: ../Math/Rect.h
 static void Register_Rect(asIScriptEngine* engine)
 {
-    // explicit Rect::Rect(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
+    // Rect::Rect(const Rect& rect) noexcept = default
+    // Error: type "constRect&" can not automatically bind
     // Rect::Rect(const Vector2& min, const Vector2& max) noexcept
-    engine->RegisterObjectBehaviour("Rect", asBEHAVE_CONSTRUCT, "void f(const Vector2&in, const Vector2&in)", AS_FUNCTION_OBJFIRST(Rect__Rect_constspVector2amp_constspVector2amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector2&" can not automatically bind
+    // explicit Rect::Rect(const Vector4& vector) noexcept
+    // Error: type "constVector4&" can not automatically bind
+    // explicit Rect::Rect(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Rect::Rect(float left, float top, float right, float bottom) noexcept
     engine->RegisterObjectBehaviour("Rect", asBEHAVE_CONSTRUCT, "void f(float, float, float, float)", AS_FUNCTION_OBJFIRST(Rect__Rect_float_float_float_float), AS_CALL_CDECL_OBJFIRST);
-    // explicit Rect::Rect(const Vector4& vector) noexcept
-    engine->RegisterObjectBehaviour("Rect", asBEHAVE_CONSTRUCT, "void f(const Vector4&in)", AS_FUNCTION_OBJFIRST(Rect__Rect_constspVector4amp), AS_CALL_CDECL_OBJFIRST);
-    // Rect::Rect(const Rect& rect) noexcept = default
-    engine->RegisterObjectBehaviour("Rect", asBEHAVE_CONSTRUCT, "void f(const Rect&in)", AS_FUNCTION_OBJFIRST(Rect__Rect_constspRectamp), AS_CALL_CDECL_OBJFIRST);
 
     RegisterMembers_Rect<Rect>(engine, "Rect");
 
@@ -2006,38 +1766,20 @@ static void ResourceRef__ResourceRef_StringHash(ResourceRef* _ptr, StringHash ty
     new(_ptr) ResourceRef(type);
 }
 
-// ResourceRef::ResourceRef(StringHash type, const String& name)
-static void ResourceRef__ResourceRef_StringHash_constspStringamp(ResourceRef* _ptr, StringHash type, const String& name)
-{
-    new(_ptr) ResourceRef(type, name);
-}
-
-// ResourceRef::ResourceRef(const String& type, const String& name)
-static void ResourceRef__ResourceRef_constspStringamp_constspStringamp(ResourceRef* _ptr, const String& type, const String& name)
-{
-    new(_ptr) ResourceRef(type, name);
-}
-
-// ResourceRef::ResourceRef(const ResourceRef& rhs) = default
-static void ResourceRef__ResourceRef_constspResourceRefamp(ResourceRef* _ptr, const ResourceRef& rhs)
-{
-    new(_ptr) ResourceRef(rhs);
-}
-
 // struct ResourceRef | File: ../Core/Variant.h
 static void Register_ResourceRef(asIScriptEngine* engine)
 {
+    // ResourceRef::ResourceRef(StringHash type, const String& name)
+    // Error: type "constString&" can not automatically bind
+    // ResourceRef::ResourceRef(const ResourceRef& rhs) = default
+    // Error: type "constResourceRef&" can not automatically bind
+    // ResourceRef::ResourceRef(const String& type, const String& name)
+    // Error: type "constString&" can not automatically bind
     // ResourceRef::ResourceRef(const char* type, const char* name)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
 
     // explicit ResourceRef::ResourceRef(StringHash type)
     engine->RegisterObjectBehaviour("ResourceRef", asBEHAVE_CONSTRUCT, "void f(StringHash)", AS_FUNCTION_OBJFIRST(ResourceRef__ResourceRef_StringHash), AS_CALL_CDECL_OBJFIRST);
-    // ResourceRef::ResourceRef(StringHash type, const String& name)
-    engine->RegisterObjectBehaviour("ResourceRef", asBEHAVE_CONSTRUCT, "void f(StringHash, const String&in)", AS_FUNCTION_OBJFIRST(ResourceRef__ResourceRef_StringHash_constspStringamp), AS_CALL_CDECL_OBJFIRST);
-    // ResourceRef::ResourceRef(const String& type, const String& name)
-    engine->RegisterObjectBehaviour("ResourceRef", asBEHAVE_CONSTRUCT, "void f(const String&in, const String&in)", AS_FUNCTION_OBJFIRST(ResourceRef__ResourceRef_constspStringamp_constspStringamp), AS_CALL_CDECL_OBJFIRST);
-    // ResourceRef::ResourceRef(const ResourceRef& rhs) = default
-    engine->RegisterObjectBehaviour("ResourceRef", asBEHAVE_CONSTRUCT, "void f(const ResourceRef&in)", AS_FUNCTION_OBJFIRST(ResourceRef__ResourceRef_constspResourceRefamp), AS_CALL_CDECL_OBJFIRST);
 
     // ResourceRef::~ResourceRef() | Implicitly-declared
     engine->RegisterObjectBehaviour("ResourceRef", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(ResourceRef), AS_CALL_CDECL_OBJFIRST);
@@ -2058,20 +1800,14 @@ static void ResourceRefList__ResourceRefList_StringHash(ResourceRefList* _ptr, S
     new(_ptr) ResourceRefList(type);
 }
 
-// ResourceRefList::ResourceRefList(StringHash type, const StringVector& names)
-static void ResourceRefList__ResourceRefList_StringHash_constspStringVectoramp(ResourceRefList* _ptr, StringHash type, CScriptArray* names_conv)
-{
-    StringVector names = ArrayToVector<String>(names_conv);
-    new(_ptr) ResourceRefList(type, names);
-}
-
 // struct ResourceRefList | File: ../Core/Variant.h
 static void Register_ResourceRefList(asIScriptEngine* engine)
 {
+    // ResourceRefList::ResourceRefList(StringHash type, const StringVector& names)
+    // Error: type "constStringVector&" can not automatically bind
+
     // explicit ResourceRefList::ResourceRefList(StringHash type)
     engine->RegisterObjectBehaviour("ResourceRefList", asBEHAVE_CONSTRUCT, "void f(StringHash)", AS_FUNCTION_OBJFIRST(ResourceRefList__ResourceRefList_StringHash), AS_CALL_CDECL_OBJFIRST);
-    // ResourceRefList::ResourceRefList(StringHash type, const StringVector& names)
-    engine->RegisterObjectBehaviour("ResourceRefList", asBEHAVE_CONSTRUCT, "void f(StringHash, Array<String>@+)", AS_FUNCTION_OBJFIRST(ResourceRefList__ResourceRefList_StringHash_constspStringVectoramp), AS_CALL_CDECL_OBJFIRST);
 
     // ResourceRefList::~ResourceRefList() | Implicitly-declared
     engine->RegisterObjectBehaviour("ResourceRefList", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(ResourceRefList), AS_CALL_CDECL_OBJFIRST);
@@ -2163,33 +1899,15 @@ static void Register_Serializer(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<Serializer>(engine, "Serializer");
 }
 
-// ShaderParameter::ShaderParameter(const String& name, unsigned glType, int location)
-static void ShaderParameter__ShaderParameter_constspStringamp_unsigned_int(ShaderParameter* _ptr, const String& name, unsigned glType, int location)
-{
-    new(_ptr) ShaderParameter(name, glType, location);
-}
-
-// ShaderParameter::ShaderParameter(ShaderType type, const String& name, unsigned offset, unsigned size, unsigned buffer)
-static void ShaderParameter__ShaderParameter_ShaderType_constspStringamp_unsigned_unsigned_unsigned(ShaderParameter* _ptr, ShaderType type, const String& name, unsigned offset, unsigned size, unsigned buffer)
-{
-    new(_ptr) ShaderParameter(type, name, offset, size, buffer);
-}
-
-// ShaderParameter::ShaderParameter(ShaderType type, const String& name, unsigned reg, unsigned regCount)
-static void ShaderParameter__ShaderParameter_ShaderType_constspStringamp_unsigned_unsigned(ShaderParameter* _ptr, ShaderType type, const String& name, unsigned reg, unsigned regCount)
-{
-    new(_ptr) ShaderParameter(type, name, reg, regCount);
-}
-
 // struct ShaderParameter | File: ../GraphicsAPI/ShaderVariation.h
 static void Register_ShaderParameter(asIScriptEngine* engine)
 {
-    // ShaderParameter::ShaderParameter(const String& name, unsigned glType, int location)
-    engine->RegisterObjectBehaviour("ShaderParameter", asBEHAVE_CONSTRUCT, "void f(const String&in, uint, int)", AS_FUNCTION_OBJFIRST(ShaderParameter__ShaderParameter_constspStringamp_unsigned_int), AS_CALL_CDECL_OBJFIRST);
     // ShaderParameter::ShaderParameter(ShaderType type, const String& name, unsigned offset, unsigned size, unsigned buffer)
-    engine->RegisterObjectBehaviour("ShaderParameter", asBEHAVE_CONSTRUCT, "void f(ShaderType, const String&in, uint, uint, uint)", AS_FUNCTION_OBJFIRST(ShaderParameter__ShaderParameter_ShaderType_constspStringamp_unsigned_unsigned_unsigned), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constString&" can not automatically bind
     // ShaderParameter::ShaderParameter(ShaderType type, const String& name, unsigned reg, unsigned regCount)
-    engine->RegisterObjectBehaviour("ShaderParameter", asBEHAVE_CONSTRUCT, "void f(ShaderType, const String&in, uint, uint)", AS_FUNCTION_OBJFIRST(ShaderParameter__ShaderParameter_ShaderType_constspStringamp_unsigned_unsigned), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constString&" can not automatically bind
+    // ShaderParameter::ShaderParameter(const String& name, unsigned glType, int location)
+    // Error: type "constString&" can not automatically bind
 
     // ShaderParameter::~ShaderParameter() | Implicitly-declared
     engine->RegisterObjectBehaviour("ShaderParameter", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(ShaderParameter), AS_CALL_CDECL_OBJFIRST);
@@ -2236,17 +1954,27 @@ static void Register_Skeleton(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<Skeleton>(engine, "Skeleton");
 }
 
-// SourceBatch::SourceBatch(const SourceBatch& batch)
-static void SourceBatch__SourceBatch_constspSourceBatchamp(SourceBatch* _ptr, const SourceBatch& batch)
+// struct SortedBatch | File: ../Graphics/BatchSort_Parallel.h
+static void Register_SortedBatch(asIScriptEngine* engine)
 {
-    new(_ptr) SourceBatch(batch);
+    // SortedBatch::~SortedBatch() | Implicitly-declared
+    engine->RegisterObjectBehaviour("SortedBatch", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(SortedBatch), AS_CALL_CDECL_OBJFIRST);
+
+    RegisterMembers_SortedBatch<SortedBatch>(engine, "SortedBatch");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_SortedBatch
+        REGISTER_CLASS_MANUAL_PART_SortedBatch();
+    #endif
+
+    // SortedBatch& SortedBatch::operator =(const SortedBatch&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<SortedBatch>(engine, "SortedBatch");
 }
 
 // struct SourceBatch | File: ../Graphics/Drawable.h
 static void Register_SourceBatch(asIScriptEngine* engine)
 {
     // SourceBatch::SourceBatch(const SourceBatch& batch)
-    engine->RegisterObjectBehaviour("SourceBatch", asBEHAVE_CONSTRUCT, "void f(const SourceBatch&in)", AS_FUNCTION_OBJFIRST(SourceBatch__SourceBatch_constspSourceBatchamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constSourceBatch&" can not automatically bind
 
     // SourceBatch::~SourceBatch()
     engine->RegisterObjectBehaviour("SourceBatch", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(SourceBatch), AS_CALL_CDECL_OBJFIRST);
@@ -2258,52 +1986,21 @@ static void Register_SourceBatch(asIScriptEngine* engine)
     #endif
 }
 
-// Sphere::Sphere(const Sphere& sphere) noexcept = default
-static void Sphere__Sphere_constspSphereamp(Sphere* _ptr, const Sphere& sphere)
-{
-    new(_ptr) Sphere(sphere);
-}
-
-// Sphere::Sphere(const Vector3& center, float radius) noexcept
-static void Sphere__Sphere_constspVector3amp_float(Sphere* _ptr, const Vector3& center, float radius)
-{
-    new(_ptr) Sphere(center, radius);
-}
-
-// explicit Sphere::Sphere(const BoundingBox& box) noexcept
-static void Sphere__Sphere_constspBoundingBoxamp(Sphere* _ptr, const BoundingBox& box)
-{
-    new(_ptr) Sphere(box);
-}
-
-// explicit Sphere::Sphere(const Frustum& frustum) noexcept
-static void Sphere__Sphere_constspFrustumamp(Sphere* _ptr, const Frustum& frustum)
-{
-    new(_ptr) Sphere(frustum);
-}
-
-// explicit Sphere::Sphere(const Polyhedron& poly) noexcept
-static void Sphere__Sphere_constspPolyhedronamp(Sphere* _ptr, const Polyhedron& poly)
-{
-    new(_ptr) Sphere(poly);
-}
-
 // class Sphere | File: ../Math/Sphere.h
 static void Register_Sphere(asIScriptEngine* engine)
 {
-    // Sphere::Sphere(const Vector3* vertices, i32 count) noexcept
-    // Error: type "const Vector3*" can not automatically bind
-
     // Sphere::Sphere(const Sphere& sphere) noexcept = default
-    engine->RegisterObjectBehaviour("Sphere", asBEHAVE_CONSTRUCT, "void f(const Sphere&in)", AS_FUNCTION_OBJFIRST(Sphere__Sphere_constspSphereamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constSphere&" can not automatically bind
     // Sphere::Sphere(const Vector3& center, float radius) noexcept
-    engine->RegisterObjectBehaviour("Sphere", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, float)", AS_FUNCTION_OBJFIRST(Sphere__Sphere_constspVector3amp_float), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector3&" can not automatically bind
+    // Sphere::Sphere(const Vector3* vertices, i32 count) noexcept
+    // Error: type "constVector3*" can not automatically bind
     // explicit Sphere::Sphere(const BoundingBox& box) noexcept
-    engine->RegisterObjectBehaviour("Sphere", asBEHAVE_CONSTRUCT, "void f(const BoundingBox&in)", AS_FUNCTION_OBJFIRST(Sphere__Sphere_constspBoundingBoxamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constBoundingBox&" can not automatically bind
     // explicit Sphere::Sphere(const Frustum& frustum) noexcept
-    engine->RegisterObjectBehaviour("Sphere", asBEHAVE_CONSTRUCT, "void f(const Frustum&in)", AS_FUNCTION_OBJFIRST(Sphere__Sphere_constspFrustumamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constFrustum&" can not automatically bind
     // explicit Sphere::Sphere(const Polyhedron& poly) noexcept
-    engine->RegisterObjectBehaviour("Sphere", asBEHAVE_CONSTRUCT, "void f(const Polyhedron&in)", AS_FUNCTION_OBJFIRST(Sphere__Sphere_constspPolyhedronamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constPolyhedron&" can not automatically bind
 
     RegisterMembers_Sphere<Sphere>(engine, "Sphere");
 
@@ -2318,28 +2015,16 @@ static void Spline__Spline_InterpolationMode(Spline* _ptr, InterpolationMode mod
     new(_ptr) Spline(mode);
 }
 
-// explicit Spline::Spline(const Vector<Variant>& knots, InterpolationMode mode = BEZIER_CURVE)
-static void Spline__Spline_constspVectorlesVariantgreamp_InterpolationMode(Spline* _ptr, CScriptArray* knots_conv, InterpolationMode mode)
-{
-    Vector<Variant> knots = ArrayToVector<Variant>(knots_conv);
-    new(_ptr) Spline(knots, mode);
-}
-
-// Spline::Spline(const Spline& rhs) = default
-static void Spline__Spline_constspSplineamp(Spline* _ptr, const Spline& rhs)
-{
-    new(_ptr) Spline(rhs);
-}
-
 // class Spline | File: ../Core/Spline.h
 static void Register_Spline(asIScriptEngine* engine)
 {
+    // Spline::Spline(const Spline& rhs) = default
+    // Error: type "constSpline&" can not automatically bind
+    // explicit Spline::Spline(const Vector<Variant>& knots, InterpolationMode mode = BEZIER_CURVE)
+    // Error: type "constVector<Variant>&" can not automatically bind
+
     // explicit Spline::Spline(InterpolationMode mode)
     engine->RegisterObjectBehaviour("Spline", asBEHAVE_CONSTRUCT, "void f(InterpolationMode)", AS_FUNCTION_OBJFIRST(Spline__Spline_InterpolationMode), AS_CALL_CDECL_OBJFIRST);
-    // explicit Spline::Spline(const Vector<Variant>& knots, InterpolationMode mode = BEZIER_CURVE)
-    engine->RegisterObjectBehaviour("Spline", asBEHAVE_CONSTRUCT, "void f(Array<Variant>@+, InterpolationMode = BEZIER_CURVE)", AS_FUNCTION_OBJFIRST(Spline__Spline_constspVectorlesVariantgreamp_InterpolationMode), AS_CALL_CDECL_OBJFIRST);
-    // Spline::Spline(const Spline& rhs) = default
-    engine->RegisterObjectBehaviour("Spline", asBEHAVE_CONSTRUCT, "void f(const Spline&in)", AS_FUNCTION_OBJFIRST(Spline__Spline_constspSplineamp), AS_CALL_CDECL_OBJFIRST);
 
     // Spline::~Spline() | Implicitly-declared
     engine->RegisterObjectBehaviour("Spline", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(Spline), AS_CALL_CDECL_OBJFIRST);
@@ -2367,17 +2052,11 @@ static void Register_StaticModelGeometryData(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<StaticModelGeometryData>(engine, "StaticModelGeometryData");
 }
 
-// StoredLogMessage::StoredLogMessage(const String& message, int level, bool error)
-static void StoredLogMessage__StoredLogMessage_constspStringamp_int_bool(StoredLogMessage* _ptr, const String& message, int level, bool error)
-{
-    new(_ptr) StoredLogMessage(message, level, error);
-}
-
 // struct StoredLogMessage | File: ../IO/Log.h
 static void Register_StoredLogMessage(asIScriptEngine* engine)
 {
     // StoredLogMessage::StoredLogMessage(const String& message, int level, bool error)
-    engine->RegisterObjectBehaviour("StoredLogMessage", asBEHAVE_CONSTRUCT, "void f(const String&in, int, bool)", AS_FUNCTION_OBJFIRST(StoredLogMessage__StoredLogMessage_constspStringamp_int_bool), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constString&" can not automatically bind
 
     // StoredLogMessage::~StoredLogMessage() | Implicitly-declared
     engine->RegisterObjectBehaviour("StoredLogMessage", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(StoredLogMessage), AS_CALL_CDECL_OBJFIRST);
@@ -2392,12 +2071,6 @@ static void Register_StoredLogMessage(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<StoredLogMessage>(engine, "StoredLogMessage");
 }
 
-// String::String(const String& str)
-static void String__String_constspStringamp(String* _ptr, const String& str)
-{
-    new(_ptr) String(str);
-}
-
 // explicit String::String(int value)
 static void String__String_int(String* _ptr, int value)
 {
@@ -2410,26 +2083,8 @@ static void String__String_short(String* _ptr, short value)
     new(_ptr) String(value);
 }
 
-// explicit String::String(long long value)
-static void String__String_longsplong(String* _ptr, long long value)
-{
-    new(_ptr) String(value);
-}
-
 // explicit String::String(unsigned value)
 static void String__String_unsigned(String* _ptr, unsigned value)
-{
-    new(_ptr) String(value);
-}
-
-// explicit String::String(unsigned short value)
-static void String__String_unsignedspshort(String* _ptr, unsigned short value)
-{
-    new(_ptr) String(value);
-}
-
-// explicit String::String(unsigned long long value)
-static void String__String_unsignedsplongsplong(String* _ptr, unsigned long long value)
 {
     new(_ptr) String(value);
 }
@@ -2471,37 +2126,37 @@ static void Register_String(asIScriptEngine* engine)
     // Error: type "String&&" can not automatically bind
     // String::String(char* str)
     // Error: type "char*" can not automatically bind
+    // String::String(const String& str)
+    // Error: type "constString&" can not automatically bind
     // String::String(const char* str)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
     // String::String(const char* str, i32 length)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
     // explicit String::String(const WString& str)
-    // Error: type "WString" can not automatically bind bacause have @nobind mark
+    // Error: type "constWString&" can not automatically bind
     // explicit String::String(const wchar_t* str)
-    // Error: type "const wchar_t*" can not automatically bind
+    // Error: type "constwchar_t*" can not automatically bind
+    // explicit String::String(long long value)
+    // Error: type "longlong" can not automatically bind
     // explicit String::String(long value)
     // Not registered because have @nobind mark
+    // explicit String::String(unsigned long long value)
+    // Error: type "unsignedlonglong" can not automatically bind
     // explicit String::String(unsigned long value)
     // Not registered because have @nobind mark
+    // explicit String::String(unsigned short value)
+    // Error: type "unsignedshort" can not automatically bind
     // explicit String::String(wchar_t* str)
     // Error: type "wchar_t*" can not automatically bind
-    // template <class T> explicit String::String(const T& value)
-    // Error: type "const T&" can not automatically bind
+    // template <> explicit String::String(const T& value)
+    // Error: type "constT&" can not automatically bind
 
-    // String::String(const String& str)
-    engine->RegisterObjectBehaviour("String", asBEHAVE_CONSTRUCT, "void f(const String&in)", AS_FUNCTION_OBJFIRST(String__String_constspStringamp), AS_CALL_CDECL_OBJFIRST);
     // explicit String::String(int value)
     engine->RegisterObjectBehaviour("String", asBEHAVE_CONSTRUCT, "void f(int)", AS_FUNCTION_OBJFIRST(String__String_int), AS_CALL_CDECL_OBJFIRST);
     // explicit String::String(short value)
     engine->RegisterObjectBehaviour("String", asBEHAVE_CONSTRUCT, "void f(int16)", AS_FUNCTION_OBJFIRST(String__String_short), AS_CALL_CDECL_OBJFIRST);
-    // explicit String::String(long long value)
-    engine->RegisterObjectBehaviour("String", asBEHAVE_CONSTRUCT, "void f(int64)", AS_FUNCTION_OBJFIRST(String__String_longsplong), AS_CALL_CDECL_OBJFIRST);
     // explicit String::String(unsigned value)
     engine->RegisterObjectBehaviour("String", asBEHAVE_CONSTRUCT, "void f(uint)", AS_FUNCTION_OBJFIRST(String__String_unsigned), AS_CALL_CDECL_OBJFIRST);
-    // explicit String::String(unsigned short value)
-    engine->RegisterObjectBehaviour("String", asBEHAVE_CONSTRUCT, "void f(uint16)", AS_FUNCTION_OBJFIRST(String__String_unsignedspshort), AS_CALL_CDECL_OBJFIRST);
-    // explicit String::String(unsigned long long value)
-    engine->RegisterObjectBehaviour("String", asBEHAVE_CONSTRUCT, "void f(uint64)", AS_FUNCTION_OBJFIRST(String__String_unsignedsplongsplong), AS_CALL_CDECL_OBJFIRST);
     // explicit String::String(float value)
     engine->RegisterObjectBehaviour("String", asBEHAVE_CONSTRUCT, "void f(float)", AS_FUNCTION_OBJFIRST(String__String_float), AS_CALL_CDECL_OBJFIRST);
     // explicit String::String(double value)
@@ -2523,36 +2178,24 @@ static void Register_String(asIScriptEngine* engine)
     #endif
 }
 
-// StringHash::StringHash(const StringHash& rhs) noexcept = default
-static void StringHash__StringHash_constspStringHashamp(StringHash* _ptr, const StringHash& rhs)
-{
-    new(_ptr) StringHash(rhs);
-}
-
 // explicit constexpr StringHash::StringHash(hash32 value) noexcept
 static void StringHash_constexpr_StringHash_hash32(StringHash* _ptr, hash32 value)
 {
     new(_ptr) StringHash(value);
 }
 
-// StringHash::StringHash(const String& str) noexcept
-static void StringHash__StringHash_constspStringamp(StringHash* _ptr, const String& str)
-{
-    new(_ptr) StringHash(str);
-}
-
 // class StringHash | File: ../Math/StringHash.h
 static void Register_StringHash(asIScriptEngine* engine)
 {
-    // constexpr StringHash::StringHash(const char* str) noexcept
-    // Error: type "const char*" can not automatically bind
-
+    // StringHash::StringHash(const String& str) noexcept
+    // Error: type "constString&" can not automatically bind
     // StringHash::StringHash(const StringHash& rhs) noexcept = default
-    engine->RegisterObjectBehaviour("StringHash", asBEHAVE_CONSTRUCT, "void f(const StringHash&in)", AS_FUNCTION_OBJFIRST(StringHash__StringHash_constspStringHashamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constStringHash&" can not automatically bind
+    // constexpr StringHash::StringHash(const char* str) noexcept
+    // Error: type "constchar*" can not automatically bind
+
     // explicit constexpr StringHash::StringHash(hash32 value) noexcept
     engine->RegisterObjectBehaviour("StringHash", asBEHAVE_CONSTRUCT, "void f(hash32)", AS_FUNCTION_OBJFIRST(StringHash_constexpr_StringHash_hash32), AS_CALL_CDECL_OBJFIRST);
-    // StringHash::StringHash(const String& str) noexcept
-    engine->RegisterObjectBehaviour("StringHash", asBEHAVE_CONSTRUCT, "void f(const String&in)", AS_FUNCTION_OBJFIRST(StringHash__StringHash_constspStringamp), AS_CALL_CDECL_OBJFIRST);
 
     RegisterMembers_StringHash<StringHash>(engine, "StringHash");
 
@@ -2653,17 +2296,11 @@ static void Register_TouchState(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<TouchState>(engine, "TouchState");
 }
 
-// TrailPoint::TrailPoint(const Vector3& position, const Vector3& forward)
-static void TrailPoint__TrailPoint_constspVector3amp_constspVector3amp(TrailPoint* _ptr, const Vector3& position, const Vector3& forward)
-{
-    new(_ptr) TrailPoint(position, forward);
-}
-
 // struct TrailPoint | File: ../Graphics/RibbonTrail.h
 static void Register_TrailPoint(asIScriptEngine* engine)
 {
     // TrailPoint::TrailPoint(const Vector3& position, const Vector3& forward)
-    engine->RegisterObjectBehaviour("TrailPoint", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, const Vector3&in)", AS_FUNCTION_OBJFIRST(TrailPoint__TrailPoint_constspVector3amp_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector3&" can not automatically bind
 
     // TrailPoint::~TrailPoint() | Implicitly-declared
     engine->RegisterObjectBehaviour("TrailPoint", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(TrailPoint), AS_CALL_CDECL_OBJFIRST);
@@ -2682,7 +2319,7 @@ static void Register_TrailPoint(asIScriptEngine* engine)
 static void Register_UIBatch(asIScriptEngine* engine)
 {
     // UIBatch::UIBatch(UIElement* element, BlendMode blendMode, const IntRect& scissor, Texture* texture, Vector<float>* vertexData)
-    // Error: type "Vector<float>*" can not automatically bind
+    // Error: type "constIntRect&" can not automatically bind
 
     // UIBatch::~UIBatch() | Implicitly-declared
     engine->RegisterObjectBehaviour("UIBatch", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(UIBatch), AS_CALL_CDECL_OBJFIRST);
@@ -2735,26 +2372,8 @@ static void Variant__Variant_int(Variant* _ptr, int value)
     new(_ptr) Variant(value);
 }
 
-// Variant::Variant(long long value)
-static void Variant__Variant_longsplong(Variant* _ptr, long long value)
-{
-    new(_ptr) Variant(value);
-}
-
 // Variant::Variant(unsigned value)
 static void Variant__Variant_unsigned(Variant* _ptr, unsigned value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(unsigned long long value)
-static void Variant__Variant_unsignedsplongsplong(Variant* _ptr, unsigned long long value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const StringHash& value)
-static void Variant__Variant_constspStringHashamp(Variant* _ptr, const StringHash& value)
 {
     new(_ptr) Variant(value);
 }
@@ -2777,142 +2396,8 @@ static void Variant__Variant_double(Variant* _ptr, double value)
     new(_ptr) Variant(value);
 }
 
-// Variant::Variant(const Vector2& value)
-static void Variant__Variant_constspVector2amp(Variant* _ptr, const Vector2& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Vector3& value)
-static void Variant__Variant_constspVector3amp(Variant* _ptr, const Vector3& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Vector4& value)
-static void Variant__Variant_constspVector4amp(Variant* _ptr, const Vector4& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Quaternion& value)
-static void Variant__Variant_constspQuaternionamp(Variant* _ptr, const Quaternion& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Color& value)
-static void Variant__Variant_constspColoramp(Variant* _ptr, const Color& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const String& value)
-static void Variant__Variant_constspStringamp(Variant* _ptr, const String& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Vector<byte>& value)
-static void Variant__Variant_constspVectorlesbytegreamp(Variant* _ptr, CScriptArray* value_conv)
-{
-    Vector<byte> value = ArrayToVector<byte>(value_conv);
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const VectorBuffer& value)
-static void Variant__Variant_constspVectorBufferamp(Variant* _ptr, const VectorBuffer& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const ResourceRef& value)
-static void Variant__Variant_constspResourceRefamp(Variant* _ptr, const ResourceRef& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const ResourceRefList& value)
-static void Variant__Variant_constspResourceRefListamp(Variant* _ptr, const ResourceRefList& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const VariantMap& value)
-static void Variant__Variant_constspVariantMapamp(Variant* _ptr, const VariantMap& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const StringVector& value)
-static void Variant__Variant_constspStringVectoramp(Variant* _ptr, CScriptArray* value_conv)
-{
-    StringVector value = ArrayToVector<String>(value_conv);
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Rect& value)
-static void Variant__Variant_constspRectamp(Variant* _ptr, const Rect& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const IntRect& value)
-static void Variant__Variant_constspIntRectamp(Variant* _ptr, const IntRect& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const IntVector2& value)
-static void Variant__Variant_constspIntVector2amp(Variant* _ptr, const IntVector2& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const IntVector3& value)
-static void Variant__Variant_constspIntVector3amp(Variant* _ptr, const IntVector3& value)
-{
-    new(_ptr) Variant(value);
-}
-
 // Variant::Variant(RefCounted* value)
 static void Variant__Variant_RefCountedstar(Variant* _ptr, RefCounted* value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Matrix3& value)
-static void Variant__Variant_constspMatrix3amp(Variant* _ptr, const Matrix3& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Matrix3x4& value)
-static void Variant__Variant_constspMatrix3x4amp(Variant* _ptr, const Matrix3x4& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const Matrix4& value)
-static void Variant__Variant_constspMatrix4amp(Variant* _ptr, const Matrix4& value)
-{
-    new(_ptr) Variant(value);
-}
-
-// Variant::Variant(const String& type, const String& value)
-static void Variant__Variant_constspStringamp_constspStringamp(Variant* _ptr, const String& type, const String& value)
-{
-    new(_ptr) Variant(type, value);
-}
-
-// Variant::Variant(VariantType type, const String& value)
-static void Variant__Variant_VariantType_constspStringamp(Variant* _ptr, VariantType type, const String& value)
-{
-    new(_ptr) Variant(type, value);
-}
-
-// Variant::Variant(const Variant& value)
-static void Variant__Variant_constspVariantamp(Variant* _ptr, const Variant& value)
 {
     new(_ptr) Variant(value);
 }
@@ -2920,83 +2405,83 @@ static void Variant__Variant_constspVariantamp(Variant* _ptr, const Variant& val
 // class Variant | File: ../Core/Variant.h
 static void Register_Variant(asIScriptEngine* engine)
 {
+    // Variant::Variant(VariantType type, const String& value)
+    // Error: type "constString&" can not automatically bind
     // Variant::Variant(VariantType type, const char* value)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
     // Variant::Variant(c32 value)
     // Not registered because have @nobind mark
+    // Variant::Variant(const Color& value)
+    // Error: type "constColor&" can not automatically bind
+    // Variant::Variant(const IntRect& value)
+    // Error: type "constIntRect&" can not automatically bind
+    // Variant::Variant(const IntVector2& value)
+    // Error: type "constIntVector2&" can not automatically bind
+    // Variant::Variant(const IntVector3& value)
+    // Error: type "constIntVector3&" can not automatically bind
+    // Variant::Variant(const Matrix3& value)
+    // Error: type "constMatrix3&" can not automatically bind
+    // Variant::Variant(const Matrix3x4& value)
+    // Error: type "constMatrix3x4&" can not automatically bind
+    // Variant::Variant(const Matrix4& value)
+    // Error: type "constMatrix4&" can not automatically bind
+    // Variant::Variant(const Quaternion& value)
+    // Error: type "constQuaternion&" can not automatically bind
+    // Variant::Variant(const Rect& value)
+    // Error: type "constRect&" can not automatically bind
+    // Variant::Variant(const ResourceRef& value)
+    // Error: type "constResourceRef&" can not automatically bind
+    // Variant::Variant(const ResourceRefList& value)
+    // Error: type "constResourceRefList&" can not automatically bind
+    // Variant::Variant(const String& type, const String& value)
+    // Error: type "constString&" can not automatically bind
+    // Variant::Variant(const String& value)
+    // Error: type "constString&" can not automatically bind
+    // Variant::Variant(const StringHash& value)
+    // Error: type "constStringHash&" can not automatically bind
+    // Variant::Variant(const StringVector& value)
+    // Error: type "constStringVector&" can not automatically bind
+    // Variant::Variant(const Variant& value)
+    // Error: type "constVariant&" can not automatically bind
+    // Variant::Variant(const VariantMap& value)
+    // Error: type "constVariantMap&" can not automatically bind
     // Variant::Variant(const VariantVector& value)
-    // Error: type "const VariantVector&" can not automatically bind
+    // Error: type "constVariantVector&" can not automatically bind
+    // Variant::Variant(const Vector2& value)
+    // Error: type "constVector2&" can not automatically bind
+    // Variant::Variant(const Vector3& value)
+    // Error: type "constVector3&" can not automatically bind
+    // Variant::Variant(const Vector4& value)
+    // Error: type "constVector4&" can not automatically bind
+    // Variant::Variant(const Vector<byte>& value)
+    // Error: type "constVector<byte>&" can not automatically bind
+    // Variant::Variant(const VectorBuffer& value)
+    // Error: type "constVectorBuffer&" can not automatically bind
     // Variant::Variant(const char* type, const char* value)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
     // Variant::Variant(const char* value)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
+    // Variant::Variant(long long value)
+    // Error: type "longlong" can not automatically bind
+    // Variant::Variant(unsigned long long value)
+    // Error: type "unsignedlonglong" can not automatically bind
     // Variant::Variant(void* value)
     // Error: type "void*" can not automatically bind
-    // template <class T> Variant::Variant(const CustomVariantValueImpl<T>& value)
-    // Error: type "const CustomVariantValueImpl<T>&" can not automatically bind
+    // template <> Variant::Variant(const CustomVariantValueImpl<T>& value)
+    // Error: type "constCustomVariantValueImpl<T>&" can not automatically bind
 
     // Variant::Variant(int value)
     engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(int)", AS_FUNCTION_OBJFIRST(Variant__Variant_int), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(long long value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(int64)", AS_FUNCTION_OBJFIRST(Variant__Variant_longsplong), AS_CALL_CDECL_OBJFIRST);
     // Variant::Variant(unsigned value)
     engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(uint)", AS_FUNCTION_OBJFIRST(Variant__Variant_unsigned), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(unsigned long long value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(uint64)", AS_FUNCTION_OBJFIRST(Variant__Variant_unsignedsplongsplong), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const StringHash& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const StringHash&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspStringHashamp), AS_CALL_CDECL_OBJFIRST);
     // Variant::Variant(bool value)
     engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(bool)", AS_FUNCTION_OBJFIRST(Variant__Variant_bool), AS_CALL_CDECL_OBJFIRST);
     // Variant::Variant(float value)
     engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(float)", AS_FUNCTION_OBJFIRST(Variant__Variant_float), AS_CALL_CDECL_OBJFIRST);
     // Variant::Variant(double value)
     engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(double)", AS_FUNCTION_OBJFIRST(Variant__Variant_double), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Vector2& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Vector2&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspVector2amp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Vector3& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Vector3&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Vector4& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Vector4&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspVector4amp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Quaternion& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Quaternion&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspQuaternionamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Color& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Color&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspColoramp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const String& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const String&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspStringamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Vector<byte>& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(Array<byte>@+)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspVectorlesbytegreamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const VectorBuffer& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const VectorBuffer&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspVectorBufferamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const ResourceRef& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const ResourceRef&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspResourceRefamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const ResourceRefList& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const ResourceRefList&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspResourceRefListamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const VariantMap& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const VariantMap&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspVariantMapamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const StringVector& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(Array<String>@+)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspStringVectoramp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Rect& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Rect&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspRectamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const IntRect& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const IntRect&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspIntRectamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const IntVector2& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const IntVector2&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspIntVector2amp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const IntVector3& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const IntVector3&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspIntVector3amp), AS_CALL_CDECL_OBJFIRST);
     // Variant::Variant(RefCounted* value)
     engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(RefCounted@+)", AS_FUNCTION_OBJFIRST(Variant__Variant_RefCountedstar), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Matrix3& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Matrix3&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspMatrix3amp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Matrix3x4& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Matrix3x4&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspMatrix3x4amp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Matrix4& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Matrix4&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspMatrix4amp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const String& type, const String& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const String&in, const String&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspStringamp_constspStringamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(VariantType type, const String& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(VariantType, const String&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_VariantType_constspStringamp), AS_CALL_CDECL_OBJFIRST);
-    // Variant::Variant(const Variant& value)
-    engine->RegisterObjectBehaviour("Variant", asBEHAVE_CONSTRUCT, "void f(const Variant&in)", AS_FUNCTION_OBJFIRST(Variant__Variant_constspVariantamp), AS_CALL_CDECL_OBJFIRST);
 
     // Variant::~Variant()
     engine->RegisterObjectBehaviour("Variant", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(Variant), AS_CALL_CDECL_OBJFIRST);
@@ -3006,18 +2491,6 @@ static void Register_Variant(asIScriptEngine* engine)
     #ifdef REGISTER_CLASS_MANUAL_PART_Variant
         REGISTER_CLASS_MANUAL_PART_Variant();
     #endif
-}
-
-// Vector2::Vector2(const Vector2& vector) noexcept = default
-static void Vector2__Vector2_constspVector2amp(Vector2* _ptr, const Vector2& vector)
-{
-    new(_ptr) Vector2(vector);
-}
-
-// explicit Vector2::Vector2(const IntVector2& vector) noexcept
-static void Vector2__Vector2_constspIntVector2amp(Vector2* _ptr, const IntVector2& vector)
-{
-    new(_ptr) Vector2(vector);
 }
 
 // Vector2::Vector2(float x, float y) noexcept
@@ -3035,13 +2508,13 @@ static void Vector2__Vector2_i32_i32(Vector2* _ptr, i32 x, i32 y)
 // class Vector2 | File: ../Math/Vector2.h
 static void Register_Vector2(asIScriptEngine* engine)
 {
-    // explicit Vector2::Vector2(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
     // Vector2::Vector2(const Vector2& vector) noexcept = default
-    engine->RegisterObjectBehaviour("Vector2", asBEHAVE_CONSTRUCT, "void f(const Vector2&in)", AS_FUNCTION_OBJFIRST(Vector2__Vector2_constspVector2amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector2&" can not automatically bind
     // explicit Vector2::Vector2(const IntVector2& vector) noexcept
-    engine->RegisterObjectBehaviour("Vector2", asBEHAVE_CONSTRUCT, "void f(const IntVector2&in)", AS_FUNCTION_OBJFIRST(Vector2__Vector2_constspIntVector2amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constIntVector2&" can not automatically bind
+    // explicit Vector2::Vector2(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Vector2::Vector2(float x, float y) noexcept
     engine->RegisterObjectBehaviour("Vector2", asBEHAVE_CONSTRUCT, "void f(float, float)", AS_FUNCTION_OBJFIRST(Vector2__Vector2_float_float), AS_CALL_CDECL_OBJFIRST);
     // Vector2::Vector2(i32 x, i32 y) noexcept
@@ -3052,30 +2525,6 @@ static void Register_Vector2(asIScriptEngine* engine)
     #ifdef REGISTER_CLASS_MANUAL_PART_Vector2
         REGISTER_CLASS_MANUAL_PART_Vector2();
     #endif
-}
-
-// Vector3::Vector3(const Vector3& vector) noexcept = default
-static void Vector3__Vector3_constspVector3amp(Vector3* _ptr, const Vector3& vector)
-{
-    new(_ptr) Vector3(vector);
-}
-
-// Vector3::Vector3(const Vector2& vector, float z) noexcept
-static void Vector3__Vector3_constspVector2amp_float(Vector3* _ptr, const Vector2& vector, float z)
-{
-    new(_ptr) Vector3(vector, z);
-}
-
-// explicit Vector3::Vector3(const Vector2& vector) noexcept
-static void Vector3__Vector3_constspVector2amp(Vector3* _ptr, const Vector2& vector)
-{
-    new(_ptr) Vector3(vector);
-}
-
-// explicit Vector3::Vector3(const IntVector3& vector) noexcept
-static void Vector3__Vector3_constspIntVector3amp(Vector3* _ptr, const IntVector3& vector)
-{
-    new(_ptr) Vector3(vector);
 }
 
 // Vector3::Vector3(float x, float y, float z) noexcept
@@ -3093,17 +2542,17 @@ static void Vector3__Vector3_float_float(Vector3* _ptr, float x, float y)
 // class Vector3 | File: ../Math/Vector3.h
 static void Register_Vector3(asIScriptEngine* engine)
 {
-    // explicit Vector3::Vector3(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
-    // Vector3::Vector3(const Vector3& vector) noexcept = default
-    engine->RegisterObjectBehaviour("Vector3", asBEHAVE_CONSTRUCT, "void f(const Vector3&in)", AS_FUNCTION_OBJFIRST(Vector3__Vector3_constspVector3amp), AS_CALL_CDECL_OBJFIRST);
     // Vector3::Vector3(const Vector2& vector, float z) noexcept
-    engine->RegisterObjectBehaviour("Vector3", asBEHAVE_CONSTRUCT, "void f(const Vector2&in, float)", AS_FUNCTION_OBJFIRST(Vector3__Vector3_constspVector2amp_float), AS_CALL_CDECL_OBJFIRST);
-    // explicit Vector3::Vector3(const Vector2& vector) noexcept
-    engine->RegisterObjectBehaviour("Vector3", asBEHAVE_CONSTRUCT, "void f(const Vector2&in)", AS_FUNCTION_OBJFIRST(Vector3__Vector3_constspVector2amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector2&" can not automatically bind
+    // Vector3::Vector3(const Vector3& vector) noexcept = default
+    // Error: type "constVector3&" can not automatically bind
     // explicit Vector3::Vector3(const IntVector3& vector) noexcept
-    engine->RegisterObjectBehaviour("Vector3", asBEHAVE_CONSTRUCT, "void f(const IntVector3&in)", AS_FUNCTION_OBJFIRST(Vector3__Vector3_constspIntVector3amp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constIntVector3&" can not automatically bind
+    // explicit Vector3::Vector3(const Vector2& vector) noexcept
+    // Error: type "constVector2&" can not automatically bind
+    // explicit Vector3::Vector3(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Vector3::Vector3(float x, float y, float z) noexcept
     engine->RegisterObjectBehaviour("Vector3", asBEHAVE_CONSTRUCT, "void f(float, float, float)", AS_FUNCTION_OBJFIRST(Vector3__Vector3_float_float_float), AS_CALL_CDECL_OBJFIRST);
     // Vector3::Vector3(float x, float y) noexcept
@@ -3116,18 +2565,6 @@ static void Register_Vector3(asIScriptEngine* engine)
     #endif
 }
 
-// Vector4::Vector4(const Vector4& vector) noexcept = default
-static void Vector4__Vector4_constspVector4amp(Vector4* _ptr, const Vector4& vector)
-{
-    new(_ptr) Vector4(vector);
-}
-
-// Vector4::Vector4(const Vector3& vector, float w) noexcept
-static void Vector4__Vector4_constspVector3amp_float(Vector4* _ptr, const Vector3& vector, float w)
-{
-    new(_ptr) Vector4(vector, w);
-}
-
 // Vector4::Vector4(float x, float y, float z, float w) noexcept
 static void Vector4__Vector4_float_float_float_float(Vector4* _ptr, float x, float y, float z, float w)
 {
@@ -3137,13 +2574,13 @@ static void Vector4__Vector4_float_float_float_float(Vector4* _ptr, float x, flo
 // class Vector4 | File: ../Math/Vector4.h
 static void Register_Vector4(asIScriptEngine* engine)
 {
-    // explicit Vector4::Vector4(const float* data) noexcept
-    // Error: type "const float*" can not automatically bind
-
-    // Vector4::Vector4(const Vector4& vector) noexcept = default
-    engine->RegisterObjectBehaviour("Vector4", asBEHAVE_CONSTRUCT, "void f(const Vector4&in)", AS_FUNCTION_OBJFIRST(Vector4__Vector4_constspVector4amp), AS_CALL_CDECL_OBJFIRST);
     // Vector4::Vector4(const Vector3& vector, float w) noexcept
-    engine->RegisterObjectBehaviour("Vector4", asBEHAVE_CONSTRUCT, "void f(const Vector3&in, float)", AS_FUNCTION_OBJFIRST(Vector4__Vector4_constspVector3amp_float), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector3&" can not automatically bind
+    // Vector4::Vector4(const Vector4& vector) noexcept = default
+    // Error: type "constVector4&" can not automatically bind
+    // explicit Vector4::Vector4(const float* data) noexcept
+    // Error: type "constfloat*" can not automatically bind
+
     // Vector4::Vector4(float x, float y, float z, float w) noexcept
     engine->RegisterObjectBehaviour("Vector4", asBEHAVE_CONSTRUCT, "void f(float, float, float, float)", AS_FUNCTION_OBJFIRST(Vector4__Vector4_float_float_float_float), AS_CALL_CDECL_OBJFIRST);
 
@@ -3227,6 +2664,89 @@ static void Register_VertexElement(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<VertexElement>(engine, "VertexElement");
 }
 
+// struct VulkanBatchDrawInfo | File: ../GraphicsAPI/Vulkan/VulkanBatchDispatcher.h
+static void Register_VulkanBatchDrawInfo(asIScriptEngine* engine)
+{
+    // VulkanBatchDrawInfo::~VulkanBatchDrawInfo() | Implicitly-declared
+    engine->RegisterObjectBehaviour("VulkanBatchDrawInfo", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(VulkanBatchDrawInfo), AS_CALL_CDECL_OBJFIRST);
+
+    RegisterMembers_VulkanBatchDrawInfo<VulkanBatchDrawInfo>(engine, "VulkanBatchDrawInfo");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanBatchDrawInfo
+        REGISTER_CLASS_MANUAL_PART_VulkanBatchDrawInfo();
+    #endif
+
+    // VulkanBatchDrawInfo& VulkanBatchDrawInfo::operator =(const VulkanBatchDrawInfo&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<VulkanBatchDrawInfo>(engine, "VulkanBatchDrawInfo");
+}
+
+// struct VulkanIndirectDrawCommand | File: ../GraphicsAPI/Vulkan/VulkanIndirectDrawManager.h
+static void Register_VulkanIndirectDrawCommand(asIScriptEngine* engine)
+{
+    // VulkanIndirectDrawCommand::VulkanIndirectDrawCommand(uint32_t idxCount = 0, uint32_t instCount = 1, uint32_t fidx = 0, int32_t voff = 0, uint32_t finst = 0)
+    // Error: type "uint32_t" can not automatically bind
+
+    // VulkanIndirectDrawCommand::~VulkanIndirectDrawCommand() | Implicitly-declared
+    engine->RegisterObjectBehaviour("VulkanIndirectDrawCommand", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(VulkanIndirectDrawCommand), AS_CALL_CDECL_OBJFIRST);
+
+    RegisterMembers_VulkanIndirectDrawCommand<VulkanIndirectDrawCommand>(engine, "VulkanIndirectDrawCommand");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanIndirectDrawCommand
+        REGISTER_CLASS_MANUAL_PART_VulkanIndirectDrawCommand();
+    #endif
+
+    // VulkanIndirectDrawCommand& VulkanIndirectDrawCommand::operator =(const VulkanIndirectDrawCommand&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<VulkanIndirectDrawCommand>(engine, "VulkanIndirectDrawCommand");
+}
+
+// struct VulkanInstanceData | File: ../GraphicsAPI/Vulkan/VulkanInstanceData.h
+static void Register_VulkanInstanceData(asIScriptEngine* engine)
+{
+    // explicit VulkanInstanceData::VulkanInstanceData(const Matrix3x4& worldTransform = Matrix3x4::IDENTITY)
+    // Error: type "constMatrix3x4&" can not automatically bind
+
+    // VulkanInstanceData::~VulkanInstanceData() | Implicitly-declared
+    engine->RegisterObjectBehaviour("VulkanInstanceData", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(VulkanInstanceData), AS_CALL_CDECL_OBJFIRST);
+
+    RegisterMembers_VulkanInstanceData<VulkanInstanceData>(engine, "VulkanInstanceData");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanInstanceData
+        REGISTER_CLASS_MANUAL_PART_VulkanInstanceData();
+    #endif
+
+    // VulkanInstanceData& VulkanInstanceData::operator =(const VulkanInstanceData&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<VulkanInstanceData>(engine, "VulkanInstanceData");
+}
+
+// struct VulkanMaterialConstants | File: ../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h
+static void Register_VulkanMaterialConstants(asIScriptEngine* engine)
+{
+    RegisterMembers_VulkanMaterialConstants<VulkanMaterialConstants>(engine, "VulkanMaterialConstants");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanMaterialConstants
+        REGISTER_CLASS_MANUAL_PART_VulkanMaterialConstants();
+    #endif
+
+    // VulkanMaterialConstants& VulkanMaterialConstants::operator =(const VulkanMaterialConstants&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<VulkanMaterialConstants>(engine, "VulkanMaterialConstants");
+}
+
+// struct VulkanSamplerKey | File: ../GraphicsAPI/Vulkan/VulkanSamplerCache.h
+static void Register_VulkanSamplerKey(asIScriptEngine* engine)
+{
+    // VulkanSamplerKey::~VulkanSamplerKey() | Implicitly-declared
+    engine->RegisterObjectBehaviour("VulkanSamplerKey", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(VulkanSamplerKey), AS_CALL_CDECL_OBJFIRST);
+
+    RegisterMembers_VulkanSamplerKey<VulkanSamplerKey>(engine, "VulkanSamplerKey");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanSamplerKey
+        REGISTER_CLASS_MANUAL_PART_VulkanSamplerKey();
+    #endif
+
+    // VulkanSamplerKey& VulkanSamplerKey::operator =(const VulkanSamplerKey&) | Possible implicitly-declared
+    RegisterImplicitlyDeclaredAssignOperatorIfPossible<VulkanSamplerKey>(engine, "VulkanSamplerKey");
+}
+
 // struct WindowModeParams | File: ../Graphics/Graphics.h
 static void Register_WindowModeParams(asIScriptEngine* engine)
 {
@@ -3243,22 +2763,15 @@ static void Register_WindowModeParams(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<WindowModeParams>(engine, "WindowModeParams");
 }
 
-// XMLElement::XMLElement(const XMLElement& rhs)
-static void XMLElement__XMLElement_constspXMLElementamp(XMLElement* _ptr, const XMLElement& rhs)
-{
-    new(_ptr) XMLElement(rhs);
-}
-
 // class XMLElement | File: ../Resource/XMLElement.h
 static void Register_XMLElement(asIScriptEngine* engine)
 {
     // XMLElement::XMLElement(XMLFile* file, const XPathResultSet* resultSet, const pugi::xpath_node* xpathNode, i32 xpathResultIndex)
-    // Error: type "const XPathResultSet*" can not automatically bind
+    // Error: type "constXPathResultSet*" can not automatically bind
     // XMLElement::XMLElement(XMLFile* file, pugi::xml_node_struct* node)
     // Error: type "pugi::xml_node_struct*" can not automatically bind
-
     // XMLElement::XMLElement(const XMLElement& rhs)
-    engine->RegisterObjectBehaviour("XMLElement", asBEHAVE_CONSTRUCT, "void f(const XMLElement&in)", AS_FUNCTION_OBJFIRST(XMLElement__XMLElement_constspXMLElementamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constXMLElement&" can not automatically bind
 
     // XMLElement::~XMLElement()
     engine->RegisterObjectBehaviour("XMLElement", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(XMLElement), AS_CALL_CDECL_OBJFIRST);
@@ -3270,17 +2783,11 @@ static void Register_XMLElement(asIScriptEngine* engine)
     #endif
 }
 
-// explicit XPathQuery::XPathQuery(const String& queryString, const String& variableString = String::EMPTY)
-static void XPathQuery__XPathQuery_constspStringamp_constspStringamp(XPathQuery* _ptr, const String& queryString, const String& variableString)
-{
-    new(_ptr) XPathQuery(queryString, variableString);
-}
-
 // class XPathQuery | File: ../Resource/XMLElement.h
 static void Register_XPathQuery(asIScriptEngine* engine)
 {
     // explicit XPathQuery::XPathQuery(const String& queryString, const String& variableString = String::EMPTY)
-    engine->RegisterObjectBehaviour("XPathQuery", asBEHAVE_CONSTRUCT, "void f(const String&in, const String&in = String::EMPTY)", AS_FUNCTION_OBJFIRST(XPathQuery__XPathQuery_constspStringamp_constspStringamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constString&" can not automatically bind
 
     // XPathQuery::~XPathQuery()
     engine->RegisterObjectBehaviour("XPathQuery", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(XPathQuery), AS_CALL_CDECL_OBJFIRST);
@@ -3295,20 +2802,13 @@ static void Register_XPathQuery(asIScriptEngine* engine)
     RegisterImplicitlyDeclaredAssignOperatorIfPossible<XPathQuery>(engine, "XPathQuery");
 }
 
-// XPathResultSet::XPathResultSet(const XPathResultSet& rhs)
-static void XPathResultSet__XPathResultSet_constspXPathResultSetamp(XPathResultSet* _ptr, const XPathResultSet& rhs)
-{
-    new(_ptr) XPathResultSet(rhs);
-}
-
 // class XPathResultSet | File: ../Resource/XMLElement.h
 static void Register_XPathResultSet(asIScriptEngine* engine)
 {
     // XPathResultSet::XPathResultSet(XMLFile* file, pugi::xpath_node_set* resultSet)
     // Error: type "pugi::xpath_node_set*" can not automatically bind
-
     // XPathResultSet::XPathResultSet(const XPathResultSet& rhs)
-    engine->RegisterObjectBehaviour("XPathResultSet", asBEHAVE_CONSTRUCT, "void f(const XPathResultSet&in)", AS_FUNCTION_OBJFIRST(XPathResultSet__XPathResultSet_constspXPathResultSetamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constXPathResultSet&" can not automatically bind
 
     // XPathResultSet::~XPathResultSet()
     engine->RegisterObjectBehaviour("XPathResultSet", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(XPathResultSet), AS_CALL_CDECL_OBJFIRST);
@@ -3663,17 +3163,11 @@ static void Register_AttributeAccessor(asIScriptEngine* engine)
     #endif
 }
 
-// explicit BatchGroup::BatchGroup(const Batch& batch)
-static void BatchGroup__BatchGroup_constspBatchamp(BatchGroup* _ptr, const Batch& batch)
-{
-    new(_ptr) BatchGroup(batch);
-}
-
 // struct BatchGroup | File: ../Graphics/Batch.h
 static void Register_BatchGroup(asIScriptEngine* engine)
 {
     // explicit BatchGroup::BatchGroup(const Batch& batch)
-    engine->RegisterObjectBehaviour("BatchGroup", asBEHAVE_CONSTRUCT, "void f(const Batch&in)", AS_FUNCTION_OBJFIRST(BatchGroup__BatchGroup_constspBatchamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constBatch&" can not automatically bind
 
     // BatchGroup::~BatchGroup() = default
     engine->RegisterObjectBehaviour("BatchGroup", asBEHAVE_DESTRUCT, "void f()", AS_DESTRUCTOR(BatchGroup), AS_CALL_CDECL_OBJFIRST);
@@ -3780,17 +3274,11 @@ static void Register_ObjectFactory(asIScriptEngine* engine)
     #endif
 }
 
-// explicit Pass::Pass(const String& name)
-static Pass* Pass__Pass_constspStringamp(const String& name)
-{
-    return new Pass(name);
-}
-
 // class Pass | File: ../Graphics/Technique.h
 static void Register_Pass(asIScriptEngine* engine)
 {
     // explicit Pass::Pass(const String& name)
-    engine->RegisterObjectBehaviour("Pass", asBEHAVE_FACTORY, "Pass@+ f(const String&in)", AS_FUNCTION(Pass__Pass_constspStringamp) , AS_CALL_CDECL);
+    // Error: type "constString&" can not automatically bind
 
     RegisterSubclass<RefCounted, Pass>(engine, "RefCounted", "Pass");
 
@@ -3895,21 +3383,16 @@ static ValueAnimationInfo* ValueAnimationInfo__ValueAnimationInfo_Objectstar_Val
     return new ValueAnimationInfo(target, animation, wrapMode, speed);
 }
 
-// ValueAnimationInfo::ValueAnimationInfo(const ValueAnimationInfo& other)
-static ValueAnimationInfo* ValueAnimationInfo__ValueAnimationInfo_constspValueAnimationInfoamp(const ValueAnimationInfo& other)
-{
-    return new ValueAnimationInfo(other);
-}
-
 // class ValueAnimationInfo | File: ../Scene/ValueAnimationInfo.h
 static void Register_ValueAnimationInfo(asIScriptEngine* engine)
 {
+    // ValueAnimationInfo::ValueAnimationInfo(const ValueAnimationInfo& other)
+    // Error: type "constValueAnimationInfo&" can not automatically bind
+
     // ValueAnimationInfo::ValueAnimationInfo(ValueAnimation* animation, WrapMode wrapMode, float speed)
     engine->RegisterObjectBehaviour("ValueAnimationInfo", asBEHAVE_FACTORY, "ValueAnimationInfo@+ f(ValueAnimation@+, WrapMode, float)", AS_FUNCTION(ValueAnimationInfo__ValueAnimationInfo_ValueAnimationstar_WrapMode_float) , AS_CALL_CDECL);
     // ValueAnimationInfo::ValueAnimationInfo(Object* target, ValueAnimation* animation, WrapMode wrapMode, float speed)
     engine->RegisterObjectBehaviour("ValueAnimationInfo", asBEHAVE_FACTORY, "ValueAnimationInfo@+ f(Object@+, ValueAnimation@+, WrapMode, float)", AS_FUNCTION(ValueAnimationInfo__ValueAnimationInfo_Objectstar_ValueAnimationstar_WrapMode_float) , AS_CALL_CDECL);
-    // ValueAnimationInfo::ValueAnimationInfo(const ValueAnimationInfo& other)
-    engine->RegisterObjectBehaviour("ValueAnimationInfo", asBEHAVE_FACTORY, "ValueAnimationInfo@+ f(const ValueAnimationInfo&in)", AS_FUNCTION(ValueAnimationInfo__ValueAnimationInfo_constspValueAnimationInfoamp) , AS_CALL_CDECL);
 
     RegisterSubclass<RefCounted, ValueAnimationInfo>(engine, "RefCounted", "ValueAnimationInfo");
 
@@ -3917,6 +3400,21 @@ static void Register_ValueAnimationInfo(asIScriptEngine* engine)
 
     #ifdef REGISTER_CLASS_MANUAL_PART_ValueAnimationInfo
         REGISTER_CLASS_MANUAL_PART_ValueAnimationInfo();
+    #endif
+}
+
+// class WorkStealingDeque | File: ../Core/WorkStealingDeque.h
+static void Register_WorkStealingDeque(asIScriptEngine* engine)
+{
+    // explicit WorkStealingDeque::WorkStealingDeque(uint32_t initialCapacity = 256)
+    // Error: type "uint32_t" can not automatically bind
+
+    RegisterSubclass<RefCounted, WorkStealingDeque>(engine, "RefCounted", "WorkStealingDeque");
+
+    RegisterMembers_WorkStealingDeque<WorkStealingDeque>(engine, "WorkStealingDeque");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_WorkStealingDeque
+        REGISTER_CLASS_MANUAL_PART_WorkStealingDeque();
     #endif
 }
 
@@ -3942,18 +3440,11 @@ static void Register_SimpleNavBuildData(asIScriptEngine* engine)
 
 #ifdef URHO3D_NETWORK
 
-// HttpRequest::HttpRequest(const String& url, const String& verb, const Vector<String>& headers, const String& postData)
-static HttpRequest* HttpRequest__HttpRequest_constspStringamp_constspStringamp_constspVectorlesStringgreamp_constspStringamp(const String& url, const String& verb, CScriptArray* headers_conv, const String& postData)
-{
-    Vector<String> headers = ArrayToVector<String>(headers_conv);
-    return new HttpRequest(url, verb, headers, postData);
-}
-
 // class HttpRequest | File: ../Network/HttpRequest.h
 static void Register_HttpRequest(asIScriptEngine* engine)
 {
     // HttpRequest::HttpRequest(const String& url, const String& verb, const Vector<String>& headers, const String& postData)
-    engine->RegisterObjectBehaviour("HttpRequest", asBEHAVE_FACTORY, "HttpRequest@+ f(const String&in, const String&in, Array<String>@+, const String&in)", AS_FUNCTION(HttpRequest__HttpRequest_constspStringamp_constspStringamp_constspVectorlesStringgreamp_constspStringamp) , AS_CALL_CDECL);
+    // Error: type "constString&" can not automatically bind
 
     RegisterSubclass<RefCounted, HttpRequest>(engine, "RefCounted", "HttpRequest");
     RegisterSubclass<Deserializer, HttpRequest>(engine, "Deserializer", "HttpRequest");
@@ -4044,25 +3535,13 @@ static void Register_TmxLayer2D(asIScriptEngine* engine)
 
 #endif // def URHO3D_URHO2D
 
-// AttributeAnimationInfo::AttributeAnimationInfo(Animatable* animatable, const AttributeInfo& attributeInfo, ValueAnimation* attributeAnimation, WrapMode wrapMode, float speed)
-static AttributeAnimationInfo* AttributeAnimationInfo__AttributeAnimationInfo_Animatablestar_constspAttributeInfoamp_ValueAnimationstar_WrapMode_float(Animatable* animatable, const AttributeInfo& attributeInfo, ValueAnimation* attributeAnimation, WrapMode wrapMode, float speed)
-{
-    return new AttributeAnimationInfo(animatable, attributeInfo, attributeAnimation, wrapMode, speed);
-}
-
-// AttributeAnimationInfo::AttributeAnimationInfo(const AttributeAnimationInfo& other)
-static AttributeAnimationInfo* AttributeAnimationInfo__AttributeAnimationInfo_constspAttributeAnimationInfoamp(const AttributeAnimationInfo& other)
-{
-    return new AttributeAnimationInfo(other);
-}
-
 // class AttributeAnimationInfo | File: ../Scene/Animatable.h
 static void Register_AttributeAnimationInfo(asIScriptEngine* engine)
 {
     // AttributeAnimationInfo::AttributeAnimationInfo(Animatable* animatable, const AttributeInfo& attributeInfo, ValueAnimation* attributeAnimation, WrapMode wrapMode, float speed)
-    engine->RegisterObjectBehaviour("AttributeAnimationInfo", asBEHAVE_FACTORY, "AttributeAnimationInfo@+ f(Animatable@+, const AttributeInfo&in, ValueAnimation@+, WrapMode, float)", AS_FUNCTION(AttributeAnimationInfo__AttributeAnimationInfo_Animatablestar_constspAttributeInfoamp_ValueAnimationstar_WrapMode_float) , AS_CALL_CDECL);
+    // Error: type "constAttributeInfo&" can not automatically bind
     // AttributeAnimationInfo::AttributeAnimationInfo(const AttributeAnimationInfo& other)
-    engine->RegisterObjectBehaviour("AttributeAnimationInfo", asBEHAVE_FACTORY, "AttributeAnimationInfo@+ f(const AttributeAnimationInfo&in)", AS_FUNCTION(AttributeAnimationInfo__AttributeAnimationInfo_constspAttributeAnimationInfoamp) , AS_CALL_CDECL);
+    // Error: type "constAttributeAnimationInfo&" can not automatically bind
 
     RegisterSubclass<ValueAnimationInfo, AttributeAnimationInfo>(engine, "ValueAnimationInfo", "AttributeAnimationInfo");
     RegisterSubclass<RefCounted, AttributeAnimationInfo>(engine, "RefCounted", "AttributeAnimationInfo");
@@ -4209,29 +3688,16 @@ static File* File__File_Contextstar()
     return new File(context);
 }
 
-// File::File(Context* context, const String& fileName, FileMode mode = FILE_READ)
-static File* File__File_Contextstar_constspStringamp_FileMode(const String& fileName, FileMode mode)
-{
-    Context* context = GetScriptContext();
-    return new File(context, fileName, mode);
-}
-
-// File::File(Context* context, PackageFile* package, const String& fileName)
-static File* File__File_Contextstar_PackageFilestar_constspStringamp(PackageFile* package, const String& fileName)
-{
-    Context* context = GetScriptContext();
-    return new File(context, package, fileName);
-}
-
 // class File | File: ../IO/File.h
 static void Register_File(asIScriptEngine* engine)
 {
+    // File::File(Context* context, PackageFile* package, const String& fileName)
+    // Error: type "constString&" can not automatically bind
+    // File::File(Context* context, const String& fileName, FileMode mode = FILE_READ)
+    // Error: type "constString&" can not automatically bind
+
     // explicit File::File(Context* context)
     engine->RegisterObjectBehaviour("File", asBEHAVE_FACTORY, "File@+ f()", AS_FUNCTION(File__File_Contextstar) , AS_CALL_CDECL);
-    // File::File(Context* context, const String& fileName, FileMode mode = FILE_READ)
-    engine->RegisterObjectBehaviour("File", asBEHAVE_FACTORY, "File@+ f(const String&in, FileMode = FILE_READ)", AS_FUNCTION(File__File_Contextstar_constspStringamp_FileMode) , AS_CALL_CDECL);
-    // File::File(Context* context, PackageFile* package, const String& fileName)
-    engine->RegisterObjectBehaviour("File", asBEHAVE_FACTORY, "File@+ f(PackageFile@+, const String&in)", AS_FUNCTION(File__File_Contextstar_PackageFilestar_constspStringamp) , AS_CALL_CDECL);
 
     RegisterSubclass<Object, File>(engine, "Object", "File");
     RegisterSubclass<RefCounted, File>(engine, "RefCounted", "File");
@@ -4496,18 +3962,11 @@ static void Register_Log(asIScriptEngine* engine)
     #endif
 }
 
-// explicit MessageBox::MessageBox(Context* context, const String& messageString = String::EMPTY, const String& titleString = String::EMPTY, XMLFile* layoutFile = nullptr, XMLFile* styleFile = nullptr)
-static MessageBox* MessageBox__MessageBox_Contextstar_constspStringamp_constspStringamp_XMLFilestar_XMLFilestar(const String& messageString, const String& titleString, XMLFile* layoutFile, XMLFile* styleFile)
-{
-    Context* context = GetScriptContext();
-    return new MessageBox(context, messageString, titleString, layoutFile, styleFile);
-}
-
 // class MessageBox | File: ../UI/MessageBox.h
 static void Register_MessageBox(asIScriptEngine* engine)
 {
     // explicit MessageBox::MessageBox(Context* context, const String& messageString = String::EMPTY, const String& titleString = String::EMPTY, XMLFile* layoutFile = nullptr, XMLFile* styleFile = nullptr)
-    engine->RegisterObjectBehaviour("MessageBox", asBEHAVE_FACTORY, "MessageBox@+ f(const String&in = String::EMPTY, const String&in = String::EMPTY, XMLFile@+ = null, XMLFile@+ = null)", AS_FUNCTION(MessageBox__MessageBox_Contextstar_constspStringamp_constspStringamp_XMLFilestar_XMLFilestar) , AS_CALL_CDECL);
+    // Error: type "constString&" can not automatically bind
 
     RegisterSubclass<Object, MessageBox>(engine, "Object", "MessageBox");
     RegisterSubclass<RefCounted, MessageBox>(engine, "RefCounted", "MessageBox");
@@ -4526,20 +3985,14 @@ static NamedPipe* NamedPipe__NamedPipe_Contextstar()
     return new NamedPipe(context);
 }
 
-// NamedPipe::NamedPipe(Context* context, const String& name, bool isServer)
-static NamedPipe* NamedPipe__NamedPipe_Contextstar_constspStringamp_bool(const String& name, bool isServer)
-{
-    Context* context = GetScriptContext();
-    return new NamedPipe(context, name, isServer);
-}
-
 // class NamedPipe | File: ../IO/NamedPipe.h
 static void Register_NamedPipe(asIScriptEngine* engine)
 {
+    // NamedPipe::NamedPipe(Context* context, const String& name, bool isServer)
+    // Error: type "constString&" can not automatically bind
+
     // explicit NamedPipe::NamedPipe(Context* context)
     engine->RegisterObjectBehaviour("NamedPipe", asBEHAVE_FACTORY, "NamedPipe@+ f()", AS_FUNCTION(NamedPipe__NamedPipe_Contextstar) , AS_CALL_CDECL);
-    // NamedPipe::NamedPipe(Context* context, const String& name, bool isServer)
-    engine->RegisterObjectBehaviour("NamedPipe", asBEHAVE_FACTORY, "NamedPipe@+ f(const String&in, bool)", AS_FUNCTION(NamedPipe__NamedPipe_Contextstar_constspStringamp_bool) , AS_CALL_CDECL);
 
     RegisterSubclass<Object, NamedPipe>(engine, "Object", "NamedPipe");
     RegisterSubclass<RefCounted, NamedPipe>(engine, "RefCounted", "NamedPipe");
@@ -4576,17 +4029,11 @@ static void Register_OcclusionBuffer(asIScriptEngine* engine)
     #endif
 }
 
-// explicit OggVorbisSoundStream::OggVorbisSoundStream(const Sound* sound)
-static OggVorbisSoundStream* OggVorbisSoundStream__OggVorbisSoundStream_constspSoundstar(const Sound* sound)
-{
-    return new OggVorbisSoundStream(sound);
-}
-
 // class OggVorbisSoundStream | File: ../Audio/OggVorbisSoundStream.h
 static void Register_OggVorbisSoundStream(asIScriptEngine* engine)
 {
     // explicit OggVorbisSoundStream::OggVorbisSoundStream(const Sound* sound)
-    engine->RegisterObjectBehaviour("OggVorbisSoundStream", asBEHAVE_FACTORY, "OggVorbisSoundStream@+ f(Sound@+)", AS_FUNCTION(OggVorbisSoundStream__OggVorbisSoundStream_constspSoundstar) , AS_CALL_CDECL);
+    // Error: type "constSound*" can not automatically bind
 
     RegisterSubclass<SoundStream, OggVorbisSoundStream>(engine, "SoundStream", "OggVorbisSoundStream");
     RegisterSubclass<RefCounted, OggVorbisSoundStream>(engine, "RefCounted", "OggVorbisSoundStream");
@@ -4605,20 +4052,14 @@ static PackageFile* PackageFile__PackageFile_Contextstar()
     return new PackageFile(context);
 }
 
-// PackageFile::PackageFile(Context* context, const String& fileName, unsigned startOffset = 0)
-static PackageFile* PackageFile__PackageFile_Contextstar_constspStringamp_unsigned(const String& fileName, unsigned startOffset)
-{
-    Context* context = GetScriptContext();
-    return new PackageFile(context, fileName, startOffset);
-}
-
 // class PackageFile | File: ../IO/PackageFile.h
 static void Register_PackageFile(asIScriptEngine* engine)
 {
+    // PackageFile::PackageFile(Context* context, const String& fileName, unsigned startOffset = 0)
+    // Error: type "constString&" can not automatically bind
+
     // explicit PackageFile::PackageFile(Context* context)
     engine->RegisterObjectBehaviour("PackageFile", asBEHAVE_FACTORY, "PackageFile@+ f()", AS_FUNCTION(PackageFile__PackageFile_Contextstar) , AS_CALL_CDECL);
-    // PackageFile::PackageFile(Context* context, const String& fileName, unsigned startOffset = 0)
-    engine->RegisterObjectBehaviour("PackageFile", asBEHAVE_FACTORY, "PackageFile@+ f(const String&in, uint = 0)", AS_FUNCTION(PackageFile__PackageFile_Contextstar_constspStringamp_unsigned) , AS_CALL_CDECL);
 
     RegisterSubclass<Object, PackageFile>(engine, "Object", "PackageFile");
     RegisterSubclass<RefCounted, PackageFile>(engine, "RefCounted", "PackageFile");
@@ -4653,7 +4094,30 @@ static void Register_Profiler(asIScriptEngine* engine)
     #endif
 
     // void Profiler::BeginBlock(const char* name)
-    // Error: type "const char*" can not automatically bind
+    // Error: type "constchar*" can not automatically bind
+}
+
+// ProfilerUI::ProfilerUI(Context* context)
+static ProfilerUI* ProfilerUI__ProfilerUI_Contextstar()
+{
+    Context* context = GetScriptContext();
+    return new ProfilerUI(context);
+}
+
+// class ProfilerUI | File: ../Graphics/ProfilerUI.h
+static void Register_ProfilerUI(asIScriptEngine* engine)
+{
+    // ProfilerUI::ProfilerUI(Context* context)
+    engine->RegisterObjectBehaviour("ProfilerUI", asBEHAVE_FACTORY, "ProfilerUI@+ f()", AS_FUNCTION(ProfilerUI__ProfilerUI_Contextstar) , AS_CALL_CDECL);
+
+    RegisterSubclass<Object, ProfilerUI>(engine, "Object", "ProfilerUI");
+    RegisterSubclass<RefCounted, ProfilerUI>(engine, "RefCounted", "ProfilerUI");
+
+    RegisterMembers_ProfilerUI<ProfilerUI>(engine, "ProfilerUI");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_ProfilerUI
+        REGISTER_CLASS_MANUAL_PART_ProfilerUI();
+    #endif
 }
 
 // explicit Renderer::Renderer(Context* context)
@@ -4748,25 +4212,13 @@ static void Register_Serializable(asIScriptEngine* engine)
     #endif
 }
 
-// ShaderParameterAnimationInfo::ShaderParameterAnimationInfo(Material* material, const String& name, ValueAnimation* attributeAnimation, WrapMode wrapMode, float speed)
-static ShaderParameterAnimationInfo* ShaderParameterAnimationInfo__ShaderParameterAnimationInfo_Materialstar_constspStringamp_ValueAnimationstar_WrapMode_float(Material* material, const String& name, ValueAnimation* attributeAnimation, WrapMode wrapMode, float speed)
-{
-    return new ShaderParameterAnimationInfo(material, name, attributeAnimation, wrapMode, speed);
-}
-
-// ShaderParameterAnimationInfo::ShaderParameterAnimationInfo(const ShaderParameterAnimationInfo& other)
-static ShaderParameterAnimationInfo* ShaderParameterAnimationInfo__ShaderParameterAnimationInfo_constspShaderParameterAnimationInfoamp(const ShaderParameterAnimationInfo& other)
-{
-    return new ShaderParameterAnimationInfo(other);
-}
-
 // class ShaderParameterAnimationInfo | File: ../Graphics/Material.h
 static void Register_ShaderParameterAnimationInfo(asIScriptEngine* engine)
 {
     // ShaderParameterAnimationInfo::ShaderParameterAnimationInfo(Material* material, const String& name, ValueAnimation* attributeAnimation, WrapMode wrapMode, float speed)
-    engine->RegisterObjectBehaviour("ShaderParameterAnimationInfo", asBEHAVE_FACTORY, "ShaderParameterAnimationInfo@+ f(Material@+, const String&in, ValueAnimation@+, WrapMode, float)", AS_FUNCTION(ShaderParameterAnimationInfo__ShaderParameterAnimationInfo_Materialstar_constspStringamp_ValueAnimationstar_WrapMode_float) , AS_CALL_CDECL);
+    // Error: type "constString&" can not automatically bind
     // ShaderParameterAnimationInfo::ShaderParameterAnimationInfo(const ShaderParameterAnimationInfo& other)
-    engine->RegisterObjectBehaviour("ShaderParameterAnimationInfo", asBEHAVE_FACTORY, "ShaderParameterAnimationInfo@+ f(const ShaderParameterAnimationInfo&in)", AS_FUNCTION(ShaderParameterAnimationInfo__ShaderParameterAnimationInfo_constspShaderParameterAnimationInfoamp) , AS_CALL_CDECL);
+    // Error: type "constShaderParameterAnimationInfo&" can not automatically bind
 
     RegisterSubclass<ValueAnimationInfo, ShaderParameterAnimationInfo>(engine, "ValueAnimationInfo", "ShaderParameterAnimationInfo");
     RegisterSubclass<RefCounted, ShaderParameterAnimationInfo>(engine, "RefCounted", "ShaderParameterAnimationInfo");
@@ -4778,18 +4230,11 @@ static void Register_ShaderParameterAnimationInfo(asIScriptEngine* engine)
     #endif
 }
 
-// ShaderPrecache::ShaderPrecache(Context* context, const String& fileName)
-static ShaderPrecache* ShaderPrecache__ShaderPrecache_Contextstar_constspStringamp(const String& fileName)
-{
-    Context* context = GetScriptContext();
-    return new ShaderPrecache(context, fileName);
-}
-
 // class ShaderPrecache | File: ../GraphicsAPI/ShaderPrecache.h
 static void Register_ShaderPrecache(asIScriptEngine* engine)
 {
     // ShaderPrecache::ShaderPrecache(Context* context, const String& fileName)
-    engine->RegisterObjectBehaviour("ShaderPrecache", asBEHAVE_FACTORY, "ShaderPrecache@+ f(const String&in)", AS_FUNCTION(ShaderPrecache__ShaderPrecache_Contextstar_constspStringamp) , AS_CALL_CDECL);
+    // Error: type "constString&" can not automatically bind
 
     RegisterSubclass<Object, ShaderPrecache>(engine, "Object", "ShaderPrecache");
     RegisterSubclass<RefCounted, ShaderPrecache>(engine, "RefCounted", "ShaderPrecache");
@@ -4847,13 +4292,6 @@ static void Register_UI(asIScriptEngine* engine)
     #endif
 }
 
-// explicit VectorBuffer::VectorBuffer(const Vector<byte>& data)
-static void VectorBuffer__VectorBuffer_constspVectorlesbytegreamp(VectorBuffer* _ptr, CScriptArray* data_conv)
-{
-    Vector<byte> data = ArrayToVector<byte>(data_conv);
-    new(_ptr) VectorBuffer(data);
-}
-
 // VectorBuffer::VectorBuffer(Deserializer& source, i32 size)
 static void VectorBuffer__VectorBuffer_Deserializeramp_i32(VectorBuffer* _ptr, Deserializer& source, i32 size)
 {
@@ -4864,10 +4302,10 @@ static void VectorBuffer__VectorBuffer_Deserializeramp_i32(VectorBuffer* _ptr, D
 static void Register_VectorBuffer(asIScriptEngine* engine)
 {
     // VectorBuffer::VectorBuffer(const void* data, i32 size)
-    // Error: type "const void*" can not automatically bind
-
+    // Error: type "constvoid*" can not automatically bind
     // explicit VectorBuffer::VectorBuffer(const Vector<byte>& data)
-    engine->RegisterObjectBehaviour("VectorBuffer", asBEHAVE_CONSTRUCT, "void f(Array<byte>@+)", AS_FUNCTION_OBJFIRST(VectorBuffer__VectorBuffer_constspVectorlesbytegreamp), AS_CALL_CDECL_OBJFIRST);
+    // Error: type "constVector<byte>&" can not automatically bind
+
     // VectorBuffer::VectorBuffer(Deserializer& source, i32 size)
     engine->RegisterObjectBehaviour("VectorBuffer", asBEHAVE_CONSTRUCT, "void f(Deserializer&, int)", AS_FUNCTION_OBJFIRST(VectorBuffer__VectorBuffer_Deserializeramp_i32), AS_CALL_CDECL_OBJFIRST);
 
@@ -4944,22 +4382,16 @@ static Viewport* Viewport__Viewport_Contextstar_Scenestar_Camerastar_RenderPaths
     return new Viewport(context, scene, camera, renderPath);
 }
 
-// Viewport::Viewport(Context* context, Scene* scene, Camera* camera, const IntRect& rect, RenderPath* renderPath = nullptr)
-static Viewport* Viewport__Viewport_Contextstar_Scenestar_Camerastar_constspIntRectamp_RenderPathstar(Scene* scene, Camera* camera, const IntRect& rect, RenderPath* renderPath)
-{
-    Context* context = GetScriptContext();
-    return new Viewport(context, scene, camera, rect, renderPath);
-}
-
 // class Viewport | File: ../Graphics/Viewport.h
 static void Register_Viewport(asIScriptEngine* engine)
 {
+    // Viewport::Viewport(Context* context, Scene* scene, Camera* camera, const IntRect& rect, RenderPath* renderPath = nullptr)
+    // Error: type "constIntRect&" can not automatically bind
+
     // explicit Viewport::Viewport(Context* context)
     engine->RegisterObjectBehaviour("Viewport", asBEHAVE_FACTORY, "Viewport@+ f()", AS_FUNCTION(Viewport__Viewport_Contextstar) , AS_CALL_CDECL);
     // Viewport::Viewport(Context* context, Scene* scene, Camera* camera, RenderPath* renderPath = nullptr)
     engine->RegisterObjectBehaviour("Viewport", asBEHAVE_FACTORY, "Viewport@+ f(Scene@+, Camera@+, RenderPath@+ = null)", AS_FUNCTION(Viewport__Viewport_Contextstar_Scenestar_Camerastar_RenderPathstar) , AS_CALL_CDECL);
-    // Viewport::Viewport(Context* context, Scene* scene, Camera* camera, const IntRect& rect, RenderPath* renderPath = nullptr)
-    engine->RegisterObjectBehaviour("Viewport", asBEHAVE_FACTORY, "Viewport@+ f(Scene@+, Camera@+, const IntRect&in, RenderPath@+ = null)", AS_FUNCTION(Viewport__Viewport_Contextstar_Scenestar_Camerastar_constspIntRectamp_RenderPathstar) , AS_CALL_CDECL);
 
     RegisterSubclass<Object, Viewport>(engine, "Object", "Viewport");
     RegisterSubclass<RefCounted, Viewport>(engine, "RefCounted", "Viewport");
@@ -4968,6 +4400,93 @@ static void Register_Viewport(asIScriptEngine* engine)
 
     #ifdef REGISTER_CLASS_MANUAL_PART_Viewport
         REGISTER_CLASS_MANUAL_PART_Viewport();
+    #endif
+}
+
+// VulkanBatchDispatcher::VulkanBatchDispatcher(Context* context)
+static VulkanBatchDispatcher* VulkanBatchDispatcher__VulkanBatchDispatcher_Contextstar()
+{
+    Context* context = GetScriptContext();
+    return new VulkanBatchDispatcher(context);
+}
+
+// class VulkanBatchDispatcher | File: ../GraphicsAPI/Vulkan/VulkanBatchDispatcher.h
+static void Register_VulkanBatchDispatcher(asIScriptEngine* engine)
+{
+    // VulkanBatchDispatcher::VulkanBatchDispatcher(Context* context)
+    engine->RegisterObjectBehaviour("VulkanBatchDispatcher", asBEHAVE_FACTORY, "VulkanBatchDispatcher@+ f()", AS_FUNCTION(VulkanBatchDispatcher__VulkanBatchDispatcher_Contextstar) , AS_CALL_CDECL);
+
+    RegisterSubclass<Object, VulkanBatchDispatcher>(engine, "Object", "VulkanBatchDispatcher");
+    RegisterSubclass<RefCounted, VulkanBatchDispatcher>(engine, "RefCounted", "VulkanBatchDispatcher");
+
+    RegisterMembers_VulkanBatchDispatcher<VulkanBatchDispatcher>(engine, "VulkanBatchDispatcher");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanBatchDispatcher
+        REGISTER_CLASS_MANUAL_PART_VulkanBatchDispatcher();
+    #endif
+}
+
+// class VulkanIndirectDrawManager | File: ../GraphicsAPI/Vulkan/VulkanIndirectDrawManager.h
+static void Register_VulkanIndirectDrawManager(asIScriptEngine* engine)
+{
+    // explicit VulkanIndirectDrawManager::VulkanIndirectDrawManager(Context* context, VulkanGraphicsImpl* graphics)
+    // Error: type "VulkanGraphicsImpl*" can not automatically bind
+
+    RegisterSubclass<Object, VulkanIndirectDrawManager>(engine, "Object", "VulkanIndirectDrawManager");
+    RegisterSubclass<RefCounted, VulkanIndirectDrawManager>(engine, "RefCounted", "VulkanIndirectDrawManager");
+
+    RegisterMembers_VulkanIndirectDrawManager<VulkanIndirectDrawManager>(engine, "VulkanIndirectDrawManager");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanIndirectDrawManager
+        REGISTER_CLASS_MANUAL_PART_VulkanIndirectDrawManager();
+    #endif
+}
+
+// class VulkanInstanceBufferManager | File: ../GraphicsAPI/Vulkan/VulkanInstanceBufferManager.h
+static void Register_VulkanInstanceBufferManager(asIScriptEngine* engine)
+{
+    // explicit VulkanInstanceBufferManager::VulkanInstanceBufferManager(Context* context, VulkanGraphicsImpl* graphics)
+    // Error: type "VulkanGraphicsImpl*" can not automatically bind
+
+    RegisterSubclass<Object, VulkanInstanceBufferManager>(engine, "Object", "VulkanInstanceBufferManager");
+    RegisterSubclass<RefCounted, VulkanInstanceBufferManager>(engine, "RefCounted", "VulkanInstanceBufferManager");
+
+    RegisterMembers_VulkanInstanceBufferManager<VulkanInstanceBufferManager>(engine, "VulkanInstanceBufferManager");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanInstanceBufferManager
+        REGISTER_CLASS_MANUAL_PART_VulkanInstanceBufferManager();
+    #endif
+}
+
+// class VulkanMaterialDescriptorManager | File: ../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h
+static void Register_VulkanMaterialDescriptorManager(asIScriptEngine* engine)
+{
+    // VulkanMaterialDescriptorManager::VulkanMaterialDescriptorManager(Context* context, VulkanGraphicsImpl* graphics)
+    // Error: type "VulkanGraphicsImpl*" can not automatically bind
+
+    RegisterSubclass<Object, VulkanMaterialDescriptorManager>(engine, "Object", "VulkanMaterialDescriptorManager");
+    RegisterSubclass<RefCounted, VulkanMaterialDescriptorManager>(engine, "RefCounted", "VulkanMaterialDescriptorManager");
+
+    RegisterMembers_VulkanMaterialDescriptorManager<VulkanMaterialDescriptorManager>(engine, "VulkanMaterialDescriptorManager");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanMaterialDescriptorManager
+        REGISTER_CLASS_MANUAL_PART_VulkanMaterialDescriptorManager();
+    #endif
+}
+
+// class VulkanSamplerCache | File: ../GraphicsAPI/Vulkan/VulkanSamplerCache.h
+static void Register_VulkanSamplerCache(asIScriptEngine* engine)
+{
+    // VulkanSamplerCache::VulkanSamplerCache(Context* context, VulkanGraphicsImpl* graphics)
+    // Error: type "VulkanGraphicsImpl*" can not automatically bind
+
+    RegisterSubclass<Object, VulkanSamplerCache>(engine, "Object", "VulkanSamplerCache");
+    RegisterSubclass<RefCounted, VulkanSamplerCache>(engine, "RefCounted", "VulkanSamplerCache");
+
+    RegisterMembers_VulkanSamplerCache<VulkanSamplerCache>(engine, "VulkanSamplerCache");
+
+    #ifdef REGISTER_CLASS_MANUAL_PART_VulkanSamplerCache
+        REGISTER_CLASS_MANUAL_PART_VulkanSamplerCache();
     #endif
 }
 
@@ -5778,14 +5297,14 @@ static void Register_Node(asIScriptEngine* engine)
         REGISTER_CLASS_MANUAL_PART_Node();
     #endif
 
-    // bool Node::Load(Deserializer& source, SceneResolver& resolver, bool loadChildren = true, bool rewriteIDs = false, CreateMode mode = REPLICATED)
-    engine->RegisterObjectMethod("Node", "bool Load(Deserializer&, SceneResolver&, bool = true, bool = false, CreateMode = REPLICATED)", AS_METHODPR(Node, Load, (Deserializer&, SceneResolver&, bool, bool, CreateMode), bool), AS_CALL_THISCALL);
-
     // bool Node::LoadJSON(const JSONValue& source, SceneResolver& resolver, bool loadChildren = true, bool rewriteIDs = false, CreateMode mode = REPLICATED)
-    engine->RegisterObjectMethod("Node", "bool LoadJSON(const JSONValue&in, SceneResolver&, bool = true, bool = false, CreateMode = REPLICATED)", AS_METHODPR(Node, LoadJSON, (const JSONValue&, SceneResolver&, bool, bool, CreateMode), bool), AS_CALL_THISCALL);
+    // Error: type "constJSONValue&" can not automatically bind
 
     // bool Node::LoadXML(const XMLElement& source, SceneResolver& resolver, bool loadChildren = true, bool rewriteIDs = false, CreateMode mode = REPLICATED)
-    engine->RegisterObjectMethod("Node", "bool LoadXML(const XMLElement&in, SceneResolver&, bool = true, bool = false, CreateMode = REPLICATED)", AS_METHODPR(Node, LoadXML, (const XMLElement&, SceneResolver&, bool, bool, CreateMode), bool), AS_CALL_THISCALL);
+    // Error: type "constXMLElement&" can not automatically bind
+
+    // bool Node::Load(Deserializer& source, SceneResolver& resolver, bool loadChildren = true, bool rewriteIDs = false, CreateMode mode = REPLICATED)
+    engine->RegisterObjectMethod("Node", "bool Load(Deserializer&, SceneResolver&, bool = true, bool = false, CreateMode = REPLICATED)", AS_METHODPR(Node, Load, (Deserializer&, SceneResolver&, bool, bool, CreateMode), bool), AS_CALL_THISCALL);
 
     // void Node::MarkReplicationDirty()
     engine->RegisterObjectMethod("Node", "void MarkReplicationDirty()", AS_METHODPR(Node, MarkReplicationDirty, (), void), AS_CALL_THISCALL);
@@ -5866,16 +5385,14 @@ static void Register_UIElement(asIScriptEngine* engine)
     #endif
 
     // const IntVector2& UIElement::GetPosition() const
-    engine->RegisterObjectMethod("UIElement", "const IntVector2& GetPosition() const", AS_METHODPR(UIElement, GetPosition, () const, const IntVector2&), AS_CALL_THISCALL);
-    engine->RegisterObjectMethod("UIElement", "const IntVector2& get_position() const", AS_METHODPR(UIElement, GetPosition, () const, const IntVector2&), AS_CALL_THISCALL);
+    // Error: type "constIntVector2&" can not automatically bind
+
+    // void UIElement::SetPosition(const IntVector2& position)
+    // Error: type "constIntVector2&" can not automatically bind
 
     // bool UIElement::IsSelected() const
     engine->RegisterObjectMethod("UIElement", "bool IsSelected() const", AS_METHODPR(UIElement, IsSelected, () const, bool), AS_CALL_THISCALL);
     engine->RegisterObjectMethod("UIElement", "bool get_selected() const", AS_METHODPR(UIElement, IsSelected, () const, bool), AS_CALL_THISCALL);
-
-    // void UIElement::SetPosition(const IntVector2& position)
-    engine->RegisterObjectMethod("UIElement", "void SetPosition(const IntVector2&in)", AS_METHODPR(UIElement, SetPosition, (const IntVector2&), void), AS_CALL_THISCALL);
-    engine->RegisterObjectMethod("UIElement", "void set_position(const IntVector2&in)", AS_METHODPR(UIElement, SetPosition, (const IntVector2&), void), AS_CALL_THISCALL);
 
     // void UIElement::SetPosition(int x, int y)
     engine->RegisterObjectMethod("UIElement", "void SetPosition(int, int)", AS_METHODPR(UIElement, SetPosition, (int, int), void), AS_CALL_THISCALL);
@@ -6001,7 +5518,7 @@ static void Register_Drawable(asIScriptEngine* engine)
     #endif
 
     // virtual void Drawable::Update(const FrameInfo& frame)
-    engine->RegisterObjectMethod("Drawable", "void Update(const FrameInfo&in)", AS_METHODPR(Drawable, Update, (const FrameInfo&), void), AS_CALL_THISCALL);
+    // Error: type "constFrameInfo&" can not automatically bind
 }
 
 // explicit LogicComponent::LogicComponent(Context* context)
@@ -8042,7 +7559,7 @@ static void Register_Drawable2D(asIScriptEngine* engine)
     #endif
 
     // virtual void Drawable::Update(const FrameInfo& frame)
-    engine->RegisterObjectMethod("Drawable2D", "void Update(const FrameInfo&in)", AS_METHODPR(Drawable2D, Update, (const FrameInfo&), void), AS_CALL_THISCALL);
+    // Error: type "constFrameInfo&" can not automatically bind
 }
 
 // explicit Renderer2D::Renderer2D(Context* context)
@@ -8403,10 +7920,12 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
     Register_AreaAllocator(engine);
     Register_AsyncProgress(engine);
     Register_AttributeInfo(engine);
+    Register_AudioMixing_SIMD(engine);
     Register_BackgroundLoadItem(engine);
     Register_Batch(engine);
     Register_BatchGroupKey(engine);
     Register_BatchQueue(engine);
+    Register_BatchSort_Parallel(engine);
     Register_BiasParameters(engine);
     Register_BigInt(engine);
     Register_Billboard(engine);
@@ -8452,6 +7971,7 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
     Register_ListBase(engine);
     Register_ListIteratorBase(engine);
     Register_ListNodeBase(engine);
+    Register_MaterialDescriptorKey(engine);
     Register_MaterialShaderParameter(engine);
     Register_Matrix2(engine);
     Register_Matrix3(engine);
@@ -8467,6 +7987,7 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
     Register_OctreeQueryResult(engine);
     Register_PackageEntry(engine);
     Register_Particle(engine);
+    Register_ParticleBuffer(engine);
     Register_PerThreadSceneResult(engine);
     Register_Plane(engine);
     Register_Polyhedron(engine);
@@ -8490,6 +8011,7 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
     Register_ShaderParameter(engine);
     Register_ShadowBatchQueue(engine);
     Register_Skeleton(engine);
+    Register_SortedBatch(engine);
     Register_SourceBatch(engine);
     Register_Sphere(engine);
     Register_Spline(engine);
@@ -8514,6 +8036,11 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
     Register_VertexBufferDesc(engine);
     Register_VertexBufferMorph(engine);
     Register_VertexElement(engine);
+    Register_VulkanBatchDrawInfo(engine);
+    Register_VulkanIndirectDrawCommand(engine);
+    Register_VulkanInstanceData(engine);
+    Register_VulkanMaterialConstants(engine);
+    Register_VulkanSamplerKey(engine);
     Register_WindowModeParams(engine);
     Register_XMLElement(engine);
     Register_XPathQuery(engine);
@@ -8568,6 +8095,7 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
     Register_ShaderVariation(engine);
     Register_SoundStream(engine);
     Register_ValueAnimationInfo(engine);
+    Register_WorkStealingDeque(engine);
 
 #ifdef URHO3D_NAVIGATION
     Register_SimpleNavBuildData(engine);
@@ -8612,6 +8140,7 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
     Register_OggVorbisSoundStream(engine);
     Register_PackageFile(engine);
     Register_Profiler(engine);
+    Register_ProfilerUI(engine);
     Register_Renderer(engine);
     Register_Resource(engine);
     Register_ResourceCache(engine);
@@ -8624,6 +8153,11 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
     Register_VertexBuffer(engine);
     Register_View(engine);
     Register_Viewport(engine);
+    Register_VulkanBatchDispatcher(engine);
+    Register_VulkanIndirectDrawManager(engine);
+    Register_VulkanInstanceBufferManager(engine);
+    Register_VulkanMaterialDescriptorManager(engine);
+    Register_VulkanSamplerCache(engine);
     Register_WorkQueue(engine);
 
 #ifdef URHO3D_DATABASE

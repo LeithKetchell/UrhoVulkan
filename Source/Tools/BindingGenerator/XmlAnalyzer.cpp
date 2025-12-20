@@ -6,6 +6,7 @@
 #include "XmlSourceData.h"
 
 #include <cassert>
+#include <iostream>
 #include <regex>
 
 using namespace std;
@@ -381,7 +382,21 @@ string ExtractName(xml_node node)
     assert(IsMemberdef(node) || IsEnumvalue(node));
 
     string result = node.child("name").child_value();
-    assert(!result.empty());
+
+    // Handle case where name is empty - provide better error message instead of crash
+    if (result.empty())
+    {
+        // Get location info for debugging
+        string file = node.child("location").attribute("file").value();
+        string line = node.child("location").attribute("line").value();
+        string kind = node.attribute("kind").value();
+
+        cerr << "Warning: Empty name found in " << kind << " at " << file << ":" << line << endl;
+        cerr << "  Node details: id=" << node.attribute("id").value() << endl;
+
+        // Return a placeholder to avoid crash
+        return "__unnamed__";
+    }
 
     return result;
 }

@@ -57,7 +57,7 @@ else()
     find_package(glslang QUIET)
     if(glslang_FOUND)
         message(STATUS "Found glslang for shader compilation (fallback)")
-        set(URHO3D_GLSLANG TRUE)
+        set(URHO3D_GLSLANG TRUE CACHE BOOL "glslang shader compiler available" FORCE)
         set(SHADER_COMPILER_FOUND TRUE)
         add_definitions(-DURHO3D_GLSLANG)
     else()
@@ -76,7 +76,26 @@ if(ShaderC_FOUND)
 endif()
 
 if(glslang_FOUND)
-    list(APPEND LIBS glslang SPIRV)
+    # Find glslang library directory from Vulkan SDK
+    if(DEFINED ENV{VULKAN_SDK})
+        set(GLSLANG_LIB_DIR "$ENV{VULKAN_SDK}/lib")
+    else()
+        # Try to find from Vulkan package
+        get_filename_component(GLSLANG_LIB_DIR "${Vulkan_LIBRARIES}" DIRECTORY)
+    endif()
+
+    # Link glslang libraries with full paths
+    find_library(GLSLANG_LIB NAMES glslang PATHS ${GLSLANG_LIB_DIR} NO_DEFAULT_PATH)
+    find_library(SPIRV_LIB NAMES SPIRV PATHS ${GLSLANG_LIB_DIR} NO_DEFAULT_PATH)
+    find_library(GLSLANG_RESOURCE_LIB NAMES glslang-default-resource-limits PATHS ${GLSLANG_LIB_DIR} NO_DEFAULT_PATH)
+
+    if(GLSLANG_LIB AND SPIRV_LIB AND GLSLANG_RESOURCE_LIB)
+        list(APPEND LIBS ${GLSLANG_LIB} ${SPIRV_LIB} ${GLSLANG_RESOURCE_LIB})
+        message(STATUS "Linked glslang libraries: ${GLSLANG_LIB}, ${SPIRV_LIB}, ${GLSLANG_RESOURCE_LIB}")
+    else()
+        message(WARNING "Could not find all glslang libraries in ${GLSLANG_LIB_DIR}")
+    endif()
+
     if(glslang_INCLUDE_DIR)
         include_directories(${glslang_INCLUDE_DIR})
     endif()

@@ -39,6 +39,9 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
     // struct AttributeInfo | File: ../Core/Attribute.h
     engine->RegisterObjectType("AttributeInfo", sizeof(AttributeInfo), asOBJ_VALUE | asGetTypeTraits<AttributeInfo>());
 
+    // class AudioMixing_SIMD | File: ../Audio/AudioMixing_SIMD.h
+    engine->RegisterObjectType("AudioMixing_SIMD", sizeof(AudioMixing_SIMD), asOBJ_VALUE | asGetTypeTraits<AudioMixing_SIMD>() | asOBJ_POD | asOBJ_APP_CLASS_ALLFLOATS);
+
     // class AutoProfileBlock | File: ../Core/Profiler.h
     // Not registered because have @nobind mark
 
@@ -53,6 +56,9 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
 
     // struct BatchQueue | File: ../Graphics/Batch.h
     engine->RegisterObjectType("BatchQueue", sizeof(BatchQueue), asOBJ_VALUE | asGetTypeTraits<BatchQueue>());
+
+    // class BatchSort_Parallel | File: ../Graphics/BatchSort_Parallel.h
+    engine->RegisterObjectType("BatchSort_Parallel", sizeof(BatchSort_Parallel), asOBJ_VALUE | asGetTypeTraits<BatchSort_Parallel>() | asOBJ_POD | asOBJ_APP_CLASS_ALLFLOATS);
 
     // struct BiasParameters | File: ../Graphics/Light.h
     engine->RegisterObjectType("BiasParameters", sizeof(BiasParameters), asOBJ_VALUE | asGetTypeTraits<BiasParameters>() | asOBJ_POD | asOBJ_APP_CLASS_ALLFLOATS);
@@ -195,6 +201,9 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
     // struct ListNodeBase | File: ../Container/ListBase.h
     engine->RegisterObjectType("ListNodeBase", sizeof(ListNodeBase), asOBJ_VALUE | asGetTypeTraits<ListNodeBase>());
 
+    // struct MaterialDescriptorKey | File: ../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h
+    engine->RegisterObjectType("MaterialDescriptorKey", sizeof(MaterialDescriptorKey), asOBJ_VALUE | asGetTypeTraits<MaterialDescriptorKey>());
+
     // struct MaterialShaderParameter | File: ../Graphics/Material.h
     engine->RegisterObjectType("MaterialShaderParameter", sizeof(MaterialShaderParameter), asOBJ_VALUE | asGetTypeTraits<MaterialShaderParameter>());
 
@@ -245,6 +254,9 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
 
     // struct Particle | File: ../Graphics/ParticleEmitter.h
     engine->RegisterObjectType("Particle", sizeof(Particle), asOBJ_VALUE | asGetTypeTraits<Particle>());
+
+    // class ParticleBuffer | File: ../Graphics/ParticleBuffer.h
+    engine->RegisterObjectType("ParticleBuffer", sizeof(ParticleBuffer), asOBJ_VALUE | asGetTypeTraits<ParticleBuffer>());
 
     // struct PerThreadSceneResult | File: ../Graphics/View.h
     engine->RegisterObjectType("PerThreadSceneResult", sizeof(PerThreadSceneResult), asOBJ_VALUE | asGetTypeTraits<PerThreadSceneResult>());
@@ -320,6 +332,9 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
 
     // class Skeleton | File: ../Graphics/Skeleton.h
     engine->RegisterObjectType("Skeleton", 0, asOBJ_REF | asOBJ_NOCOUNT);
+
+    // struct SortedBatch | File: ../Graphics/BatchSort_Parallel.h
+    engine->RegisterObjectType("SortedBatch", sizeof(SortedBatch), asOBJ_VALUE | asGetTypeTraits<SortedBatch>());
 
     // struct SourceBatch | File: ../Graphics/Drawable.h
     engine->RegisterObjectType("SourceBatch", sizeof(SourceBatch), asOBJ_VALUE | asGetTypeTraits<SourceBatch>());
@@ -398,6 +413,21 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
 
     // struct VertexElement | File: ../GraphicsAPI/GraphicsDefs.h
     engine->RegisterObjectType("VertexElement", sizeof(VertexElement), asOBJ_VALUE | asGetTypeTraits<VertexElement>());
+
+    // struct VulkanBatchDrawInfo | File: ../GraphicsAPI/Vulkan/VulkanBatchDispatcher.h
+    engine->RegisterObjectType("VulkanBatchDrawInfo", sizeof(VulkanBatchDrawInfo), asOBJ_VALUE | asGetTypeTraits<VulkanBatchDrawInfo>());
+
+    // struct VulkanIndirectDrawCommand | File: ../GraphicsAPI/Vulkan/VulkanIndirectDrawManager.h
+    engine->RegisterObjectType("VulkanIndirectDrawCommand", sizeof(VulkanIndirectDrawCommand), asOBJ_VALUE | asGetTypeTraits<VulkanIndirectDrawCommand>());
+
+    // struct VulkanInstanceData | File: ../GraphicsAPI/Vulkan/VulkanInstanceData.h
+    engine->RegisterObjectType("VulkanInstanceData", sizeof(VulkanInstanceData), asOBJ_VALUE | asGetTypeTraits<VulkanInstanceData>());
+
+    // struct VulkanMaterialConstants | File: ../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h
+    engine->RegisterObjectType("VulkanMaterialConstants", sizeof(VulkanMaterialConstants), asOBJ_VALUE | asGetTypeTraits<VulkanMaterialConstants>() | asOBJ_POD | asOBJ_APP_CLASS_ALLFLOATS);
+
+    // struct VulkanSamplerKey | File: ../GraphicsAPI/Vulkan/VulkanSamplerCache.h
+    engine->RegisterObjectType("VulkanSamplerKey", sizeof(VulkanSamplerKey), asOBJ_VALUE | asGetTypeTraits<VulkanSamplerKey>());
 
     // class WString | File: ../Container/Str.h
     // Not registered because have @nobind mark
@@ -562,6 +592,9 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
     // struct WorkItem | File: ../Core/WorkQueue.h
     // Not registered because have @nobind mark
 
+    // class WorkStealingDeque | File: ../Core/WorkStealingDeque.h
+    engine->RegisterObjectType("WorkStealingDeque", 0, asOBJ_REF);
+
 #ifdef URHO3D_NAVIGATION
     // struct DynamicNavBuildData | File: ../Navigation/NavBuildData.h
     // Not registered because have @nobind mark
@@ -675,6 +708,9 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
     // class Profiler | File: ../Core/Profiler.h
     engine->RegisterObjectType("Profiler", 0, asOBJ_REF);
 
+    // class ProfilerUI | File: ../Graphics/ProfilerUI.h
+    engine->RegisterObjectType("ProfilerUI", 0, asOBJ_REF);
+
     // class Renderer | File: ../Graphics/Renderer.h
     engine->RegisterObjectType("Renderer", 0, asOBJ_REF);
 
@@ -713,6 +749,21 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
 
     // class Viewport | File: ../Graphics/Viewport.h
     engine->RegisterObjectType("Viewport", 0, asOBJ_REF);
+
+    // class VulkanBatchDispatcher | File: ../GraphicsAPI/Vulkan/VulkanBatchDispatcher.h
+    engine->RegisterObjectType("VulkanBatchDispatcher", 0, asOBJ_REF);
+
+    // class VulkanIndirectDrawManager | File: ../GraphicsAPI/Vulkan/VulkanIndirectDrawManager.h
+    engine->RegisterObjectType("VulkanIndirectDrawManager", 0, asOBJ_REF);
+
+    // class VulkanInstanceBufferManager | File: ../GraphicsAPI/Vulkan/VulkanInstanceBufferManager.h
+    engine->RegisterObjectType("VulkanInstanceBufferManager", 0, asOBJ_REF);
+
+    // class VulkanMaterialDescriptorManager | File: ../GraphicsAPI/Vulkan/VulkanMaterialDescriptorManager.h
+    engine->RegisterObjectType("VulkanMaterialDescriptorManager", 0, asOBJ_REF);
+
+    // class VulkanSamplerCache | File: ../GraphicsAPI/Vulkan/VulkanSamplerCache.h
+    engine->RegisterObjectType("VulkanSamplerCache", 0, asOBJ_REF);
 
     // class WorkQueue | File: ../Core/WorkQueue.h
     engine->RegisterObjectType("WorkQueue", 0, asOBJ_REF);

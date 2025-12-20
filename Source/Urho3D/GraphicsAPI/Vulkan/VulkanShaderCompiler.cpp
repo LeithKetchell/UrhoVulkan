@@ -387,8 +387,8 @@ bool VulkanShaderCompiler::CompileWithGlslang(
         shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
 
         // Compile shader
-        const char* messages = "";
-        if (!shader.parse(GetDefaultResources(), 100, false, EShMsgSpvRules | EShMsgVulkanRules, messages))
+        EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
+        if (!shader.parse(GetDefaultResources(), 100, false, messages))
         {
             compilerOutput = String(shader.getInfoLog()) + "\n" + String(shader.getInfoDebugLog());
             URHO3D_LOGERROR("glslang shader parsing failed: " + compilerOutput);
@@ -399,7 +399,7 @@ bool VulkanShaderCompiler::CompileWithGlslang(
         glslang::TProgram program;
         program.addShader(&shader);
 
-        if (!program.link(EShMsgSpvRules | EShMsgVulkanRules, messages))
+        if (!program.link(messages))
         {
             compilerOutput = String(program.getInfoLog()) + "\n" + String(program.getInfoDebugLog());
             URHO3D_LOGERROR("glslang program linking failed: " + compilerOutput);

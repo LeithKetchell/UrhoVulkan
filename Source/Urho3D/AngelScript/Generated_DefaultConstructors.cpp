@@ -153,6 +153,9 @@ void ASRegisterGeneratedDefaultConstructors(asIScriptEngine* engine)
     // ListNodeBase::ListNodeBase() | File: ../Container/ListBase.h
     engine->RegisterObjectBehaviour("ListNodeBase", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<ListNodeBase>), AS_CALL_CDECL_OBJFIRST);
 
+    // MaterialDescriptorKey::MaterialDescriptorKey() | Implicitly-declared
+    engine->RegisterObjectBehaviour("MaterialDescriptorKey", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<MaterialDescriptorKey>), AS_CALL_CDECL_OBJFIRST);
+
     // MaterialShaderParameter::MaterialShaderParameter() | Implicitly-declared
     engine->RegisterObjectBehaviour("MaterialShaderParameter", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<MaterialShaderParameter>), AS_CALL_CDECL_OBJFIRST);
 
@@ -255,6 +258,9 @@ void ASRegisterGeneratedDefaultConstructors(asIScriptEngine* engine)
     // ShadowBatchQueue::ShadowBatchQueue() | Implicitly-declared
     engine->RegisterObjectBehaviour("ShadowBatchQueue", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<ShadowBatchQueue>), AS_CALL_CDECL_OBJFIRST);
 
+    // SortedBatch::SortedBatch() | Implicitly-declared
+    engine->RegisterObjectBehaviour("SortedBatch", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<SortedBatch>), AS_CALL_CDECL_OBJFIRST);
+
     // SourceBatch::SourceBatch() | File: ../Graphics/Drawable.h
     engine->RegisterObjectBehaviour("SourceBatch", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<SourceBatch>), AS_CALL_CDECL_OBJFIRST);
 
@@ -317,6 +323,12 @@ void ASRegisterGeneratedDefaultConstructors(asIScriptEngine* engine)
 
     // VertexElement::VertexElement() noexcept | File: ../GraphicsAPI/GraphicsDefs.h
     engine->RegisterObjectBehaviour("VertexElement", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<VertexElement>), AS_CALL_CDECL_OBJFIRST);
+
+    // VulkanBatchDrawInfo::VulkanBatchDrawInfo() | Implicitly-declared
+    engine->RegisterObjectBehaviour("VulkanBatchDrawInfo", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<VulkanBatchDrawInfo>), AS_CALL_CDECL_OBJFIRST);
+
+    // VulkanSamplerKey::VulkanSamplerKey() | Implicitly-declared
+    engine->RegisterObjectBehaviour("VulkanSamplerKey", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<VulkanSamplerKey>), AS_CALL_CDECL_OBJFIRST);
 
     // WindowModeParams::WindowModeParams() | Implicitly-declared
     engine->RegisterObjectBehaviour("WindowModeParams", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ASCompatibleConstructor<WindowModeParams>), AS_CALL_CDECL_OBJFIRST);
