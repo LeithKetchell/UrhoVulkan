@@ -1,14 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-# Define target name
-set (TARGET_NAME 56_DeferredRendering)
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:02cca42dcc1d887df2b0a23f46774e8f1dff6f6af21f38afaaf553f896053984
+size 302

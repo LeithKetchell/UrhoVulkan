@@ -1,18 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-if (NOT URHO3D_URHO2D OR NOT URHO3D_PHYSICS2D)
-    return ()
-endif ()
-
-# Define target name
-set (TARGET_NAME 28_Physics2DRope)
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:a5fe154329e4a2859eec0ad82264ab7140703c2cf79605e9146a2e078dc94aa6
+size 369

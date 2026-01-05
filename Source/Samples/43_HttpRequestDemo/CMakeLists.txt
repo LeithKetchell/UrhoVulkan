@@ -1,22 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-if (NOT URHO3D_NETWORK)
-    return ()
-endif ()
-
-# Define target name
-set (TARGET_NAME 43_HttpRequestDemo)
-
-if (URHO3D_SSL)
-    add_definitions (-DURHO3D_SSL)
-endif ()
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:899a029f4003cc22b263803a32a2c498bd125372d70eabd55289dae9ffbaa012
+size 409

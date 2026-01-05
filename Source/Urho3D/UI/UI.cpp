@@ -10,6 +10,7 @@
 #include "../Graphics/Camera.h"
 #include "../Graphics/Graphics.h"
 #include "../Graphics/GraphicsEvents.h"
+#include "../GraphicsAPI/Vulkan/VulkanGraphicsImpl.h"
 #include "../Graphics/Octree.h"
 #include "../Graphics/Technique.h"
 #include "../Graphics/Viewport.h"
@@ -409,6 +410,10 @@ void UI::RenderUpdate()
     const IntVector2& rootPos = rootElement_->GetPosition();
     // Note: the scissors operate on unscaled coordinates. Scissor scaling is only performed during render
     IntRect currentScissor = IntRect(rootPos.x_, rootPos.y_, rootPos.x_ + rootSize.x_, rootPos.y_ + rootSize.y_);
+    fprintf(stderr, "UI_HANDLERENDER: rootElement visible=%d, children=%u, size=%dx%d, scissor=(%d,%d)-(%d,%d)\n",
+            rootElement_->IsVisible(), rootElement_->GetNumChildren(),
+            rootSize.x_, rootSize.y_,
+            currentScissor.left_, currentScissor.top_, currentScissor.right_, currentScissor.bottom_);
     if (rootElement_->IsVisible())
         GetBatches(batches_, vertexData_, rootElement_, currentScissor);
 
@@ -967,16 +972,30 @@ void UI::SetVertexData(VertexBuffer* dest, const Vector<float>& vertexData)
     if (dest->GetVertexCount() < numVertices || dest->GetVertexCount() > numVertices * 2)
         dest->SetSize(numVertices, VertexElements::Position | VertexElements::Color | VertexElements::TexCoord1, true);
 
+    // DIAGNOSTIC: Dump first vertex data
+    if (numVertices > 0 && vertexData.Size() >= UI_VERTEX_SIZE)
+    {
+        fprintf(stderr, "VERTEX[0]: pos=(%.1f,%.1f,%.1f) color=0x%08X texcoord=(%.3f,%.3f)\n",
+                vertexData[0], vertexData[1], vertexData[2],
+                *((unsigned*)&vertexData[3]),
+                vertexData[4], vertexData[5]);
+    }
+
     dest->SetData(&vertexData[0]);
 }
 
 void UI::Render(VertexBuffer* buffer, const Vector<UIBatch>& batches, unsigned batchStart, unsigned batchEnd)
 {
+    fprintf(stderr, "UI_RENDER: Called with %u batches (start=%u, end=%u)\n", batches.Size(), batchStart, batchEnd);
+
     // Engine does not render when window is closed or device is lost
     assert(graphics_ && graphics_->IsInitialized() && !graphics_->IsDeviceLost());
 
     if (batches.Empty())
+    {
+        fprintf(stderr, "UI_RENDER: Batches empty, returning early\n");
         return;
+    }
 
     unsigned alphaFormat = Graphics::GetAlphaFormat();
     RenderSurface* surface = graphics_->GetRenderTarget(0);
@@ -985,10 +1004,15 @@ void UI::Render(VertexBuffer* buffer, const Vector<UIBatch>& batches, unsigned b
     Vector2 scale(2.0f * invScreenSize.x_, -2.0f * invScreenSize.y_);
     Vector2 offset(-1.0f, 1.0f);
 
-    if (Graphics::GetGAPI() == GAPI_OPENGL && surface)
+    // CRITICAL FIX: Vulkan uses Y-down NDC (like D3D), OpenGL uses Y-up
+    // Need to flip Y for: (1) Vulkan always, (2) OpenGL when rendering to texture
+    GAPI gapi = Graphics::GetGAPI();
+    if (gapi == GAPI_VULKAN || (gapi == GAPI_OPENGL && surface))
     {
-        // On OpenGL, flip the projection if rendering to a texture so that the texture can be addressed in the
-        // same way as a render texture produced on Direct3D.
+        // Flip the projection Y-axis for Vulkan (always) or OpenGL (when rendering to texture)
+        // This ensures screen (0,0) maps to NDC top-left in both APIs
+        fprintf(stderr, "UI: Applying Y-flip for GAPI=%d (VULKAN=%d)\n", gapi, GAPI_VULKAN);
+        fflush(stderr);
         offset.y_ = -offset.y_;
         scale.y_ = -scale.y_;
     }
@@ -1002,14 +1026,41 @@ void UI::Render(VertexBuffer* buffer, const Vector<UIBatch>& batches, unsigned b
     projection.m23_ = 0.0f;
     projection.m33_ = 1.0f;
 
+    fprintf(stderr, "UI projection matrix: m00=%f, m03=%f, m11=%f, m13=%f\n",
+            projection.m00_, projection.m03_, projection.m11_, projection.m13_);
+    fflush(stderr);
+
     graphics_->ClearParameterSources();
+
+    // CRITICAL: Clear render targets to ensure UI renders to swapchain, not G-Buffer
+    // Must restart render pass since we can't change framebuffers mid-pass in Vulkan
+    // ONLY restart if render targets were actually set (dirty flag indicates a change was made)
+    bool hadRenderTarget = (graphics_->GetRenderTarget(0) != nullptr);
+
+    graphics_->SetRenderTarget(0, (RenderSurface*)nullptr);
+    graphics_->SetDepthStencil((RenderSurface*)nullptr);
+
+    // Restart render pass with swapchain framebuffer (Vulkan requirement)
+    // Only if we actually changed from a render target to swapchain
+    if (gapi == GAPI_VULKAN && hadRenderTarget)
+    {
+        auto* vkImpl = graphics_->GetImpl_Vulkan();
+        if (vkImpl && vkImpl->IsRenderPassActive())
+        {
+            vkImpl->EndRenderPass();
+            vkImpl->BeginRenderPass();
+        }
+    }
+
+    // CRITICAL: Disable clip plane IMMEDIATELY after clearing parameters
+    // Must be set before any shaders are loaded to prevent garbage cClipPlane values from clipping UI geometry
+    graphics_->SetClipPlane(false);
+
     graphics_->SetColorWrite(true);
 
-    // Reverse winding if rendering to texture on OpenGL
-    if (Graphics::GetGAPI() == GAPI_OPENGL && surface)
-        graphics_->SetCullMode(CULL_CW);
-    else
-        graphics_->SetCullMode(CULL_CCW);
+    // UI should not use culling - quads can be wound either way
+    // CRITICAL FIX: Vulkan coordinate system differs from OpenGL, CULL_CCW was culling all UI triangles
+    graphics_->SetCullMode(CULL_NONE);
 
     graphics_->SetDepthTest(CMP_ALWAYS);
     graphics_->SetDepthWrite(false);
@@ -1145,10 +1196,15 @@ void UI::GetBatches(Vector<UIBatch>& batches, Vector<float>& vertexData, UIEleme
     // Set clipping scissor for child elements. No need to draw if zero size
     element->AdjustScissor(currentScissor);
     if (currentScissor.left_ == currentScissor.right_ || currentScissor.top_ == currentScissor.bottom_)
+    {
+        fprintf(stderr, "GETBATCHES: Scissor zero size, returning\n");
         return;
+    }
 
     element->SortChildren();
     const Vector<SharedPtr<UIElement>>& children = element->GetChildren();
+    fprintf(stderr, "GETBATCHES: element=%p, children=%u, batches_before=%u\n",
+            (void*)element, children.Size(), batches.Size());
     if (children.Empty())
         return;
 

@@ -11,9 +11,10 @@
 #include "../VulkanDefs.h"
 #include "../GraphicsDefs.h"
 #include "../Texture2D.h"
+#include "../VertexBuffer.h"
 #include "../../IO/Log.h"
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
+#include <SDL/SDL.h>
+#include <SDL/SDL_vulkan.h>
 
 #ifdef _MSC_VER
 #pragma warning(disable: 26812)  // Unscoped enum warning for Vulkan
@@ -75,6 +76,12 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         URHO3D_LOGERROR("Failed to create logical device");
         return false;
     }
+
+    // Debug: Check actual window size before creating surface
+    int actualWindowWidth = 0, actualWindowHeight = 0;
+    SDL_GetWindowSize(window, &actualWindowWidth, &actualWindowHeight);
+    URHO3D_LOGDEBUG(String("[VULKAN] SDL window size before CreateSurface: ") + String(actualWindowWidth) + "x" + String(actualWindowHeight));
+    URHO3D_LOGDEBUG(String("[VULKAN] Requested init size: ") + String(width) + "x" + String(height));
 
     if (!CreateSurface(window))
     {
@@ -452,6 +459,19 @@ void VulkanGraphicsImpl::Shutdown()
         samplerCache_ = nullptr;
     }
 
+    // Destroy thread-local upload command pools
+    {
+        MutexLock lock(threadUploadCommandPoolsMutex_);
+        for (auto& pair : threadUploadCommandPools_)
+        {
+            if (pair.second_)
+            {
+                vkDestroyCommandPool(device_, pair.second_, nullptr);
+            }
+        }
+        threadUploadCommandPools_.Clear();
+    }
+
     // Destroy command pool
     if (commandPool_)
     {
@@ -517,18 +537,19 @@ bool VulkanGraphicsImpl::AcquireNextImage()
     // Wait for fence from previous frame
     WaitForFrameFence();
 
-    VkSemaphore imageAcquiredSemaphore = imageAcquiredSemaphores_[frameIndex_];
     VkFence frameFence = frameFences_[frameIndex_];
 
     // Reset fence for this frame
     vkResetFences(device_, 1, &frameFence);
 
-    // Acquire next swapchain image
+    // Acquire next swapchain image FIRST to get currentImageIndex_
+    // NOTE: Must use frame-based semaphore since we don't know image index yet
+    currentImageAcquiredSemaphore_ = imageAcquiredSemaphores_[frameIndex_ % imageAcquiredSemaphores_.Size()];
     VkResult result = vkAcquireNextImageKHR(
         device_,
         swapchain_,
         UINT64_MAX,
-        imageAcquiredSemaphore,
+        currentImageAcquiredSemaphore_,
         nullptr,
         &currentImageIndex_
     );
@@ -557,8 +578,9 @@ void VulkanGraphicsImpl::Present()
         VkSemaphore signalSemaphores[2]{};
         uint32_t signalSemaphoreCount = 0;
 
-        // Always signal render complete binary semaphore for presentation
-        signalSemaphores[signalSemaphoreCount++] = renderCompleteSemaphores_[frameIndex_];
+        // CRITICAL FIX: Use currentImageIndex_ for renderComplete semaphore (not frameIndex_)
+        // Each swapchain image needs its own semaphore to avoid reuse before present completes
+        signalSemaphores[signalSemaphoreCount++] = renderCompleteSemaphores_[currentImageIndex_];
 
         // Prepare timeline semaphore signaling if available (Phase 33)
         VkTimelineSemaphoreSubmitInfo timelineSubmitInfo{};
@@ -582,7 +604,7 @@ void VulkanGraphicsImpl::Present()
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &cmdBuffer;
         submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = &imageAcquiredSemaphores_[frameIndex_];
+        submitInfo.pWaitSemaphores = &currentImageAcquiredSemaphore_;  // Use semaphore from BeginFrame
         submitInfo.signalSemaphoreCount = signalSemaphoreCount;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -594,6 +616,16 @@ void VulkanGraphicsImpl::Present()
         if (submitResult != VK_SUCCESS)
         {
             URHO3D_LOGERROR("Failed to submit command buffer: " + String((int)submitResult));
+
+            // Detect device loss at submission point
+            if (submitResult == VK_ERROR_DEVICE_LOST)
+            {
+                deviceLost_ = true;
+                URHO3D_LOGERROR("DEVICE LOST detected at vkQueueSubmit (frame submission, detection point)");
+                fprintf(stderr, "DEVICE_LOST: Detected at vkQueueSubmit (frame submission)\n");
+                fflush(stderr);
+            }
+
             return;
         }
 
@@ -604,17 +636,29 @@ void VulkanGraphicsImpl::Present()
     // Present rendered image to swapchain
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.pNext = nullptr;  // CRITICAL: Must be nullptr
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &renderCompleteSemaphores_[frameIndex_];
+    // CRITICAL FIX: Use currentImageIndex_ (not frameIndex_) to match signal semaphore
+    presentInfo.pWaitSemaphores = &renderCompleteSemaphores_[currentImageIndex_];
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &swapchain_;
     presentInfo.pImageIndices = &currentImageIndex_;
+    presentInfo.pResults = nullptr;  // CRITICAL: Must be nullptr when not used
 
     VkResult presentResult = vkQueuePresentKHR(presentQueue_, &presentInfo);
 
     if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR)
     {
         URHO3D_LOGERROR("Failed to present swapchain image: " + String((int)presentResult));
+
+        // Detect device loss at present point
+        if (presentResult == VK_ERROR_DEVICE_LOST)
+        {
+            deviceLost_ = true;
+            URHO3D_LOGERROR("DEVICE LOST detected at vkQueuePresentKHR (detection point)");
+            fprintf(stderr, "DEVICE_LOST: Detected at vkQueuePresentKHR\n");
+            fflush(stderr);
+        }
     }
 
     // Advance to next frame
@@ -642,11 +686,29 @@ void VulkanGraphicsImpl::WaitForFrameFence()
     }
     else
     {
-        // Fallback: CPU-blocking fence wait (original behavior)
+        // Fallback: CPU-blocking fence wait with timeout to detect hangs
         VkFence fence = frameFences_[frameIndex_];
         if (fence)
         {
-            vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
+            VkResult waitResult = vkWaitForFences(device_, 1, &fence, VK_TRUE, 10000000000ULL); // 10 seconds
+
+            if (waitResult == VK_TIMEOUT)
+            {
+                URHO3D_LOGERROR(String("Frame fence wait TIMED OUT after 10 seconds! Frame=") + String(frameIndex_));
+            }
+            else if (waitResult != VK_SUCCESS)
+            {
+                URHO3D_LOGERROR(String("Frame fence wait FAILED with result=") + String((int)waitResult));
+
+                // Detect device loss at fence wait point
+                if (waitResult == VK_ERROR_DEVICE_LOST)
+                {
+                    deviceLost_ = true;
+                    URHO3D_LOGERROR("DEVICE LOST detected at vkWaitForFences (frame fence, detection point)");
+                    fprintf(stderr, "DEVICE_LOST: Detected at vkWaitForFences (frame fence)\n");
+                    fflush(stderr);
+                }
+            }
         }
     }
 }
@@ -663,11 +725,19 @@ void VulkanGraphicsImpl::ResetFrameCommandBuffer()
 void VulkanGraphicsImpl::BeginRenderPass()
 {
     if (!renderPass_ || !device_)
+    {
+        URHO3D_LOGERROR("BeginRenderPass: Missing renderPass or device");
         return;
+    }
 
     VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
     if (!cmdBuffer)
+    {
+        URHO3D_LOGERROR("BeginRenderPass: No command buffer");
         return;
+    }
+
+    URHO3D_LOGDEBUG("BeginRenderPass: Starting render pass");
 
     // Phase 34 Step 3: Handle deferred rendering framebuffer rebuild if needed
     if (renderTargetsDirty_)
@@ -681,13 +751,22 @@ void VulkanGraphicsImpl::BeginRenderPass()
     VkRenderPass currentRenderPass = renderPass_;
     uint32_t clearValueCount = 2;  // Default: color + depth
 
-    // If we have a deferred framebuffer and render targets are set, use deferred pass
-    // (renderTargetFramebuffer_ is non-null when RebuildRenderTargetFramebuffer() succeeds)
-    if (renderTargetFramebuffer_ != VK_NULL_HANDLE)
+    // If we have a deferred framebuffer and render targets are ACTUALLY SET (not just framebuffer exists), use deferred pass
+    // Only use G-Buffer when renderTargetsDirty_ was triggered by SetRenderTarget, not just by unconditional init
+    bool hasActiveRenderTargets = (graphics_ && graphics_->GetRenderTarget(0) != nullptr);
+    if (hasActiveRenderTargets && renderTargetFramebuffer_ != VK_NULL_HANDLE && renderTargetRenderPass_ != VK_NULL_HANDLE)
     {
         currentFramebuffer = renderTargetFramebuffer_;
+        currentRenderPass = renderTargetRenderPass_;  // Use G-Buffer render pass, not swapchain render pass!
         // G-Buffer has 4 color attachments + 1 depth = 5 attachments total
         clearValueCount = 5;
+        URHO3D_LOGDEBUGF("[Thread %lu] BeginRenderPass: Using G-Buffer render pass with %u attachments",
+                         (unsigned long)Thread::GetCurrentThreadID(), clearValueCount);
+    }
+    else
+    {
+        URHO3D_LOGDEBUGF("[Thread %lu] BeginRenderPass: Using swapchain render pass with %u attachments",
+                         (unsigned long)Thread::GetCurrentThreadID(), clearValueCount);
     }
 
     // Prepare clear values for all attachments
@@ -695,7 +774,7 @@ void VulkanGraphicsImpl::BeginRenderPass()
     VkClearValue clearValues[5]{};
     for (uint32_t i = 0; i < clearValueCount - 1; ++i)
     {
-        clearValues[i].color = {{0.0f, 0.0f, 0.0f, 1.0f}};  // Color attachments: clear to black
+        clearValues[i].color = {{0.0f, 0.0f, 0.0f, 1.0f}};  // Clear to black
     }
     clearValues[clearValueCount - 1].depthStencil = {1.0f, 0};  // Depth: clear to 1.0
 
@@ -708,15 +787,40 @@ void VulkanGraphicsImpl::BeginRenderPass()
     renderPassInfo.clearValueCount = clearValueCount;
     renderPassInfo.pClearValues = clearValues;
 
+    URHO3D_LOGDEBUGF("[Thread %lu] BeginRenderPass: renderArea=(%u,%u) extent=%ux%u, framebuffer=%llu, renderPass=%llu",
+                     (unsigned long)Thread::GetCurrentThreadID(),
+                     renderPassInfo.renderArea.offset.x, renderPassInfo.renderArea.offset.y,
+                     renderPassInfo.renderArea.extent.width, renderPassInfo.renderArea.extent.height,
+                     (unsigned long long)currentFramebuffer, (unsigned long long)currentRenderPass);
+
     vkCmdBeginRenderPass(cmdBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    URHO3D_LOGINFO("BeginRenderPass: Render pass ACTIVE, framebuffer=" + String((unsigned long long)currentFramebuffer));
 
     renderPassActive_ = true;
 }
 
 void VulkanGraphicsImpl::EndRenderPass()
 {
-    // Render pass is ended by the caller via vkCmdEndRenderPass
+    URHO3D_LOGDEBUG("EndRenderPass: ENTRY, renderPassActive_=" + String(renderPassActive_));
+
+    if (!renderPassActive_)
+    {
+        URHO3D_LOGWARNING("EndRenderPass: Render pass not active, skipping vkCmdEndRenderPass");
+        return;
+    }
+
+    VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
+    if (!cmdBuffer)
+    {
+        URHO3D_LOGERROR("EndRenderPass: cmdBuffer is null!");
+        return;
+    }
+
+    // End the active render pass (transitions image to finalLayout: PRESENT_SRC_KHR)
+    URHO3D_LOGDEBUG("EndRenderPass: Calling vkCmdEndRenderPass");
+    vkCmdEndRenderPass(cmdBuffer);
     renderPassActive_ = false;
+    URHO3D_LOGDEBUG("EndRenderPass: Render pass ended successfully");
 }
 
 void VulkanGraphicsImpl::NextSubpass()
@@ -736,11 +840,270 @@ void VulkanGraphicsImpl::NextSubpass()
     vkCmdNextSubpass(cmdBuffer, VK_SUBPASS_CONTENTS_INLINE);
 }
 
+VkCommandBuffer VulkanGraphicsImpl::BeginUploadCommandBuffer()
+{
+    // Get current thread ID
+    ThreadID currentThread = Thread::GetCurrentThreadID();
+
+    // Get or create command pool for this thread (thread-safe)
+    VkCommandPool threadPool = VK_NULL_HANDLE;
+    {
+        MutexLock lock(threadUploadCommandPoolsMutex_);
+
+        // Check if this thread already has a command pool
+        auto it = threadUploadCommandPools_.Find(currentThread);
+        if (it == threadUploadCommandPools_.End())
+        {
+            // Create new command pool for this thread
+            VkCommandPoolCreateInfo poolInfo{};
+            poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+            poolInfo.queueFamilyIndex = graphicsQueueFamily_;
+            poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
+            VkCommandPool newPool = VK_NULL_HANDLE;
+            if (vkCreateCommandPool(device_, &poolInfo, nullptr, &newPool) != VK_SUCCESS)
+            {
+                URHO3D_LOGERROR("Failed to create thread-local upload command pool");
+                return VK_NULL_HANDLE;
+            }
+
+            URHO3D_LOGDEBUG(String("Created thread-local upload command pool for thread ") +
+                           String((unsigned long long)currentThread));
+
+            threadUploadCommandPools_[currentThread] = newPool;
+            threadPool = newPool;
+        }
+        else
+        {
+            threadPool = it->second_;
+        }
+    }
+
+    // Allocate command buffer from thread-local pool (no contention between threads)
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.pNext = nullptr;  // CRITICAL: Must be nullptr to avoid garbage pointer
+    allocInfo.commandPool = threadPool;  // Thread-local pool
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffer) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to allocate upload command buffer from thread-local pool");
+        return VK_NULL_HANDLE;
+    }
+
+    URHO3D_LOGDEBUG(String("BeginUploadCommandBuffer: Allocated cmdBuf=") +
+                   String((unsigned long long)(uintptr_t)commandBuffer) +
+                   " from pool=" + String((unsigned long long)(uintptr_t)threadPool));
+
+    // Begin recording
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.pNext = nullptr;  // CRITICAL: Must be nullptr to avoid garbage pointer
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    beginInfo.pInheritanceInfo = nullptr;  // CRITICAL: Must be nullptr (not using secondary buffers)
+
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to begin upload command buffer");
+        vkFreeCommandBuffers(device_, threadPool, 1, &commandBuffer);
+        return VK_NULL_HANDLE;
+    }
+
+    return commandBuffer;
+}
+
+void VulkanGraphicsImpl::EndUploadCommandBuffer(VkCommandBuffer commandBuffer)
+{
+    if (commandBuffer == VK_NULL_HANDLE)
+        return;
+
+    // Get current thread ID to retrieve thread-local command pool
+    ThreadID currentThread = Thread::GetCurrentThreadID();
+
+    // Get thread-local command pool (should always exist if BeginUploadCommandBuffer was called)
+    VkCommandPool threadPool = VK_NULL_HANDLE;
+    {
+        MutexLock lock(threadUploadCommandPoolsMutex_);
+        auto it = threadUploadCommandPools_.Find(currentThread);
+        if (it != threadUploadCommandPools_.End())
+        {
+            threadPool = it->second_;
+        }
+        else
+        {
+            URHO3D_LOGERROR("EndUploadCommandBuffer: No thread-local pool found for current thread");
+            return;
+        }
+    }
+
+    // End recording
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to end upload command buffer");
+        vkFreeCommandBuffers(device_, threadPool, 1, &commandBuffer);
+        return;
+    }
+
+    // Submit to graphics queue
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.pNext = nullptr;  // CRITICAL: Must be nullptr
+    submitInfo.waitSemaphoreCount = 0;
+    submitInfo.pWaitSemaphores = nullptr;
+    submitInfo.pWaitDstStageMask = nullptr;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    submitInfo.signalSemaphoreCount = 0;
+    submitInfo.pSignalSemaphores = nullptr;
+
+    // Create a fence for this upload
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.pNext = nullptr;  // CRITICAL: Must be nullptr
+    fenceInfo.flags = 0;
+
+    VkFence uploadFence;
+    if (vkCreateFence(device_, &fenceInfo, nullptr, &uploadFence) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create upload fence");
+        vkFreeCommandBuffers(device_, threadPool, 1, &commandBuffer);
+        return;
+    }
+
+    URHO3D_LOGDEBUG("EndUploadCommandBuffer: About to submit to graphics queue with fence");
+
+    // Protect queue submission with mutex (vkQueueSubmit is NOT thread-safe)
+    VkResult submitResult;
+    {
+        MutexLock lock(queueSubmitMutex_);
+        submitResult = vkQueueSubmit(graphicsQueue_, 1, &submitInfo, uploadFence);
+    }
+
+    if (submitResult != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR(String("Failed to submit upload command buffer: ") + String((int)submitResult));
+
+        // Detect device loss at upload submission point
+        if (submitResult == VK_ERROR_DEVICE_LOST)
+        {
+            deviceLost_ = true;
+            URHO3D_LOGERROR("DEVICE LOST detected at vkQueueSubmit (upload submission, detection point)");
+            fprintf(stderr, "DEVICE_LOST: Detected at vkQueueSubmit (upload submission)\n");
+            fflush(stderr);
+        }
+
+        vkDestroyFence(device_, uploadFence, nullptr);
+        vkFreeCommandBuffers(device_, threadPool, 1, &commandBuffer);
+        return;
+    }
+    URHO3D_LOGDEBUG("EndUploadCommandBuffer: Queue submit succeeded, waiting for fence");
+
+    // Check fence status before waiting
+    VkResult fenceStatus = vkGetFenceStatus(device_, uploadFence);
+    URHO3D_LOGDEBUG(String("EndUploadCommandBuffer: Initial fence status=") + String((int)fenceStatus));
+
+    // Wait for completion with a timeout to detect hangs
+    URHO3D_LOGDEBUG("EndUploadCommandBuffer: Calling vkWaitForFences with 10 second timeout...");
+    VkResult waitResult = vkWaitForFences(device_, 1, &uploadFence, VK_TRUE, 10000000000ULL); // 10 seconds
+
+    if (waitResult == VK_TIMEOUT)
+    {
+        URHO3D_LOGERROR("EndUploadCommandBuffer: Fence wait TIMED OUT after 10 seconds!");
+
+        // Check fence status again
+        fenceStatus = vkGetFenceStatus(device_, uploadFence);
+        URHO3D_LOGERROR(String("EndUploadCommandBuffer: Fence status after timeout=") + String((int)fenceStatus));
+
+        // Try to check queue status with a short timeout
+        URHO3D_LOGERROR("EndUploadCommandBuffer: Checking queue status with vkQueueWaitIdle...");
+        VkResult queueStatus;
+        {
+            MutexLock lock(queueSubmitMutex_);
+            queueStatus = vkQueueWaitIdle(graphicsQueue_);
+        }
+        URHO3D_LOGERROR(String("EndUploadCommandBuffer: vkQueueWaitIdle result=") + String((int)queueStatus));
+
+        // Check if device is lost
+        URHO3D_LOGERROR("EndUploadCommandBuffer: Checking device status with vkDeviceWaitIdle...");
+        VkResult deviceStatus = vkDeviceWaitIdle(device_);
+        URHO3D_LOGERROR(String("EndUploadCommandBuffer: vkDeviceWaitIdle result=") + String((int)deviceStatus));
+
+        if (deviceStatus == VK_ERROR_DEVICE_LOST)
+        {
+            deviceLost_ = true;
+            URHO3D_LOGERROR("DEVICE LOST detected at vkDeviceWaitIdle (upload timeout, detection point)");
+            fprintf(stderr, "DEVICE_LOST: Detected at vkDeviceWaitIdle (upload timeout)\n");
+            fflush(stderr);
+        }
+        else if (queueStatus == VK_ERROR_DEVICE_LOST)
+        {
+            deviceLost_ = true;
+            URHO3D_LOGERROR("DEVICE LOST detected at vkQueueWaitIdle (upload timeout, detection point)");
+            fprintf(stderr, "DEVICE_LOST: Detected at vkQueueWaitIdle (upload timeout)\n");
+            fflush(stderr);
+        }
+        else if (queueStatus == VK_SUCCESS && deviceStatus == VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("EndUploadCommandBuffer: Queue and device are OK, but fence still not signaled - fence attachment bug?");
+        }
+
+        // Clean up and return (don't wait forever)
+        vkDestroyFence(device_, uploadFence, nullptr);
+        vkFreeCommandBuffers(device_, threadPool, 1, &commandBuffer);
+        return;
+    }
+    else if (waitResult != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR(String("EndUploadCommandBuffer: vkWaitForFences failed with result=") + String((int)waitResult));
+
+        // Detect device loss at upload fence wait point
+        if (waitResult == VK_ERROR_DEVICE_LOST)
+        {
+            deviceLost_ = true;
+            URHO3D_LOGERROR("DEVICE LOST detected at vkWaitForFences (upload fence, detection point)");
+            fprintf(stderr, "DEVICE_LOST: Detected at vkWaitForFences (upload fence)\n");
+            fflush(stderr);
+        }
+
+        vkDestroyFence(device_, uploadFence, nullptr);
+        vkFreeCommandBuffers(device_, threadPool, 1, &commandBuffer);
+        return;
+    }
+
+    URHO3D_LOGDEBUG("EndUploadCommandBuffer: Fence signaled, upload complete");
+
+    vkDestroyFence(device_, uploadFence, nullptr);
+
+    // Free the command buffer from thread-local pool
+    URHO3D_LOGDEBUG(String("EndUploadCommandBuffer: Freeing cmdBuf=") +
+                   String((unsigned long long)(uintptr_t)commandBuffer) +
+                   " to pool=" + String((unsigned long long)(uintptr_t)threadPool));
+    vkFreeCommandBuffers(device_, threadPool, 1, &commandBuffer);
+}
+
 VkFramebuffer VulkanGraphicsImpl::GetCurrentFramebuffer() const
 {
     if (currentImageIndex_ < framebuffers_.Size())
         return framebuffers_[currentImageIndex_];
     return nullptr;
+}
+
+VkRenderPass VulkanGraphicsImpl::GetRenderPass() const
+{
+    // Return the G-Buffer render pass if render targets are active, otherwise swapchain
+    if (graphics_ && graphics_->GetRenderTarget(0) != nullptr &&
+        renderTargetRenderPass_ != VK_NULL_HANDLE)
+    {
+        URHO3D_LOGDEBUGF("[Thread %lu] GetRenderPass: Returning G-Buffer render pass (render target is set)",
+                         (unsigned long)Thread::GetCurrentThreadID());
+        return renderTargetRenderPass_;
+    }
+    URHO3D_LOGDEBUGF("[Thread %lu] GetRenderPass: Returning swapchain render pass (no render target)",
+                     (unsigned long)Thread::GetCurrentThreadID());
+    return renderPass_;
 }
 
 VkSampler VulkanGraphicsImpl::GetSampler(VkFilter filter, VkSamplerAddressMode addressMode)
@@ -814,7 +1177,10 @@ bool VulkanGraphicsImpl::CreateInstance()
     if (validationLayerAvailable)
     {
         layers.Push(validationLayerName);
-        URHO3D_LOGINFO("Vulkan validation layer enabled");
+        // Add debug utils extension for validation layer messages
+        extensions.Push(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        extensionCount++;
+        URHO3D_LOGINFO("Vulkan validation layer enabled with debug utils");
     }
 
     VkApplicationInfo appInfo{};
@@ -846,6 +1212,39 @@ bool VulkanGraphicsImpl::CreateInstance()
 
     URHO3D_LOGINFO("Vulkan instance created successfully");
     URHO3D_LOGDEBUG(String("[VULKAN] Instance handle: ") + String((unsigned long long)instance_));
+
+    // Setup debug messenger if validation layers are enabled
+    if (validationLayerAvailable)
+    {
+        VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
+        debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        debugCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        debugCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        debugCreateInfo.pfnUserCallback = [](
+            VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+            VkDebugUtilsMessageTypeFlagsEXT messageType,
+            const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+            void* pUserData) -> VkBool32
+        {
+            if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+            {
+                URHO3D_LOGWARNING(String("[VULKAN VALIDATION] ") + pCallbackData->pMessage);
+            }
+            return VK_FALSE;
+        };
+
+        auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT");
+        if (func != nullptr)
+        {
+            VkDebugUtilsMessengerEXT debugMessenger;
+            func(instance_, &debugCreateInfo, nullptr, &debugMessenger);
+            URHO3D_LOGINFO("Vulkan debug messenger created");
+        }
+    }
+
     return true;
 }
 
@@ -1257,6 +1656,7 @@ bool VulkanGraphicsImpl::CreateLogicalDevice()
     VkPhysicalDeviceFeatures deviceFeatures{};
     deviceFeatures.samplerAnisotropy = VK_FALSE;
     deviceFeatures.sampleRateShading = VK_FALSE;
+    deviceFeatures.shaderClipDistance = VK_TRUE;  // CRITICAL: Required for gl_ClipDistance in shaders
 
     const char* deviceExtensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
@@ -1314,16 +1714,40 @@ bool VulkanGraphicsImpl::CreateSwapchain(int width, int height)
         imageCount = capabilities.minImageCount;
     }
 
-    swapchainExtent_ = capabilities.currentExtent;
-    if (capabilities.currentExtent.width == UINT32_MAX)
+    // Log current extent before deciding
+    URHO3D_LOGDEBUG("Surface currentExtent: " + String((int)capabilities.currentExtent.width) + "x" +
+                    String((int)capabilities.currentExtent.height) +
+                    " (UINT32_MAX=" + String(capabilities.currentExtent.width == UINT32_MAX ? "YES" : "NO") + ")");
+    URHO3D_LOGDEBUG("Requested window size: " + String((int)width) + "x" + String((int)height));
+
+    // FIXED: Always use requested dimensions if currentExtent is undefined (UINT32_MAX)
+    // OR if it's invalid (0 or 1, which happens with hidden/minimized windows)
+    if (capabilities.currentExtent.width == UINT32_MAX ||
+        capabilities.currentExtent.width <= 1 ||
+        capabilities.currentExtent.height <= 1)
     {
         swapchainExtent_.width = (uint32_t)width;
         swapchainExtent_.height = (uint32_t)height;
+
+        // Clamp to supported range
+        if (swapchainExtent_.width < capabilities.minImageExtent.width)
+            swapchainExtent_.width = capabilities.minImageExtent.width;
+        if (swapchainExtent_.height < capabilities.minImageExtent.height)
+            swapchainExtent_.height = capabilities.minImageExtent.height;
 
         if (swapchainExtent_.width > capabilities.maxImageExtent.width)
             swapchainExtent_.width = capabilities.maxImageExtent.width;
         if (swapchainExtent_.height > capabilities.maxImageExtent.height)
             swapchainExtent_.height = capabilities.maxImageExtent.height;
+
+        URHO3D_LOGDEBUG("Using requested extent (currentExtent was invalid): " +
+                       String((int)swapchainExtent_.width) + "x" + String((int)swapchainExtent_.height));
+    }
+    else
+    {
+        swapchainExtent_ = capabilities.currentExtent;
+        URHO3D_LOGDEBUG("Using surface currentExtent: " +
+                       String((int)swapchainExtent_.width) + "x" + String((int)swapchainExtent_.height));
     }
 
     swapchainFormat_ = surfaceFormat.format;
@@ -1734,6 +2158,27 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
     // Phase 34 Step 1: Create framebuffer for G-Buffer (4 color + depth attachments)
     // This framebuffer is used for the geometry pass in deferred rendering
 
+    // CRITICAL: Don't create G-Buffer framebuffer if no render targets are set
+    // If all render targets are null, we should use the swapchain instead (forward rendering)
+    bool hasAnyRenderTarget = false;
+    if (graphics_)
+    {
+        for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
+        {
+            if (graphics_->GetRenderTarget(i) != nullptr)
+            {
+                hasAnyRenderTarget = true;
+                break;
+            }
+        }
+    }
+
+    if (!hasAnyRenderTarget)
+    {
+        URHO3D_LOGDEBUG("RebuildRenderTargetFramebuffer: No render targets set, skipping G-Buffer creation (will use swapchain)");
+        return true;  // Not an error - just means we're using swapchain rendering
+    }
+
     if (gBufferPositionImage_ == VK_NULL_HANDLE ||
         gBufferNormalImage_ == VK_NULL_HANDLE ||
         gBufferAlbedoImage_ == VK_NULL_HANDLE ||
@@ -1755,12 +2200,13 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
     descriptor.sampleCount = VK_SAMPLE_COUNT_1_BIT;              // No MSAA for G-Buffer
 
     // Get or create the G-Buffer render pass
-    VkRenderPass gBufferRenderPass = GetOrCreateRenderPass(descriptor);
-    if (gBufferRenderPass == VK_NULL_HANDLE)
+    renderTargetRenderPass_ = GetOrCreateRenderPass(descriptor);
+    if (renderTargetRenderPass_ == VK_NULL_HANDLE)
     {
         URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create G-Buffer render pass");
         return false;
     }
+    VkRenderPass gBufferRenderPass = renderTargetRenderPass_;  // For local use
 
     // Phase 34 Step 1: Prepare attachment image views
     VkImageView attachments[5] = {
@@ -1811,6 +2257,7 @@ bool VulkanGraphicsImpl::CreateRenderPass()
     attachments.Resize(attachmentCount);
 
     // Attachment 0: Color attachment (MSAA if enabled, else swapchain)
+    attachments[0].flags = 0;  // No special flags needed
     attachments[0].format = swapchainFormat_;
     attachments[0].samples = actualSampleCount_;  // Use MSAA sample count
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -1821,6 +2268,7 @@ bool VulkanGraphicsImpl::CreateRenderPass()
     attachments[0].finalLayout = useMSAA ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     // Attachment 1: Depth attachment
+    attachments[1].flags = 0;  // No special flags needed
     attachments[1].format = VK_FORMAT_D32_SFLOAT;
     attachments[1].samples = actualSampleCount_;  // Must match color attachment
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -1833,6 +2281,7 @@ bool VulkanGraphicsImpl::CreateRenderPass()
     // Attachment 2: Resolve attachment (only if MSAA enabled)
     if (useMSAA)
     {
+        attachments[2].flags = 0;  // No special flags needed
         attachments[2].format = swapchainFormat_;
         attachments[2].samples = VK_SAMPLE_COUNT_1_BIT;  // Resolve target is always 1x
         attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -1932,6 +2381,7 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     // Color attachments (indices 0 to colorAttachmentCount-1)
     for (uint32_t i = 0; i < descriptor.colorAttachmentCount; ++i)
     {
+        attachments[i].flags = 0;  // No special flags needed
         attachments[i].format = descriptor.colorFormats[i];
         attachments[i].samples = descriptor.sampleCount;
         attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -1945,6 +2395,7 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
 
     // Depth attachment (after all color attachments)
     uint32_t depthIndex = descriptor.colorAttachmentCount;
+    attachments[depthIndex].flags = 0;  // No special flags needed
     attachments[depthIndex].format = descriptor.depthFormat;
     attachments[depthIndex].samples = descriptor.sampleCount;
     attachments[depthIndex].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -1985,12 +2436,19 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     Vector<VkSubpassDescription> subpasses;
     subpasses.Resize(descriptor.subpassCount);
 
+    // Zero-initialize all subpasses to avoid validation layer crashes
+    for (uint32_t i = 0; i < descriptor.subpassCount; ++i)
+    {
+        memset(&subpasses[i], 0, sizeof(VkSubpassDescription));
+    }
+
     // Subpass 0: Geometry pass (writes to color attachments)
     subpasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpasses[0].colorAttachmentCount = descriptor.colorAttachmentCount;
     subpasses[0].pColorAttachments = colorRefs.Buffer();
     subpasses[0].pDepthStencilAttachment = &depthRef;
     subpasses[0].inputAttachmentCount = 0;  // Geometry doesn't read inputs
+    subpasses[0].pInputAttachments = nullptr;
 
     // Subpass 1: Lighting pass (reads from input attachments, writes to color[0])
     if (descriptor.subpassCount > 1)
@@ -2006,7 +2464,11 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
 
     // Create subpass dependencies
     Vector<VkSubpassDependency> dependencies;
-    dependencies.Resize(descriptor.subpassCount + 1);  // External -> subpass 0, and subpass 0 -> subpass 1
+    uint32_t dependencyCount = 1;  // At minimum: external -> subpass 0
+    if (descriptor.subpassCount > 1)
+        dependencyCount = descriptor.subpassCount + 1;  // Add inter-subpass dependencies
+
+    dependencies.Resize(dependencyCount);
 
     // Dependency: VK_SUBPASS_EXTERNAL -> Subpass 0 (geometry)
     dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -2015,6 +2477,7 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependencies[0].srcAccessMask = 0;
     dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[0].dependencyFlags = 0;  // Initialize to prevent garbage memory
 
     // Dependency: Subpass 0 -> Subpass 1 (geometry to lighting)
     if (descriptor.subpassCount > 1)
@@ -2034,8 +2497,19 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     renderPassInfo.pAttachments = attachments.Buffer();
     renderPassInfo.subpassCount = descriptor.subpassCount;
     renderPassInfo.pSubpasses = subpasses.Buffer();
-    renderPassInfo.dependencyCount = descriptor.subpassCount + 1;
+    renderPassInfo.dependencyCount = dependencyCount;
     renderPassInfo.pDependencies = dependencies.Buffer();
+
+    // Debug logging
+    URHO3D_LOGDEBUG(String("Creating render pass: attachments=") + String(totalAttachmentCount) +
+                   ", subpasses=" + String(descriptor.subpassCount) +
+                   ", dependencies=" + String(dependencyCount));
+    for (uint32_t i = 0; i < descriptor.subpassCount; ++i)
+    {
+        URHO3D_LOGDEBUG(String("  Subpass ") + String(i) + ": colorAttachments=" +
+                       String(subpasses[i].colorAttachmentCount) +
+                       ", inputAttachments=" + String(subpasses[i].inputAttachmentCount));
+    }
 
     VkRenderPass renderPass = VK_NULL_HANDLE;
     if (vkCreateRenderPass(device_, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS)
@@ -2135,9 +2609,16 @@ bool VulkanGraphicsImpl::CreateCommandBuffers()
 
 bool VulkanGraphicsImpl::CreateSynchronizationPrimitives()
 {
-    frameFences_.Resize(VULKAN_FRAME_COUNT);
-    imageAcquiredSemaphores_.Resize(VULKAN_FRAME_COUNT);
-    renderCompleteSemaphores_.Resize(VULKAN_FRAME_COUNT);
+    // CRITICAL FIX: Semaphores must match swapchain image count, NOT hardcoded frame count
+    // Swapchain may have 4 images while VULKAN_FRAME_COUNT=3, causing semaphore reuse errors
+    uint32_t swapchainImageCount = static_cast<uint32_t>(swapchainImages_.Size());
+
+    frameFences_.Resize(VULKAN_FRAME_COUNT);  // Fences can use frame count (CPU-side pacing)
+    imageAcquiredSemaphores_.Resize(swapchainImageCount);  // One per swapchain image
+    renderCompleteSemaphores_.Resize(swapchainImageCount);  // One per swapchain image
+
+    URHO3D_LOGINFO(String("Creating synchronization: ") + String(VULKAN_FRAME_COUNT) + " fences, " +
+                   String(swapchainImageCount) + " semaphore pairs (matching swapchain image count)");
 
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -2146,13 +2627,23 @@ bool VulkanGraphicsImpl::CreateSynchronizationPrimitives()
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
+    // Create fences (frame-based)
     for (uint32_t i = 0; i < VULKAN_FRAME_COUNT; ++i)
     {
-        if (vkCreateFence(device_, &fenceInfo, nullptr, &frameFences_[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &imageAcquiredSemaphores_[i]) != VK_SUCCESS ||
+        if (vkCreateFence(device_, &fenceInfo, nullptr, &frameFences_[i]) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("Failed to create frame fence");
+            return false;
+        }
+    }
+
+    // Create semaphores (one pair per swapchain image)
+    for (uint32_t i = 0; i < swapchainImageCount; ++i)
+    {
+        if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &imageAcquiredSemaphores_[i]) != VK_SUCCESS ||
             vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &renderCompleteSemaphores_[i]) != VK_SUCCESS)
         {
-            URHO3D_LOGERROR("Failed to create synchronization primitives");
+            URHO3D_LOGERROR("Failed to create semaphore pair for swapchain image " + String(i));
             return false;
         }
     }
@@ -2187,14 +2678,21 @@ bool VulkanGraphicsImpl::CreateMemoryAllocator()
 
 bool VulkanGraphicsImpl::CreateDescriptorPool()
 {
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSize.descriptorCount = VULKAN_DESCRIPTOR_POOL_SIZE;
+    // Create descriptor pool with support for both uniform buffers and image samplers
+    VkDescriptorPoolSize poolSizes[2];
+
+    // Uniform buffers for shader parameters
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].descriptorCount = VULKAN_DESCRIPTOR_POOL_SIZE;
+
+    // Combined image samplers for textures
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = VULKAN_DESCRIPTOR_POOL_SIZE * 8;  // 8 texture units per set
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = 2;  // Both uniform buffers and image samplers
+    poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = VULKAN_DESCRIPTOR_POOL_SIZE;
 
     if (vkCreateDescriptorPool(device_, &poolInfo, nullptr, &descriptorPool_) != VK_SUCCESS)
@@ -2203,7 +2701,7 @@ bool VulkanGraphicsImpl::CreateDescriptorPool()
         return false;
     }
 
-    URHO3D_LOGINFO("Descriptor pool created");
+    URHO3D_LOGINFO("Descriptor pool created with uniform buffers and image samplers");
     return true;
 }
 
@@ -2217,21 +2715,31 @@ bool VulkanGraphicsImpl::CreateDescriptorSetLayouts()
     if (profiler)
         profiler->StartPhase("Phase36A: Descriptor Set Layout Creation");
 
-    // Set 0: Material descriptor layout (textures, samplers, material parameters)
-    // Bindings: 8 combined image samplers for textures
-    VkDescriptorSetLayoutBinding materialBindings[MAX_TEXTURE_UNITS];
+    // Set 0: Material descriptor layout (shader uniforms + textures)
+    // Binding 0: Uniform buffer for shader parameters (ObjectVS, CameraVS, MaterialPS)
+    // Bindings 1-7: Combined image samplers for textures
+    VkDescriptorSetLayoutBinding materialBindings[MAX_TEXTURE_UNITS + 1];
+
+    // Binding 0: Shader parameter uniform buffer
+    materialBindings[0].binding = 0;
+    materialBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    materialBindings[0].descriptorCount = 1;
+    materialBindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    materialBindings[0].pImmutableSamplers = nullptr;
+
+    // Bindings 1-8: Texture samplers
     for (unsigned i = 0; i < MAX_TEXTURE_UNITS; ++i)
     {
-        materialBindings[i].binding = i;
-        materialBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        materialBindings[i].descriptorCount = 1;
-        materialBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        materialBindings[i].pImmutableSamplers = nullptr;
+        materialBindings[i + 1].binding = i + 1;
+        materialBindings[i + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        materialBindings[i + 1].descriptorCount = 1;
+        materialBindings[i + 1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        materialBindings[i + 1].pImmutableSamplers = nullptr;
     }
 
     VkDescriptorSetLayoutCreateInfo materialLayoutInfo{};
     materialLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    materialLayoutInfo.bindingCount = MAX_TEXTURE_UNITS;
+    materialLayoutInfo.bindingCount = MAX_TEXTURE_UNITS + 1;  // +1 for uniform buffer
     materialLayoutInfo.pBindings = materialBindings;
 
     if (vkCreateDescriptorSetLayout(device_, &materialLayoutInfo, nullptr, &materialDescriptorLayout_) != VK_SUCCESS)
@@ -2315,6 +2823,28 @@ bool VulkanGraphicsImpl::CreateDescriptorSetLayouts()
     // Phase 36A Profiler Integration: End tracking
     if (profiler)
         profiler->EndPhase();
+
+    // Create global pipeline layout using all 4 descriptor set layouts
+    Vector<VkDescriptorSetLayout> allLayouts;
+    allLayouts.Push(materialDescriptorLayout_);
+    allLayouts.Push(gbufferTextureLayout_);
+    allLayouts.Push(constantBufferLayout_);
+    allLayouts.Push(inputAttachmentLayout_);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = allLayouts.Size();
+    pipelineLayoutInfo.pSetLayouts = &allLayouts[0];
+    pipelineLayoutInfo.pushConstantRangeCount = 0;  // No push constants for now
+    pipelineLayoutInfo.pPushConstantRanges = nullptr;
+
+    if (vkCreatePipelineLayout(device_, &pipelineLayoutInfo, nullptr, &currentPipelineLayout_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create global pipeline layout");
+        return false;
+    }
+
+    URHO3D_LOGINFO("Global pipeline layout created and set as current");
 
     return true;
 }
@@ -2525,6 +3055,119 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkImage image, VkFormat format,
                          1, &barrier);  // one image barrier
 }
 
+void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkFormat format,
+                                            VkImageLayout oldLayout, VkImageLayout newLayout,
+                                            uint32_t mipLevels)
+{
+    URHO3D_LOGDEBUG("TransitionImageLayout: cmdBuf=" + String((unsigned long long)(uintptr_t)commandBuffer) +
+                    ", image=" + String((unsigned long long)(uintptr_t)image) +
+                    ", format=" + String((unsigned)format) +
+                    ", old=" + String((unsigned)oldLayout) +
+                    ", new=" + String((unsigned)newLayout) +
+                    ", mips=" + String(mipLevels));
+
+    // Use provided command buffer instead of getting frame command buffer
+    if (commandBuffer == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("TransitionImageLayout: NULL command buffer");
+        return;
+    }
+
+    if (image == VK_NULL_HANDLE)
+    {
+        URHO3D_LOGERROR("TransitionImageLayout: NULL image");
+        return;
+    }
+
+    // Create image memory barrier for layout transition
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.pNext = nullptr;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = mipLevels;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    // Determine pipeline stage and access flags based on layout transition
+    VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        barrier.srcAccessMask = 0;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
+
+    if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    }
+    else if (newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
+    else if (newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    }
+    else if (newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        barrier.dstAccessMask = 0;
+    }
+
+    // Log all barrier parameters before calling vkCmdPipelineBarrier
+    URHO3D_LOGDEBUG("vkCmdPipelineBarrier: srcStage=" + String((unsigned)srcStageMask) +
+                    ", dstStage=" + String((unsigned)dstStageMask) +
+                    ", srcAccess=" + String((unsigned)barrier.srcAccessMask) +
+                    ", dstAccess=" + String((unsigned)barrier.dstAccessMask) +
+                    ", aspectMask=" + String((unsigned)barrier.subresourceRange.aspectMask) +
+                    ", mipLevels=" + String(barrier.subresourceRange.levelCount));
+
+    // Validate barrier structure
+    if (barrier.sType != VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+    {
+        URHO3D_LOGERROR("TransitionImageLayout: Invalid barrier sType!");
+        return;
+    }
+
+    URHO3D_LOGDEBUG("About to call vkCmdPipelineBarrier...");
+
+    // Record pipeline barrier to handle the layout transition
+    vkCmdPipelineBarrier(commandBuffer,
+                         srcStageMask, dstStageMask,
+                         0,  // no dependency flags
+                         0, nullptr,  // no memory barriers
+                         0, nullptr,  // no buffer barriers
+                         1, &barrier);  // one image barrier
+
+    URHO3D_LOGDEBUG("vkCmdPipelineBarrier completed successfully");
+}
+
 void VulkanGraphicsImpl::ReportPoolStatistics() const
 {
     /// \brief Phase 12 (Quick Win #9): Gather and report pool statistics
@@ -2590,6 +3233,83 @@ void VulkanGraphicsImpl::ReportPoolStatistics() const
 }
 
 // ============================================
+// Reflection-Based Pipeline Layout Creation
+// ============================================
+
+/// Helper: Convert SPIRVResource to VkDescriptorSetLayoutBinding
+static inline VkDescriptorSetLayoutBinding SPIRVResourceToBinding(const SPIRVResource& resource)
+{
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = resource.binding;
+    binding.descriptorType = resource.descriptorType;
+    binding.descriptorCount = resource.descriptorCount;
+    binding.stageFlags = resource.stageFlags;
+    binding.pImmutableSamplers = nullptr;
+    return binding;
+}
+
+/// Create descriptor set layout dynamically from reflected SPIR-V resources
+/// Merges vertex and pixel shader resources, combining stage flags for shared bindings
+VkDescriptorSetLayout VulkanGraphicsImpl::CreateReflectionBasedLayout(
+    const Vector<SPIRVResource>& vsResources,
+    const Vector<SPIRVResource>& psResources)
+{
+    // Merge VS + PS resources (combine bindings from both stages)
+    HashMap<uint32_t, VkDescriptorSetLayoutBinding> bindingMap;  // binding number → binding info
+
+    // Add vertex shader resources
+    for (const auto& res : vsResources)
+    {
+        VkDescriptorSetLayoutBinding binding = SPIRVResourceToBinding(res);
+        binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        bindingMap[binding.binding] = binding;
+    }
+
+    // Add pixel shader resources (merge if binding number already exists)
+    for (const auto& res : psResources)
+    {
+        VkDescriptorSetLayoutBinding binding = SPIRVResourceToBinding(res);
+
+        if (bindingMap.Contains(binding.binding))
+        {
+            // Same binding in VS and PS - combine stage flags
+            bindingMap[binding.binding].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        else
+        {
+            binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindingMap[binding.binding] = binding;
+        }
+    }
+
+    // Convert HashMap to Vector for Vulkan
+    Vector<VkDescriptorSetLayoutBinding> bindings;
+    bindings.Reserve(bindingMap.Size());
+    for (auto& pair : bindingMap)
+    {
+        bindings.Push(pair.second_);
+    }
+
+    // Create descriptor set layout
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.Size());
+    layoutInfo.pBindings = bindings.Empty() ? nullptr : &bindings[0];
+
+    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    VkResult result = vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &layout);
+
+    if (result != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("CreateReflectionBasedLayout: Failed to create descriptor set layout");
+        return VK_NULL_HANDLE;
+    }
+
+    URHO3D_LOGDEBUG("CreateReflectionBasedLayout: Created layout with " + String(bindings.Size()) + " bindings");
+    return layout;
+}
+
+// ============================================
 // Phase 33: Shader Module Creation from Variations
 // ============================================
 
@@ -2619,6 +3339,19 @@ bool VulkanGraphicsImpl::CreateShaderModules(ShaderVariation* vertexShader, Shad
         {
             URHO3D_LOGERROR("CreateShaderModules: Failed to create vertex shader module");
             return false;
+        }
+
+        // Reflect SPIR-V to extract bindings and store in ShaderVariation
+        VulkanSPIRVReflect reflector;
+        Vector<SPIRVResource> resources;
+        if (reflector.ReflectShaderResources(spirvBytecode, VK_SHADER_STAGE_VERTEX_BIT, resources))
+        {
+            vertexShader->SetReflectedResources(resources);
+            URHO3D_LOGDEBUG("CreateShaderModules: Reflected " + String(resources.Size()) + " resources from vertex shader SPIR-V");
+        }
+        else
+        {
+            URHO3D_LOGWARNING("CreateShaderModules: Failed to reflect vertex shader resources");
         }
     }
 
@@ -2651,6 +3384,19 @@ bool VulkanGraphicsImpl::CreateShaderModules(ShaderVariation* vertexShader, Shad
                 vsModule = VK_NULL_HANDLE;
             }
             return false;
+        }
+
+        // Reflect SPIR-V to extract bindings and store in ShaderVariation
+        VulkanSPIRVReflect reflector;
+        Vector<SPIRVResource> resources;
+        if (reflector.ReflectShaderResources(spirvBytecode, VK_SHADER_STAGE_FRAGMENT_BIT, resources))
+        {
+            pixelShader->SetReflectedResources(resources);
+            URHO3D_LOGDEBUG("CreateShaderModules: Reflected " + String(resources.Size()) + " resources from pixel shader SPIR-V");
+        }
+        else
+        {
+            URHO3D_LOGWARNING("CreateShaderModules: Failed to reflect pixel shader resources");
         }
     }
 
@@ -2750,6 +3496,7 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     VkPipelineLayout layout,
     VkRenderPass renderPass,
     const VulkanPipelineState& state,
+    VertexBuffer* vertexBuffer,
     VkShaderModule vsModule,
     VkShaderModule fsModule,
     VkShaderModule gsModule)
@@ -2879,12 +3626,115 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     inputAssemblyState.primitiveRestartEnable = false;
 
+    // CRITICAL FIX: Build vertex input state from vertex buffer layout
+    // ALWAYS CREATE ALL 8 VERTEX ATTRIBUTES TO MATCH SHADER EXPECTATIONS
+    Vector<VkVertexInputBindingDescription> bindingDescriptions;
+    Vector<VkVertexInputAttributeDescription> attributeDescriptions;
+
+    if (vertexBuffer)
+    {
+        // Create binding description (one binding at index 0)
+        VkVertexInputBindingDescription binding{};
+        binding.binding = 0;
+        binding.stride = vertexBuffer->GetVertexSize();
+        binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        bindingDescriptions.Push(binding);
+
+        // Pre-allocate all 14 vertex attribute locations (0-13) to match shader layout
+        // Fill missing locations with dummy vec4(0) from offset 0
+        attributeDescriptions.Resize(14);
+        for (unsigned i = 0; i < 14; ++i)
+        {
+            attributeDescriptions[i].binding = 0;
+            attributeDescriptions[i].location = i;
+            attributeDescriptions[i].format = VK_FORMAT_R32G32B32A32_SFLOAT;  // vec4 default
+            attributeDescriptions[i].offset = 0;  // Dummy: all read from start
+        }
+
+        // Override with actual vertex buffer elements where available
+        const Vector<VertexElement>& elements = vertexBuffer->GetElements();
+        for (unsigned i = 0; i < elements.Size(); ++i)
+        {
+            const VertexElement& element = elements[i];
+
+            // Map vertex element semantic to shader input location
+            // Shader locations: 0=iPos, 1=iNormal, 2=iColor, 3=iTexCoord, 4=iTexCoord1, 5=iTangent, etc.
+            unsigned location = 0;
+            switch (element.semantic_)
+            {
+                case SEM_POSITION:
+                    location = 0;
+                    break;
+                case SEM_NORMAL:
+                    location = 1;
+                    break;
+                case SEM_COLOR:
+                    location = 2;
+                    break;
+                case SEM_TEXCOORD:
+                    location = 3 + element.index_;  // iTexCoord=3, iTexCoord1=4
+                    break;
+                case SEM_TANGENT:
+                    location = 5;
+                    break;
+                case SEM_BLENDWEIGHTS:
+                    location = 6;
+                    break;
+                case SEM_BLENDINDICES:
+                    location = 7;
+                    break;
+                default:
+                    location = i;  // Fallback to sequential
+                    break;
+            }
+
+            // Map VertexElementType to VkFormat
+            switch (element.type_)
+            {
+            case TYPE_INT:
+                attributeDescriptions[location].format = VK_FORMAT_R32_SINT;
+                break;
+            case TYPE_FLOAT:
+                attributeDescriptions[location].format = VK_FORMAT_R32_SFLOAT;
+                break;
+            case TYPE_VECTOR2:
+                attributeDescriptions[location].format = VK_FORMAT_R32G32_SFLOAT;
+                break;
+            case TYPE_VECTOR3:
+                attributeDescriptions[location].format = VK_FORMAT_R32G32B32_SFLOAT;
+                break;
+            case TYPE_VECTOR4:
+                attributeDescriptions[location].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+                break;
+            case TYPE_UBYTE4:
+                attributeDescriptions[location].format = VK_FORMAT_R8G8B8A8_UNORM;
+                break;
+            case TYPE_UBYTE4_NORM:
+                attributeDescriptions[location].format = VK_FORMAT_R8G8B8A8_UNORM;
+                break;
+            default:
+                attributeDescriptions[location].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+                break;
+            }
+
+            // Set actual offset for this attribute
+            attributeDescriptions[location].offset = element.offset_;
+
+            URHO3D_LOGDEBUG("Vertex element " + String(i) + ": semantic=" + String((int)element.semantic_) +
+                           ", location=" + String(location) + ", offset=" + String(element.offset_) +
+                           ", format=" + String((int)attributeDescriptions[location].format));
+        }
+
+        URHO3D_LOGDEBUG("Vertex input state: " + String(bindingDescriptions.Size()) + " bindings, " +
+                        String(attributeDescriptions.Size()) + " attributes (14 total, with dummies), stride=" + String(binding.stride));
+    }
+
     VkPipelineVertexInputStateCreateInfo vertexInputState{};
     vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputState.vertexBindingDescriptionCount = 0;
-    vertexInputState.pVertexBindingDescriptions = nullptr;
-    vertexInputState.vertexAttributeDescriptionCount = 0;
-    vertexInputState.pVertexAttributeDescriptions = nullptr;
+    vertexInputState.vertexBindingDescriptionCount = bindingDescriptions.Size();
+    vertexInputState.pVertexBindingDescriptions = bindingDescriptions.Empty() ? nullptr : &bindingDescriptions[0];
+    vertexInputState.vertexAttributeDescriptionCount = attributeDescriptions.Size();
+    vertexInputState.pVertexAttributeDescriptions = attributeDescriptions.Empty() ? nullptr : &attributeDescriptions[0];
 
     VkPipelineMultisampleStateCreateInfo multisampleState{};
     multisampleState.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -2924,12 +3774,17 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     // Add vertex shader stage if provided
     if (vsModule != VK_NULL_HANDLE)
     {
+        fprintf(stderr, "PIPELINE: Adding VERTEX shader module=%llu\n", (unsigned long long)(uintptr_t)vsModule);
         VkPipelineShaderStageCreateInfo vsStage{};
         vsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vsStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
         vsStage.module = vsModule;
         vsStage.pName = "main";  // GLSL entry point
         shaderStages.Push(vsStage);
+    }
+    else
+    {
+        fprintf(stderr, "PIPELINE: ERROR - Vertex shader module is NULL!\n");
     }
 
     // Add geometry shader stage if provided (Phase 36+: Geometry Shader Support)
@@ -2946,12 +3801,17 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     // Add fragment shader stage if provided
     if (fsModule != VK_NULL_HANDLE)
     {
+        fprintf(stderr, "PIPELINE: Adding FRAGMENT shader module=%llu\n", (unsigned long long)(uintptr_t)fsModule);
         VkPipelineShaderStageCreateInfo fsStage{};
         fsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         fsStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         fsStage.module = fsModule;
         fsStage.pName = "main";  // GLSL entry point
         shaderStages.Push(fsStage);
+    }
+    else
+    {
+        fprintf(stderr, "PIPELINE: ERROR - Fragment shader module is NULL!\n");
     }
 
     // Build graphics pipeline create info
@@ -2969,6 +3829,9 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.stageCount = shaderStages.Size();        // Phase 33: Set from shader modules
     pipelineInfo.pStages = shaderStages.Size() > 0 ? &shaderStages[0] : nullptr;  // Phase 33: Bind stages
+
+    fprintf(stderr, "PIPELINE: Creating pipeline with %u shader stages, pStages=%p\n",
+            pipelineInfo.stageCount, (void*)pipelineInfo.pStages);
 
     // Use pipeline cache for creation (handles memory + disk caching)
     VkPipeline pipeline = pipelineCache_->GetOrCreatePipeline(stateHash, pipelineInfo);

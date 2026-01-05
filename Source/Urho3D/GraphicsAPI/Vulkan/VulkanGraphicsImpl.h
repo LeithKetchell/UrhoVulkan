@@ -10,6 +10,8 @@
 #include "../../Container/HashMap.h"
 #include "../../Container/Vector.h"
 #include "../../Core/Object.h"
+#include "../../Core/Mutex.h"
+#include "../../Core/Thread.h"
 #include "../GraphicsDefs.h"
 #include "../VulkanDefs.h"
 #include "VulkanSamplerCache.h"
@@ -29,6 +31,13 @@
 
 // Forward declare SDL_Window in global namespace
 struct SDL_Window;
+
+// Descriptor pool sizing - increased for per-draw descriptor sets
+// Since we create a new descriptor set for EVERY draw call, we need a much larger pool
+// 50000 = ~1000 draw calls per frame * 3 frames in flight * safety margin
+#ifndef VULKAN_DESCRIPTOR_POOL_SIZE
+#define VULKAN_DESCRIPTOR_POOL_SIZE 50000  // Support 50000 descriptor sets
+#endif
 
 namespace Urho3D
 {
@@ -260,10 +269,25 @@ public:
     /// \details Finishes the current render pass. Must be called after all draw commands.
     void EndRenderPass();
 
+    /// \brief Check if render pass is currently active
+    /// \returns true if a render pass is active, false otherwise
+    bool IsRenderPassActive() const { return renderPassActive_; }
+
     /// \brief Transition to next subpass
     /// \details Phase 36: Transitions from geometry pass (subpass 0) to lighting pass (subpass 1) in deferred rendering.
     /// This must be called after all geometry rendering is complete and before lighting pass rendering begins.
     void NextSubpass();
+
+    /// \brief Begin a one-time submit command buffer for uploads
+    /// \returns VkCommandBuffer in recording state, ready for commands
+    /// \details Creates and begins a transient command buffer for resource uploads (textures, buffers).
+    /// Must be paired with EndUploadCommandBuffer() to submit and cleanup.
+    VkCommandBuffer BeginUploadCommandBuffer();
+
+    /// \brief End and submit upload command buffer
+    /// \param commandBuffer The command buffer returned from BeginUploadCommandBuffer()
+    /// \details Ends recording, submits to graphics queue, waits for completion, and frees the command buffer.
+    void EndUploadCommandBuffer(VkCommandBuffer commandBuffer);
 
     /// \name Vulkan Object Accessors
     /// \brief Access to core Vulkan objects for direct usage
@@ -302,8 +326,8 @@ public:
     VkExtent2D GetSwapchainExtent() const { return swapchainExtent_; }
 
     /// \brief Get current render pass
-    /// \returns VkRenderPass handle
-    VkRenderPass GetRenderPass() const { return renderPass_; }
+    /// \returns VkRenderPass handle (swapchain or G-Buffer based on active render targets)
+    VkRenderPass GetRenderPass() const;
 
     /// \brief Get current framebuffer
     /// \returns VkFramebuffer for swapchain image
@@ -445,6 +469,41 @@ public:
     /// \param layout VkPipelineLayout to use for subsequent descriptor bindings
     void SetCurrentPipelineLayout(VkPipelineLayout layout) { currentPipelineLayout_ = layout; }
 
+    /// \brief Get current reflection-based descriptor set layout (Phase 36 Step 5)
+    /// \returns VkDescriptorSetLayout created from SPIR-V reflection, or VK_NULL_HANDLE if not set
+    /// \details Returns the descriptor set layout dynamically generated from shader reflection.
+    /// This layout matches the actual SPIR-V bindings and is used for creating descriptor sets.
+    VkDescriptorSetLayout GetCurrentDescriptorSetLayout() const { return currentDescriptorSetLayout_; }
+
+    /// \brief Set current reflection-based descriptor set layout (Phase 36 Step 5)
+    /// \param layout VkDescriptorSetLayout to use for descriptor set allocation
+    /// \details Stores the descriptor set layout created from SPIR-V reflection so descriptor sets
+    /// can be allocated with the same layout used for pipeline creation. This ensures compatibility
+    /// between descriptor sets and pipeline layouts.
+    void SetCurrentDescriptorSetLayout(VkDescriptorSetLayout layout) { currentDescriptorSetLayout_ = layout; }
+
+    /// \brief Get current constant buffer for uniform buffer descriptors (Phase 36 Step 5)
+    /// \returns VkBuffer containing shader parameters, or VK_NULL_HANDLE if not set
+    /// \details Returns the constant buffer created by UploadPendingShaderParameters_Vulkan().
+    /// This buffer contains packed shader parameters uploaded to GPU memory.
+    VkBuffer GetCurrentConstantBuffer() const { return currentConstantBuffer_; }
+
+    /// \brief Get current constant buffer size (Phase 36 Step 5)
+    /// \returns Size of constant buffer in bytes, or 0 if not set
+    /// \details Returns the size of the constant buffer for descriptor set updates.
+    size_t GetCurrentConstantBufferSize() const { return currentConstantBufferSize_; }
+
+    /// \brief Set current constant buffer for uniform buffer descriptors (Phase 36 Step 5)
+    /// \param buffer VkBuffer containing shader parameters
+    /// \param size Size of buffer in bytes
+    /// \details Stores the constant buffer created by UploadPendingShaderParameters_Vulkan() so
+    /// descriptor sets can bind it to uniform buffer bindings. This buffer contains the packed
+    /// shader parameters (camera matrices, object transforms, material properties).
+    void SetCurrentConstantBuffer(VkBuffer buffer, size_t size) {
+        currentConstantBuffer_ = buffer;
+        currentConstantBufferSize_ = size;
+    }
+
     /// \brief Create texture descriptor set for currently bound textures (Phase 36B)
     /// \returns VkDescriptorSet for Set 1 containing texture bindings, or VK_NULL_HANDLE on error
     /// \details Creates descriptor set with currently bound textures from textures_[] array.
@@ -491,6 +550,17 @@ public:
     /// \param newLayout Desired VkImageLayout
     /// \param mipLevels Number of mip levels to transition
     void TransitionImageLayout(VkImage image, VkFormat format,
+                              VkImageLayout oldLayout, VkImageLayout newLayout,
+                              uint32_t mipLevels);
+
+    /// \brief Transition image layout using a specific command buffer
+    /// \param commandBuffer VkCommandBuffer to record transition commands into
+    /// \param image VkImage to transition
+    /// \param format VkFormat of the image
+    /// \param oldLayout Previous VkImageLayout
+    /// \param newLayout Desired VkImageLayout
+    /// \param mipLevels Number of mip levels to transition
+    void TransitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkFormat format,
                               VkImageLayout oldLayout, VkImageLayout newLayout,
                               uint32_t mipLevels);
 
@@ -663,6 +733,7 @@ private:
     /// Phase 36+: Supports geometry shader stage
     VkPipeline GetOrCreateGraphicsPipeline(VkPipelineLayout layout, VkRenderPass renderPass,
                                           const VulkanPipelineState& state,
+                                          class VertexBuffer* vertexBuffer = nullptr,
                                           VkShaderModule vsModule = VK_NULL_HANDLE,
                                           VkShaderModule fsModule = VK_NULL_HANDLE,
                                           VkShaderModule gsModule = VK_NULL_HANDLE);
@@ -680,6 +751,17 @@ private:
     bool CreateShaderModules(class ShaderVariation* vertexShader, class ShaderVariation* pixelShader,
                             VkShaderModule& vsModule, VkShaderModule& fsModule,
                             class ShaderVariation* geometryShader = nullptr, VkShaderModule* gsModule = nullptr);
+
+    /// \brief Create descriptor set layout from reflected SPIR-V resources
+    /// \param vsResources Reflected resources from vertex shader SPIR-V
+    /// \param psResources Reflected resources from pixel shader SPIR-V
+    /// \returns VkDescriptorSetLayout with merged bindings, or VK_NULL_HANDLE on failure
+    /// \details Dynamically generates descriptor set layouts based on actual shader bindings.
+    /// Merges vertex and pixel shader resources, combining stage flags for shared binding numbers.
+    /// This enables automatic pipeline layout creation without hardcoded expectations.
+    VkDescriptorSetLayout CreateReflectionBasedLayout(
+        const Vector<struct SPIRVResource>& vsResources,
+        const Vector<struct SPIRVResource>& psResources);
 
     /// \brief Find optimal surface format for swapchain
     /// \returns VkSurfaceFormatKHR with preferred color space and format
@@ -827,6 +909,13 @@ private:
     VkCommandPool commandPool_{};
     Vector<VkCommandBuffer> commandBuffers_;
 
+    // Thread-local command pools for upload operations (thread safety fix)
+    HashMap<ThreadID, VkCommandPool> threadUploadCommandPools_;
+    Mutex threadUploadCommandPoolsMutex_;
+
+    // Queue submission mutex (thread safety for vkQueueSubmit)
+    Mutex queueSubmitMutex_;
+
     // Synchronization primitives
     Vector<VkFence> frameFences_;
     Vector<VkSemaphore> imageAcquiredSemaphores_;
@@ -879,6 +968,7 @@ private:
     uint32_t frameIndex_{0};
     uint32_t currentImageIndex_{0};
     bool renderPassActive_{false};
+    VkSemaphore currentImageAcquiredSemaphore_{VK_NULL_HANDLE};  ///< Semaphore used for current frame's image acquisition
 
     // Debug callback
     VkDebugUtilsMessengerEXT debugMessenger_{};
@@ -895,6 +985,7 @@ private:
     RenderSurface* depthStencil_{};
     bool renderTargetsDirty_{true};  // Flag to rebuild framebuffer when targets change
     VkFramebuffer renderTargetFramebuffer_{};  // Framebuffer for render-to-texture
+    VkRenderPass renderTargetRenderPass_{};   // Render pass for render-to-texture (G-Buffer)
     Vector<VkImageView> renderTargetViews_;    // Image views for render target attachments
 
     // Default placeholder textures (Phase 22A)
@@ -910,8 +1001,16 @@ private:
     SharedPtr<class VulkanMaterialDescriptorManager> materialDescriptorManager_;
     /// Current pipeline layout for descriptor set binding
     VkPipelineLayout currentPipelineLayout_{};
+    /// Current reflection-based descriptor set layout (Phase 36 Step 5)
+    /// Dynamically generated from SPIR-V reflection to match actual shader bindings
+    VkDescriptorSetLayout currentDescriptorSetLayout_{VK_NULL_HANDLE};
+    /// Current constant buffer for uniform buffer descriptors (Phase 36 Step 5)
+    /// Contains packed shader parameters uploaded to GPU memory
+    VkBuffer currentConstantBuffer_{VK_NULL_HANDLE};
+    /// Size of current constant buffer in bytes (Phase 36 Step 5)
+    size_t currentConstantBufferSize_{0};
 
-    // Phase 36A: Descriptor set layouts for multi-set binding
+    // Phase 36A: Descriptor set layouts for multi-set binding (DEPRECATED - use reflection-based layouts)
     /// Descriptor set layout for material descriptors (Set 0: textures, samplers, material params)
     VkDescriptorSetLayout materialDescriptorLayout_{VK_NULL_HANDLE};
     /// Descriptor set layout for G-Buffer textures (Set 1: albedo, normal, depth for deferred lighting)
@@ -923,6 +1022,9 @@ private:
 
     // Graphics context for resource management
     Graphics* graphics_{nullptr};
+
+    // Device loss tracking
+    bool deviceLost_{false};
 
     friend class Graphics;
 };

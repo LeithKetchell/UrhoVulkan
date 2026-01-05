@@ -1,14 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-# Define target name
-set (TARGET_NAME 30_LightAnimation)
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:2fdd6350f4d73e6199635f471d2336a66fdd3109c63369c01884ecd1061417fc
+size 299

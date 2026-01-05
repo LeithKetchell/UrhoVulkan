@@ -9,6 +9,10 @@
 #include "../GraphicsAPI/GPUObject.h"
 #include "../GraphicsAPI/GraphicsDefs.h"
 
+#ifdef URHO3D_VULKAN
+#include "../GraphicsAPI/Vulkan/VulkanSPIRVReflect.h"
+#endif
+
 namespace Urho3D
 {
 
@@ -121,6 +125,13 @@ public:
     /// Return defines with the CLIPPLANE define appended. Used internally on Direct3D11 only, will be empty on other APIs.
     const String& GetDefinesClipPlane() { return definesClipPlane_; }
 
+#ifdef URHO3D_VULKAN
+    /// Return reflected SPIR-V resources (Vulkan only).
+    const Vector<SPIRVResource>& GetReflectedResources() const { return reflectedResources_; }
+    /// Set reflected SPIR-V resources (Vulkan only).
+    void SetReflectedResources(const Vector<SPIRVResource>& resources) { reflectedResources_ = resources; }
+#endif
+
     /// OpenGL vertex semantic names. Used internally.
     static const char* elementSemanticNames_OGL[];
 
@@ -193,6 +204,10 @@ private:
     String definesClipPlane_;
     /// Shader compile error string.
     String compilerOutput_;
+#ifdef URHO3D_VULKAN
+    /// Reflected SPIR-V resources (Vulkan only). Stores binding info extracted from compiled SPIR-V.
+    Vector<SPIRVResource> reflectedResources_;
+#endif
 };
 
 }

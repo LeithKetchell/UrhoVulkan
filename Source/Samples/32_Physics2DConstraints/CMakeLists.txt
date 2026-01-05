@@ -1,18 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-if (NOT URHO3D_URHO2D OR NOT URHO3D_PHYSICS2D)
-    return ()
-endif ()
-
-# Define target name
-set (TARGET_NAME 32_Physics2DConstraints)
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:0f33c1ed3c9910b5ef4f1be7beaf4ec0e011bb37dcd88de777e2c21879608b7b
+size 376

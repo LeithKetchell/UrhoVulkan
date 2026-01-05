@@ -11,13 +11,16 @@ namespace Urho3D
 class Graphics;
 
 /// API-specific GPU object representation
-union GPUObjectHandle
+struct GPUObjectHandle
 {
-    /// Object pointer (Direct3D)
+    /// Object pointer (Direct3D, Vulkan buffer)
     void* ptr_;
 
     /// Object name (OpenGL)
     u32 name_;
+
+    /// Second object pointer (Vulkan allocation)
+    void* ptr2_;
 };
 
 /// Base class for GPU resources.

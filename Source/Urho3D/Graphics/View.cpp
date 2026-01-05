@@ -501,9 +501,13 @@ bool View::Define(RenderSurface* renderTarget, Viewport* viewport)
 
 void View::Update(const FrameInfo& frame)
 {
+    URHO3D_LOGINFO("View::Update CALLED");
     // No need to update if using another prepared view
     if (sourceView_)
+    {
+        URHO3D_LOGINFO("View::Update EARLY RETURN - using sourceView");
         return;
+    }
 
     frame_.camera_ = cullCamera_;
     frame_.timeStep_ = frame.timeStep_;
@@ -593,7 +597,9 @@ void View::Render()
     }
 
     // Render
+    URHO3D_LOGINFO("View::Render - About to execute render path commands");
     ExecuteRenderPathCommands();
+    URHO3D_LOGINFO("View::Render - Finished executing render path commands");
 
     // Reset state after commands
     graphics_->SetFillMode(FILL_SOLID);
@@ -783,8 +789,12 @@ void View::SetGBufferShaderParameters(const IntVector2& texSize, const IntRect& 
 
 void View::GetDrawables()
 {
+    URHO3D_LOGINFO("GetDrawables: octree_=" + String(octree_ != nullptr) + ", cullCamera_=" + String(cullCamera_ != nullptr));
     if (!octree_ || !cullCamera_)
+    {
+        URHO3D_LOGERROR("GetDrawables: EARLY RETURN - octree or cullCamera null!");
         return;
+    }
 
     URHO3D_PROFILE(GetDrawables);
 
@@ -951,15 +961,23 @@ void View::GetDrawables()
 
 void View::GetBatches()
 {
+    URHO3D_LOGINFO("GetBatches: octree_=" + String(octree_ != nullptr) + ", cullCamera_=" + String(cullCamera_ != nullptr));
     if (!octree_ || !cullCamera_)
+    {
+        URHO3D_LOGERROR("GetBatches: EARLY RETURN");
         return;
+    }
 
     nonThreadedGeometries_.Clear();
     threadedGeometries_.Clear();
 
+    URHO3D_LOGINFO("GetBatches: About to call ProcessLights");
     ProcessLights();
+    URHO3D_LOGINFO("GetBatches: About to call GetLightBatches");
     GetLightBatches();
+    URHO3D_LOGINFO("GetBatches: About to call GetBaseBatches");
     GetBaseBatches();
+    URHO3D_LOGINFO("GetBatches: DONE");
 }
 
 void View::ProcessLights()
@@ -1179,6 +1197,7 @@ void View::GetBaseBatches()
 {
     URHO3D_PROFILE(GetBaseBatches);
 
+    URHO3D_LOGINFO("GetBaseBatches: geometries_.Size()=" + String(geometries_.Size()) + ", scenePasses_.Size()=" + String(scenePasses_.Size()));
     for (Vector<Drawable*>::ConstIterator i = geometries_.Begin(); i != geometries_.End(); ++i)
     {
         Drawable* drawable = *i;
@@ -1202,7 +1221,12 @@ void View::GetBaseBatches()
 
             Technique* tech = GetTechnique(drawable, srcBatch.material_);
             if (!srcBatch.geometry_ || !srcBatch.numWorldTransforms_ || !tech)
+            {
+                URHO3D_LOGINFO("GetBaseBatches: Skipping batch - geometry=" + String(srcBatch.geometry_ != nullptr) +
+                              ", numWorldTransforms=" + String(srcBatch.numWorldTransforms_) +
+                              ", tech=" + String(tech != nullptr));
                 continue;
+            }
 
             // Check each of the scene passes
             for (const ScenePassInfo& info : scenePasses_)
@@ -1256,7 +1280,11 @@ void View::GetBaseBatches()
                 if (allowInstancing && info.markToStencil_ && destBatch.lightMask_ != (destBatch.zone_->GetLightMask() & 0xffu))
                     allowInstancing = false;
 
+                URHO3D_LOGINFO("GetBaseBatches: Adding batch to queue, passIndex=" + String(info.passIndex_) +
+                              ", queue=" + String((unsigned long long)info.batchQueue_) +
+                              ", queue.batches.Size BEFORE=" + String(info.batchQueue_->batches_.Size()));
                 AddBatchToQueue(*info.batchQueue_, destBatch, tech, allowInstancing);
+                URHO3D_LOGINFO("GetBaseBatches: queue.batches.Size AFTER=" + String(info.batchQueue_->batches_.Size()));
             }
         }
     }
@@ -1467,11 +1495,17 @@ void View::ExecuteRenderPathCommands()
                 lastCommandIndex = i;
         }
 
+        URHO3D_LOGINFO("ExecuteRenderPathCommands: Total commands=" + String(renderPath_->commands_.Size()));
         for (i32 i = 0; i < renderPath_->commands_.Size(); ++i)
         {
             RenderPathCommand& command = renderPath_->commands_[i];
+            URHO3D_LOGINFO("Command[" + String(i) + "]: type=" + String((int)command.type_) + ", checking IsNecessary...");
             if (!actualView->IsNecessary(command))
+            {
+                URHO3D_LOGINFO("Command[" + String(i) + "]: SKIPPED (not necessary)");
                 continue;
+            }
+            URHO3D_LOGINFO("Command[" + String(i) + "]: EXECUTING");
 
             bool viewportRead = actualView->CheckViewportRead(command);
             bool viewportWrite = actualView->CheckViewportWrite(command);
@@ -1549,6 +1583,7 @@ void View::ExecuteRenderPathCommands()
                     currentRenderTarget_ = substituteRenderTarget_ ? substituteRenderTarget_ : renderTarget_;
             }
 
+            URHO3D_LOGINFO("Executing render command type=" + String((int)command.type_) + " (CMD_SCENEPASS=" + String((int)CMD_SCENEPASS) + ")");
             switch (command.type_)
             {
             case CMD_CLEAR:
@@ -1567,6 +1602,7 @@ void View::ExecuteRenderPathCommands()
             case CMD_SCENEPASS:
                 {
                     BatchQueue& queue = actualView->batchQueues_[command.passIndex_];
+                    URHO3D_LOGINFO("CMD_SCENEPASS case hit, queue.IsEmpty()=" + String(queue.IsEmpty()) + ", queue.batches_.Size()=" + String(queue.batches_.Size()));
                     if (!queue.IsEmpty())
                     {
                         URHO3D_PROFILE(RenderScenePass);
@@ -1584,7 +1620,9 @@ void View::ExecuteRenderPathCommands()
                             passCommand_ = &command;
                         }
 
+                        URHO3D_LOGINFO("CMD_SCENEPASS: About to call queue.Draw, queue size=" + String(queue.batches_.Size()));
                         queue.Draw(this, camera_, command.markToStencil_, false, allowDepthWrite);
+                        URHO3D_LOGINFO("CMD_SCENEPASS: queue.Draw completed");
 
                         passCommand_ = nullptr;
                     }
@@ -1876,8 +1914,21 @@ void View::RenderQuad(RenderPathCommand& command)
 
 bool View::IsNecessary(const RenderPathCommand& command)
 {
-    return command.enabled_ && command.outputs_.Size() &&
+    bool necessary = command.enabled_ && command.outputs_.Size() &&
            (command.type_ != CMD_SCENEPASS || !batchQueues_[command.passIndex_].IsEmpty());
+
+    if (command.type_ == CMD_SCENEPASS)
+    {
+        URHO3D_LOGINFO("IsNecessary for CMD_SCENEPASS: enabled=" + String(command.enabled_) +
+                      ", outputs.Size=" + String(command.outputs_.Size()) +
+                      ", passIndex=" + String(command.passIndex_) +
+                      ", queue=" + String((unsigned long long)&batchQueues_[command.passIndex_]) +
+                      ", queue.IsEmpty=" + String(batchQueues_[command.passIndex_].IsEmpty()) +
+                      ", queue.batches.Size=" + String(batchQueues_[command.passIndex_].batches_.Size()) +
+                      ", result=" + String(necessary));
+    }
+
+    return necessary;
 }
 
 bool View::CheckViewportRead(const RenderPathCommand& command)

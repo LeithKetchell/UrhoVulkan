@@ -580,7 +580,7 @@ Resource* ResourceCache::GetResource(StringHash type, const String& name, bool s
     resource = DynamicCast<Resource>(context_->CreateObject(type));
     if (!resource)
     {
-        URHO3D_LOGERROR("Could not load unknown resource type " + String(type));
+        URHO3D_LOGERROR("Could not load unknown resource type " + String(type) + " for resource: " + sanitatedName);
 
         if (sendEventOnFailure)
         {
@@ -659,7 +659,7 @@ SharedPtr<Resource> ResourceCache::GetTempResource(StringHash type, const String
     resource = DynamicCast<Resource>(context_->CreateObject(type));
     if (!resource)
     {
-        URHO3D_LOGERROR("Could not load unknown resource type " + String(type));
+        URHO3D_LOGERROR("Could not load unknown resource type " + String(type) + " for resource: " + sanitatedName);
 
         if (sendEventOnFailure)
         {

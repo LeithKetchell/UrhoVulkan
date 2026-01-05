@@ -8,12 +8,14 @@
 #ifdef VERTEXCOLOR
     varying vec4 vColor;
 #endif
+varying float vVertexIndex;
 
 void VS()
 {
-    mat4 modelMatrix = iModelMatrix;
-    vec3 worldPos = GetWorldPos(modelMatrix);
-    gl_Position = GetClipPos(worldPos);
+    // DIAGNOSTIC: Output iPos directly to test vertex data reading
+    // UI vertices are in screen space (0-1024, 0-768), scale to NDC manually
+    vec4 pos = iPos;
+    gl_Position = vec4(pos.x / 512.0 - 1.0, pos.y / 384.0 - 1.0, 0.5, 1.0);
 
     #ifdef DIFFMAP
         vTexCoord = iTexCoord;
@@ -21,15 +23,26 @@ void VS()
     #ifdef VERTEXCOLOR
         vColor = iColor;
     #endif
+
+    vVertexIndex = float(gl_VertexIndex);
 }
 
 void PS()
 {
+    // DIAGNOSTIC: Color by vertex index to test if vertex shader runs
+    float idx = vVertexIndex / 6.0;  // Normalize to 0-1 for first 6 vertices
+    gl_FragColor = vec4(idx, 1.0 - idx, 0.5, 1.0);
+    return;
+
     vec4 diffColor = cMatDiffColor;
 
     #ifdef VERTEXCOLOR
         diffColor *= vColor;
     #endif
+
+    // DIAGNOSTIC: Output diffColor without texture (white * vertex color)
+    gl_FragColor = diffColor;
+    return;
 
     #if (!defined(DIFFMAP)) && (!defined(ALPHAMAP))
         gl_FragColor = diffColor;

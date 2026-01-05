@@ -31,21 +31,22 @@ void IndexBuffer::Release_Vulkan()
     if (!object_.ptr_)
         return;
 
-    VulkanGraphicsImpl* impl = GetSubsystem<Graphics>()->GetImpl_Vulkan();
-    if (!impl)
-        return;
+    Graphics* graphics = GetSubsystem<Graphics>();
+    VulkanGraphicsImpl* impl = graphics ? graphics->GetImpl_Vulkan() : nullptr;
 
     VkBuffer buffer = (VkBuffer)(void*)object_.ptr_;
-    VmaAllocation allocation = (VmaAllocation)object_.name_;
+    VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
 
-    if (buffer)
+    // Always clear handles, even if we can't destroy (shutdown order)
+    object_.ptr_ = nullptr;
+    object_.ptr2_ = nullptr;
+    dataPending_ = false;
+
+    // Only destroy if graphics subsystem still exists
+    if (impl && buffer)
     {
         vmaDestroyBuffer(impl->GetAllocator(), buffer, allocation);
-        object_.ptr_ = nullptr;
-        object_.name_ = 0;
     }
-
-    dataPending_ = false;
 }
 
 bool IndexBuffer::Create_Vulkan()
@@ -75,7 +76,8 @@ bool IndexBuffer::Create_Vulkan()
 
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocInfo.flags = dynamic_ ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT : 0;
+    // ALWAYS need HOST_VISIBLE for CPU mapping (static buffers are mapped too)
+    allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
     // Attempt to use memory pool for optimized allocation
     VulkanMemoryPoolManager* poolMgr = impl->GetMemoryPoolManager();
@@ -89,8 +91,8 @@ bool IndexBuffer::Create_Vulkan()
         }
     }
 
-    VkBuffer buffer;
-    VmaAllocation allocation;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
     if (vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo, &buffer, &allocation, nullptr) != VK_SUCCESS)
     {
         // Fallback: attempt without pool if pool allocation failed
@@ -112,7 +114,7 @@ bool IndexBuffer::Create_Vulkan()
     }
 
     object_.ptr_ = (void*)buffer;
-    object_.name_ = (u32)(uintptr_t)allocation;
+    object_.ptr2_ = (void*)allocation;
 
     dataPending_ = true;
     return true;
@@ -158,7 +160,7 @@ bool IndexBuffer::UpdateToGPU_Vulkan()
         return false;
 
     VkBuffer buffer = (VkBuffer)(void*)object_.ptr_;
-    VmaAllocation allocation = (VmaAllocation)object_.name_;
+    VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
 
     // For dynamic buffers or small updates, use host memory mapping
     if (dynamic_)

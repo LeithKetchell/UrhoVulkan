@@ -1,18 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-if (NOT URHO3D_URHO2D OR NOT URHO3D_PHYSICS2D)
-    return ()
-endif ()
-
-# Define target name
-set (TARGET_NAME 50_Urho2DPlatformer)
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES} ../Utilities2D/Sample2D.h ../Utilities2D/Sample2D.cpp ../Utilities2D/Mover.h ../Utilities2D/Mover.cpp)
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:3436ff6d7d66ac9f794f9df75f8312f524a4f7b0375f7ef4ec39727468e0c462
+size 474

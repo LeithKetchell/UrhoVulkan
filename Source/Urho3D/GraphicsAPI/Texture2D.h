@@ -92,6 +92,9 @@ private:
     bool SetData_Vulkan(Image* image, bool useAlpha);
     bool GetData_Vulkan(unsigned level, void* dest) const;
     bool Create_Vulkan();
+
+    /// VMA allocation handle (Vulkan only, cannot use object_.name_ due to union)
+    void* vmaAllocation_{};
 #endif // def URHO3D_VULKAN
 
     /// Handle render surface update event.

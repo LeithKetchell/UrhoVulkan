@@ -583,6 +583,9 @@ Graphics::Graphics(Context* context, GAPI gapi)
 {
     Graphics::gapi = gapi;
 
+    // Initialize viewport to default 1024x768 (will be updated by SetViewport after window creation)
+    viewport_ = IntRect(0, 0, 1024, 768);
+
 #ifdef URHO3D_VULKAN
     // Create Vulkan profiler instance
     vulkanProfiler_ = new VulkanProfiler();
@@ -762,6 +765,11 @@ bool Graphics::BeginFrame()
         return BeginFrame_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return BeginFrame_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -778,6 +786,11 @@ void Graphics::EndFrame()
     if (gapi == GAPI_D3D11)
         return EndFrame_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return EndFrame_Vulkan();
+#endif
 }
 
 void Graphics::Clear(ClearTargetFlags flags, const Color& color, float depth, unsigned stencil)
@@ -792,6 +805,11 @@ void Graphics::Clear(ClearTargetFlags flags, const Color& color, float depth, un
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return Clear_D3D11(flags, color, depth, stencil);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Clear_Vulkan(flags, color, depth, stencil);
 #endif
 }
 
@@ -964,6 +982,11 @@ void Graphics::SetVertexBuffer(VertexBuffer* buffer)
 {
     GAPI gapi = Graphics::GetGAPI();
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetVertexBuffer_Vulkan(0, buffer);
+#endif
+
 #ifdef URHO3D_OPENGL
     if (gapi == GAPI_OPENGL)
         return SetVertexBuffer_OGL(buffer);
@@ -989,6 +1012,11 @@ bool Graphics::SetVertexBuffers(const Vector<VertexBuffer*>& buffers, unsigned i
         return SetVertexBuffers_D3D11(buffers, instanceOffset);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetVertexBuffers_Vulkan(buffers, instanceOffset);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -1004,6 +1032,11 @@ bool Graphics::SetVertexBuffers(const Vector<SharedPtr<VertexBuffer>>& buffers, 
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetVertexBuffers_D3D11(buffers, instanceOffset);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetVertexBuffers_Vulkan(buffers, instanceOffset);
 #endif
 
     return {}; // Prevent warning
@@ -1057,6 +1090,11 @@ void Graphics::SetShaderParameter(StringHash param, const float* data, unsigned 
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, data, count);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(Vector<byte>((const byte*)data, count * sizeof(float))));
+#endif
 }
 
 void Graphics::SetShaderParameter(StringHash param, float value)
@@ -1071,6 +1109,11 @@ void Graphics::SetShaderParameter(StringHash param, float value)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, value);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(value));
 #endif
 }
 
@@ -1087,6 +1130,11 @@ void Graphics::SetShaderParameter(StringHash param, int value)
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, value);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(value));
+#endif
 }
 
 void Graphics::SetShaderParameter(StringHash param, bool value)
@@ -1101,6 +1149,11 @@ void Graphics::SetShaderParameter(StringHash param, bool value)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, value);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(value));
 #endif
 }
 
@@ -1117,6 +1170,11 @@ void Graphics::SetShaderParameter(StringHash param, const Color& color)
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, color);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(color));
+#endif
 }
 
 void Graphics::SetShaderParameter(StringHash param, const Vector2& vector)
@@ -1131,6 +1189,11 @@ void Graphics::SetShaderParameter(StringHash param, const Vector2& vector)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, vector);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(vector));
 #endif
 }
 
@@ -1147,6 +1210,11 @@ void Graphics::SetShaderParameter(StringHash param, const Matrix3& matrix)
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, matrix);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(matrix));
+#endif
 }
 
 void Graphics::SetShaderParameter(StringHash param, const Vector3& vector)
@@ -1161,6 +1229,11 @@ void Graphics::SetShaderParameter(StringHash param, const Vector3& vector)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, vector);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(vector));
 #endif
 }
 
@@ -1177,6 +1250,11 @@ void Graphics::SetShaderParameter(StringHash param, const Matrix4& matrix)
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, matrix);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(matrix));
+#endif
 }
 
 void Graphics::SetShaderParameter(StringHash param, const Vector4& vector)
@@ -1191,6 +1269,11 @@ void Graphics::SetShaderParameter(StringHash param, const Vector4& vector)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, vector);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(vector));
 #endif
 }
 
@@ -1207,6 +1290,11 @@ void Graphics::SetShaderParameter(StringHash param, const Matrix3x4& matrix)
     if (gapi == GAPI_D3D11)
         return SetShaderParameter_D3D11(param, matrix);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetShaderParameter_Vulkan(param, Variant(matrix));
+#endif
 }
 
 bool Graphics::NeedParameterUpdate(ShaderParameterGroup group, const void* source)
@@ -1221,6 +1309,11 @@ bool Graphics::NeedParameterUpdate(ShaderParameterGroup group, const void* sourc
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return NeedParameterUpdate_D3D11(group, source);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return true;  // Always update parameters for Vulkan (no caching yet)
 #endif
 
     return {}; // Prevent warning
@@ -1318,6 +1411,11 @@ void Graphics::SetTexture(unsigned index, Texture* texture)
     if (gapi == GAPI_D3D11)
         return SetTexture_D3D11(index, texture);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetTexture_Vulkan(index, texture);
+#endif
 }
 
 void Graphics::SetDefaultTextureFilterMode(TextureFilterMode mode)
@@ -1353,6 +1451,11 @@ void Graphics::SetDefaultTextureAnisotropy(unsigned level)
 void Graphics::ResetRenderTargets()
 {
     GAPI gapi = Graphics::GetGAPI();
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ResetRenderTargets_Vulkan();
+#endif
 
 #ifdef URHO3D_OPENGL
     if (gapi == GAPI_OPENGL)
@@ -1408,6 +1511,11 @@ void Graphics::SetRenderTarget(unsigned index, RenderSurface* renderTarget)
     if (gapi == GAPI_D3D11)
         return SetRenderTarget_D3D11(index, renderTarget);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetRenderTarget_Vulkan(index, renderTarget);
+#endif
 }
 
 void Graphics::SetRenderTarget(unsigned index, Texture2D* texture)
@@ -1438,6 +1546,11 @@ void Graphics::SetDepthStencil(RenderSurface* depthStencil)
     if (gapi == GAPI_D3D11)
         return SetDepthStencil_D3D11(depthStencil);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDepthStencil_Vulkan(depthStencil);
+#endif
 }
 
 void Graphics::SetDepthStencil(Texture2D* texture)
@@ -1467,6 +1580,11 @@ void Graphics::SetViewport(const IntRect& rect)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetViewport_D3D11(rect);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetViewport_Vulkan(rect.left_, rect.top_, rect.Width(), rect.Height());
 #endif
 }
 
@@ -1635,7 +1753,14 @@ void Graphics::SetScissorTest(bool enable, const Rect& rect, bool borderInclusiv
     if (gapi == GAPI_D3D11)
         return SetScissorTest_D3D11(enable, rect, borderInclusive);
 #endif
-    // TODO: Implement SetScissorTest_Vulkan wrapper for Rect (currently skipped)
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+    {
+        if (enable)
+            return SetScissor_Vulkan((int)rect.min_.x_, (int)rect.min_.y_, (int)(rect.max_.x_ - rect.min_.x_), (int)(rect.max_.y_ - rect.min_.y_));
+    }
+#endif
 }
 
 void Graphics::SetScissorTest(bool enable, const IntRect& rect)
@@ -1651,7 +1776,14 @@ void Graphics::SetScissorTest(bool enable, const IntRect& rect)
     if (gapi == GAPI_D3D11)
         return SetScissorTest_D3D11(enable, rect);
 #endif
-    // TODO: Implement SetScissorTest_Vulkan wrapper for IntRect (currently skipped)
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+    {
+        if (enable)
+            return SetScissor_Vulkan(rect.left_, rect.top_, rect.Width(), rect.Height());
+    }
+#endif
 }
 
 void Graphics::SetClipPlane(bool enable, const Plane& clipPlane, const Matrix3x4& view, const Matrix4& projection)
@@ -1667,7 +1799,11 @@ void Graphics::SetClipPlane(bool enable, const Plane& clipPlane, const Matrix3x4
     if (gapi == GAPI_D3D11)
         return SetClipPlane_D3D11(enable, clipPlane, view, projection);
 #endif
-    // TODO: Implement SetClipPlane_Vulkan (currently skipped)
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetClipPlane_Vulkan(enable, clipPlane, view, projection);
+#endif
 }
 
 void Graphics::SetStencilTest(bool enable, CompareMode mode, StencilOp pass, StencilOp fail, StencilOp zFail, u32 stencilRef,
@@ -1705,6 +1841,11 @@ bool Graphics::IsInitialized() const
         return IsInitialized_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return IsInitialized_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -1737,6 +1878,11 @@ bool Graphics::IsDeviceLost() const
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return IsDeviceLost_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return IsDeviceLost_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -1790,6 +1936,11 @@ ShaderVariation* Graphics::GetShader(ShaderType type, const String& name, const 
         return GetShader_D3D11(type, name, defines);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetShader_Vulkan(type, name, defines);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -1805,6 +1956,11 @@ ShaderVariation* Graphics::GetShader(ShaderType type, const char* name, const ch
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetShader_D3D11(type, name, defines);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetShader_Vulkan(type, name, defines);
 #endif
 
     return {}; // Prevent warning

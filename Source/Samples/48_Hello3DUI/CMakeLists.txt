@@ -1,14 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-# Define target name
-set (TARGET_NAME 48_Hello3DUI)
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:d9d73eec6461c21ff79f101790918ac16752037e25a42becbe56d7ffa5c1cc38
+size 294

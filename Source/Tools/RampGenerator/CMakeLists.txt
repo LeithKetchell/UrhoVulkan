@@ -1,18 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-# Define target name
-set (TARGET_NAME RampGenerator)
-
-# Define preprocessor macros
-if (MINGW AND (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 6.1.0 OR CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 6.1.0) AND URHO3D_LIB_TYPE STREQUAL STATIC)
-    # Workaround the "multiple definition of" linking issue in STATIC build
-else ()
-    add_definitions (-DSTB_IMAGE_WRITE_IMPLEMENTATION)
-endif ()
-
-# Define source files
-define_source_files ()
-
-# Setup target
-setup_executable (TOOL)
+version https://git-lfs.github.com/spec/v1
+oid sha256:18d1dcc72b40f82b55e242bf24ab217aa7daeffee66f49889b3a63c9946e16c1
+size 530

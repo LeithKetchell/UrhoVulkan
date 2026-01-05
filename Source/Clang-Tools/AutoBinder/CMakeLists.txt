@@ -1,16 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-# Define target name
-set (TARGET_NAME AutoBinder)
-
-# Define source files
-define_source_files ()
-
-# Define dependency libs
-add_subdirectory (${CMAKE_CURRENT_SOURCE_DIR}/../../ThirdParty/Mustache Mustache)
-
-# Setup target
-setup_executable (TOOL NODEPS)
-install (DIRECTORY Templates DESTINATION ${DEST_RUNTIME_DIR})
-add_dependencies (${TARGET_NAME} Mustache)
+version https://git-lfs.github.com/spec/v1
+oid sha256:5c86618ac98a2694ee66a9f3b10926eb04133d7410bea4822758c143ed3c23f7
+size 417

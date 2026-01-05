@@ -324,8 +324,8 @@ VkDescriptorSet VulkanMaterialDescriptorManager::CreateDescriptorSet(Material* m
     VulkanConstantBufferPool* constantBufferPool = graphics_->GetConstantBufferPool();
     if (constantBufferPool)
     {
-        VkBuffer paramBuffer;
-        VkDeviceSize paramOffset;
+        VkBuffer paramBuffer = VK_NULL_HANDLE;
+        VkDeviceSize paramOffset = 0;
         if (constantBufferPool->AllocateBuffer(&params, sizeof(VulkanMaterialConstants), paramBuffer, paramOffset))
         {
             bufferBindInfo.buffer = paramBuffer;

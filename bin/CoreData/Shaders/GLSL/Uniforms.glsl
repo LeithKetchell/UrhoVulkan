@@ -149,7 +149,7 @@ uniform ObjectVS
     mat3 cBillboardRot;
 #endif
 #ifdef SKINNED
-    uniform vec4 cSkinMatrices[MAXBONES*3];
+    vec4 cSkinMatrices[MAXBONES*3];
 #endif
 };
 

@@ -1,18 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-if (NOT URHO3D_PHYSICS)
-    return ()
-endif ()
-
-# Define target name
-set (TARGET_NAME 13_Ragdolls)
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:2627aca9fae4eeea667d22ccba0ef291bf11ee78b1219124b1eedc5d12a10c84
+size 341

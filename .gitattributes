@@ -2,3 +2,31 @@ Docs/* linguist-documentation
 Source/ThirdParty/* linguist-vendored
 bin/Data/Fonts/* linguist-vendored
 *.h linguist-language=C++
+settings.gradle.kts filter=lfs diff=lfs merge=lfs -text
+TODO.md filter=lfs diff=lfs merge=lfs -text
+CMakeDoxygenDefaults.cmake filter=lfs diff=lfs merge=lfs -text
+cmake_install.cmake filter=lfs diff=lfs merge=lfs -text
+gradlew.bat filter=lfs diff=lfs merge=lfs -text
+CLAUDE.md filter=lfs diff=lfs merge=lfs -text
+CPackConfig.cmake filter=lfs diff=lfs merge=lfs -text
+gdb_crash_log.txt filter=lfs diff=lfs merge=lfs -text
+Gemini.md filter=lfs diff=lfs merge=lfs -text
+profile_output.log filter=lfs diff=lfs merge=lfs -text
+README.md filter=lfs diff=lfs merge=lfs -text
+Urho3D.layout filter=lfs diff=lfs merge=lfs -text
+CMakeDoxyfile.in filter=lfs diff=lfs merge=lfs -text
+CMakeLists.txt filter=lfs diff=lfs merge=lfs -text
+CPackSourceConfig.cmake filter=lfs diff=lfs merge=lfs -text
+gradle.properties filter=lfs diff=lfs merge=lfs -text
+Urho3D.cbp filter=lfs diff=lfs merge=lfs -text
+build.gradle.kts filter=lfs diff=lfs merge=lfs -text
+build/CMakeDoxyfile.in filter=lfs diff=lfs merge=lfs -text
+build/CMakeDoxygenDefaults.cmake filter=lfs diff=lfs merge=lfs -text
+build/cmake_install.cmake filter=lfs diff=lfs merge=lfs -text
+build/CPackConfig.cmake filter=lfs diff=lfs merge=lfs -text
+build/CPackSourceConfig.cmake filter=lfs diff=lfs merge=lfs -text
+build/Urho3D.cbp filter=lfs diff=lfs merge=lfs -text
+build/Urho3D.layout filter=lfs diff=lfs merge=lfs -text
+build/CMakeCache.txt filter=lfs diff=lfs merge=lfs -text
+bin/tool/*.* filter=lfs diff=lfs merge=lfs -text
+lib/libUrho3D.a filter=lfs diff=lfs merge=lfs -text

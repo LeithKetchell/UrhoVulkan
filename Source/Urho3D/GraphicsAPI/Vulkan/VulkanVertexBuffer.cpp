@@ -32,21 +32,22 @@ void VertexBuffer::Release_Vulkan()
     if (!object_.ptr_)
         return;
 
-    VulkanGraphicsImpl* impl = GetSubsystem<Graphics>()->GetImpl_Vulkan();
-    if (!impl)
-        return;
+    Graphics* graphics = GetSubsystem<Graphics>();
+    VulkanGraphicsImpl* impl = graphics ? graphics->GetImpl_Vulkan() : nullptr;
 
     VkBuffer buffer = (VkBuffer)(void*)object_.ptr_;
-    VmaAllocation allocation = (VmaAllocation)object_.name_;
+    VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
 
-    if (buffer)
+    // Always clear handles, even if we can't destroy (shutdown order)
+    object_.ptr_ = nullptr;
+    object_.ptr2_ = nullptr;
+    dataPending_ = false;
+
+    // Only destroy if graphics subsystem still exists
+    if (impl && buffer)
     {
         vmaDestroyBuffer(impl->GetAllocator(), buffer, allocation);
-        object_.ptr_ = nullptr;
-        object_.name_ = 0;
     }
-
-    dataPending_ = false;
 }
 
 bool VertexBuffer::Create_Vulkan()
@@ -76,7 +77,8 @@ bool VertexBuffer::Create_Vulkan()
 
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocInfo.flags = dynamic_ ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT : 0;
+    // ALWAYS need HOST_VISIBLE for CPU mapping (static buffers are mapped too)
+    allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
     // Attempt to use memory pool for optimized allocation
     VulkanMemoryPoolManager* poolMgr = impl->GetMemoryPoolManager();
@@ -90,8 +92,8 @@ bool VertexBuffer::Create_Vulkan()
         }
     }
 
-    VkBuffer buffer;
-    VmaAllocation allocation;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
     if (vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo, &buffer, &allocation, nullptr) != VK_SUCCESS)
     {
         // Fallback: attempt without pool if pool allocation failed
@@ -113,7 +115,7 @@ bool VertexBuffer::Create_Vulkan()
     }
 
     object_.ptr_ = (void*)buffer;
-    object_.name_ = (u32)(uintptr_t)allocation;
+    object_.ptr2_ = (void*)allocation;
 
     dataPending_ = true;
     return true;
@@ -124,9 +126,23 @@ bool VertexBuffer::SetData_Vulkan(const void* data)
     if (!data)
         return false;
 
+    URHO3D_LOGINFO(String("[VERTEXBUFFER] SetData_Vulkan: vertexCount=") + String(vertexCount_) +
+                   ", vertexSize=" + String(vertexSize_) + ", shadowData=" + String(shadowData_ != nullptr));
+
     // Copy to shadow buffer first
     if (shadowData_)
         memcpy(shadowData_.Get(), data, (size_t)vertexCount_ * vertexSize_);
+
+    // DEBUG: Dump first vertex
+    if (vertexCount_ >= 1 && vertexSize_ >= 24)
+    {
+        const float* floatData = (const float*)data;
+        const unsigned char* byteData = (const unsigned char*)data;
+        URHO3D_LOGINFO(String("[VB] VERTEX[0]: pos=(") + String(floatData[0]) + "," +
+                       String(floatData[1]) + "," + String(floatData[2]) + "), color_bytes=(" +
+                       String((int)byteData[12]) + "," + String((int)byteData[13]) + "," +
+                       String((int)byteData[14]) + "," + String((int)byteData[15]) + ")");
+    }
 
     return UpdateToGPU_Vulkan();
 }
@@ -140,6 +156,21 @@ bool VertexBuffer::SetDataRange_Vulkan(const void* data, i32 start, i32 count, b
     if (shadowData_)
     {
         memcpy(shadowData_.Get() + start * vertexSize_, data, (size_t)count * vertexSize_);
+    }
+
+    // DEBUG: Always log vertex buffer updates
+    URHO3D_LOGDEBUG(String("SetDataRange_Vulkan: start=") + String(start) + ", count=" + String(count) +
+                   ", vertexSize=" + String(vertexSize_) + ", shadowData=" + String(shadowData_ != nullptr));
+
+    // DEBUG: Dump first vertex data to check position/color
+    if (count >= 1 && vertexSize_ >= 24)
+    {
+        const float* floatData = (const float*)data;
+        const unsigned char* byteData = (const unsigned char*)data;
+        URHO3D_LOGDEBUG(String("VERTEX_DATA[0]: pos=(") + String(floatData[0]) + "," +
+                       String(floatData[1]) + "," + String(floatData[2]) + "), color_bytes=(" +
+                       String((int)byteData[12]) + "," + String((int)byteData[13]) + "," +
+                       String((int)byteData[14]) + "," + String((int)byteData[15]) + ")");
     }
 
     return UpdateToGPU_Vulkan();
@@ -159,7 +190,7 @@ bool VertexBuffer::UpdateToGPU_Vulkan()
         return false;
 
     VkBuffer buffer = (VkBuffer)(void*)object_.ptr_;
-    VmaAllocation allocation = (VmaAllocation)object_.name_;
+    VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
 
     // For dynamic buffers or small updates, use host memory mapping
     if (dynamic_)

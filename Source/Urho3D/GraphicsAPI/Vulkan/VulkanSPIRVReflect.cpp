@@ -233,6 +233,30 @@ void VulkanSPIRVReflect::ExtractResourceMetadata(
 
         idx += wordCount;
     }
+
+    // Log what resources were extracted from SPIR-V
+    fprintf(stderr, "\n=== SPIR-V Reflection Results ===\n");
+    fprintf(stderr, "Total resources extracted: %zu\n", resources.Size());
+
+    unsigned uniformBufferCount = 0;
+    unsigned samplerCount = 0;
+
+    for (const SPIRVResource& res : resources)
+    {
+        const char* typeStr = (res.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+                              ? "UNIFORM_BUFFER" : "SAMPLER";
+        fprintf(stderr, "  Set %u, Binding %u: %s\n",
+                res.set, res.binding, typeStr);
+
+        if (res.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+            uniformBufferCount++;
+        else
+            samplerCount++;
+    }
+
+    fprintf(stderr, "Summary: %u uniform buffers, %u samplers\n",
+            uniformBufferCount, samplerCount);
+    fprintf(stderr, "================================\n\n");
 }
 
 

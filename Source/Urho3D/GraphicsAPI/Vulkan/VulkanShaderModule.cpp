@@ -90,6 +90,17 @@ bool VulkanShaderModule::GetOrCompileSPIRV(
 
     ShaderType shaderType = variation->GetShaderType();
     String shaderSource = owner->GetSourceCode(shaderType);
+
+    fprintf(stderr, "GET_OR_COMPILE_SPIRV: variation=%s, type=%d, source length=%d\n",
+            variation->GetFullName().CString(), (int)shaderType, shaderSource.Length());
+    fprintf(stderr, "GET_OR_COMPILE_SPIRV: First 200 chars: %.200s\n", shaderSource.CString());
+    fprintf(stderr, "GET_OR_COMPILE_SPIRV: Checking for nulls in first 100 bytes: ");
+    const char* src = shaderSource.CString();
+    for (int i = 0; i < 100 && i < (int)shaderSource.Length(); ++i) {
+        if (src[i] == '\0') fprintf(stderr, "NULL@%d ", i);
+    }
+    fprintf(stderr, "\n");
+
     if (shaderSource.Empty())
     {
         errorOutput = "Shader has no source code";

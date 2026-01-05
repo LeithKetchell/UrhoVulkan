@@ -41,12 +41,13 @@ void HelloWorld::Start()
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_FREE);
 
-    // Initialize profiler UI
-    auto* graphics = GetSubsystem<Graphics>();
-    auto* ui = GetSubsystem<UI>();
-    profilerUI_ = new ProfilerUI(context_);
-    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
-    profilerUI_->SetVisible(true);
+    // TEMPORARY: Disable ProfilerUI to avoid Mesa RADV driver bug with many pipeline barriers
+    // TODO: Re-enable when driver bug is fixed
+    // auto* graphics = GetSubsystem<Graphics>();
+    // auto* ui = GetSubsystem<UI>();
+    // profilerUI_ = new ProfilerUI(context_);
+    // profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    // profilerUI_->SetVisible(true);
 }
 
 void HelloWorld::CreateText()
@@ -94,10 +95,11 @@ void HelloWorld::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // Take the frame time step
     float timeStep = eventData[P_TIMESTEP].GetFloat();
 
-    // Update profiler display
-    if (profilerUI_)
-    {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
-    }
+    // TEMPORARY: ProfilerUI disabled to avoid Mesa RADV driver bug
+    // // Update profiler display
+    // if (profilerUI_)
+    // {
+    //     GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+    //     profilerUI_->Update();
+    // }
 }

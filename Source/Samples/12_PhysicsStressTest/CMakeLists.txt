@@ -1,18 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-if (NOT URHO3D_PHYSICS)
-    return ()
-endif ()
-
-# Define target name
-set (TARGET_NAME 12_PhysicsStressTest)
-
-# Define source files
-define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
-
-# Setup target with resource copying
-setup_main_executable ()
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:8df2fb45d970a76e3ebb6acf917507a8f9bce6b4c1182f4a45b6cace23c2a80c
+size 350

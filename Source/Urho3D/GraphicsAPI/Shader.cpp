@@ -80,8 +80,9 @@ bool Shader::BeginLoad(Deserializer& source)
     CommentOutFunction(vsSourceCode_, "void PS(");
     CommentOutFunction(psSourceCode_, "void VS(");
 
-    // OpenGL: rename either VS() or PS() to main()
-    if (Graphics::GetGAPI() == GAPI_OPENGL)
+    // OpenGL and Vulkan: rename either VS() or PS() to main()
+    GAPI gapi = Graphics::GetGAPI();
+    if (gapi == GAPI_OPENGL || gapi == GAPI_VULKAN)
     {
         vsSourceCode_.Replace("void VS(", "void main(");
         psSourceCode_.Replace("void PS(", "void main(");

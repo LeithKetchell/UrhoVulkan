@@ -64,7 +64,8 @@ vec4 GetClipPos(vec3 worldPos)
     #if !defined(GL_ES) && !defined(GL3)
         gl_ClipVertex = ret;
     #elif defined(GL3)
-        gl_ClipDistance[0] = dot(cClipPlane, ret);
+        // DISABLED: gl_ClipDistance causing all geometry to be clipped in Vulkan
+        // gl_ClipDistance[0] = dot(cClipPlane, ret);
     #endif
     return ret;
 }

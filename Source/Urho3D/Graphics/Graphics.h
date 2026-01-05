@@ -1083,6 +1083,8 @@ private:
     /// Integrates Phases 17-26 descriptor pipeline into rendering
     void Draw_Vulkan(class Geometry* geometry, class Material* material);
     void SetVertexBuffer_Vulkan(unsigned index, VertexBuffer* buffer);
+    bool SetVertexBuffers_Vulkan(const Vector<VertexBuffer*>& buffers, unsigned instanceOffset = 0);
+    bool SetVertexBuffers_Vulkan(const Vector<SharedPtr<VertexBuffer>>& buffers, unsigned instanceOffset = 0);
     void SetIndexBuffer_Vulkan(IndexBuffer* buffer);
     void SetBlendMode_Vulkan(BlendMode mode, bool alphaToCoverage = false);
     void SetCullMode_Vulkan(CullMode mode);
@@ -1090,6 +1092,7 @@ private:
     void SetDepthWrite_Vulkan(bool enable);
     void SetFillMode_Vulkan(FillMode mode);
     void SetStencilTest_Vulkan(bool enable, CompareMode mode = CMP_ALWAYS, StencilOp pass = OP_KEEP, StencilOp fail = OP_KEEP, StencilOp zFail = OP_KEEP, u32 stencilRef = 0, u32 compareMask = M_U32_MASK_ALL_BITS, u32 writeMask = M_U32_MASK_ALL_BITS);
+    void SetClipPlane_Vulkan(bool enable, const Plane& clipPlane, const Matrix3x4& view, const Matrix4& projection);
     void SetColorWrite_Vulkan(bool enable);
     void Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned vertexCount);
     void Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount);
@@ -1102,6 +1105,8 @@ private:
     void SetComputeShader_Vulkan(ShaderVariation* shader);
     void SetStorageBuffer_Vulkan(unsigned index, VertexBuffer* buffer);
     void SetShaderParameter_Vulkan(StringHash param, const Variant& value);
+    /// Phase 36 Step 5: Reflection-based descriptor set creation
+    VkDescriptorSet CreateReflectionBasedDescriptorSet_Vulkan();
     /// Phase 36 Step 2: G-Buffer texture descriptor set management for deferred rendering
     VkDescriptorSet CreateGBufferTextureDescriptorSet_Vulkan();
     bool BindGBufferTextureDescriptors_Vulkan();
@@ -1117,10 +1122,17 @@ private:
     bool BindInputAttachmentDescriptors_Vulkan(VkDescriptorSet descriptorSet);
     bool NeedParameterUpdate_Vulkan(ShaderParameterGroup group, const void* source);
     void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps, ShaderVariation* gs = nullptr);
+    ShaderVariation* GetShader_Vulkan(ShaderType type, const String& name, const String& defines = String::EMPTY) const;
+    ShaderVariation* GetShader_Vulkan(ShaderType type, const char* name, const char* defines) const;
     void SetRenderTarget_Vulkan(unsigned index, RenderSurface* renderTarget);
     void SetDepthStencil_Vulkan(RenderSurface* depthStencil);
+    void ResetRenderTargets_Vulkan();
     /// \brief Apply cached Graphics state to VulkanPipelineState (Phase 32)
     void ApplyGraphicsState_Vulkan(VulkanPipelineState& state) const;
+    /// \brief Check if Vulkan graphics is initialized
+    bool IsInitialized_Vulkan() const;
+    /// \brief Check if Vulkan device is lost
+    bool IsDeviceLost_Vulkan() const;
 #endif // def URHO3D_VULKAN
 
     /// Mutex for accessing the GPU objects vector from several threads.
@@ -1288,6 +1300,10 @@ private:
     /// Phase 36: Pending shader parameters for batched upload to constant buffers
     /// Accumulated during SetShaderParameter_Vulkan() calls, uploaded during draw calls
     HashMap<StringHash, Variant> pendingShaderParameters_;
+    /// Block offsets within concatenated constant buffer (binding -> offset)
+    /// Updated by UploadPendingShaderParameters_Vulkan(), used by CreateReflectionBasedDescriptorSet_Vulkan()
+    HashMap<unsigned, size_t> currentBlockOffsets_;
+    HashMap<unsigned, unsigned> currentBlockSizes_;
 #endif
     /// Allowed screen orientations.
     String orientations_;

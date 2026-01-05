@@ -663,16 +663,24 @@ void Batch::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool allowD
         pushConstants.materialIndex = 0;  // TODO: Per-material index from material data
         pushConstants.batchFlags = 0;     // TODO: Batch-specific flags (skinning, billboarding, etc.)
 
+        // Get pipeline layout from graphics implementation
+        Graphics* graphics = view->GetGraphics();
+        VulkanGraphicsImpl* vkImpl = graphics->GetImpl_Vulkan();
+        VkPipelineLayout pipelineLayout = vkImpl ? vkImpl->GetCurrentPipelineLayout() : VK_NULL_HANDLE;
+
         // Record to secondary command buffer via Vulkan API
         VkCommandBuffer cmdBuffer = static_cast<VkCommandBuffer>(secondaryCommandBuffer);
-        vkCmdPushConstants(
-            cmdBuffer,
-            nullptr,  // TODO: Get pipeline layout from shader program
-            VK_SHADER_STAGE_VERTEX_BIT,
-            0,  // offset
-            VulkanBatchPushConstants::SIZE,
-            &pushConstants
-        );
+        if (pipelineLayout)
+        {
+            vkCmdPushConstants(
+                cmdBuffer,
+                pipelineLayout,
+                VK_SHADER_STAGE_VERTEX_BIT,
+                0,  // offset
+                VulkanBatchPushConstants::SIZE,
+                &pushConstants
+            );
+        }
 
         geometry_->Draw(view->GetGraphics());
     }
@@ -819,14 +827,21 @@ void BatchGroup::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool a
                     pushConstants.materialIndex = 0;  // TODO: Per-material index
                     pushConstants.batchFlags = 0;     // TODO: Batch flags
 
-                    vkCmdPushConstants(
-                        cmdBuffer,
-                        nullptr,  // TODO: Get pipeline layout from shader program
-                        VK_SHADER_STAGE_VERTEX_BIT,
-                        0,
-                        VulkanBatchPushConstants::SIZE,
-                        &pushConstants
-                    );
+                    // Get pipeline layout from graphics implementation
+                    VulkanGraphicsImpl* vkImpl = graphics->GetImpl_Vulkan();
+                    VkPipelineLayout pipelineLayout = vkImpl ? vkImpl->GetCurrentPipelineLayout() : VK_NULL_HANDLE;
+
+                    if (pipelineLayout)
+                    {
+                        vkCmdPushConstants(
+                            cmdBuffer,
+                            pipelineLayout,
+                            VK_SHADER_STAGE_VERTEX_BIT,
+                            0,
+                            VulkanBatchPushConstants::SIZE,
+                            &pushConstants
+                        );
+                    }
                 }
 
                 graphics->Draw(geometry_->GetPrimitiveType(), geometry_->GetIndexStart(), geometry_->GetIndexCount(),
@@ -856,14 +871,21 @@ void BatchGroup::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool a
                 pushConstants.materialIndex = 0;  // TODO: Per-material index
                 pushConstants.batchFlags = 0;     // TODO: Batch flags
 
-                vkCmdPushConstants(
-                    cmdBuffer,
-                    nullptr,  // TODO: Get pipeline layout from shader program
-                    VK_SHADER_STAGE_VERTEX_BIT,
-                    0,
-                    VulkanBatchPushConstants::SIZE,
-                    &pushConstants
-                );
+                // Get pipeline layout from graphics implementation
+                VulkanGraphicsImpl* vkImpl = graphics->GetImpl_Vulkan();
+                VkPipelineLayout pipelineLayout = vkImpl ? vkImpl->GetCurrentPipelineLayout() : VK_NULL_HANDLE;
+
+                if (pipelineLayout)
+                {
+                    vkCmdPushConstants(
+                        cmdBuffer,
+                        pipelineLayout,
+                        VK_SHADER_STAGE_VERTEX_BIT,
+                        0,
+                        VulkanBatchPushConstants::SIZE,
+                        &pushConstants
+                    );
+                }
             }
 
             graphics->DrawInstanced(geometry_->GetPrimitiveType(), geometry_->GetIndexStart(), geometry_->GetIndexCount(),

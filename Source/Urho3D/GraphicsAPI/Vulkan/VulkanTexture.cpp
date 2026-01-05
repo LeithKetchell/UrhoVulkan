@@ -19,6 +19,15 @@
 namespace Urho3D
 {
 
+// Helper function to map Urho3D texture format to Vulkan format
+// WORKAROUND: Uses placeholder format values until Graphics::Get*Format() is implemented for Vulkan
+static VkFormat GetVulkanFormat(unsigned urhoFormat)
+{
+    // urhoFormat is already a VkFormat enum value (not a placeholder)
+    // SetData_Vulkan now assigns actual VkFormat values to format_
+    return (VkFormat)urhoFormat;
+}
+
 void Texture2D::OnDeviceLost_Vulkan()
 {
     // Vulkan textures survive device loss
@@ -34,7 +43,11 @@ void Texture2D::Release_Vulkan()
     if (!object_.ptr_)
         return;
 
-    VulkanGraphicsImpl* impl = GetSubsystem<Graphics>()->GetImpl_Vulkan();
+    Graphics* graphics = GetSubsystem<Graphics>();
+    if (!graphics)
+        return;
+
+    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
     if (!impl)
         return;
 
@@ -54,7 +67,8 @@ void Texture2D::Release_Vulkan()
 
     // Release image
     VkImage image = (VkImage)(void*)object_.ptr_;
-    VmaAllocation allocation = (VmaAllocation)object_.name_;
+    // NOTE: VmaAllocation stored in vmaAllocation_ member (see Create_Vulkan)
+    VmaAllocation allocation = (VmaAllocation)vmaAllocation_;
 
     if (image)
     {
@@ -82,8 +96,9 @@ bool Texture2D::Create_Vulkan()
     // Calculate mipmap levels
     levels_ = CheckMaxLevels(width_, height_, requestedLevels_);
 
-    // Map Urho3D format to Vulkan format (simplified - supports common formats)
-    VkFormat vkFormat = VK_FORMAT_R8G8B8A8_SRGB;  // Default RGBA SRGB
+    // Map Urho3D format to Vulkan format
+    VkFormat vkFormat = GetVulkanFormat(format_);
+    URHO3D_LOGDEBUG("Create_Vulkan: format_=" + String(format_) + ", vkFormat=" + String((unsigned)vkFormat));
 
     // Create image
     VkImageCreateInfo imageInfo{};
@@ -115,7 +130,22 @@ bool Texture2D::Create_Vulkan()
 
     VkImage image;
     VmaAllocation allocation;
-    if (vmaCreateImage(impl->GetAllocator(), &imageInfo, &allocInfo, &image, &allocation, nullptr) != VK_SUCCESS)
+
+    // Log VMA stats before allocation
+    VmaTotalStatistics stats;
+    vmaCalculateStatistics(impl->GetAllocator(), &stats);
+    URHO3D_LOGDEBUG(String("VMA BEFORE Create: allocations=") + String(stats.total.statistics.allocationCount) +
+                   ", blocks=" + String(stats.total.statistics.blockCount) +
+                   ", used=" + String((unsigned long long)stats.total.statistics.allocationBytes / 1024) + "KB");
+
+    URHO3D_LOGDEBUG(String("About to call vmaCreateImage: size=") + String(width_) + "x" + String(height_) +
+                   ", mips=" + String(levels_) + ", format=" + String((unsigned)vkFormat));
+
+    VkResult createResult = vmaCreateImage(impl->GetAllocator(), &imageInfo, &allocInfo, &image, &allocation, nullptr);
+
+    URHO3D_LOGDEBUG(String("vmaCreateImage returned, VkResult=") + String((int)createResult));
+
+    if (createResult != VK_SUCCESS)
     {
         // Fallback: attempt without pool if pool allocation failed
         if (poolMgr)
@@ -135,8 +165,16 @@ bool Texture2D::Create_Vulkan()
         }
     }
 
+    // Log VMA stats after allocation
+    vmaCalculateStatistics(impl->GetAllocator(), &stats);
+    URHO3D_LOGDEBUG(String("VMA AFTER Create: allocations=") + String(stats.total.statistics.allocationCount) +
+                   ", blocks=" + String(stats.total.statistics.blockCount) +
+                   ", used=" + String((unsigned long long)stats.total.statistics.allocationBytes / 1024) + "KB");
+
     object_.ptr_ = (void*)image;
-    object_.name_ = (u32)(uintptr_t)allocation;
+    // NOTE: Cannot use object_.name_ for Vulkan! It's a union that shares memory with ptr_!
+    // Store VMA allocation in dedicated member variable
+    vmaAllocation_ = allocation;
 
     // Create image view
     VkImageViewCreateInfo viewInfo{};
@@ -170,46 +208,67 @@ bool Texture2D::Create_Vulkan()
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 
-    // Map filter mode
-    switch (filterMode_)
+    // Map filter mode (handle FILTER_DEFAULT by using graphics default)
+    // NOTE: Anisotropy is disabled because samplerAnisotropy device feature is VK_FALSE
+    // TODO: Query physical device features and enable if supported
+    TextureFilterMode effectiveFilterMode = filterMode_;
+    if (effectiveFilterMode == FILTER_DEFAULT)
+        effectiveFilterMode = graphics_->GetDefaultTextureFilterMode();
+
+    switch (effectiveFilterMode)
     {
     case FILTER_NEAREST:
         samplerInfo.magFilter = VK_FILTER_NEAREST;
         samplerInfo.minFilter = VK_FILTER_NEAREST;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
         break;
     case FILTER_BILINEAR:
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
         break;
     case FILTER_TRILINEAR:
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
         break;
     case FILTER_ANISOTROPIC:
+        // Fallback to trilinear since anisotropy is not enabled on device
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        samplerInfo.anisotropyEnable = VK_TRUE;
-        samplerInfo.maxAnisotropy = anisotropy_ ? anisotropy_ : 1.0f;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
         break;
     default:
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
     }
 
-    // Map address modes
+    // Map address modes (must match order of TextureAddressMode enum)
+    // ADDRESS_WRAP=0, ADDRESS_MIRROR=1, ADDRESS_CLAMP=2, ADDRESS_BORDER=3
     VkSamplerAddressMode addressModes[] = {
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
+        VK_SAMPLER_ADDRESS_MODE_REPEAT,          // ADDRESS_WRAP = 0
+        VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT, // ADDRESS_MIRROR = 1
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,   // ADDRESS_CLAMP = 2
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER  // ADDRESS_BORDER = 3
     };
 
-    samplerInfo.addressModeU = addressModes[addressModes_[COORD_U]];
-    samplerInfo.addressModeV = addressModes[addressModes_[COORD_V]];
+    // Clamp address mode indices to valid range
+    unsigned uMode = addressModes_[COORD_U] < MAX_ADDRESSMODES ? addressModes_[COORD_U] : ADDRESS_WRAP;
+    unsigned vMode = addressModes_[COORD_V] < MAX_ADDRESSMODES ? addressModes_[COORD_V] : ADDRESS_WRAP;
+
+    samplerInfo.addressModeU = addressModes[uMode];
+    samplerInfo.addressModeV = addressModes[vMode];
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 
     samplerInfo.mipLodBias = 0.0f;
@@ -238,6 +297,11 @@ bool Texture2D::Create_Vulkan()
 
 bool Texture2D::SetData_Vulkan(unsigned level, int x, int y, int width, int height, const void* data)
 {
+    // Track texture upload count for debugging
+    static int textureUploadCount = 0;
+    textureUploadCount++;
+    URHO3D_LOGINFO(String("========== TEXTURE UPLOAD #") + String(textureUploadCount) + " ==========");
+
     URHO3D_LOGINFO("SetData_Vulkan(raw): level=" + String(level) + ", region=" + String(x) + "," +
                    String(y) + "," + String(width) + "x" + String(height) +
                    ", tex_size=" + String(width_) + "x" + String(height_) +
@@ -291,17 +355,19 @@ bool Texture2D::SetData_Vulkan(unsigned level, int x, int y, int width, int heig
         return false;
     }
 
-    // Get command buffer for recording transfer commands
-    VkCommandBuffer commandBuffer = impl->GetFrameCommandBuffer();
+    // Begin upload command buffer for transfer commands
+    VkCommandBuffer commandBuffer = impl->BeginUploadCommandBuffer();
     if (commandBuffer == VK_NULL_HANDLE)
     {
-        URHO3D_LOGERROR("Texture2D::SetData_Vulkan - no command buffer available");
+        URHO3D_LOGERROR("Texture2D::SetData_Vulkan - failed to begin upload command buffer");
         return false;
     }
 
-    // Transition image layout: SHADER_READ_ONLY_OPTIMAL -> TRANSFER_DST_OPTIMAL
-    impl->TransitionImageLayout(image, VK_FORMAT_R8G8B8A8_SRGB,
-                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    // Transition image layout: UNDEFINED -> TRANSFER_DST_OPTIMAL
+    // Note: Using UNDEFINED as source means we don't care about previous contents,
+    // which is correct for texture uploads (we're overwriting the data anyway)
+    impl->TransitionImageLayout(commandBuffer, image, VK_FORMAT_R8G8B8A8_SRGB,
+                               VK_IMAGE_LAYOUT_UNDEFINED,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                1);
 
@@ -316,9 +382,9 @@ bool Texture2D::SetData_Vulkan(unsigned level, int x, int y, int width, int heig
     allocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
     allocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-    VkBuffer stagingBuffer;
-    VmaAllocation stagingAllocation;
-    VmaAllocationInfo allocationInfo;
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;  // CRITICAL: Initialize to avoid garbage
+    VmaAllocation stagingAllocation = VK_NULL_HANDLE;  // CRITICAL: Initialize to avoid garbage
+    VmaAllocationInfo allocationInfo{};
 
     if (vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo,
                        &stagingBuffer, &stagingAllocation, &allocationInfo) != VK_SUCCESS)
@@ -346,13 +412,15 @@ bool Texture2D::SetData_Vulkan(unsigned level, int x, int y, int width, int heig
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     // Transition image layout: TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
-    impl->TransitionImageLayout(image, VK_FORMAT_R8G8B8A8_SRGB,
+    impl->TransitionImageLayout(commandBuffer, image, VK_FORMAT_R8G8B8A8_SRGB,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                1);
 
-    // Defer staging buffer cleanup until GPU finishes
-    // For now, we'll destroy immediately (in real implementation, track with fence)
+    // End and submit upload command buffer (waits for completion)
+    impl->EndUploadCommandBuffer(commandBuffer);
+
+    // Safe to destroy staging buffer now since upload command has completed
     vmaDestroyBuffer(impl->GetAllocator(), stagingBuffer, stagingAllocation);
 
     dataPending_ = false;
@@ -412,6 +480,33 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
         }
     }
 
+    // Log the determined format
+    URHO3D_LOGDEBUG("SetData_Vulkan: determined format=" + String(format) + " from " + String(components) + " components");
+
+    // WORKAROUND: Graphics::Get*Format() methods not yet implemented for Vulkan
+    // Use actual VkFormat values based on component count (NOT placeholders!)
+    // GetRowDataSize_Vulkan() expects real VkFormat enums to calculate byte sizes correctly
+    // Using UNORM formats instead of SRGB for better driver compatibility
+    if (format == 0)
+    {
+        switch (components)
+        {
+        case 1:
+            format = VK_FORMAT_R8_UNORM; // R8 UNORM (value=9)
+            break;
+        case 2:
+            format = VK_FORMAT_R8G8_UNORM; // RG8 UNORM (value=16)
+            break;
+        case 3:
+            format = VK_FORMAT_R8G8B8_UNORM; // RGB8 UNORM (value=23)
+            break;
+        case 4:
+            format = VK_FORMAT_R8G8B8A8_UNORM; // RGBA8 UNORM (value=37)
+            break;
+        }
+        URHO3D_LOGDEBUG("SetData_Vulkan: using VkFormat=" + String(format) + " for " + String(components) + " components (Graphics::Get*Format not implemented for Vulkan)");
+    }
+
     // Set texture size if not already set (this sets format_)
     if (!width_ || !height_)
     {
@@ -421,6 +516,12 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
             URHO3D_LOGERROR("Texture2D::SetData_Vulkan - SetSize failed");
             return false;
         }
+    }
+    else
+    {
+        // Texture already sized (Create_Vulkan was called), but we still need to set the format
+        URHO3D_LOGDEBUG("SetData_Vulkan: texture already sized, setting format_=" + String(format));
+        format_ = format;
     }
 
     VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
@@ -434,6 +535,13 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
         return false;
     }
 
+    URHO3D_LOGINFO("SetData_Vulkan: image=" + String((unsigned long long)(uintptr_t)vkImage) +
+                   ", size=" + String(width) + "x" + String(height) +
+                   ", levels=" + String(levels_) +
+                   ", format=" + String((unsigned)format_));
+
+    URHO3D_LOGDEBUG("SetData_Vulkan: About to get image data");
+
     // Get image data
     unsigned char* data = image->GetData();
     if (!data)
@@ -441,6 +549,8 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
         URHO3D_LOGERROR("Texture2D::SetData_Vulkan - no image data");
         return false;
     }
+
+    URHO3D_LOGDEBUG("SetData_Vulkan: Got image data, calculating sizes");
 
     // Calculate total data size for all mip levels
     unsigned totalSize = 0;
@@ -454,13 +564,17 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
         levelHeight = Max(levelHeight >> 1, 1);
     }
 
-    // Get command buffer for recording transfer commands
-    VkCommandBuffer commandBuffer = impl->GetFrameCommandBuffer();
+    URHO3D_LOGDEBUG("SetData_Vulkan: Calculated totalSize=" + String(totalSize) + ", beginning upload command buffer");
+
+    // Begin upload command buffer for transfer commands
+    VkCommandBuffer commandBuffer = impl->BeginUploadCommandBuffer();
     if (commandBuffer == VK_NULL_HANDLE)
     {
-        URHO3D_LOGERROR("Texture2D::SetData_Vulkan - no command buffer available");
+        URHO3D_LOGERROR("Texture2D::SetData_Vulkan - failed to begin upload command buffer");
         return false;
     }
+
+    URHO3D_LOGDEBUG("SetData_Vulkan: Command buffer created, creating staging buffer");
 
     // Create staging buffer
     VkBufferCreateInfo bufferInfo{};
@@ -473,16 +587,24 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
     allocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
     allocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-    VkBuffer stagingBuffer;
-    VmaAllocation stagingAllocation;
-    VmaAllocationInfo allocationInfo;
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;  // CRITICAL: Initialize to avoid garbage
+    VmaAllocation stagingAllocation = VK_NULL_HANDLE;  // CRITICAL: Initialize to avoid garbage
+    VmaAllocationInfo allocationInfo{};
 
-    if (vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo,
-                       &stagingBuffer, &stagingAllocation, &allocationInfo) != VK_SUCCESS)
+    URHO3D_LOGDEBUG(String("SetData_Vulkan: About to call vmaCreateBuffer, size=") + String(totalSize / 1024) + "KB");
+
+    VkResult result = vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo,
+                       &stagingBuffer, &stagingAllocation, &allocationInfo);
+
+    URHO3D_LOGDEBUG(String("SetData_Vulkan: vmaCreateBuffer returned, result=") + String((int)result));
+
+    if (result != VK_SUCCESS)
     {
-        URHO3D_LOGERROR("Texture2D::SetData_Vulkan - failed to create staging buffer");
+        URHO3D_LOGERROR(String("Texture2D::SetData_Vulkan - failed to create staging buffer, VkResult=") + String((int)result));
         return false;
     }
+
+    URHO3D_LOGDEBUG("SetData_Vulkan: Staging buffer created, copying data");
 
     // Copy all mip levels to staging buffer
     unsigned char* stagingData = (unsigned char*)allocationInfo.pMappedData;
@@ -521,10 +643,13 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
     }
 
     // Transition image layout: UNDEFINED -> TRANSFER_DST_OPTIMAL
-    impl->TransitionImageLayout(vkImage, VK_FORMAT_R8G8B8A8_SRGB,
+    VkFormat vkFormat = GetVulkanFormat(format_);
+    URHO3D_LOGDEBUG("About to call TransitionImageLayout with levels_=" + String(levels_) + ", format_=" + String(format_) + ", vkFormat=" + String((unsigned)vkFormat));
+    impl->TransitionImageLayout(commandBuffer, vkImage, vkFormat,
                                VK_IMAGE_LAYOUT_UNDEFINED,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                levels_);
+    URHO3D_LOGDEBUG("TransitionImageLayout returned successfully");
 
     // Record buffer-to-image copy for all mip levels
     Vector<VkBufferImageCopy> regions;
@@ -552,15 +677,23 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
         levelHeight = Max(levelHeight >> 1, 1);
     }
 
+    URHO3D_LOGDEBUG("About to call vkCmdCopyBufferToImage: cmdBuf=" + String((unsigned long long)commandBuffer) +
+                   ", stagingBuf=" + String((unsigned long long)stagingBuffer) +
+                   ", image=" + String((unsigned long long)vkImage) +
+                   ", regions=" + String(regions.Size()));
     vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, vkImage,
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           regions.Size(), &regions[0]);
+    URHO3D_LOGDEBUG("vkCmdCopyBufferToImage completed successfully");
 
     // Transition image layout: TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
-    impl->TransitionImageLayout(vkImage, VK_FORMAT_R8G8B8A8_SRGB,
+    impl->TransitionImageLayout(commandBuffer, vkImage, vkFormat,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                levels_);
+
+    // End and submit upload command buffer (waits for completion)
+    impl->EndUploadCommandBuffer(commandBuffer);
 
     // VMA handles deferred cleanup - won't free until GPU operations complete
     // Note: For async uploads, use VulkanStagingBufferManager with explicit fences
@@ -591,6 +724,7 @@ unsigned Texture::GetRowDataSize_Vulkan(int width) const
     case VK_FORMAT_R8_SNORM:
     case VK_FORMAT_R8_UINT:
     case VK_FORMAT_R8_SINT:
+    case VK_FORMAT_R8_SRGB:
         return (unsigned)width;
 
     // 2 bytes per pixel formats
@@ -598,6 +732,7 @@ unsigned Texture::GetRowDataSize_Vulkan(int width) const
     case VK_FORMAT_R8G8_SNORM:
     case VK_FORMAT_R8G8_UINT:
     case VK_FORMAT_R8G8_SINT:
+    case VK_FORMAT_R8G8_SRGB:
     case VK_FORMAT_R16_UNORM:
     case VK_FORMAT_R16_SNORM:
     case VK_FORMAT_R16_UINT:
@@ -610,7 +745,9 @@ unsigned Texture::GetRowDataSize_Vulkan(int width) const
     case VK_FORMAT_R8G8B8_SNORM:
     case VK_FORMAT_R8G8B8_UINT:
     case VK_FORMAT_R8G8B8_SINT:
+    case VK_FORMAT_R8G8B8_SRGB:
     case VK_FORMAT_B8G8R8_UNORM:
+    case VK_FORMAT_B8G8R8_SRGB:
         return (unsigned)(width * 3);
 
     // 4 bytes per pixel formats

@@ -1,14 +1,3 @@
-# Copyright (c) 2008-2022 the Urho3D project
-# License: MIT
-
-# Define target name
-set (TARGET_NAME Tests)
-
-# Define source files
-define_source_files (RECURSE GROUP)
-
-# Setup target
-setup_executable (TOOL)
-
-# Setup test cases
-setup_test ()
+version https://git-lfs.github.com/spec/v1
+oid sha256:367bf62b92d09ca354912b915f371912efab5e0c67a37041aba38c8f0a4b7abd
+size 239

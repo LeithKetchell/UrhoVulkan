@@ -110,7 +110,7 @@ bool BackgroundLoader::QueueResource(StringHash type, const String& name, bool s
     item.resource_ = DynamicCast<Resource>(owner_->GetContext()->CreateObject(type));
     if (!item.resource_)
     {
-        URHO3D_LOGERROR("Could not load unknown resource type " + String(type));
+        URHO3D_LOGERROR("Could not load unknown resource type " + String(type) + " for resource: " + name);
 
         if (sendEventOnFailure && Thread::IsMainThread())
         {
