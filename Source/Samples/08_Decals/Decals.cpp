@@ -88,6 +88,16 @@ void Decals::CreateScene()
     planeObject->SetModel(cache->GetResource<Model>("Models/Plane.mdl"));
     planeObject->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
 
+    // ALPHA PASS TEST: Create a box with alpha-blended material to test if alpha pass works
+    {
+        Node* testNode = scene_->CreateChild("AlphaTestBox");
+        testNode->SetPosition(Vector3(0.0f, 2.0f, 5.0f));
+        testNode->SetScale(2.0f);
+        auto* testObject = testNode->CreateComponent<StaticModel>();
+        testObject->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
+        testObject->SetMaterial(cache->GetResource<Material>("Materials/UrhoDecal.xml"));
+    }
+
     // Create a Zone component for ambient lighting & fog control
     Node* zoneNode = scene_->CreateChild("Zone");
     auto* zone = zoneNode->CreateComponent<Zone>();

@@ -13,6 +13,7 @@
 #include <Urho3D/Graphics/RenderPath.h>
 #include <Urho3D/Graphics/StaticModel.h>
 #include <Urho3D/Graphics/Viewport.h>
+#include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
@@ -30,7 +31,7 @@ URHO3D_DEFINE_APPLICATION_MAIN(DeferredRendering)
 
 DeferredRendering::DeferredRendering(Context* context) :
     Sample(context),
-    currentRenderPath_(1)  // Start with deferred rendering
+    currentRenderPath_(1)  // Deferred rendering
 {
 }
 
@@ -80,9 +81,18 @@ void DeferredRendering::CreateScene()
     // any drawable components, or else nothing will show up.
     scene_->CreateComponent<Octree>();
 
+    // Create a Zone for ambient lighting and fog
+    Node* zoneNode = scene_->CreateChild("Zone");
+    auto* zone = zoneNode->CreateComponent<Zone>();
+    zone->SetBoundingBox(BoundingBox(-1000.0f, 1000.0f));
+    zone->SetAmbientColor(Color(0.15f, 0.15f, 0.15f));
+    zone->SetFogColor(Color(0.5f, 0.5f, 0.7f));
+    zone->SetFogStart(100.0f);
+    zone->SetFogEnd(300.0f);
+
     // Create a large plane as the floor
     Node* floorNode = scene_->CreateChild("Floor");
-    floorNode->SetScale(Vector3(100.0f, 1.0f, 100.0f));
+    floorNode->SetScale(Vector3(200.0f, 1.0f, 200.0f));
     auto* floorModel = floorNode->CreateComponent<StaticModel>();
     floorModel->SetModel(cache->GetResource<Model>("Models/Plane.mdl"));
     floorModel->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
@@ -107,9 +117,9 @@ void DeferredRendering::CreateScene()
     auto* camera = cameraNode_->CreateComponent<Camera>();
     camera->SetFarClip(300.0f);
 
-    // Enable HDR rendering for better lighting results
-    auto* renderer = GetSubsystem<Renderer>();
-    renderer->SetHDRRendering(true);
+    // HDR rendering disabled for now — viewport buffer blit not yet working in Vulkan
+    // auto* renderer = GetSubsystem<Renderer>();
+    // renderer->SetHDRRendering(true);
 }
 
 void DeferredRendering::CreateLights()

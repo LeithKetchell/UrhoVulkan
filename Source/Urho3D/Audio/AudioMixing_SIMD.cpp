@@ -30,14 +30,6 @@ void AudioMixing_SIMD::MixMonoWithGain_4x(int* dest, const short* src, int vol)
     }
 #endif
 
-    // Phase 4 Instrumentation: Log that mixing is happening
-    static thread_local bool logged_mix = false;
-    if (!logged_mix)
-    {
-        fprintf(stderr, "[Phase4] AudioMixing_SIMD::MixMonoWithGain_4x called (audio mixing active)\n");
-        fflush(stderr);
-        logged_mix = true;
-    }
 }
 
 void AudioMixing_SIMD::MixStereoWithGain_2x(int* destL, int* destR, const short* src, int volL, int volR)
@@ -135,15 +127,6 @@ void AudioMixing_SIMD::MixMultipleSources(
     uint32_t numSources,
     uint32_t samples)
 {
-    // Phase 4 Instrumentation: Track multiple source mixing
-    static thread_local bool logged_multi = false;
-    if (!logged_multi && numSources > 1)
-    {
-        fprintf(stderr, "[Phase4] AudioMixing_SIMD::MixMultipleSources called with %u sources\n", numSources);
-        fflush(stderr);
-        logged_multi = true;
-    }
-
     // For each source, accumulate into destination with its gain
     for (uint32_t srcIdx = 0; srcIdx < numSources; ++srcIdx)
     {

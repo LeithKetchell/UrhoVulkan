@@ -293,6 +293,11 @@ void Texture::UpdateParameters()
     if (gapi == GAPI_D3D11)
         return UpdateParameters_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return UpdateParameters_Vulkan();
+#endif
 }
 
 bool Texture::GetParametersDirty() const
@@ -307,6 +312,11 @@ bool Texture::GetParametersDirty() const
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetParametersDirty_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetParametersDirty_Vulkan();
 #endif
 
     return {}; // Prevent warning

@@ -289,6 +289,8 @@ public:
     void ClearTransformSources();
     /// Set texture.
     void SetTexture(unsigned index, Texture* texture);
+    /// Set current material for Vulkan descriptor creation.
+    void SetCurrentMaterial(Material* material);
     /// Set default texture filtering mode. Called by Renderer before rendering.
     void SetDefaultTextureFilterMode(TextureFilterMode mode);
     /// Set default texture anisotropy level. Called by Renderer before rendering.
@@ -474,6 +476,30 @@ public:
     /// @property
     unsigned GetNumBatches() const { return numBatches_; }
 
+    /// Return number of instanced draw calls this frame.
+    /// @property
+    unsigned GetNumInstancedDrawCalls() const { return numInstancedDrawCalls_; }
+
+    /// Return total instance count across all instanced draw calls this frame.
+    /// @property
+    unsigned GetTotalInstanceCount() const { return totalInstanceCount_; }
+
+    /// Return number of vertex buffer bind calls this frame.
+    unsigned GetNumVertexBufferBinds() const { return numVertexBufferBinds_; }
+
+    /// Return number of instance buffer bind calls this frame.
+    unsigned GetNumInstanceBufferBinds() const { return numInstanceBufferBinds_; }
+
+    /// Return number of pipeline state changes this frame.
+    unsigned GetNumPipelineChanges() const { return numPipelineChanges_; }
+
+    /// Return number of octants traversed this frame.
+    /// @property
+    unsigned GetNumOctantsTraversed() const { return numOctantsTraversed_; }
+
+    /// Increment octant traversal count (called from octree queries).
+    void IncrementOctantCount() { ++numOctantsTraversed_; }
+
     /// Return dummy color texture format for shadow maps. Is "NULL" (consume no video memory) if supported.
     unsigned GetDummyColorFormat() const { return dummyColorFormat_; }
 
@@ -486,6 +512,12 @@ public:
     /// Return whether hardware instancing is supported.
     /// @property
     bool GetInstancingSupport() const { return instancingSupport_; }
+
+    /// Return current frame index for multi-buffered resources (0-2 for Vulkan triple buffering, 0 for other APIs).
+    unsigned GetFrameIndex() const;
+
+    /// Return max frames in flight (3 for Vulkan, 1 for other APIs).
+    static unsigned GetMaxFramesInFlight();
 
     /// Return whether light pre-pass rendering is supported.
     /// @property
@@ -1097,14 +1129,15 @@ private:
     void Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned vertexCount);
     void Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount);
     void Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned baseVertexIndex, unsigned minVertex, unsigned vertexCount);
-    void DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount, unsigned instanceCount);
-    void DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned baseVertexIndex, unsigned minVertex, unsigned vertexCount, unsigned instanceCount);
+    void DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount, unsigned instanceCount, unsigned instanceStart = 0);
+    void DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned baseVertexIndex, unsigned minVertex, unsigned vertexCount, unsigned instanceCount, unsigned instanceStart = 0);
     void DispatchCompute_Vulkan(unsigned groupCountX, unsigned groupCountY, unsigned groupCountZ);
     void PrepareDraw_Vulkan();
     void SetTexture_Vulkan(unsigned index, Texture* texture);
     void SetComputeShader_Vulkan(ShaderVariation* shader);
     void SetStorageBuffer_Vulkan(unsigned index, VertexBuffer* buffer);
     void SetShaderParameter_Vulkan(StringHash param, const Variant& value);
+    void SetShaderParameter_Vulkan(StringHash param, const void* data, unsigned byteSize);
     /// Phase 36 Step 5: Reflection-based descriptor set creation
     VkDescriptorSet CreateReflectionBasedDescriptorSet_Vulkan();
     /// Phase 36 Step 2: G-Buffer texture descriptor set management for deferred rendering
@@ -1121,6 +1154,8 @@ private:
     VkDescriptorSet CreateInputAttachmentDescriptorSet_Vulkan();
     bool BindInputAttachmentDescriptors_Vulkan(VkDescriptorSet descriptorSet);
     bool NeedParameterUpdate_Vulkan(ShaderParameterGroup group, const void* source);
+    /// Reset per-binding buffer cache at frame start
+    void ResetBindingCache_Vulkan();
     void SetShaders_Vulkan(ShaderVariation* vs, ShaderVariation* ps, ShaderVariation* gs = nullptr);
     ShaderVariation* GetShader_Vulkan(ShaderType type, const String& name, const String& defines = String::EMPTY) const;
     ShaderVariation* GetShader_Vulkan(ShaderType type, const char* name, const char* defines) const;
@@ -1133,6 +1168,63 @@ private:
     bool IsInitialized_Vulkan() const;
     /// \brief Check if Vulkan device is lost
     bool IsDeviceLost_Vulkan() const;
+    /// \brief Get Vulkan format for compressed texture format
+    unsigned GetFormat_Vulkan(CompressedFormat format) const;
+
+    // --- Missing Vulkan dispatch implementations ---
+    void Destructor_Vulkan();
+    void Close_Vulkan();
+    void OnWindowResized_Vulkan();
+    void OnWindowMoved_Vulkan();
+    void SetSRGB_Vulkan(bool enable);
+    void SetDither_Vulkan(bool enable);
+    void SetFlushGPU_Vulkan(bool enable);
+    void SetForceGL2_Vulkan(bool enable);
+    bool TakeScreenShot_Vulkan(Image& destImage);
+    bool ResolveToTexture_Vulkan(Texture2D* destination, const IntRect& viewport);
+    bool ResolveToTexture_Vulkan(Texture2D* texture);
+    bool ResolveToTexture_Vulkan(TextureCube* texture);
+    bool HasShaderParameter_Vulkan(StringHash param);
+    bool HasTextureUnit_Vulkan(TextureUnit unit);
+    void ClearParameterSource_Vulkan(ShaderParameterGroup group);
+    void ClearParameterSources_Vulkan();
+    void ClearTransformSources_Vulkan();
+    void SetDefaultTextureFilterMode_Vulkan(TextureFilterMode mode);
+    void SetDefaultTextureAnisotropy_Vulkan(unsigned level);
+    void ResetRenderTarget_Vulkan(unsigned index);
+    void ResetDepthStencil_Vulkan();
+    void SetRenderTarget_Vulkan(unsigned index, Texture2D* texture);
+    void SetDepthStencil_Vulkan(Texture2D* texture);
+    void SetDepthBias_Vulkan(float constantBias, float slopeScaledBias);
+    void SetLineAntiAlias_Vulkan(bool enable);
+    bool GetDither_Vulkan() const;
+    Vector<int> GetMultiSampleLevels_Vulkan() const;
+    VertexBuffer* GetVertexBuffer_Vulkan(unsigned index) const;
+    TextureUnit GetTextureUnit_Vulkan(const String& name);
+    const String& GetTextureUnitName_Vulkan(TextureUnit unit);
+    Texture* GetTexture_Vulkan(unsigned index) const;
+    RenderSurface* GetRenderTarget_Vulkan(unsigned index) const;
+    IntVector2 GetRenderTargetDimensions_Vulkan() const;
+    static unsigned GetMaxBones_Vulkan();
+    static bool GetGL3Support_Vulkan();
+    ConstantBuffer* GetOrCreateConstantBuffer_Vulkan(ShaderType type, unsigned index, unsigned size);
+    static unsigned GetAlphaFormat_Vulkan();
+    static unsigned GetLuminanceFormat_Vulkan();
+    static unsigned GetLuminanceAlphaFormat_Vulkan();
+    static unsigned GetRGBFormat_Vulkan();
+    static unsigned GetRGBAFormat_Vulkan();
+    static unsigned GetRGBA16Format_Vulkan();
+    static unsigned GetRGBAFloat16Format_Vulkan();
+    static unsigned GetRGBAFloat32Format_Vulkan();
+    static unsigned GetRG16Format_Vulkan();
+    static unsigned GetRGFloat16Format_Vulkan();
+    static unsigned GetRGFloat32Format_Vulkan();
+    static unsigned GetFloat16Format_Vulkan();
+    static unsigned GetFloat32Format_Vulkan();
+    static unsigned GetLinearDepthFormat_Vulkan();
+    static unsigned GetDepthStencilFormat_Vulkan();
+    static unsigned GetReadableDepthFormat_Vulkan();
+    static unsigned GetFormat_Vulkan(const String& formatName);
 #endif // def URHO3D_VULKAN
 
     /// Mutex for accessing the GPU objects vector from several threads.
@@ -1192,8 +1284,20 @@ private:
     unsigned numPrimitives_{};
     /// Number of batches this frame.
     unsigned numBatches_{};
+    /// Number of instanced draw calls this frame.
+    unsigned numInstancedDrawCalls_{};
+    /// Total instance count across all instanced draw calls this frame.
+    unsigned totalInstanceCount_{};
+    /// Number of octants traversed this frame.
+    unsigned numOctantsTraversed_{};
     /// Largest scratch buffer request this frame.
     i32 maxScratchBufferRequest_{};
+    /// Number of vertex buffer bind calls this frame.
+    unsigned numVertexBufferBinds_{};
+    /// Number of instance buffer bind calls this frame.
+    unsigned numInstanceBufferBinds_{};
+    /// Number of pipeline state changes this frame.
+    unsigned numPipelineChanges_{};
     /// GPU objects.
     Vector<GPUObject*> gpuObjects_;
     /// Scratch buffers.
@@ -1224,6 +1328,8 @@ private:
     VertexBuffer* storageBuffers_[MAX_TEXTURE_UNITS]{};
     /// Textures in use.
     Texture* textures_[MAX_TEXTURE_UNITS]{};
+    /// Current material being rendered (for Vulkan descriptor creation).
+    Material* currentMaterial_{};
     /// Texture unit mappings.
     HashMap<String, TextureUnit> textureUnits_;
     /// Rendertargets in use.
@@ -1304,6 +1410,13 @@ private:
     /// Updated by UploadPendingShaderParameters_Vulkan(), used by CreateReflectionBasedDescriptorSet_Vulkan()
     HashMap<unsigned, size_t> currentBlockOffsets_;
     HashMap<unsigned, unsigned> currentBlockSizes_;
+
+    /// Per-binding cache for uniform buffer offsets (survives across draws within a frame)
+    /// These caches persist within a frame so subsequent draws can reuse previously uploaded data
+    /// for bindings that haven't changed (e.g., camera/zone data when only model matrix changes)
+    HashMap<unsigned, VkBuffer> cachedBindingBuffers_;      ///< Cached GPU buffer per binding
+    HashMap<unsigned, unsigned long long> cachedBindingOffsets_;  ///< Cached buffer offset per binding (VkDeviceSize)
+    HashMap<unsigned, size_t> cachedBindingSizes_;          ///< Cached data size per binding
 #endif
     /// Allowed screen orientations.
     String orientations_;

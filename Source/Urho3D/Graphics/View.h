@@ -208,6 +208,9 @@ public:
     /// Non-intrusive: does nothing on non-Vulkan backends.
     void SubmitSecondaryCommandBuffers();
 
+    /// Get number of instances written to instancing buffer (for debugging)
+    unsigned GetInstancesWrittenToBuffer() const { return instancesWrittenToBuffer_; }
+
 private:
     /// Query the octree for drawable objects.
     void GetDrawables();
@@ -456,6 +459,9 @@ private:
     /// Secondary command buffer pool for parallel batch recording (Phase 4).
     SharedPtr<VulkanSecondaryCommandBufferPool> secondaryBufferPool_;
 #endif
+
+    /// Number of instances written to instancing buffer (for performance monitoring)
+    unsigned instancesWrittenToBuffer_{};
 };
 
 }

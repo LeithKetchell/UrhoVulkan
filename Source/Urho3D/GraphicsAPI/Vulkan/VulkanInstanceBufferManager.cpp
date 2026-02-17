@@ -30,8 +30,19 @@ VulkanInstanceBufferManager::VulkanInstanceBufferManager(Context* context, Vulka
 
 VulkanInstanceBufferManager::~VulkanInstanceBufferManager()
 {
-    // VertexBuffer destructor handles cleanup via SharedPtr
+    Release();
+}
+
+void VulkanInstanceBufferManager::Release()
+{
+    if (vulkanBuffer_ != VK_NULL_HANDLE && graphics_ && graphics_->GetAllocator())
+    {
+        vmaDestroyBuffer(graphics_->GetAllocator(), vulkanBuffer_, allocation_);
+        vulkanBuffer_ = VK_NULL_HANDLE;
+        allocation_ = nullptr;
+    }
     instanceBuffer_ = nullptr;
+    lockedData_ = nullptr;
 }
 
 bool VulkanInstanceBufferManager::Initialize(uint32_t maxInstances)

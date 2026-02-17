@@ -49,6 +49,9 @@ public:
     /// \brief Destructor - releases GPU resources
     ~VulkanStagingBufferManager();
 
+    /// Release GPU resources
+    void Release();
+
     /// \brief Initialize staging buffer pool
     /// \param totalStagingSize Total size of staging buffer pool in bytes
     /// \returns True if initialization successful, false on error

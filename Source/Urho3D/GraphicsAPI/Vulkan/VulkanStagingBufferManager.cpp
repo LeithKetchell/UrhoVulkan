@@ -24,7 +24,18 @@ VulkanStagingBufferManager::VulkanStagingBufferManager(Context* context, VulkanG
 
 VulkanStagingBufferManager::~VulkanStagingBufferManager()
 {
-    // GPU resources will be cleaned up in VulkanGraphicsImpl shutdown
+    Release();
+}
+
+void VulkanStagingBufferManager::Release()
+{
+    if (stagingBuffer_ != VK_NULL_HANDLE && graphics_ && graphics_->GetAllocator())
+    {
+        vmaDestroyBuffer(graphics_->GetAllocator(), stagingBuffer_, stagingAllocation_);
+        stagingBuffer_ = VK_NULL_HANDLE;
+        stagingAllocation_ = nullptr;
+    }
+    stagingMappedData_ = nullptr;
 }
 
 bool VulkanStagingBufferManager::Initialize(VkDeviceSize totalStagingSize)

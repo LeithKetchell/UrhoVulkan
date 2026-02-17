@@ -137,7 +137,16 @@ bool VulkanConstantBufferPool::CreatePoolBuffer(uint32_t size)
         return false;
     }
 
-    poolBuffer.currentOffset = 0;
+    // Divide buffer into equal regions (one per swapchain image)
+    uint32_t regionSize = size / regionCount_;
+    poolBuffer.regionCount = regionCount_;
+    for (uint32_t i = 0; i < regionCount_; ++i)
+    {
+        poolBuffer.frameRegions[i].offset = i * regionSize;
+        poolBuffer.frameRegions[i].size = regionSize;
+        poolBuffer.frameRegions[i].currentOffset = i * regionSize;
+    }
+
     poolBuffer.isUsed = true;
 
     poolBuffers_.Push(poolBuffer);
@@ -155,10 +164,13 @@ PooledConstantBuffer* VulkanConstantBufferPool::FindAvailableBuffer(uint32_t req
     if (!impl_ || requiredSize == 0)
         return nullptr;
 
-    // Look for existing buffer with enough space
+    // Look for existing buffer with enough space in current frame's region
     for (auto& buffer : poolBuffers_)
     {
-        uint32_t remainingSpace = buffer.size - buffer.currentOffset;
+        FrameRegion& region = buffer.frameRegions[currentFrameIndex_];
+        uint32_t allocatedInRegion = region.currentOffset - region.offset;
+        uint32_t remainingSpace = region.size - allocatedInRegion;
+
         if (remainingSpace >= requiredSize)
             return &buffer;
     }
@@ -200,15 +212,26 @@ bool VulkanConstantBufferPool::AllocateBuffer(
         return false;
     }
 
-    // Write data to buffer
-    std::memcpy((char*)buffer->mappedData + buffer->currentOffset, data, dataSize);
+    // Get current frame's region
+    FrameRegion& region = buffer->frameRegions[currentFrameIndex_];
 
-    // Return buffer and offset
+    // Disabled for performance - uncomment for debugging constant buffer allocations
+    // static int allocCount = 0;
+    // if (allocCount < 20)
+    // {
+    //             allocCount, currentFrameIndex_, region.offset, region.size, dataSize, region.currentOffset);
+    //     allocCount++;
+    // }
+
+    // Write data to this frame's region
+    std::memcpy((char*)buffer->mappedData + region.currentOffset, data, dataSize);
+
+    // Return buffer and offset within this frame's region
     outBuffer = buffer->buffer;
-    outOffset = buffer->currentOffset;
+    outOffset = region.currentOffset;
 
-    // Update tracking
-    buffer->currentOffset += alignedSize;
+    // Update tracking within this frame's region
+    region.currentOffset += alignedSize;
     currentFrameSize_ += alignedSize;
     stats_.allocationCount++;
 
@@ -218,12 +241,42 @@ bool VulkanConstantBufferPool::AllocateBuffer(
     return true;
 }
 
+void VulkanConstantBufferPool::BeginFrame(uint32_t frameIndex)
+{
+    if (frameIndex >= regionCount_)
+    {
+        URHO3D_LOGERROR("Invalid frame/image index: " + String(frameIndex) + " (regionCount=" + String(regionCount_) + ")");
+        return;
+    }
+
+    // Debug: BeginFrame called for frameIndex
+
+    // Reset ONLY this image's region offsets in all buffers
+    for (auto& buffer : poolBuffers_)
+    {
+        if (frameIndex < buffer.regionCount)
+        {
+            FrameRegion& region = buffer.frameRegions[frameIndex];
+            region.currentOffset = region.offset;
+        }
+    }
+
+    currentFrameSize_ = 0;
+    currentFrameIndex_ = frameIndex;
+}
+
 void VulkanConstantBufferPool::ResetFrameAllocations()
 {
+    // DEPRECATED: Use BeginFrame() instead for proper triple-buffering
+    // This method resets ALL frames, which causes synchronization bugs
+
     // Reset all buffer offsets for next frame
     for (auto& buffer : poolBuffers_)
     {
-        buffer.currentOffset = 0;
+        for (uint32_t i = 0; i < 3; ++i)
+        {
+            buffer.frameRegions[i].currentOffset = buffer.frameRegions[i].offset;
+        }
     }
 
     currentFrameSize_ = 0;
@@ -246,7 +299,13 @@ VulkanConstantBufferPool::PoolStats VulkanConstantBufferPool::GetStatistics() co
     for (const auto& buffer : poolBuffers_)
     {
         stats.totalPoolSize += buffer.size;
-        stats.usedSize += buffer.currentOffset;
+
+        // Sum used space across all frame regions
+        for (uint32_t i = 0; i < 3; ++i)
+        {
+            const FrameRegion& region = buffer.frameRegions[i];
+            stats.usedSize += (region.currentOffset - region.offset);
+        }
     }
 
     stats.wastedSize = stats.totalPoolSize - stats.usedSize;

@@ -11,6 +11,7 @@ namespace Urho3D
 
 class Node;
 class Scene;
+class Text;
 
 }
 
@@ -43,5 +44,9 @@ private:
     void SubscribeToEvents();
     /// Handle the logic update event.
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
+
+    /// Profiler UI overlay.
     SharedPtr<ProfilerUI> profilerUI_;
+    /// Auto-test timer for debugging
+    float autoTestTimer_{0.0f};
 };

@@ -48,6 +48,23 @@ class RenderSurface;
 class ShaderProgram;
 class Texture2D;
 
+/// Per-frame synchronization resources
+/// Groups all resources needed for one frame in flight
+struct FrameResources
+{
+    VkCommandBuffer commandBuffer{VK_NULL_HANDLE};
+    VkFence fence{VK_NULL_HANDLE};
+    VkSemaphore imageAcquired{VK_NULL_HANDLE};  // Per-frame: we don't know image index yet
+    uint32_t imageIndex{0};  // Which swapchain image this frame acquired
+};
+
+/// Per-swapchain-image semaphores
+/// Fixes validation error: each swapchain image needs its own renderComplete semaphore
+struct ImageSemaphores
+{
+    VkSemaphore renderComplete{VK_NULL_HANDLE};
+};
+
 /// \brief Descriptor for render pass configuration
 /// \details Allows caching multiple render pass configurations for future multi-pass support.
 /// Contains all the information needed to create or retrieve a cached Vulkan render pass,
@@ -92,6 +109,12 @@ struct RenderPassDescriptor
     /// Sample count for MSAA support (default: VK_SAMPLE_COUNT_1_BIT, extensible for Issue #14A)
     VkSampleCountFlagBits sampleCount{VK_SAMPLE_COUNT_1_BIT};
 
+    /// Whether this render pass targets a texture (SHADER_READ_ONLY finalLayout) vs swapchain (PRESENT_SRC)
+    bool isRenderToTexture{false};
+
+    /// Load operation for color attachments (CLEAR for first use, LOAD to preserve content)
+    VkAttachmentLoadOp colorLoadOp{VK_ATTACHMENT_LOAD_OP_CLEAR};
+
     /// \brief Calculate hash for caching
     /// \returns Hash value computed from all descriptor fields using DJB2 algorithm
     /// Phase 35: Updated to include all new multi-pass fields
@@ -114,6 +137,8 @@ struct RenderPassDescriptor
             h = ((h << 5) + h) + inputAttachmentIndices[i];
 
         h = ((h << 5) + h) + sampleCount;
+        h = ((h << 5) + h) + (isRenderToTexture ? 1u : 0u);
+        h = ((h << 5) + h) + colorLoadOp;
         return h;
     }
 
@@ -128,7 +153,9 @@ struct RenderPassDescriptor
             depthFormat != other.depthFormat ||
             subpassCount != other.subpassCount ||
             inputAttachmentCount != other.inputAttachmentCount ||
-            sampleCount != other.sampleCount)
+            sampleCount != other.sampleCount ||
+            isRenderToTexture != other.isRenderToTexture ||
+            colorLoadOp != other.colorLoadOp)
             return false;
 
         // Compare all color format entries
@@ -247,6 +274,10 @@ public:
     /// \returns Index of the swapchain image currently being rendered to
     uint32_t GetCurrentImageIndex() const { return currentImageIndex_; }
 
+    /// \brief Get current frame in flight index (0 to MAX_FRAMES_IN_FLIGHT-1)
+    /// \returns Index of the current frame being rendered (for per-frame resources)
+    uint32_t GetCurrentFrame() const { return currentFrame_; }
+
     /// \brief Get frame command buffer for recording commands
     /// \returns VkCommandBuffer for the current frame (triple-buffered)
     VkCommandBuffer GetFrameCommandBuffer() const;
@@ -272,6 +303,15 @@ public:
     /// \brief Check if render pass is currently active
     /// \returns true if a render pass is active, false otherwise
     bool IsRenderPassActive() const { return renderPassActive_; }
+
+    /// \returns true if render targets have changed since last framebuffer rebuild
+    bool IsRenderTargetsDirty() const { return renderTargetsDirty_; }
+
+    /// \brief Ensure render pass is started (lazy initialization)
+    /// \details Starts render pass if not already active. This allows instance buffers
+    /// to be filled BEFORE the render pass begins, fixing synchronization issues
+    /// where buffer barriers cannot be used inside render passes.
+    void EnsureRenderPassStarted();
 
     /// \brief Transition to next subpass
     /// \details Phase 36: Transitions from geometry pass (subpass 0) to lighting pass (subpass 1) in deferred rendering.
@@ -341,9 +381,15 @@ public:
     /// \returns VmaAllocator for GPU memory management
     VmaAllocator GetAllocator() const { return allocator_; }
 
-    /// \brief Get descriptor pool
+    /// \brief Get descriptor pool for current frame (SYNC FIX)
     /// \returns VkDescriptorPool for descriptor set allocation
-    VkDescriptorPool GetDescriptorPool() const { return descriptorPool_; }
+    /// \details Returns the descriptor pool for the current FRAME (not swapchain image).
+    /// CRITICAL: Must use currentFrame_ to match constant buffer pool synchronization.
+    /// Fences are per-frame, so we wait on fence N before reusing frame N's resources.
+    /// Using imageIndex would cause mismatch with constant buffer regions, causing flickering.
+    VkDescriptorPool GetDescriptorPool() const {
+        return currentFrame_ < descriptorPools_.Size() ? descriptorPools_[currentFrame_] : VK_NULL_HANDLE;
+    }
     /// @}
 
     /// \brief Get physical device properties for limits validation
@@ -493,15 +539,23 @@ public:
     /// \details Returns the size of the constant buffer for descriptor set updates.
     size_t GetCurrentConstantBufferSize() const { return currentConstantBufferSize_; }
 
+    /// \brief Get current constant buffer offset (Triple-buffering fix)
+    /// \returns Base offset into constant buffer for current frame, or 0 if not set
+    /// \details Returns the frame-specific offset from VulkanConstantBufferPool.
+    /// This offset must be added to per-block offsets when creating descriptor sets.
+    VkDeviceSize GetCurrentConstantBufferOffset() const { return currentConstantBufferOffset_; }
+
     /// \brief Set current constant buffer for uniform buffer descriptors (Phase 36 Step 5)
     /// \param buffer VkBuffer containing shader parameters
     /// \param size Size of buffer in bytes
+    /// \param offset Base offset into buffer (for triple-buffering)
     /// \details Stores the constant buffer created by UploadPendingShaderParameters_Vulkan() so
     /// descriptor sets can bind it to uniform buffer bindings. This buffer contains the packed
     /// shader parameters (camera matrices, object transforms, material properties).
-    void SetCurrentConstantBuffer(VkBuffer buffer, size_t size) {
+    void SetCurrentConstantBuffer(VkBuffer buffer, size_t size, VkDeviceSize offset = 0) {
         currentConstantBuffer_ = buffer;
         currentConstantBufferSize_ = size;
+        currentConstantBufferOffset_ = offset;
     }
 
     /// \brief Create texture descriptor set for currently bound textures (Phase 36B)
@@ -734,9 +788,13 @@ private:
     VkPipeline GetOrCreateGraphicsPipeline(VkPipelineLayout layout, VkRenderPass renderPass,
                                           const VulkanPipelineState& state,
                                           class VertexBuffer* vertexBuffer = nullptr,
+                                          class VertexBuffer* instanceBuffer = nullptr,
                                           VkShaderModule vsModule = VK_NULL_HANDLE,
                                           VkShaderModule fsModule = VK_NULL_HANDLE,
-                                          VkShaderModule gsModule = VK_NULL_HANDLE);
+                                          VkShaderModule gsModule = VK_NULL_HANDLE,
+                                          class ShaderVariation* vertexShader = nullptr,
+                                          class ShaderVariation* pixelShader = nullptr,
+                                          class ShaderVariation* geometryShader = nullptr);
 
     /// \brief Phase 33: Create shader modules from shader variations
     /// \param vertexShader Vertex shader variation (may be nullptr)
@@ -762,6 +820,23 @@ private:
     VkDescriptorSetLayout CreateReflectionBasedLayout(
         const Vector<struct SPIRVResource>& vsResources,
         const Vector<struct SPIRVResource>& psResources);
+
+    /// \brief Get or create cached descriptor set layout from reflected shader resources
+    /// \param vsResources Reflected resources from vertex shader SPIR-V
+    /// \param psResources Reflected resources from pixel shader SPIR-V
+    /// \returns Cached VkDescriptorSetLayout, or newly created one if not in cache
+    /// \details Computes hash of binding configuration and checks cache before creating.
+    /// Dramatically reduces vkCreateDescriptorSetLayout calls from ~1500/sec to ~2-5 total.
+    VkDescriptorSetLayout GetOrCreateDescriptorSetLayout(
+        const Vector<struct SPIRVResource>& vsResources,
+        const Vector<struct SPIRVResource>& psResources);
+
+    /// \brief Get or create cached pipeline layout from descriptor set layout
+    /// \param descriptorSetLayout Descriptor set layout to create pipeline layout from
+    /// \returns Cached VkPipelineLayout, or newly created one if not in cache
+    /// \details Uses descriptor set layout handle as cache key.
+    /// Dramatically reduces vkCreatePipelineLayout calls from ~1500/sec to ~2-5 total.
+    VkPipelineLayout GetOrCreatePipelineLayout(VkDescriptorSetLayout descriptorSetLayout);
 
     /// \brief Find optimal surface format for swapchain
     /// \returns VkSurfaceFormatKHR with preferred color space and format
@@ -862,6 +937,7 @@ private:
     VkSwapchainKHR swapchain_{};
     Vector<VkImage> swapchainImages_;
     Vector<VkImageView> swapchainImageViews_;
+    Vector<ImageSemaphores> imageSemaphores_;  // One set per swapchain image
     VkFormat swapchainFormat_{VK_FORMAT_UNDEFINED};
     VkExtent2D swapchainExtent_{};
 
@@ -899,15 +975,22 @@ private:
     VmaAllocation fullScreenQuadIndexAlloc_{};   ///< VMA allocation for index buffer
 
     // Render pass and framebuffers
-    VkRenderPass renderPass_{};
+    VkRenderPass renderPass_{};           ///< Swapchain render pass with loadOp=CLEAR (first use per frame)
+    VkRenderPass renderPassLoad_{};       ///< Swapchain render pass with loadOp=LOAD (re-entry mid-frame)
+    bool swapchainPassUsedThisFrame_{};   ///< Track whether swapchain pass was already used this frame
+    HashSet<void*> writtenRenderTargets_; ///< Track which render targets were written this frame (for LOAD vs CLEAR)
+    void* activePassRenderTargets_[MAX_RENDERTARGETS]{}; ///< Render targets at time BeginRenderPass was called
+    unsigned activePassColorCount_{}; ///< Number of color attachments in the active render pass
+    RenderPassDescriptor renderTargetRPDescriptor_{}; ///< Descriptor from last RebuildRTFB (for LOAD variant creation)
     Vector<VkFramebuffer> framebuffers_;
 
     // Render pass cache - supports future multi-pass rendering (Issue #2)
     HashMap<uint32_t, VkRenderPass> renderPassCache_;
+    // Reverse lookup: VkRenderPass handle → descriptor hash (stable across sessions)
+    HashMap<uintptr_t, uint32_t> renderPassToDescHash_;
 
     // Command buffers (double/triple buffering)
     VkCommandPool commandPool_{};
-    Vector<VkCommandBuffer> commandBuffers_;
 
     // Thread-local command pools for upload operations (thread safety fix)
     HashMap<ThreadID, VkCommandPool> threadUploadCommandPools_;
@@ -916,13 +999,15 @@ private:
     // Queue submission mutex (thread safety for vkQueueSubmit)
     Mutex queueSubmitMutex_;
 
-    // Synchronization primitives
-    Vector<VkFence> frameFences_;
-    Vector<VkSemaphore> imageAcquiredSemaphores_;
-    Vector<VkSemaphore> renderCompleteSemaphores_;
+    // Per-frame synchronization resources
+    // Using 4 for safe pipelining with triple-buffered swapchain
+    static const uint32_t MAX_FRAMES_IN_FLIGHT = 4;
+    Vector<FrameResources> frames_;  // Size = MAX_FRAMES_IN_FLIGHT
+    uint32_t currentFrame_{0};
 
-    // Descriptor management
-    VkDescriptorPool descriptorPool_{};
+    // Descriptor management (Per-image fix: one pool per swapchain image, not per frame)
+    // Must match swapchain image count to avoid resetting pools while images are presenting
+    Vector<VkDescriptorPool> descriptorPools_;
 
     // Enhanced sampler cache with expanded configurations (Quick Win #4)
     SharedPtr<VulkanSamplerCache> samplerCache_;
@@ -932,6 +1017,18 @@ private:
 
     // Pipeline disk persistence cache (Phase B Quick Win #10)
     SharedPtr<VulkanPipelineCache> pipelineCache_;
+
+    // Descriptor set layout cache - reduces vkCreateDescriptorSetLayout calls from ~1500/sec to ~2-5 total
+    HashMap<unsigned, VkDescriptorSetLayout> descriptorSetLayoutCache_;
+
+    // Pipeline layout cache - reduces vkCreatePipelineLayout calls from ~1500/sec to ~2-5 total
+    HashMap<unsigned long long, VkPipelineLayout> pipelineLayoutCache_;
+
+    // Shader module cache - avoids vkCreateShaderModule/vkDestroyShaderModule per draw call
+    HashMap<ShaderVariation*, VkShaderModule> shaderModuleCache_;
+
+    // Last bound pipeline - skip redundant vkCmdBindPipeline calls
+    VkPipeline lastBoundPipeline_{VK_NULL_HANDLE};
 
     // Compute pipeline cache (Phase 36+: Compute shader support)
     VulkanComputePipeline* computePipeline_;
@@ -968,7 +1065,6 @@ private:
     uint32_t frameIndex_{0};
     uint32_t currentImageIndex_{0};
     bool renderPassActive_{false};
-    VkSemaphore currentImageAcquiredSemaphore_{VK_NULL_HANDLE};  ///< Semaphore used for current frame's image acquisition
 
     // Debug callback
     VkDebugUtilsMessengerEXT debugMessenger_{};
@@ -980,13 +1076,31 @@ private:
     ShaderProgram* currentShaderProgram_{};
     Vector<ConstantBuffer*> dirtyConstantBuffers_;
 
-    // Render target tracking (Phase 5)
+    // Render target tracking (Phase 5 + RTT)
     RenderSurface* renderTargets_[MAX_RENDERTARGETS]{};
     RenderSurface* depthStencil_{};
     bool renderTargetsDirty_{true};  // Flag to rebuild framebuffer when targets change
     VkFramebuffer renderTargetFramebuffer_{};  // Framebuffer for render-to-texture
-    VkRenderPass renderTargetRenderPass_{};   // Render pass for render-to-texture (G-Buffer)
+    VkRenderPass renderTargetRenderPass_{};   // Render pass for render-to-texture
     Vector<VkImageView> renderTargetViews_;    // Image views for render target attachments
+
+    // RTT: Framebuffer cache and state
+    HashMap<unsigned long long, VkFramebuffer> rttFramebufferCache_;
+    int rttWidth_{0};
+    int rttHeight_{0};
+    bool renderingToTexture_{false};
+
+    // Clear values (set by Clear_Vulkan, used by BeginRenderPass)
+    float clearColor_[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float clearDepth_{1.0f};
+    unsigned clearStencil_{0};
+
+    // RTT: Per-RTT depth buffer (when no explicit depth stencil is provided)
+    VkImage rttDepthImage_{};
+    VkDeviceMemory rttDepthImageMemory_{};
+    VkImageView rttDepthImageView_{};
+    int rttDepthWidth_{0};
+    int rttDepthHeight_{0};
 
     // Default placeholder textures (Phase 22A)
     /// Default 1x1 white diffuse texture for materials without diffuse maps
@@ -999,8 +1113,10 @@ private:
     // Material descriptor management (Phase 27)
     /// Material descriptor manager for GPU binding (textures, samplers, parameters)
     SharedPtr<class VulkanMaterialDescriptorManager> materialDescriptorManager_;
-    /// Current pipeline layout for descriptor set binding
+    /// Current pipeline layout for descriptor set binding (may be overwritten per-draw)
     VkPipelineLayout currentPipelineLayout_{};
+    /// Global pipeline layout created at init (owned, must be destroyed)
+    VkPipelineLayout globalPipelineLayout_{};
     /// Current reflection-based descriptor set layout (Phase 36 Step 5)
     /// Dynamically generated from SPIR-V reflection to match actual shader bindings
     VkDescriptorSetLayout currentDescriptorSetLayout_{VK_NULL_HANDLE};
@@ -1009,6 +1125,8 @@ private:
     VkBuffer currentConstantBuffer_{VK_NULL_HANDLE};
     /// Size of current constant buffer in bytes (Phase 36 Step 5)
     size_t currentConstantBufferSize_{0};
+    /// Base offset into constant buffer for current frame (Triple-buffering fix)
+    VkDeviceSize currentConstantBufferOffset_{0};
 
     // Phase 36A: Descriptor set layouts for multi-set binding (DEPRECATED - use reflection-based layouts)
     /// Descriptor set layout for material descriptors (Set 0: textures, samplers, material params)

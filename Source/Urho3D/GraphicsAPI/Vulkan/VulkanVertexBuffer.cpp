@@ -126,22 +126,14 @@ bool VertexBuffer::SetData_Vulkan(const void* data)
     if (!data)
         return false;
 
-    URHO3D_LOGINFO(String("[VERTEXBUFFER] SetData_Vulkan: vertexCount=") + String(vertexCount_) +
-                   ", vertexSize=" + String(vertexSize_) + ", shadowData=" + String(shadowData_ != nullptr));
-
     // Copy to shadow buffer first
     if (shadowData_)
         memcpy(shadowData_.Get(), data, (size_t)vertexCount_ * vertexSize_);
 
-    // DEBUG: Dump first vertex
-    if (vertexCount_ >= 1 && vertexSize_ >= 24)
+    // If no shadow buffer, upload data directly to GPU
+    if (!shadowData_)
     {
-        const float* floatData = (const float*)data;
-        const unsigned char* byteData = (const unsigned char*)data;
-        URHO3D_LOGINFO(String("[VB] VERTEX[0]: pos=(") + String(floatData[0]) + "," +
-                       String(floatData[1]) + "," + String(floatData[2]) + "), color_bytes=(" +
-                       String((int)byteData[12]) + "," + String((int)byteData[13]) + "," +
-                       String((int)byteData[14]) + "," + String((int)byteData[15]) + ")");
+        return UploadDataToGPU_Vulkan(data, vertexCount_ * vertexSize_);
     }
 
     return UpdateToGPU_Vulkan();
@@ -176,6 +168,38 @@ bool VertexBuffer::SetDataRange_Vulkan(const void* data, i32 start, i32 count, b
     return UpdateToGPU_Vulkan();
 }
 
+bool VertexBuffer::UploadDataToGPU_Vulkan(const void* data, size_t dataSize)
+{
+    if (!data || !object_.ptr_)
+        return false;
+
+    Graphics* graphics = GetSubsystem<Graphics>();
+    if (!graphics)
+        return false;
+
+    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
+    if (!impl)
+        return false;
+
+    VkBuffer buffer = (VkBuffer)(void*)object_.ptr_;
+    VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
+
+    // Map GPU memory and copy data directly
+    void* mappedData;
+    if (vmaMapMemory(impl->GetAllocator(), allocation, &mappedData) == VK_SUCCESS)
+    {
+        memcpy(mappedData, data, dataSize);
+        // CRITICAL: Flush memory to ensure GPU visibility on non-coherent memory
+        vmaFlushAllocation(impl->GetAllocator(), allocation, 0, dataSize);
+        vmaUnmapMemory(impl->GetAllocator(), allocation);
+        dataPending_ = false;
+        return true;
+    }
+
+    URHO3D_LOGERROR("Failed to map vertex buffer memory for upload");
+    return false;
+}
+
 bool VertexBuffer::UpdateToGPU_Vulkan()
 {
     if (!shadowData_ || !object_.ptr_)
@@ -192,26 +216,17 @@ bool VertexBuffer::UpdateToGPU_Vulkan()
     VkBuffer buffer = (VkBuffer)(void*)object_.ptr_;
     VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
 
+    size_t dataSize = (size_t)vertexCount_ * vertexSize_;
+
     // For dynamic buffers or small updates, use host memory mapping
-    if (dynamic_)
+    void* mappedData;
+    VkResult mapResult = vmaMapMemory(impl->GetAllocator(), allocation, &mappedData);
+    if (mapResult == VK_SUCCESS)
     {
-        void* mappedData;
-        if (vmaMapMemory(impl->GetAllocator(), allocation, &mappedData) == VK_SUCCESS)
-        {
-            memcpy(mappedData, shadowData_.Get(), (size_t)vertexCount_ * vertexSize_);
-            vmaUnmapMemory(impl->GetAllocator(), allocation);
-        }
-    }
-    else
-    {
-        // For static buffers, would need staging buffer transfer (to be implemented with better resource management)
-        // For now, use host-accessible memory for static buffers too
-        void* mappedData;
-        if (vmaMapMemory(impl->GetAllocator(), allocation, &mappedData) == VK_SUCCESS)
-        {
-            memcpy(mappedData, shadowData_.Get(), (size_t)vertexCount_ * vertexSize_);
-            vmaUnmapMemory(impl->GetAllocator(), allocation);
-        }
+        memcpy(mappedData, shadowData_.Get(), dataSize);
+        // CRITICAL: Flush memory to ensure GPU visibility on non-coherent memory
+        vmaFlushAllocation(impl->GetAllocator(), allocation, 0, dataSize);
+        vmaUnmapMemory(impl->GetAllocator(), allocation);
     }
 
     dataPending_ = false;
@@ -245,11 +260,64 @@ void VertexBuffer::Unlock_Vulkan()
     if (lockState_ == LOCK_NONE)
         return;
 
+
     if (lockState_ == LOCK_SCRATCH && lockScratchData_)
     {
+
         // Copy scratch data back to shadow buffer if available
         if (shadowData_)
+        {
             memcpy(shadowData_.Get() + lockStart_ * vertexSize_, lockScratchData_, lockCount_ * vertexSize_);
+        }
+        else
+        {
+            // No shadow buffer - upload scratch data directly to GPU
+            // This is needed for instancing buffers which don't use shadow data
+            if (object_.ptr_)
+            {
+                Graphics* graphics = GetSubsystem<Graphics>();
+                VulkanGraphicsImpl* impl = graphics ? graphics->GetImpl_Vulkan() : nullptr;
+                if (impl)
+                {
+                    VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
+                    void* mappedData;
+                    VkResult mapResult = vmaMapMemory(impl->GetAllocator(), allocation, &mappedData);
+                    if (mapResult == VK_SUCCESS)
+                    {
+                        // Copy to the correct offset in the GPU buffer
+                        size_t uploadSize = lockCount_ * vertexSize_;
+                        size_t uploadOffset = lockStart_ * vertexSize_;
+                        memcpy((byte*)mappedData + uploadOffset, lockScratchData_, uploadSize);
+
+                        // CRITICAL: Flush memory to ensure GPU visibility on non-coherent memory
+                        vmaFlushAllocation(impl->GetAllocator(), allocation, uploadOffset, uploadSize);
+
+                        vmaUnmapMemory(impl->GetAllocator(), allocation);
+
+                        // DIAGNOSTIC: Log scratch-to-GPU upload
+                        static int scratchUploadLog = 0;
+                        if (scratchUploadLog < 10)
+                        {
+                            const float* fd = reinterpret_cast<const float*>(lockScratchData_ ? lockScratchData_ : (byte*)0);
+                            URHO3D_LOGWARNING("[SCRATCH_GPU] Upload OK: vtxSize=" + String(vertexSize_) +
+                                ", lockCount=" + String(lockCount_) + ", uploadSize=" + String((unsigned)uploadSize) +
+                                ", uploadOffset=" + String((unsigned)uploadOffset) +
+                                ", vkBuf=" + String(object_.ptr_ != nullptr));
+                            scratchUploadLog++;
+                        }
+                    }
+                    else
+                    {
+                        URHO3D_LOGERROR("[SCRATCH_GPU] vmaMapMemory FAILED! VkResult=" + String((int)mapResult) +
+                            ", vtxSize=" + String(vertexSize_) + ", lockCount=" + String(lockCount_));
+                    }
+                }
+            }
+            else
+            {
+                URHO3D_LOGERROR("[SCRATCH_GPU] No GPU object! Cannot upload scratch data, vtxSize=" + String(vertexSize_));
+            }
+        }
 
         delete[](byte*)lockScratchData_;
         lockScratchData_ = nullptr;
@@ -258,7 +326,7 @@ void VertexBuffer::Unlock_Vulkan()
     lockState_ = LOCK_NONE;
     dataPending_ = true;
 
-    // Upload to GPU
+    // Upload to GPU (for shadow buffer path)
     UpdateToGPU_Vulkan();
 }
 

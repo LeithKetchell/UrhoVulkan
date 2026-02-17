@@ -13,6 +13,10 @@
 #include <cstring>
 
 namespace Urho3D
+
+// Enable verbose debug logging to diagnose texture rendering issue
+#define VULKAN_DEBUG_LOGGING 1
+
 {
 
 // SPIR-V Constants
@@ -38,6 +42,7 @@ enum SPIRVOp
     OpTypePointer = 32,
     OpConstant = 43,
     OpVariable = 59,
+    OpLoad = 61,
     OpDecorate = 71,
     OpMemberDecorate = 72,
 };
@@ -77,7 +82,7 @@ bool VulkanSPIRVReflect::ReflectShaderResources(
     }
 
     // Extract resource metadata from decorations and variable declarations
-    ExtractResourceMetadata(spirvBytecode, resources);
+    ExtractResourceMetadata(spirvBytecode, shaderStage, resources);
 
     // Set shader stage flags for all resources found
     for (auto& res : resources)
@@ -140,6 +145,7 @@ bool VulkanSPIRVReflect::ValidateSPIRVHeader(const Vector<uint32_t>& spirv)
 
 void VulkanSPIRVReflect::ExtractResourceMetadata(
     const Vector<uint32_t>& spirv,
+    VkShaderStageFlagBits shaderStage,
     Vector<SPIRVResource>& resources)
 {
     resources.Clear();
@@ -190,6 +196,8 @@ void VulkanSPIRVReflect::ExtractResourceMetadata(
     }
 
     // Second pass: extract variables with their storage class and type
+    // Also track resource index → variable ID for OpLoad filtering in Pass 3
+    HashMap<unsigned, uint32_t> resourceIndexToVariableId;  // index in resources → variable ID
     idx = 5;
 
     while (idx < spirv.Size())
@@ -227,6 +235,10 @@ void VulkanSPIRVReflect::ExtractResourceMetadata(
                     resource.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
                 }
 
+                // Track mapping: resource index → variable ID (for OpLoad filtering)
+                unsigned resourceIndex = resources.Size();
+                resourceIndexToVariableId[resourceIndex] = resultId;
+
                 resources.Push(resource);
             }
         }
@@ -234,29 +246,99 @@ void VulkanSPIRVReflect::ExtractResourceMetadata(
         idx += wordCount;
     }
 
-    // Log what resources were extracted from SPIR-V
-    fprintf(stderr, "\n=== SPIR-V Reflection Results ===\n");
-    fprintf(stderr, "Total resources extracted: %zu\n", resources.Size());
+    // === PASS 3: Track which variables are actually loaded ===
+    // Only filter fragment shader combined image samplers (textures)
+    // Vertex shader resources and uniform buffers are always included
+    HashMap<uint32_t, bool> loadedVariables;  // Variable ID → is actually used
 
-    unsigned uniformBufferCount = 0;
-    unsigned samplerCount = 0;
-
-    for (const SPIRVResource& res : resources)
+    if (shaderStage == VK_SHADER_STAGE_FRAGMENT_BIT)
     {
-        const char* typeStr = (res.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-                              ? "UNIFORM_BUFFER" : "SAMPLER";
-        fprintf(stderr, "  Set %u, Binding %u: %s\n",
-                res.set, res.binding, typeStr);
+        idx = 5;  // Skip SPIR-V header again
+        while (idx < spirv.Size())
+        {
+            uint32_t word = spirv[idx];
+            uint16_t wordCount = word >> 16;
+            uint16_t opcode = word & 0xFFFF;
 
-        if (res.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-            uniformBufferCount++;
-        else
-            samplerCount++;
+            if (wordCount == 0)
+                break;
+
+            // OpLoad: result_type, result_id, pointer_id
+            if (opcode == OpLoad && wordCount >= 4)
+            {
+                uint32_t pointerId = spirv[idx + 3];  // Variable being loaded
+                loadedVariables[pointerId] = true;
+            }
+
+            idx += wordCount;
+        }
+
+        // Filter resources - keep only loaded samplers, or non-samplers
+        Vector<SPIRVResource> filteredResources;
+        for (unsigned i = 0; i < resources.Size(); ++i)
+        {
+            const SPIRVResource& res = resources[i];
+
+            if (res.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            {
+                // For samplers in fragment shader, only include if actually loaded
+                // Safety check: ensure we have a variable ID mapping for this resource
+                auto it = resourceIndexToVariableId.Find(i);
+                if (it != resourceIndexToVariableId.End())
+                {
+                    uint32_t variableId = it->second_;
+                    if (loadedVariables.Contains(variableId))
+                    {
+                        filteredResources.Push(res);
+#if VULKAN_DEBUG_LOGGING
+#endif
+                    }
+#if VULKAN_DEBUG_LOGGING
+                    else
+                    {
+                    }
+#endif
+                }
+                else
+                {
+                    // No variable ID mapping - this shouldn't happen, but include the resource to be safe
+                    filteredResources.Push(res);
+                }
+            }
+            else
+            {
+                // Always include uniform buffers and other non-sampler resources
+                filteredResources.Push(res);
+            }
+        }
+
+        // Replace resources with filtered list
+        resources = filteredResources;
     }
 
-    fprintf(stderr, "Summary: %u uniform buffers, %u samplers\n",
-            uniformBufferCount, samplerCount);
-    fprintf(stderr, "================================\n\n");
+    // DEBUG: Disabled for performance
+    // static int reflectionDebugCount = 0;
+    // if (reflectionDebugCount < 3)
+    // {
+    //
+    //     unsigned uniformBufferCount = 0;
+    //     unsigned samplerCount = 0;
+    //
+    //     for (const SPIRVResource& res : resources)
+    //     {
+    //         const char* typeStr = (res.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+    //                               ? "UNIFORM_BUFFER" : "SAMPLER";
+    //                 res.set, res.binding, typeStr);
+    //
+    //         if (res.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+    //             uniformBufferCount++;
+    //         else
+    //             samplerCount++;
+    //     }
+    //
+    //             uniformBufferCount, samplerCount);
+    //     reflectionDebugCount++;
+    // }
 }
 
 

@@ -107,10 +107,13 @@ void CalculateShadowMatrix(Matrix4& dest, LightBatchQueue* queue, i32 split, Ren
         scale.z_ = 0.5f;
         offset.y_ = 1.0f - offset.y_;
     }
-    else
+    else if (Graphics::GetGAPI() != GAPI_VULKAN)
     {
+        // D3D11: NDC Y=+1 at top, texture V=0 at top — need Y-flip
         scale.y_ = -scale.y_;
     }
+    // Vulkan: shadow maps rendered with positive viewport height (no flip).
+    // NDC Y → texture V mapping doesn't need negation.
 
     // If using 4 shadow samples, offset the position diagonally by half pixel
     if (renderer->GetShadowQuality() == SHADOWQUALITY_PCF_16BIT || renderer->GetShadowQuality() == SHADOWQUALITY_PCF_24BIT)
@@ -171,6 +174,7 @@ void Batch::CalculateSortKey()
 
 void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool allowDepthWrite) const
 {
+    // Only log mushroom batches
     if (!vertexShader_ || !pixelShader_)
         return;
 
@@ -179,6 +183,9 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
     Node* cameraNode = camera ? camera->GetNode() : nullptr;
     Light* light = lightQueue_ ? lightQueue_->light_ : nullptr;
     Texture2D* shadowMap = lightQueue_ ? lightQueue_->shadowMap_ : nullptr;
+    if (light && shadowMap)
+    {
+    }
 
     // Set shaders first. The available shader parameters and their register/uniform positions depend on the currently set shaders
     graphics->SetShaders(vertexShader_, pixelShader_);
@@ -345,8 +352,8 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
                     {
                         Matrix4 lightVecRot(lightNode->GetWorldRotation().RotationMatrix());
                         // HLSL compiler will pack the parameters as if the matrix is only 3x4, so must be careful to not overwrite
-                        // the next parameter
-                        if (Graphics::GetGAPI() == GAPI_OPENGL)
+                        // the next parameter. GLSL (OpenGL/Vulkan) uses full mat4 (16 floats).
+                        if (Graphics::GetGAPI() == GAPI_OPENGL || Graphics::GetGAPI() == GAPI_VULKAN)
                             graphics->SetShaderParameter(VSP_LIGHTMATRICES, lightVecRot.Data(), 16);
                         else
                             graphics->SetShaderParameter(VSP_LIGHTMATRICES, lightVecRot.Data(), 12);
@@ -364,8 +371,9 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
                 fade = Min(1.0f - (light->GetDistance() - fadeStart) / (fadeEnd - fadeStart), 1.0f);
 
             // Negative lights will use subtract blending, so write absolute RGB values to the shader parameter
-            graphics->SetShaderParameter(PSP_LIGHTCOLOR, Color(light->GetEffectiveColor().Abs(),
-                light->GetEffectiveSpecularIntensity()) * fade);
+            Color effectiveLightColor = Color(light->GetEffectiveColor().Abs(),
+                light->GetEffectiveSpecularIntensity()) * fade;
+            graphics->SetShaderParameter(PSP_LIGHTCOLOR, effectiveLightColor);
             graphics->SetShaderParameter(PSP_LIGHTDIR, lightDir);
             graphics->SetShaderParameter(PSP_LIGHTPOS, lightPos);
             graphics->SetShaderParameter(PSP_LIGHTRAD, light->GetRadius());
@@ -404,8 +412,8 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
                     {
                         Matrix4 lightVecRot(lightNode->GetWorldRotation().RotationMatrix());
                         // HLSL compiler will pack the parameters as if the matrix is only 3x4, so must be careful to not overwrite
-                        // the next parameter
-                        if (Graphics::GetGAPI() == GAPI_OPENGL)
+                        // the next parameter. GLSL (OpenGL/Vulkan) uses full mat4 (16 floats).
+                        if (Graphics::GetGAPI() == GAPI_OPENGL || Graphics::GetGAPI() == GAPI_VULKAN)
                             graphics->SetShaderParameter(PSP_LIGHTMATRICES, lightVecRot.Data(), 16);
                         else
                             graphics->SetShaderParameter(PSP_LIGHTMATRICES, lightVecRot.Data(), 12);
@@ -425,7 +433,7 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
                     auto height = (float)shadowMap->GetHeight();
 
                     float mulX, mulY, addX, addY;
-                    if (Graphics::GetGAPI() == GAPI_OPENGL)
+                    if (Graphics::GetGAPI() == GAPI_OPENGL || Graphics::GetGAPI() == GAPI_VULKAN)
                     {
                         mulX = (float)(faceWidth - 3) / width;
                         mulY = (float)(faceHeight - 3) / height;
@@ -591,10 +599,19 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
         graphics->SetTexture(TU_ENVIRONMENT, zone_->GetZoneTexture());
 #endif
 
+    // Store current material for Vulkan descriptor set creation
+    // Vulkan needs to read textures from the material directly, not from textures_[] array
+    // which can be modified by other systems (e.g., UI cleanup) between Prepare() and Draw()
+    if (material_)
+        URHO3D_LOGDEBUG("Batch::Prepare: Setting currentMaterial to " + material_->GetName());
+    graphics->SetCurrentMaterial(material_);
+
     // Set material-specific shader parameters and textures
     if (material_)
     {
-        if (graphics->NeedParameterUpdate(SP_MATERIAL, reinterpret_cast<const void*>(material_->GetShaderParameterHash())))
+        bool needUpdate = graphics->NeedParameterUpdate(SP_MATERIAL, reinterpret_cast<const void*>(material_->GetShaderParameterHash()));
+
+        if (needUpdate)
         {
             const HashMap<StringHash, MaterialShaderParameter>& parameters = material_->GetShaderParameters();
             for (HashMap<StringHash, MaterialShaderParameter>::ConstIterator i = parameters.Begin(); i != parameters.End(); ++i)
@@ -613,7 +630,9 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
     if (light)
     {
         if (shadowMap && graphics->HasTextureUnit(TU_SHADOWMAP))
+        {
             graphics->SetTexture(TU_SHADOWMAP, shadowMap);
+        }
         if (graphics->HasTextureUnit(TU_LIGHTRAMP))
         {
             Texture* rampTexture = light->GetRampTexture();
@@ -728,8 +747,11 @@ void BatchGroup::SetInstancingData(void* lockedData, i32 stride, i32& freeIndex)
     startIndex_ = freeIndex;
     unsigned char* buffer = static_cast<unsigned char*>(lockedData) + startIndex_ * stride;
 
-    for (const InstanceData& instance : instances_)
+    for (unsigned i = 0; i < instances_.Size(); ++i)
     {
+        const InstanceData& instance = instances_[i];
+
+        // Copy Matrix3x4 as-is for INSTANCED shader path
         memcpy(buffer, instance.worldTransform_, sizeof(Matrix3x4));
 
         if (instance.instancingData_)
@@ -774,12 +796,17 @@ void BatchGroup::Draw(View* view, Camera* camera, bool allowDepthWrite) const
             // Hack: use a const_cast to avoid dynamic allocation of new temp vectors
             auto& vertexBuffers = const_cast<Vector<SharedPtr<VertexBuffer>>&>(
                 geometry_->GetVertexBuffers());
+
             vertexBuffers.Push(SharedPtr<VertexBuffer>(instanceBuffer));
 
             graphics->SetIndexBuffer(geometry_->GetIndexBuffer());
             graphics->SetVertexBuffers(vertexBuffers, startIndex_);
+
+            // BUGFIX: Call the 7-param DrawInstanced with correct parameter mapping:
+            // DrawInstanced(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount, instanceCount)
+            // Note: startIndex_ (instance offset) is already applied in SetVertexBuffers above, not passed here
             graphics->DrawInstanced(geometry_->GetPrimitiveType(), geometry_->GetIndexStart(), geometry_->GetIndexCount(),
-                geometry_->GetVertexStart(), geometry_->GetVertexCount(), instances_.Size());
+                geometry_->GetVertexStart(), 0, geometry_->GetVertexCount(), instances_.Size());
 
             // Remove the instancing buffer & element mask now
             vertexBuffers.Pop();
@@ -856,6 +883,7 @@ void BatchGroup::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool a
             // Hack: use a const_cast to avoid dynamic allocation of new temp vectors
             auto& vertexBuffers = const_cast<Vector<SharedPtr<VertexBuffer>>&>(
                 geometry_->GetVertexBuffers());
+
             vertexBuffers.Push(SharedPtr<VertexBuffer>(instanceBuffer));
 
             graphics->SetIndexBuffer(geometry_->GetIndexBuffer());
@@ -888,8 +916,11 @@ void BatchGroup::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool a
                 }
             }
 
+            // BUGFIX: Call the 7-param DrawInstanced with correct parameter mapping:
+            // DrawInstanced(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount, instanceCount)
+            // Note: startIndex_ (instance offset) is already applied in SetVertexBuffers above, not passed here
             graphics->DrawInstanced(geometry_->GetPrimitiveType(), geometry_->GetIndexStart(), geometry_->GetIndexCount(),
-                geometry_->GetVertexStart(), geometry_->GetVertexCount(), instances_.Size());
+                geometry_->GetVertexStart(), 0, geometry_->GetVertexCount(), instances_.Size());
 
             // Remove the instancing buffer & element mask now
             vertexBuffers.Pop();

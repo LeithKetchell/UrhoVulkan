@@ -113,6 +113,7 @@ private:
     /// Infers descriptor types from storage class (0 = image, others = buffer).
     static void ExtractResourceMetadata(
         const Vector<uint32_t>& spirv,
+        VkShaderStageFlagBits shaderStage,
         Vector<SPIRVResource>& resources);
 };
 

@@ -34,6 +34,9 @@ public:
     /// Destructor - releases GPU resources
     ~VulkanInstanceBufferManager();
 
+    /// Release GPU resources
+    void Release();
+
     /// \brief Initialize instance buffer with specified capacity
     /// \param maxInstances Maximum number of instances to support
     /// \returns True if initialization successful

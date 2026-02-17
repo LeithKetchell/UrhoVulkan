@@ -188,6 +188,7 @@ private:
     void Unlock_Vulkan();
     bool Create_Vulkan();
     bool UpdateToGPU_Vulkan();
+    bool UploadDataToGPU_Vulkan(const void* data, size_t dataSize);
     void* MapBuffer_Vulkan(i32 start, i32 count, bool discard);
     void UnmapBuffer_Vulkan();
 #endif // def URHO3D_VULKAN

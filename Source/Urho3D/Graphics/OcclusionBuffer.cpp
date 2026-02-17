@@ -108,6 +108,18 @@ void OcclusionBuffer::SetView(Camera* camera)
 
     view_ = camera->GetView();
     projection_ = camera->GetProjection();
+
+    // For Vulkan, GetProjection() returns a Y-flipped matrix for GPU rendering.
+    // But occlusion testing is done on CPU where Y-flip should NOT apply.
+    // Undo the flip by negating the Y row of the projection matrix.
+    if (camera->GetFlipVertical())
+    {
+        projection_.m10_ = -projection_.m10_;
+        projection_.m11_ = -projection_.m11_;
+        projection_.m12_ = -projection_.m12_;
+        projection_.m13_ = -projection_.m13_;
+    }
+
     viewProj_ = projection_ * view_;
     nearClip_ = camera->GetNearClip();
     farClip_ = camera->GetFarClip();

@@ -213,6 +213,10 @@ void Octant::Initialize(const BoundingBox& box)
 
 void Octant::GetDrawablesInternal(OctreeQuery& query, bool inside) const
 {
+    // Track octant traversal for debugging
+    if (Graphics* graphics = root_ ? root_->GetSubsystem<Graphics>() : nullptr)
+        graphics->IncrementOctantCount();
+
     if (this != root_)
     {
         Intersection res = query.TestOctant(cullingBox_, inside);

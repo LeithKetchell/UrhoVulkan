@@ -344,6 +344,11 @@ void TextureCube::OnDeviceLost()
     if (gapi == GAPI_D3D11)
         return OnDeviceLost_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return OnDeviceLost_Vulkan();
+#endif
 }
 
 void TextureCube::OnDeviceReset()
@@ -358,6 +363,11 @@ void TextureCube::OnDeviceReset()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return OnDeviceReset_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return OnDeviceReset_Vulkan();
 #endif
 }
 
@@ -374,6 +384,11 @@ void TextureCube::Release()
     if (gapi == GAPI_D3D11)
         return Release_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Release_Vulkan();
+#endif
 }
 
 bool TextureCube::SetData(CubeMapFace face, unsigned level, int x, int y, int width, int height, const void* data)
@@ -388,6 +403,11 @@ bool TextureCube::SetData(CubeMapFace face, unsigned level, int x, int y, int wi
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetData_D3D11(face, level, x, y, width, height, data);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetData_Vulkan(face, level, x, y, width, height, data);
 #endif
 
     return {}; // Prevent warning
@@ -407,6 +427,11 @@ bool TextureCube::SetData(CubeMapFace face, Deserializer& source)
         return SetData_D3D11(face, source);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetData_Vulkan(face, source);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -422,6 +447,11 @@ bool TextureCube::SetData(CubeMapFace face, Image* image, bool useAlpha)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetData_D3D11(face, image, useAlpha);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetData_Vulkan(face, image, useAlpha);
 #endif
 
     return {}; // Prevent warning
@@ -441,6 +471,11 @@ bool TextureCube::GetData(CubeMapFace face, unsigned level, void* dest) const
         return GetData_D3D11(face, level, dest);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetData_Vulkan(face, level, dest);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -456,6 +491,11 @@ bool TextureCube::Create()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return Create_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Create_Vulkan();
 #endif
 
     return {}; // Prevent warning

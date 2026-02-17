@@ -29,15 +29,26 @@ class VulkanGraphicsImpl;
 /// - buffer: VkBuffer handle for GPU binding
 /// - allocation: VMA allocation metadata
 /// - mappedData: CPU-writable pointer (persistent mapping)
-/// - currentOffset: Write position for next sub-allocation
+/// - frameRegions: Per-frame regions for triple-buffering (prevents overwrites)
 /// - isUsed: Whether this buffer has any allocations this frame
+
+/// \brief Frame region within a pooled buffer (for triple-buffering)
+/// \details Each frame gets its own region to prevent overwrites while GPU is rendering
+struct FrameRegion
+{
+    uint32_t offset{0};         ///< Start offset of this frame's region
+    uint32_t size{0};           ///< Size of this frame's region
+    uint32_t currentOffset{0};  ///< Current allocation position within this region
+};
+
 struct PooledConstantBuffer
 {
     VkBuffer buffer{};                      ///< VkBuffer handle
     VmaAllocation allocation{};             ///< VMA allocation tracking
     void* mappedData{nullptr};              ///< CPU-mapped pointer for writing
     uint32_t size{0};                       ///< Total buffer size in bytes
-    uint32_t currentOffset{0};              ///< Current write position for this frame
+    FrameRegion frameRegions[8];            ///< Per-image regions (max 8 swapchain images)
+    uint32_t regionCount{0};                ///< Actual number of regions in use
     bool isUsed{false};                     ///< Whether buffer used this frame
 };
 
@@ -91,15 +102,25 @@ public:
     /// Additional buffers created dynamically as needed.
     bool Initialize(VulkanGraphicsImpl* impl, uint32_t poolSizeInBytes = 4 * 1024 * 1024);
 
+    /// \brief Set number of regions per buffer (must match swapchain image count)
+    /// \param count Number of regions (typically 2-4 for double/triple/quad buffering)
+    void SetRegionCount(uint32_t count) { regionCount_ = count; }
+
     /// \brief Release all pooled buffers
     /// \details Calls vkDestroyBuffer() and vmaFreeMemory() on all buffers.
     /// Safe to call multiple times. Called automatically on destruction.
     void Release();
 
-    /// \brief Reset per-frame allocations
-    /// \details Resets currentOffset to 0 for all buffers and clears isUsed flags.
+    /// \brief Begin a new frame with the given frame index (for triple-buffering)
+    /// \param frameIndex Frame index (0-2) for triple-buffering
+    /// \details Resets ONLY this frame's region offsets, leaving other frames' data intact.
+    /// This prevents Frame N+1 from overwriting Frame N's constant buffer while GPU is still rendering.
     /// Must be called at start of each frame before new allocations.
-    /// Enables buffer reuse without waste (linear allocation pattern).
+    void BeginFrame(uint32_t frameIndex);
+
+    /// \brief Reset per-frame allocations (DEPRECATED - use BeginFrame instead)
+    /// \details Resets currentOffset to 0 for all buffers and clears isUsed flags.
+    /// @deprecated Use BeginFrame() for proper triple-buffering synchronization
     void ResetFrameAllocations();
 
     /// \brief Allocate space in the pool and return buffer + offset
@@ -205,6 +226,12 @@ private:
 
     /// Current frame size (resets each frame)
     uint32_t currentFrameSize_{0};
+
+    /// Current frame/image index (0 to regionCount_-1)
+    uint32_t currentFrameIndex_{0};
+
+    /// Number of regions per buffer (matches swapchain image count)
+    uint32_t regionCount_{3};
 
     /// Statistics
     mutable PoolStats stats_{};

@@ -5,17 +5,21 @@
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Graphics/Camera.h>
 #include <Urho3D/Graphics/Graphics.h>
+#include <Urho3D/Graphics/Light.h>
 #include <Urho3D/Graphics/Material.h>
 #include <Urho3D/Graphics/Model.h>
 #include <Urho3D/Graphics/Octree.h>
 #include <Urho3D/Graphics/Renderer.h>
 #include <Urho3D/Graphics/StaticModel.h>
+#include <Urho3D/Graphics/View.h>
+#include <Urho3D/Graphics/Viewport.h>
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
 #include <Urho3D/UI/Font.h>
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
+#include <Urho3D/IO/Log.h>
 
 #include "StaticScene.h"
 
@@ -54,12 +58,11 @@ void StaticScene::Start()
     // Set the mouse mode to use in the sample
     Sample::InitMouseMode(MM_RELATIVE);
 
-
     // Initialize profiler UI
     auto* graphics = GetSubsystem<Graphics>();
     auto* ui = GetSubsystem<UI>();
     profilerUI_ = new ProfilerUI(context_);
-    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler());
+    profilerUI_->Initialize(ui, graphics->GetVulkanProfiler(), graphics);
     profilerUI_->SetVisible(true);
 }
 
@@ -68,55 +71,38 @@ void StaticScene::CreateScene()
     auto* cache = GetSubsystem<ResourceCache>();
 
     scene_ = new Scene(context_);
-
-    // Create the Octree component to the scene. This is required before adding any drawable components, or else nothing will
-    // show up. The default octree volume will be from (-1000, -1000, -1000) to (1000, 1000, 1000) in world coordinates; it
-    // is also legal to place objects outside the volume but their visibility can then not be checked in a hierarchically
-    // optimizing manner
     scene_->CreateComponent<Octree>();
 
-    // Create a child scene node (at world origin) and a StaticModel component into it. Set the StaticModel to show a simple
-    // plane mesh with a "stone" material. Note that naming the scene nodes is optional. Scale the scene node larger
-    // (100 x 100 world units)
+    // Floor plane
     Node* planeNode = scene_->CreateChild("Plane");
-    planeNode->SetScale(Vector3(100.0f, 1.0f, 100.0f));
+    planeNode->SetScale(Vector3(20.0f, 1.0f, 20.0f));
     auto* planeObject = planeNode->CreateComponent<StaticModel>();
     planeObject->SetModel(cache->GetResource<Model>("Models/Plane.mdl"));
     planeObject->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
 
-    // Create a directional light to the world so that we can see something. The light scene node's orientation controls the
-    // light direction; we will use the SetDirection() function which calculates the orientation from a forward direction vector.
-    // The light will use default settings (white light, no shadows)
+    // Directional light with shadows
     Node* lightNode = scene_->CreateChild("DirectionalLight");
-    lightNode->SetDirection(Vector3(0.6f, -1.0f, 0.8f)); // The direction vector does not need to be normalized
+    lightNode->SetDirection(Vector3(0.6f, -1.0f, 0.8f));
     auto* light = lightNode->CreateComponent<Light>();
     light->SetLightType(LIGHT_DIRECTIONAL);
+    light->SetCastShadows(true);
+    light->SetShadowBias(BiasParameters(0.00025f, 0.5f));
+    light->SetShadowCascade(CascadeParameters(10.0f, 50.0f, 200.0f, 0.0f, 0.8f));
 
-    // Create more StaticModel objects to the scene, randomly positioned, rotated and scaled. For rotation, we construct a
-    // quaternion from Euler angles where the Y angle (rotation about the Y axis) is randomized. The mushroom model contains
-    // LOD levels, so the StaticModel component will automatically select the LOD level according to the view distance (you'll
-    // see the model get simpler as it moves further away). Finally, rendering a large number of the same object with the
-    // same material allows instancing to be used, if the GPU supports it. This reduces the amount of CPU work in rendering the
-    // scene.
-    const unsigned NUM_OBJECTS = 200;
-    for (unsigned i = 0; i < NUM_OBJECTS; ++i)
-    {
-        Node* mushroomNode = scene_->CreateChild("Mushroom");
-        mushroomNode->SetPosition(Vector3(Random(90.0f) - 45.0f, 0.0f, Random(90.0f) - 45.0f));
-        mushroomNode->SetRotation(Quaternion(0.0f, Random(360.0f), 0.0f));
-        mushroomNode->SetScale(0.5f + Random(2.0f));
-        auto* mushroomObject = mushroomNode->CreateComponent<StaticModel>();
-        mushroomObject->SetModel(cache->GetResource<Model>("Models/Mushroom.mdl"));
-        mushroomObject->SetMaterial(cache->GetResource<Material>("Materials/Mushroom.xml"));
-    }
+    // One mushroom
+    Node* mushroomNode = scene_->CreateChild("Mushroom");
+    mushroomNode->SetPosition(Vector3(0.0f, 0.0f, 3.0f));
+    mushroomNode->SetScale(2.0f);
+    auto* mushroomObject = mushroomNode->CreateComponent<StaticModel>();
+    mushroomObject->SetModel(cache->GetResource<Model>("Models/Mushroom.mdl"));
+    mushroomObject->SetMaterial(cache->GetResource<Material>("Materials/Mushroom.xml"));
+    mushroomObject->SetCastShadows(true);
 
-    // Create a scene node for the camera, which we will move around
-    // The camera will use default settings (1000 far clip distance, 45 degrees FOV, set aspect ratio automatically)
+    // Camera looking at the mushroom from above-ish
     cameraNode_ = scene_->CreateChild("Camera");
     cameraNode_->CreateComponent<Camera>();
-
-    // Set an initial position for the camera scene node above the plane
-    cameraNode_->SetPosition(Vector3(0.0f, 5.0f, 0.0f));
+    cameraNode_->SetPosition(Vector3(0.0f, 5.0f, -5.0f));
+    cameraNode_->SetRotation(Quaternion(30.0f, 0.0f, 0.0f));
 }
 
 void StaticScene::CreateInstructions()
@@ -133,14 +119,6 @@ void StaticScene::CreateInstructions()
     instructionText->SetHorizontalAlignment(HA_CENTER);
     instructionText->SetVerticalAlignment(VA_CENTER);
     instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
-
-    // Add Vulkan indicator in top-left corner
-    auto* vulkanIndicator = new Text(context_);
-    vulkanIndicator->SetText("Using: Vulkan");
-    vulkanIndicator->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
-    vulkanIndicator->SetColor(Color::YELLOW);
-    vulkanIndicator->SetPosition(10, 10);
-    ui->GetRoot()->AddChild(vulkanIndicator);
 }
 
 void StaticScene::SetupViewport()
@@ -201,14 +179,54 @@ void StaticScene::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // Take the frame time step, which is stored as a float
     float timeStep = eventData[P_TIMESTEP].GetFloat();
 
+    // AUTO-TEST: Disabled - camera stays fixed for debugging
+    // autoTestTimer_ += timeStep;
+    // if (autoTestTimer_ < 3.0f)
+    // {
+    //     const float AUTO_MOVE_SPEED = 15.0f;
+    //     cameraNode_->Translate(Vector3::FORWARD * AUTO_MOVE_SPEED * timeStep);
+    // }
+
     // Move the camera, scale movement with time step
     MoveCamera(timeStep);
 
-    // Update profiler display
+    // Update profiler
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* renderer = GetSubsystem<Renderer>();
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        graphics->GetVulkanProfiler()->RecordFrame(timeStep);
         profilerUI_->Update();
+
+        // Add custom stats to profiler UI
+        unsigned numBatches = graphics->GetNumBatches();
+        unsigned numInstanced = graphics->GetNumInstancedDrawCalls();
+        unsigned totalInstances = graphics->GetTotalInstanceCount();
+        unsigned numVBBinds = graphics->GetNumVertexBufferBinds();
+        unsigned numInstBinds = graphics->GetNumInstanceBufferBinds();
+        unsigned numPipelineChanges = graphics->GetNumPipelineChanges();
+        Vector3 camPos = cameraNode_->GetPosition();
+
+        // Get instances written to buffer from the view
+        unsigned instancesInBuffer = 0;
+        if (renderer->GetNumViewports() > 0)
+        {
+            Viewport* viewport = renderer->GetViewport(0);
+            if (viewport && viewport->GetView())
+                instancesInBuffer = viewport->GetView()->GetInstancesWrittenToBuffer();
+        }
+
+        String stats;
+        stats += "In buffer: " + String(instancesInBuffer) + " | Submit: " + String(totalInstances) + "\n";
+        stats += "InstDraws: " + String(numInstanced) + " | Batches: " + String(numBatches) + "\n";
+        stats += "VBBinds: " + String(numVBBinds) + " | InstBinds: " + String(numInstBinds) + "\n";
+        stats += "Pipelines: " + String(numPipelineChanges) + "\n";
+        char camBuf[64];
+        sprintf(camBuf, "Cam: %.1f, %.1f, %.1f", camPos.x_, camPos.y_, camPos.z_);
+        stats += String(camBuf);
+
+        profilerUI_->SetCustomStats(stats);
     }
+
 }
 

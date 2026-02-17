@@ -254,7 +254,7 @@ protected:
 
 #ifdef URHO3D_VULKAN
     void SetSRGB_Vulkan(bool enable) { sRGB_ = enable; }
-    void UpdateParameters_Vulkan() { parametersDirty_ = false; }
+    void UpdateParameters_Vulkan();
     bool GetParametersDirty_Vulkan() const;
     bool IsCompressed_Vulkan() const;
     unsigned GetRowDataSize_Vulkan(int width) const;

@@ -207,20 +207,12 @@ void PBRMaterials::SetupViewport()
     auto* cache = GetSubsystem<ResourceCache>();
     auto* renderer = GetSubsystem<Renderer>();
 
-    renderer->SetHDRRendering(true);
+    // HDR and post-processing disabled for Vulkan backend testing
+    // renderer->SetHDRRendering(true);
 
     // Set up a viewport to the Renderer subsystem so that the 3D scene can be seen
     SharedPtr<Viewport> viewport(new Viewport(context_, scene_, cameraNode_->GetComponent<Camera>()));
     renderer->SetViewport(0, viewport);
-
-    // Add post-processing effects appropriate with the example scene
-    SharedPtr<RenderPath> effectRenderPath = viewport->GetRenderPath()->Clone();
-    effectRenderPath->Append(cache->GetResource<XMLFile>("PostProcess/FXAA2.xml"));
-    effectRenderPath->Append(cache->GetResource<XMLFile>("PostProcess/GammaCorrection.xml"));
-    effectRenderPath->Append(cache->GetResource<XMLFile>("PostProcess/Tonemap.xml"));
-    effectRenderPath->Append(cache->GetResource<XMLFile>("PostProcess/AutoExposure.xml"));
-
-    viewport->SetRenderPath(effectRenderPath);
 }
 
 void PBRMaterials::SubscribeToEvents()

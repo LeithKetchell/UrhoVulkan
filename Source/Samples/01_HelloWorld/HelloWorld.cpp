@@ -58,11 +58,7 @@ void HelloWorld::CreateText()
 
     // Construct new Text object
     SharedPtr<Text> helloText(new Text(context_));
-
-    // Set String to display
     helloText->SetText("Hello World from Urho3D!");
-
-    // Set font and text color
     helloText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 30);
     helloText->SetColor(Color(0.0f, 1.0f, 0.0f));
 

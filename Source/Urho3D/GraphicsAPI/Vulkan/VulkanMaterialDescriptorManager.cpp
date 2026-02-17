@@ -82,16 +82,16 @@ bool VulkanMaterialDescriptorManager::Initialize()
     }
 
     // Phase 16.1: Create descriptor pool for material descriptor sets
-    // Pool size: ~100 descriptor sets with space for UBO + 3 samplers per set
+    // Pool size: ~100 descriptor sets with space for UBO + 5 samplers per set
     VkDescriptorPoolSize poolSizes[2];
 
     // Uniform buffer objects (one per material)
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 100;
 
-    // Combined image samplers (3 per material: diffuse, normal, specular)
+    // Combined image samplers (5 per material: diffuse, normal, specular, emissive, environment)
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 300;  // 100 materials * 3 samplers
+    poolSizes[1].descriptorCount = 500;  // 100 materials * 5 samplers
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -240,7 +240,7 @@ bool VulkanMaterialDescriptorManager::CreateDescriptorSetLayout()
     // Phase 24: Alternative approach - layouts can be auto-generated from shader reflection:
     // For shader programs with reflection data, bindings can be created via SPIRVResourceToBinding()
     // helper function, enabling bytecode-driven descriptor layout rather than manual specification.
-    VkDescriptorSetLayoutBinding bindings[4] = {};
+    VkDescriptorSetLayoutBinding bindings[6] = {};
 
     // Binding 0: Material constant buffer (uniform buffer object)
     bindings[0].binding = 0;
@@ -249,30 +249,44 @@ bool VulkanMaterialDescriptorManager::CreateDescriptorSetLayout()
     bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[0].pImmutableSamplers = nullptr;
 
-    // Binding 1: Diffuse texture + sampler
-    bindings[1].binding = 1;
+    // Binding 100: Diffuse texture + sampler (match shader binding)
+    bindings[1].binding = 100;
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[1].pImmutableSamplers = nullptr;
 
-    // Binding 2: Normal map texture + sampler
-    bindings[2].binding = 2;
+    // Binding 102: Normal map texture + sampler (match shader binding for sNormalMap)
+    bindings[2].binding = 102;
     bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[2].pImmutableSamplers = nullptr;
 
-    // Binding 3: Specular/roughness texture + sampler
-    bindings[3].binding = 3;
+    // Binding 103: Specular/roughness texture + sampler (match shader binding for sSpecMap)
+    bindings[3].binding = 103;
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[3].pImmutableSamplers = nullptr;
 
+    // Binding 104: Emissive texture + sampler
+    bindings[4].binding = 104;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[4].pImmutableSamplers = nullptr;
+
+    // Binding 105: Environment texture + sampler
+    bindings[5].binding = 105;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[5].pImmutableSamplers = nullptr;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
+    layoutInfo.bindingCount = 6;
     layoutInfo.pBindings = bindings;
 
     VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout_);
@@ -282,7 +296,7 @@ bool VulkanMaterialDescriptorManager::CreateDescriptorSetLayout()
         return false;
     }
 
-    URHO3D_LOGINFO("VulkanMaterialDescriptorManager: Created descriptor set layout with 4 bindings");
+    URHO3D_LOGINFO("VulkanMaterialDescriptorManager: Created descriptor set layout with 6 bindings (1 UBO + 5 textures)");
     return true;
 }
 
@@ -361,7 +375,7 @@ VkDescriptorSet VulkanMaterialDescriptorManager::CreateDescriptorSet(Material* m
         // No defaults for emissive/environment - use null if not provided
 
         Texture2D* textures[] = {diffuseTexture, normalTexture, specularTexture, emissiveTexture, environmentTexture};
-        const uint32_t bindingOffsets[] = {1, 2, 3, 4, 5};
+        const uint32_t bindingOffsets[] = {100, 102, 103, 104, 105};  // Match descriptor set layout bindings
 
         for (uint32_t i = 0; i < 5; ++i)
         {
@@ -631,7 +645,7 @@ bool VulkanMaterialDescriptorManager::UpdateTextureBindings(Material* material, 
     // All textures now have values (either from material or fallback defaults)
     const TextureUnit textureUnits[] = {TU_DIFFUSE, TU_NORMAL, TU_SPECULAR};
     Texture2D* textures[] = {diffuseTexture, normalTexture, specularTexture};
-    const uint32_t bindingOffsets[] = {1, 2, 3};  // Descriptor bindings 1-3
+    const uint32_t bindingOffsets[] = {100, 102, 103};  // Match descriptor set layout bindings
 
     for (uint32_t i = 0; i < 3; ++i)
     {

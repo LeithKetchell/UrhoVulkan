@@ -254,8 +254,15 @@ void SortBatchQueueBackToFrontWork(const WorkItem* item, i32 threadIndex)
 void SortLightQueueWork(const WorkItem* item, i32 threadIndex)
 {
     auto* start = reinterpret_cast<LightBatchQueue*>(item->start_);
+
+    // DIAGNOSTIC: Track sorting (disabled for performance)
+    // static int sortCount = 0;
+    // sortCount++; batches=start->litBaseBatches_.batches_.Size(); groups=start->litBaseBatches_.batchGroups_.Size()
+
     start->litBaseBatches_.SortFrontToBack();
     start->litBatches_.SortFrontToBack();
+
+    // After sort: sortedBatches=start->litBaseBatches_.sortedBatches_.Size(); sortedGroups=start->litBaseBatches_.sortedBatchGroups_.Size()
 }
 
 void SortShadowQueueWork(const WorkItem* item, i32 threadIndex)
@@ -501,13 +508,9 @@ bool View::Define(RenderSurface* renderTarget, Viewport* viewport)
 
 void View::Update(const FrameInfo& frame)
 {
-    URHO3D_LOGINFO("View::Update CALLED");
     // No need to update if using another prepared view
     if (sourceView_)
-    {
-        URHO3D_LOGINFO("View::Update EARLY RETURN - using sourceView");
         return;
-    }
 
     frame_.camera_ = cullCamera_;
     frame_.timeStep_ = frame.timeStep_;
@@ -595,11 +598,17 @@ void View::Render()
         if (camera_)
             camera_->SetFlipVertical(!camera_->GetFlipVertical());
     }
+    // VULKAN Y-FLIP: Combining projection flip with negative viewport height
+    // The negative viewport height in SetViewport_Vulkan fixes visibility issues
+    // The projection flip here compensates for the resulting upside-down image
+    else if (Graphics::GetGAPI() == GAPI_VULKAN)
+    {
+        if (camera_)
+            camera_->SetFlipVertical(!camera_->GetFlipVertical());
+    }
 
     // Render
-    URHO3D_LOGINFO("View::Render - About to execute render path commands");
     ExecuteRenderPathCommands();
-    URHO3D_LOGINFO("View::Render - Finished executing render path commands");
 
     // Reset state after commands
     graphics_->SetFillMode(FILL_SOLID);
@@ -645,6 +654,12 @@ void View::Render()
     if (Graphics::GetGAPI() == GAPI_OPENGL && renderTarget_)
     {
         // Restores original setting of FlipVertical when flipped by code above.
+        if (camera_)
+            camera_->SetFlipVertical(!camera_->GetFlipVertical());
+    }
+    // Restore flip state for Vulkan (matches the flip enabled above)
+    else if (Graphics::GetGAPI() == GAPI_VULKAN)
+    {
         if (camera_)
             camera_->SetFlipVertical(!camera_->GetFlipVertical());
     }
@@ -738,9 +753,11 @@ void View::SetCameraShaderParameters(Camera* camera)
 
     Matrix4 projection = camera->GetGPUProjection();
 
-    if (Graphics::GetGAPI() == GAPI_OPENGL)
+    if (Graphics::GetGAPI() == GAPI_OPENGL || Graphics::GetGAPI() == GAPI_VULKAN)
     {
-        // Add constant depth bias manually to the projection matrix due to glPolygonOffset() inconsistency
+        // Add constant depth bias manually to the projection matrix due to glPolygonOffset()/vkCmdSetDepthBias() inconsistency
+        // The hardware constant bias factor is multiplied by depth format's minimum resolvable difference (r),
+        // which makes it unreliable across formats. Applying bias to the projection matrix is format-independent.
         float constantBias = 2.0f * graphics_->GetDepthConstantBias();
         projection.m22_ += projection.m32_ * constantBias;
         projection.m23_ += projection.m33_ * constantBias;
@@ -789,10 +806,9 @@ void View::SetGBufferShaderParameters(const IntVector2& texSize, const IntRect& 
 
 void View::GetDrawables()
 {
-    URHO3D_LOGINFO("GetDrawables: octree_=" + String(octree_ != nullptr) + ", cullCamera_=" + String(cullCamera_ != nullptr));
     if (!octree_ || !cullCamera_)
     {
-        URHO3D_LOGERROR("GetDrawables: EARLY RETURN - octree or cullCamera null!");
+        URHO3D_LOGERROR("GetDrawables: octree or cullCamera null");
         return;
     }
 
@@ -882,8 +898,12 @@ void View::GetDrawables()
     {
         FrustumOctreeQuery query(tempDrawables, cullCamera_->GetFrustum(), DrawableTypes::Geometry | DrawableTypes::Light, cullCamera_->GetViewMask());
         octree_->GetDrawables(query);
+
+        // DIAGNOSTIC: Frustum query logging (disabled for performance)
+        // frustumQueryCount, tempDrawables.Size(), camPos, camFwd
     }
 
+    // DIAGNOSTIC: Log frustum query results per viewport
     // Check drawable occlusion, find zones for moved drawables and collect geometries & lights in worker threads
     {
         for (PerThreadSceneResult& result : sceneResults_)
@@ -961,23 +981,21 @@ void View::GetDrawables()
 
 void View::GetBatches()
 {
-    URHO3D_LOGINFO("GetBatches: octree_=" + String(octree_ != nullptr) + ", cullCamera_=" + String(cullCamera_ != nullptr));
+    // DIAGNOSTIC: Log geometry count changes with camera position (disabled for performance)
+    // batchFrame, geometries_.Size(), lastGeomCount, camPos
+
     if (!octree_ || !cullCamera_)
     {
-        URHO3D_LOGERROR("GetBatches: EARLY RETURN");
+        URHO3D_LOGERROR("GetBatches: octree or cullCamera null");
         return;
     }
 
     nonThreadedGeometries_.Clear();
     threadedGeometries_.Clear();
 
-    URHO3D_LOGINFO("GetBatches: About to call ProcessLights");
     ProcessLights();
-    URHO3D_LOGINFO("GetBatches: About to call GetLightBatches");
     GetLightBatches();
-    URHO3D_LOGINFO("GetBatches: About to call GetBaseBatches");
     GetBaseBatches();
-    URHO3D_LOGINFO("GetBatches: DONE");
 }
 
 void View::ProcessLights()
@@ -1010,6 +1028,9 @@ void View::GetLightBatches()
 {
     BatchQueue* alphaQueue = batchQueues_.Contains(alphaPassIndex_) ? &batchQueues_[alphaPassIndex_] : nullptr;
 
+    // DIAGNOSTIC: GetLightBatches entry (disabled for performance)
+    // getLightBatchesCount, lightQueryResults_.Size()
+
     // Build light queues and lit batches
     {
         URHO3D_PROFILE(GetLightBatches);
@@ -1019,6 +1040,9 @@ void View::GetLightBatches()
         i32 usedLightQueues = 0;
         for (Vector<LightQueryResult>::ConstIterator i = lightQueryResults_.Begin(); i != lightQueryResults_.End(); ++i)
         {
+            // DIAGNOSTIC: light query results (disabled for performance)
+            // light, perVertex, litGeometries.Size()
+
             if (!i->light_->GetPerVertex() && i->litGeometries_.Size())
                 ++numLightQueues;
         }
@@ -1048,6 +1072,10 @@ void View::GetLightBatches()
                 lightQueue.light_ = light;
                 lightQueue.negative_ = light->IsNegative();
                 lightQueue.shadowMap_ = nullptr;
+
+                // DIAGNOSTIC: Track Clear calls (disabled for performance)
+                // clearCallCount, lightQueue, litBaseBatches_.batches_.Size()
+
                 lightQueue.litBaseBatches_.Clear(maxSortedInstances);
                 lightQueue.litBatches_.Clear(maxSortedInstances);
                 if (forwardLightsCommand_)
@@ -1091,7 +1119,6 @@ void View::GetLightBatches()
                          k < query.shadowCasters_.Begin() + query.shadowCasterEnd_[j]; ++k)
                     {
                         Drawable* drawable = *k;
-                        // If drawable is not in actual view frustum, mark it in view here and check its geometry update type
                         if (!drawable->IsInView(frame_, true))
                         {
                             drawable->MarkInView(frame_.frameNumber_);
@@ -1111,7 +1138,6 @@ void View::GetLightBatches()
                                 continue;
 
                             Pass* pass = tech->GetSupportedPass(Technique::shadowPassIndex);
-                            // Skip if material has no shadow pass
                             if (!pass)
                                 continue;
 
@@ -1171,6 +1197,9 @@ void View::GetLightBatches()
     }
 
     // Process drawables with limited per-pixel light count
+    // DIAGNOSTIC: max lights drawable processing (disabled for performance)
+    // maxLightsProcessCount, maxLightsDrawables_.Size()
+
     if (maxLightsDrawables_.Size())
     {
         URHO3D_PROFILE(GetMaxLightsBatches);
@@ -1181,10 +1210,15 @@ void View::GetLightBatches()
             drawable->LimitLights();
             const Vector<Light*>& lights = drawable->GetLights();
 
+            // DIAGNOSTIC: drawable lights count (disabled for performance)
+            // drawable, lights.Size()
+
             for (const Light* light : lights)
             {
                 // Find the correct light queue again
                 LightBatchQueue* queue = light->GetLightQueue();
+
+                // DIAGNOSTIC: queue lookup (disabled for performance)
 
                 if (queue)
                     GetLitBatches(drawable, *queue, alphaQueue);
@@ -1197,7 +1231,6 @@ void View::GetBaseBatches()
 {
     URHO3D_PROFILE(GetBaseBatches);
 
-    URHO3D_LOGINFO("GetBaseBatches: geometries_.Size()=" + String(geometries_.Size()) + ", scenePasses_.Size()=" + String(scenePasses_.Size()));
     for (Vector<Drawable*>::ConstIterator i = geometries_.Begin(); i != geometries_.End(); ++i)
     {
         Drawable* drawable = *i;
@@ -1220,13 +1253,10 @@ void View::GetBaseBatches()
                 CheckMaterialForAuxView(srcBatch.material_);
 
             Technique* tech = GetTechnique(drawable, srcBatch.material_);
+
+
             if (!srcBatch.geometry_ || !srcBatch.numWorldTransforms_ || !tech)
-            {
-                URHO3D_LOGINFO("GetBaseBatches: Skipping batch - geometry=" + String(srcBatch.geometry_ != nullptr) +
-                              ", numWorldTransforms=" + String(srcBatch.numWorldTransforms_) +
-                              ", tech=" + String(tech != nullptr));
                 continue;
-            }
 
             // Check each of the scene passes
             for (const ScenePassInfo& info : scenePasses_)
@@ -1280,11 +1310,7 @@ void View::GetBaseBatches()
                 if (allowInstancing && info.markToStencil_ && destBatch.lightMask_ != (destBatch.zone_->GetLightMask() & 0xffu))
                     allowInstancing = false;
 
-                URHO3D_LOGINFO("GetBaseBatches: Adding batch to queue, passIndex=" + String(info.passIndex_) +
-                              ", queue=" + String((unsigned long long)info.batchQueue_) +
-                              ", queue.batches.Size BEFORE=" + String(info.batchQueue_->batches_.Size()));
                 AddBatchToQueue(*info.batchQueue_, destBatch, tech, allowInstancing);
-                URHO3D_LOGINFO("GetBaseBatches: queue.batches.Size AFTER=" + String(info.batchQueue_->batches_.Size()));
             }
         }
     }
@@ -1394,9 +1420,14 @@ void View::GetLitBatches(Drawable* drawable, LightBatchQueue& lightQueue, BatchQ
     Zone* zone = GetZone(drawable);
     const Vector<SourceBatch>& batches = drawable->GetBatches();
 
+    // DIAGNOSTIC: GetLitBatches calls (disabled for performance)
+    // litBatchCallCount, drawable, batches.Size()
+
     bool allowLitBase =
         useLitBase_ && !lightQueue.negative_ && light == drawable->GetFirstLight() && drawable->GetVertexLights().Empty() &&
         !zone->GetAmbientGradient();
+
+
 
     for (i32 i = 0; i < batches.Size(); ++i)
     {
@@ -1422,6 +1453,8 @@ void View::GetLitBatches(Drawable* drawable, LightBatchQueue& lightQueue, BatchQ
             {
                 destBatch.isBase_ = true;
                 drawable->SetBasePass(i);
+
+                // DIAGNOSTIC: lit base pass found (disabled for performance)
             }
             else
                 destBatch.pass_ = tech->GetSupportedPass(lightPassIndex_);
@@ -1438,7 +1471,10 @@ void View::GetLitBatches(Drawable* drawable, LightBatchQueue& lightQueue, BatchQ
 
         // Skip if material does not receive light at all
         if (!destBatch.pass_)
+        {
+            // DIAGNOSTIC: no lit pass (disabled for performance)
             continue;
+        }
 
         destBatch.lightQueue_ = &lightQueue;
         destBatch.zone_ = zone;
@@ -1446,9 +1482,15 @@ void View::GetLitBatches(Drawable* drawable, LightBatchQueue& lightQueue, BatchQ
         if (!isLitAlpha)
         {
             if (destBatch.isBase_)
+            {
+                // DIAGNOSTIC: adding to litBaseBatches (disabled for performance)
                 AddBatchToQueue(lightQueue.litBaseBatches_, destBatch, tech);
+            }
             else
+            {
+                // DIAGNOSTIC: adding to litBatches (disabled for performance)
                 AddBatchToQueue(lightQueue.litBatches_, destBatch, tech);
+            }
         }
         else if (alphaQueue)
         {
@@ -1495,17 +1537,11 @@ void View::ExecuteRenderPathCommands()
                 lastCommandIndex = i;
         }
 
-        URHO3D_LOGINFO("ExecuteRenderPathCommands: Total commands=" + String(renderPath_->commands_.Size()));
         for (i32 i = 0; i < renderPath_->commands_.Size(); ++i)
         {
             RenderPathCommand& command = renderPath_->commands_[i];
-            URHO3D_LOGINFO("Command[" + String(i) + "]: type=" + String((int)command.type_) + ", checking IsNecessary...");
             if (!actualView->IsNecessary(command))
-            {
-                URHO3D_LOGINFO("Command[" + String(i) + "]: SKIPPED (not necessary)");
                 continue;
-            }
-            URHO3D_LOGINFO("Command[" + String(i) + "]: EXECUTING");
 
             bool viewportRead = actualView->CheckViewportRead(command);
             bool viewportWrite = actualView->CheckViewportWrite(command);
@@ -1583,7 +1619,6 @@ void View::ExecuteRenderPathCommands()
                     currentRenderTarget_ = substituteRenderTarget_ ? substituteRenderTarget_ : renderTarget_;
             }
 
-            URHO3D_LOGINFO("Executing render command type=" + String((int)command.type_) + " (CMD_SCENEPASS=" + String((int)CMD_SCENEPASS) + ")");
             switch (command.type_)
             {
             case CMD_CLEAR:
@@ -1602,7 +1637,14 @@ void View::ExecuteRenderPathCommands()
             case CMD_SCENEPASS:
                 {
                     BatchQueue& queue = actualView->batchQueues_[command.passIndex_];
-                    URHO3D_LOGINFO("CMD_SCENEPASS case hit, queue.IsEmpty()=" + String(queue.IsEmpty()) + ", queue.batches_.Size()=" + String(queue.batches_.Size()));
+
+                    // DIAG: Log scenepass execution
+                    {
+                        static int diagCount = 0;
+                        if (diagCount++ < 30)
+                            URHO3D_LOGWARNING("CMD_SCENEPASS: pass=" + command.pass_ + " empty=" + String(queue.IsEmpty()) + " outputs=" + String(command.outputs_.Size()));
+                    }
+
                     if (!queue.IsEmpty())
                     {
                         URHO3D_PROFILE(RenderScenePass);
@@ -1620,9 +1662,7 @@ void View::ExecuteRenderPathCommands()
                             passCommand_ = &command;
                         }
 
-                        URHO3D_LOGINFO("CMD_SCENEPASS: About to call queue.Draw, queue size=" + String(queue.batches_.Size()));
                         queue.Draw(this, camera_, command.markToStencil_, false, allowDepthWrite);
-                        URHO3D_LOGINFO("CMD_SCENEPASS: queue.Draw completed");
 
                         passCommand_ = nullptr;
                     }
@@ -1687,6 +1727,12 @@ void View::ExecuteRenderPathCommands()
                 break;
 
             case CMD_LIGHTVOLUMES:
+                // DIAG: Log lightvolumes execution
+                {
+                    static int lvCount = 0;
+                    if (lvCount++ < 10)
+                        URHO3D_LOGWARNING("CMD_LIGHTVOLUMES: lightQueues=" + String(actualView->lightQueues_.Size()) + " volumeBatches total pending");
+                }
                 // Render shadow maps + light volumes
                 if (!actualView->lightQueues_.Empty())
                 {
@@ -1917,17 +1963,6 @@ bool View::IsNecessary(const RenderPathCommand& command)
     bool necessary = command.enabled_ && command.outputs_.Size() &&
            (command.type_ != CMD_SCENEPASS || !batchQueues_[command.passIndex_].IsEmpty());
 
-    if (command.type_ == CMD_SCENEPASS)
-    {
-        URHO3D_LOGINFO("IsNecessary for CMD_SCENEPASS: enabled=" + String(command.enabled_) +
-                      ", outputs.Size=" + String(command.outputs_.Size()) +
-                      ", passIndex=" + String(command.passIndex_) +
-                      ", queue=" + String((unsigned long long)&batchQueues_[command.passIndex_]) +
-                      ", queue.IsEmpty=" + String(batchQueues_[command.passIndex_].IsEmpty()) +
-                      ", queue.batches.Size=" + String(batchQueues_[command.passIndex_].batches_.Size()) +
-                      ", result=" + String(necessary));
-    }
-
     return necessary;
 }
 
@@ -2030,6 +2065,17 @@ void View::AllocateScreenBuffers()
         if (!renderTarget_ && hasCustomDepth)
             needSubstitute = true;
     }
+#ifdef URHO3D_VULKAN
+    else if (Graphics::GetGAPI() == GAPI_VULKAN)
+    {
+        // Vulkan deferred/scene-pass-to-RT modes also need a substitute render target
+        // so the "viewport" output has a real texture to write to instead of null backbuffer
+        if ((deferred_ || hasScenePassToRTs) && !renderTarget_)
+            needSubstitute = true;
+        if (!renderTarget_ && hasCustomDepth)
+            needSubstitute = true;
+    }
+#endif
 
     // If backbuffer is antialiased when using deferred rendering, need to reserve a buffer
     if (deferred_ && !renderTarget_ && graphics_->GetMultiSample() > 1)
@@ -2755,7 +2801,7 @@ void View::FinalizeShadowCamera(Camera* shadowCamera, Light* light, const IntRec
             shadowCamera->SetZoom(shadowCamera->GetZoom() * ((shadowMapWidth - 2.0f) / shadowMapWidth));
         else
         {
-            if (Graphics::GetGAPI() == GAPI_OPENGL)
+            if (Graphics::GetGAPI() == GAPI_OPENGL || Graphics::GetGAPI() == GAPI_VULKAN)
                 shadowCamera->SetZoom(shadowCamera->GetZoom() * ((shadowMapWidth - 3.0f) / shadowMapWidth));
             else
                 shadowCamera->SetZoom(shadowCamera->GetZoom() * ((shadowMapWidth - 4.0f) / shadowMapWidth));
@@ -2932,20 +2978,29 @@ void View::SetQueueShaderDefines(BatchQueue& queue, const RenderPathCommand& com
 
 void View::AddBatchToQueue(BatchQueue& queue, Batch& batch, Technique* tech, bool allowInstancing, bool allowShadows)
 {
+    // DIAGNOSTIC: AddBatchToQueue calls (disabled for performance)
+    // addBatchCallCount, geometryType, allowInstancing, hasIndexBuffer
+
     if (!batch.material_)
         batch.material_ = renderer_->GetDefaultMaterial();
 
     // Convert to instanced if possible
     if (allowInstancing && batch.geometryType_ == GEOM_STATIC && batch.geometry_->GetIndexBuffer())
+    {
+        // DIAGNOSTIC: converting to instanced (disabled for performance)
         batch.geometryType_ = GEOM_INSTANCED;
+    }
 
     if (batch.geometryType_ == GEOM_INSTANCED)
     {
+        // DIAGNOSTIC: instanced batch (disabled for performance)
+
         BatchGroupKey key(batch);
 
         HashMap<BatchGroupKey, BatchGroup>::Iterator i = queue.batchGroups_.Find(key);
         if (i == queue.batchGroups_.End())
         {
+            // DIAGNOSTIC: creating new batch group (disabled for performance)
             // Create a new group based on the batch
             // In case the group remains below the instancing limit, do not enable instancing shaders yet
             BatchGroup newGroup(batch);
@@ -2957,6 +3012,8 @@ void View::AddBatchToQueue(BatchQueue& queue, Batch& batch, Technique* tech, boo
 
         int oldSize = i->second_.instances_.Size();
         i->second_.AddTransforms(batch);
+
+        // DIAGNOSTIC: instances.Size() (disabled for performance)
         // Convert to using instancing shaders when the instancing limit is reached
         if (oldSize < minInstances_ && (int)i->second_.instances_.Size() >= minInstances_)
         {
@@ -2967,6 +3024,8 @@ void View::AddBatchToQueue(BatchQueue& queue, Batch& batch, Technique* tech, boo
     }
     else
     {
+        // DIAGNOSTIC: non-instanced batch (disabled for performance)
+
         renderer_->SetBatchShaders(batch, tech, allowShadows, queue);
         batch.CalculateSortKey();
 
@@ -2981,9 +3040,13 @@ void View::AddBatchToQueue(BatchQueue& queue, Batch& batch, Technique* tech, boo
                 queue.batches_.Push(batch);
                 ++batch.worldTransform_;
             }
+            // DIAGNOSTIC: pushed multi-transform batch (disabled for performance)
         }
         else
+        {
             queue.batches_.Push(batch);
+            // DIAGNOSTIC: pushed single batch (disabled for performance)
+        }
     }
 }
 
@@ -3013,12 +3076,18 @@ void View::PrepareInstancingBuffer()
         totalInstances += i->litBatches_.GetNumInstances();
     }
 
-    if (!totalInstances || !renderer_->ResizeInstancingBuffer(totalInstances))
+    if (!totalInstances)
+        return;
+    // Use cumulative offset to prevent multi-view instance buffer overwrite (Vulkan deferred execution hazard).
+    // Each view appends its instances after the previous view's data in the shared buffer.
+    i32 baseOffset = renderer_->GetFrameInstancingOffset();
+    i32 cumulativeInstances = baseOffset + totalInstances;
+    if (!renderer_->ResizeInstancingBuffer(cumulativeInstances))
         return;
 
     VertexBuffer* instancingBuffer = renderer_->GetInstancingBuffer();
-    i32 freeIndex = 0;
-    void* dest = instancingBuffer->Lock(0, totalInstances, true);
+    i32 freeIndex = baseOffset;
+    void* dest = instancingBuffer->Lock(0, cumulativeInstances, baseOffset == 0);
     if (!dest)
         return;
 
@@ -3034,6 +3103,11 @@ void View::PrepareInstancingBuffer()
         i->litBaseBatches_.SetInstancingData(dest, stride, freeIndex);
         i->litBatches_.SetInstancingData(dest, stride, freeIndex);
     }
+
+    // Track how many instances were actually written to buffer
+    instancesWrittenToBuffer_ = freeIndex - baseOffset;
+    // Advance the cumulative offset for the next view
+    renderer_->AdvanceFrameInstancingOffset(totalInstances);
 
     instancingBuffer->Unlock();
 }

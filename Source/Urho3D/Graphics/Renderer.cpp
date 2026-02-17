@@ -301,11 +301,15 @@ void Renderer::SetSpecularLighting(bool enable)
 void Renderer::SetTextureAnisotropy(int level)
 {
     textureAnisotropy_ = Max(level, 1);
+    if (graphics_)
+        graphics_->SetDefaultTextureAnisotropy((unsigned)textureAnisotropy_);
 }
 
 void Renderer::SetTextureFilterMode(TextureFilterMode mode)
 {
     textureFilterMode_ = mode;
+    if (graphics_)
+        graphics_->SetDefaultTextureFilterMode(mode);
 }
 
 void Renderer::SetTextureQuality(MaterialQuality quality)
@@ -438,10 +442,22 @@ void Renderer::SetMaxShadowMaps(int shadowMaps)
 
 void Renderer::SetDynamicInstancing(bool enable)
 {
-    if (!instancingBuffer_)
+    if (instancingBuffers_.Empty())
         enable = false;
 
     dynamicInstancing_ = enable;
+}
+
+VertexBuffer* Renderer::GetInstancingBuffer() const
+{
+    if (!dynamicInstancing_ || instancingBuffers_.Empty())
+        return nullptr;
+
+    unsigned frameIndex = graphics_->GetFrameIndex();
+    if (frameIndex >= instancingBuffers_.Size())
+        return nullptr;
+
+    return instancingBuffers_[frameIndex];
 }
 
 void Renderer::SetNumExtraInstancingBufferElements(int elements)
@@ -678,6 +694,9 @@ void Renderer::Render()
     assert(graphics_ && graphics_->IsInitialized() && !graphics_->IsDeviceLost());
 
     URHO3D_PROFILE(RenderViews);
+
+    // Reset instancing buffer offset for the new frame (prevents multi-view data overwrite in Vulkan)
+    frameInstancingOffset_ = 0;
 
     // If the indirection textures have lost content (OpenGL mode only), restore them now
     if (faceSelectCubeMap_ && faceSelectCubeMap_->IsDataLost())
@@ -1339,10 +1358,23 @@ bool Renderer::ResizeInstancingBuffer(i32 numInstances)
 {
     assert(numInstances >= 0);
 
-    if (!instancingBuffer_ || !dynamicInstancing_)
+    if (instancingBuffers_.Empty() || !dynamicInstancing_)
+    {
+        return false;
+    }
+
+    // Get the current frame's instancing buffer
+    unsigned frameIndex = graphics_->GetFrameIndex();
+    if (frameIndex >= instancingBuffers_.Size())
+    {
+        return false;
+    }
+
+    VertexBuffer* instancingBuffer = instancingBuffers_[frameIndex];
+    if (!instancingBuffer)
         return false;
 
-    i32 oldSize = instancingBuffer_->GetVertexCount();
+    i32 oldSize = instancingBuffer->GetVertexCount();
     if (numInstances <= oldSize)
         return true;
 
@@ -1351,15 +1383,15 @@ bool Renderer::ResizeInstancingBuffer(i32 numInstances)
         newSize <<= 1;
 
     const Vector<VertexElement> instancingBufferElements = CreateInstancingBufferElements(numExtraInstancingBufferElements_);
-    if (!instancingBuffer_->SetSize(newSize, instancingBufferElements, true))
+    if (!instancingBuffer->SetSize(newSize, instancingBufferElements, true))
     {
         URHO3D_LOGERROR("Failed to resize instancing buffer to " + String(newSize));
         // If failed, try to restore the old size
-        instancingBuffer_->SetSize(oldSize, instancingBufferElements, true);
+        instancingBuffer->SetSize(oldSize, instancingBufferElements, true);
         return false;
     }
 
-    URHO3D_LOGDEBUG("Resized instancing buffer to " + String(newSize));
+    URHO3D_LOGDEBUG("Resized instancing buffer " + String(frameIndex) + " to " + String(newSize));
     return true;
 }
 
@@ -1582,6 +1614,11 @@ void Renderer::Initialize()
     URHO3D_PROFILE(InitRenderer);
 
     graphics_ = graphics;
+
+    // Vulkan: render all shadow maps before scene passes to avoid mid-frame
+    // render pass restart (which would clear already-drawn geometry)
+    if (Graphics::GetGAPI() == GAPI_VULKAN)
+        reuseShadowMaps_ = false;
 
     if (!graphics_->GetShadowMapFormat())
         drawShadows_ = false;
@@ -1879,20 +1916,32 @@ void Renderer::SetIndirectionTextureData()
 
 void Renderer::CreateInstancingBuffer()
 {
+    unsigned numBuffers = Graphics::GetMaxFramesInFlight();
+
     // Do not create buffer if instancing not supported
     if (!graphics_->GetInstancingSupport())
     {
-        instancingBuffer_.Reset();
+        instancingBuffers_.Clear();
         dynamicInstancing_ = false;
         return;
     }
 
-    instancingBuffer_ = new VertexBuffer(context_);
+    // Create one instancing buffer per frame in flight to avoid GPU/CPU synchronization issues
+    instancingBuffers_.Resize(numBuffers);
     const Vector<VertexElement> instancingBufferElements = CreateInstancingBufferElements(numExtraInstancingBufferElements_);
-    if (!instancingBuffer_->SetSize(INSTANCING_BUFFER_DEFAULT_SIZE, instancingBufferElements, true))
+
+    for (unsigned i = 0; i < numBuffers; ++i)
     {
-        instancingBuffer_.Reset();
-        dynamicInstancing_ = false;
+        instancingBuffers_[i] = new VertexBuffer(context_);
+        // Enable shadow data for CPU-side validation and consistent GPU uploads
+        instancingBuffers_[i]->SetShadowed(true);
+        if (!instancingBuffers_[i]->SetSize(INSTANCING_BUFFER_DEFAULT_SIZE, instancingBufferElements, true))
+        {
+            URHO3D_LOGERROR("CreateInstancingBuffer: SetSize() failed for buffer " + String(i));
+            instancingBuffers_.Clear();
+            dynamicInstancing_ = false;
+            return;
+        }
     }
 }
 
@@ -1915,7 +1964,7 @@ String Renderer::GetShadowVariations() const
     switch (shadowQuality_)
     {
         case SHADOWQUALITY_SIMPLE_16BIT:
-            if (Graphics::GetGAPI() == GAPI_OPENGL)
+            if (Graphics::GetGAPI() == GAPI_OPENGL || Graphics::GetGAPI() == GAPI_VULKAN)
             {
                 return "SIMPLE_SHADOW ";
             }
@@ -1929,7 +1978,7 @@ String Renderer::GetShadowVariations() const
         case SHADOWQUALITY_SIMPLE_24BIT:
             return "SIMPLE_SHADOW ";
         case SHADOWQUALITY_PCF_16BIT:
-            if (Graphics::GetGAPI() == GAPI_OPENGL)
+            if (Graphics::GetGAPI() == GAPI_OPENGL || Graphics::GetGAPI() == GAPI_VULKAN)
             {
                 return "PCF_SHADOW ";
             }

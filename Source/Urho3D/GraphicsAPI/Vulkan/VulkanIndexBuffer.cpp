@@ -162,26 +162,16 @@ bool IndexBuffer::UpdateToGPU_Vulkan()
     VkBuffer buffer = (VkBuffer)(void*)object_.ptr_;
     VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
 
-    // For dynamic buffers or small updates, use host memory mapping
-    if (dynamic_)
+    size_t dataSize = (size_t)indexCount_ * indexSize_;
+
+    // Use host memory mapping for all buffers
+    void* mappedData;
+    if (vmaMapMemory(impl->GetAllocator(), allocation, &mappedData) == VK_SUCCESS)
     {
-        void* mappedData;
-        if (vmaMapMemory(impl->GetAllocator(), allocation, &mappedData) == VK_SUCCESS)
-        {
-            memcpy(mappedData, shadowData_.Get(), (size_t)indexCount_ * indexSize_);
-            vmaUnmapMemory(impl->GetAllocator(), allocation);
-        }
-    }
-    else
-    {
-        // For static buffers, would need staging buffer transfer (to be implemented with better resource management)
-        // For now, use host-accessible memory for static buffers too
-        void* mappedData;
-        if (vmaMapMemory(impl->GetAllocator(), allocation, &mappedData) == VK_SUCCESS)
-        {
-            memcpy(mappedData, shadowData_.Get(), (size_t)indexCount_ * indexSize_);
-            vmaUnmapMemory(impl->GetAllocator(), allocation);
-        }
+        memcpy(mappedData, shadowData_.Get(), dataSize);
+        // CRITICAL: Flush memory to ensure GPU visibility on non-coherent memory
+        vmaFlushAllocation(impl->GetAllocator(), allocation, 0, dataSize);
+        vmaUnmapMemory(impl->GetAllocator(), allocation);
     }
 
     dataPending_ = false;
@@ -219,7 +209,44 @@ void IndexBuffer::Unlock_Vulkan()
     {
         // Copy scratch data back to shadow buffer if available
         if (shadowData_)
+        {
             memcpy(shadowData_.Get() + lockStart_ * indexSize_, lockScratchData_, lockCount_ * indexSize_);
+        }
+        else
+        {
+            // No shadow buffer - upload scratch data directly to GPU
+            if (object_.ptr_)
+            {
+                Graphics* graphics = GetSubsystem<Graphics>();
+                VulkanGraphicsImpl* impl = graphics ? graphics->GetImpl_Vulkan() : nullptr;
+                if (impl)
+                {
+                    VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
+                    void* mappedData;
+                    VkResult mapResult = vmaMapMemory(impl->GetAllocator(), allocation, &mappedData);
+                    if (mapResult == VK_SUCCESS)
+                    {
+                        size_t uploadSize = (size_t)lockCount_ * indexSize_;
+                        size_t uploadOffset = (size_t)lockStart_ * indexSize_;
+                        memcpy((byte*)mappedData + uploadOffset, lockScratchData_, uploadSize);
+                        vmaFlushAllocation(impl->GetAllocator(), allocation, uploadOffset, uploadSize);
+                        vmaUnmapMemory(impl->GetAllocator(), allocation);
+
+                        static int ibScratchLog = 0;
+                        if (ibScratchLog < 10)
+                        {
+                            URHO3D_LOGWARNING("[IB_SCRATCH_GPU] Upload OK: idxSize=" + String(indexSize_) +
+                                ", lockCount=" + String(lockCount_) + ", uploadSize=" + String((unsigned)uploadSize));
+                            ibScratchLog++;
+                        }
+                    }
+                    else
+                    {
+                        URHO3D_LOGERROR("[IB_SCRATCH_GPU] vmaMapMemory FAILED! VkResult=" + String((int)mapResult));
+                    }
+                }
+            }
+        }
 
         delete[](byte*)lockScratchData_;
         lockScratchData_ = nullptr;
@@ -228,7 +255,7 @@ void IndexBuffer::Unlock_Vulkan()
     lockState_ = LOCK_NONE;
     dataPending_ = true;
 
-    // Upload to GPU
+    // Upload to GPU (for shadow buffer path)
     UpdateToGPU_Vulkan();
 }
 

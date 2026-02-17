@@ -83,9 +83,24 @@ private:
     bool Create_D3D11();
 #endif // def URHO3D_D3D11
 
+#ifdef URHO3D_VULKAN
+    void OnDeviceLost_Vulkan();
+    void OnDeviceReset_Vulkan();
+    void Release_Vulkan();
+    bool SetData_Vulkan(CubeMapFace face, unsigned level, int x, int y, int width, int height, const void* data);
+    bool SetData_Vulkan(CubeMapFace face, Deserializer& source);
+    bool SetData_Vulkan(CubeMapFace face, Image* image, bool useAlpha = false);
+    bool GetData_Vulkan(CubeMapFace face, unsigned level, void* dest) const;
+    bool Create_Vulkan();
+#endif // def URHO3D_VULKAN
+
     /// Handle render surface update event.
     void HandleRenderSurfaceUpdate(StringHash eventType, VariantMap& eventData);
 
+#ifdef URHO3D_VULKAN
+    /// VMA allocation handle for Vulkan.
+    void* vmaAllocation_{};
+#endif
     /// Render surfaces.
     SharedPtr<RenderSurface> renderSurfaces_[MAX_CUBEMAP_FACES];
     /// Memory use per face.

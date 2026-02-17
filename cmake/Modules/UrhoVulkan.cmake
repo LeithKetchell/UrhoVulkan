@@ -59,7 +59,7 @@ else()
         message(STATUS "Found glslang for shader compilation (fallback)")
         set(URHO3D_GLSLANG TRUE CACHE BOOL "glslang shader compiler available" FORCE)
         set(SHADER_COMPILER_FOUND TRUE)
-        add_definitions(-DURHO3D_GLSLANG)
+        # Note: URHO3D_GLSLANG define is added via generated Urho3D.h, not command line
     else()
         message(WARNING "Neither shaderc nor glslang found. Runtime shader compilation will be disabled.")
         message(WARNING "Install Vulkan SDK (includes shaderc) or glslang library for shader compilation support.")

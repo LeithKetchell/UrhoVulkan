@@ -109,6 +109,16 @@ RenderSurface::RenderSurface(Texture* parentTexture)
         return;
     }
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+    {
+        parentTexture_ = parentTexture;
+        surface_ = nullptr;
+        readOnlyView_ = nullptr;
+        return;
+    }
+#endif
 }
 
 bool RenderSurface::CreateRenderBuffer(unsigned width, unsigned height, unsigned format, int multiSample)

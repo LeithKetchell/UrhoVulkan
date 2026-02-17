@@ -25,6 +25,8 @@
 
 #include <Urho3D/DebugNew.h>
 #include <Urho3D/Graphics/ProfilerUI.h>
+#include <Urho3D/Graphics/View.h>
+#include <Urho3D/Math/Frustum.h>
 
 URHO3D_DEFINE_APPLICATION_MAIN(MultipleViewports)
 
@@ -269,6 +271,15 @@ void MultipleViewports::MoveCamera(float timeStep)
     // Toggle debug geometry with space
     if (input->GetKeyPress(KEY_SPACE))
         drawDebug_ = !drawDebug_;
+
+    // Toggle occlusion culling on main camera with 'O' key
+    if (input->GetKeyPress(KEY_O))
+    {
+        Camera* mainCam = cameraNode_->GetComponent<Camera>();
+        ViewOverrideFlags flags = mainCam->GetViewOverrideFlags();
+        flags ^= VO_DISABLE_OCCLUSION;
+        mainCam->SetViewOverrideFlags(flags);
+    }
 }
 
 void MultipleViewports::HandleUpdate(StringHash eventType, VariantMap& eventData)
@@ -281,10 +292,44 @@ void MultipleViewports::HandleUpdate(StringHash eventType, VariantMap& eventData
     // Move the camera, scale movement with time step
     MoveCamera(timeStep);
 
-    // Update profiler display
+    // Update profiler display with culling diagnostics
     if (profilerUI_)
     {
         GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+
+        // Per-viewport culling stats
+        auto* renderer = GetSubsystem<Renderer>();
+        Camera* mainCam = cameraNode_->GetComponent<Camera>();
+        Camera* rearCam = rearCameraNode_->GetComponent<Camera>();
+        View* mainView = renderer->GetPreparedView(mainCam);
+        View* rearView = renderer->GetPreparedView(rearCam);
+        int mainGeoms = mainView ? (int)mainView->GetGeometries().Size() : -1;
+        int rearGeoms = rearView ? (int)rearView->GetGeometries().Size() : -1;
+        int pitch = (int)pitch_;
+        int yaw = (int)yaw_;
+
+        Camera* mainCamPtr = cameraNode_->GetComponent<Camera>();
+        bool occDisabled = (mainCamPtr->GetViewOverrideFlags() & VO_DISABLE_OCCLUSION) != 0;
+
+        // Frustum plane diagnostics
+        const Frustum& frustum = mainCam->GetFrustum();
+        const Plane& upPlane = frustum.planes_[PLANE_UP];
+        const Plane& downPlane = frustum.planes_[PLANE_DOWN];
+
+        // Test a ground-level point 20 units in front of camera
+        Vector3 camFwd = cameraNode_->GetWorldDirection();
+        Vector3 testPt = cameraNode_->GetWorldPosition() + Vector3(camFwd.x_, 0.0f, camFwd.z_).Normalized() * 20.0f;
+        testPt.y_ = 0.5f; // Ground level
+        Intersection testResult = frustum.IsInside(testPt);
+
+        String stats;
+        stats += "Pitch: " + String(pitch) + "  Yaw: " + String(yaw) + "\n";
+        stats += "Main geoms: " + String(mainGeoms) + "  Rear: " + String(rearGeoms) + "\n";
+        stats += "Occ: " + String(occDisabled ? "OFF" : "ON") + " (O key)\n";
+        stats += "UP n.y:" + String((int)(upPlane.normal_.y_ * 100)) + " DN n.y:" + String((int)(downPlane.normal_.y_ * 100)) + "\n";
+        stats += "TestPt(20m fwd,y=0.5): " + String(testResult == INSIDE ? "IN" : "OUT");
+        profilerUI_->SetCustomStats(stats);
+
         profilerUI_->Update();
     }
 }

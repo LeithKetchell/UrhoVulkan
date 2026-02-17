@@ -425,8 +425,14 @@ public:
     /// Return the shadowed pointlight indirection cube map.
     TextureCube* GetIndirectionCubeMap() const { return indirectionCubeMap_; }
 
-    /// Return the instancing vertex buffer.
-    VertexBuffer* GetInstancingBuffer() const { return dynamicInstancing_ ? instancingBuffer_.Get() : nullptr; }
+    /// Return the instancing vertex buffer for the current frame.
+    VertexBuffer* GetInstancingBuffer() const;
+    /// Return current frame instancing buffer offset (cumulative across views).
+    i32 GetFrameInstancingOffset() const { return frameInstancingOffset_; }
+    /// Advance the frame instancing buffer offset after a view fills its instances.
+    void AdvanceFrameInstancingOffset(i32 count) { frameInstancingOffset_ += count; }
+    /// Reset frame instancing offset at the start of each frame's render loop.
+    void ResetFrameInstancingOffset() { frameInstancingOffset_ = 0; }
 
     /// Return the frame update parameters.
     const FrameInfo& GetFrameInfo() const { return frame_; }
@@ -534,8 +540,8 @@ private:
     SharedPtr<Geometry> spotLightGeometry_;
     /// Point light volume geometry.
     SharedPtr<Geometry> pointLightGeometry_;
-    /// Instance stream vertex buffer.
-    SharedPtr<VertexBuffer> instancingBuffer_;
+    /// Instance stream vertex buffers (one per frame in flight for Vulkan synchronization).
+    Vector<SharedPtr<VertexBuffer>> instancingBuffers_;
     /// Default material.
     SharedPtr<Material> defaultMaterial_;
     /// Default range attenuation texture.
@@ -584,6 +590,8 @@ private:
     Vector<String> deferredLightPSVariations_;
     /// Frame info for rendering.
     FrameInfo frame_;
+    /// Cumulative instancing buffer offset across views within a single frame (prevents multi-view data overwrite).
+    i32 frameInstancingOffset_{0};
     /// Texture anisotropy level.
     int textureAnisotropy_{4};
     /// Texture filtering mode.

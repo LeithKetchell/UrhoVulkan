@@ -15,6 +15,10 @@
 #include "../../IO/Log.h"
 
 namespace Urho3D
+
+// Disable verbose debug logging for performance
+#define VULKAN_DEBUG_LOGGING 0
+
 {
 
 VkShaderModule VulkanShaderModule::CreateShaderModule(
@@ -39,7 +43,8 @@ VkShaderModule VulkanShaderModule::CreateShaderModule(
         return nullptr;
     }
 
-    URHO3D_LOGDEBUG("Shader module created, size: " + String(createInfo.codeSize) + " bytes");
+    // Disabled for performance - this happens per draw call
+    // URHO3D_LOGDEBUG("Shader module created, size: " + String(createInfo.codeSize) + " bytes");
     return shaderModule;
 }
 
@@ -76,7 +81,8 @@ bool VulkanShaderModule::GetOrCompileSPIRV(
             spirvBytecode.Push(spirvWords[i]);
         }
 
-        URHO3D_LOGDEBUG("Using cached SPIR-V bytecode for: " + variation->GetFullName());
+        // Disabled for performance - this happens per draw call
+        // URHO3D_LOGDEBUG("Using cached SPIR-V bytecode for: " + variation->GetFullName());
         return true;
     }
 
@@ -91,15 +97,11 @@ bool VulkanShaderModule::GetOrCompileSPIRV(
     ShaderType shaderType = variation->GetShaderType();
     String shaderSource = owner->GetSourceCode(shaderType);
 
-    fprintf(stderr, "GET_OR_COMPILE_SPIRV: variation=%s, type=%d, source length=%d\n",
-            variation->GetFullName().CString(), (int)shaderType, shaderSource.Length());
-    fprintf(stderr, "GET_OR_COMPILE_SPIRV: First 200 chars: %.200s\n", shaderSource.CString());
-    fprintf(stderr, "GET_OR_COMPILE_SPIRV: Checking for nulls in first 100 bytes: ");
-    const char* src = shaderSource.CString();
-    for (int i = 0; i < 100 && i < (int)shaderSource.Length(); ++i) {
-        if (src[i] == '\0') fprintf(stderr, "NULL@%d ", i);
-    }
-    fprintf(stderr, "\n");
+    // Disabled for performance - uncomment for debugging shader compilation
+    //         variation->GetFullName().CString(), (int)shaderType, shaderSource.Length());
+    // const char* src = shaderSource.CString();
+    // for (int i = 0; i < 100 && i < (int)shaderSource.Length(); ++i) {
+    // }
 
     if (shaderSource.Empty())
     {

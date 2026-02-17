@@ -21,6 +21,9 @@ namespace Urho3D
 /// Pipeline state for caching and reuse
 struct VulkanPipelineState
 {
+    // Primitive topology
+    PrimitiveType primitiveType = TRIANGLE_LIST;
+
     // Rasterization state
     CullMode cullMode = CULL_CCW;
     FillMode fillMode = FILL_SOLID;

@@ -452,7 +452,13 @@ bool DecalSet::AddDecal(Drawable* target, const Vector3& worldPosition, const Qu
     while (decals_.Size() && (numVertices_ > maxVertices_ || numIndices_ > maxIndices_))
         RemoveDecals(1);
 
-    URHO3D_LOGDEBUG("Added decal with " + String(newDecal.vertices_.Size()) + " vertices");
+    URHO3D_LOGWARNING("[DECAL_ADD] Added decal: " + String(newDecal.vertices_.Size()) + " verts, " +
+        String(newDecal.indices_.Size()) + " indices, totalVerts=" + String(numVertices_) +
+        ", totalIndices=" + String(numIndices_) +
+        ", firstPos=(" + String(newDecal.vertices_[0].position_.x_) + "," +
+        String(newDecal.vertices_[0].position_.y_) + "," + String(newDecal.vertices_[0].position_.z_) +
+        "), firstUV=(" + String(newDecal.vertices_[0].texCoord_.x_) + "," +
+        String(newDecal.vertices_[0].texCoord_.y_) + ")");
 
     // If new decal is time limited, subscribe to scene post-update
     if (newDecal.timeToLive_ > 0.0f && !subscribed_)
@@ -1047,6 +1053,33 @@ void DecalSet::UpdateBuffers()
     indexBuffer_->Unlock();
     indexBuffer_->ClearDataLost();
     bufferDirty_ = false;
+
+    // DIAGNOSTIC: Verify GPU buffer state after upload
+    URHO3D_LOGWARNING("[DECAL_BUF] UpdateBuffers complete: numVerts=" + String(numVertices_) +
+        ", numIndices=" + String(numIndices_) +
+        ", vbSize=" + String(vertexBuffer_->GetVertexCount()) +
+        ", vbStride=" + String(vertexBuffer_->GetVertexSize()) +
+        ", vbGPU=" + String(vertexBuffer_->GetGPUObject() ? "yes" : "no") +
+        ", vbShadow=" + String(vertexBuffer_->GetShadowData() ? "yes" : "no") +
+        ", ibSize=" + String(indexBuffer_->GetIndexCount()) +
+        ", ibGPU=" + String(indexBuffer_->GetGPUObject() ? "yes" : "no"));
+
+    // Dump first vertex data from GPU-mapped memory to verify upload
+    if (numVertices_ > 0 && vertexBuffer_->GetGPUObject())
+    {
+        // Read back from shadow data if available, else note it
+        if (vertexBuffer_->GetShadowData())
+        {
+            const float* vd = reinterpret_cast<const float*>(vertexBuffer_->GetShadowData());
+            URHO3D_LOGWARNING("[DECAL_BUF] V[0] pos=(" + String(vd[0]) + "," + String(vd[1]) + "," + String(vd[2]) +
+                ") norm=(" + String(vd[3]) + "," + String(vd[4]) + "," + String(vd[5]) +
+                ") uv=(" + String(vd[6]) + "," + String(vd[7]) + ")");
+        }
+        else
+        {
+            URHO3D_LOGWARNING("[DECAL_BUF] No shadow data - cannot verify uploaded vertex data from CPU side");
+        }
+    }
 }
 
 void DecalSet::UpdateSkinning()

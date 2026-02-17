@@ -9,10 +9,12 @@
 #ifdef URHO3D_VULKAN
 
 #include "VulkanShaderCompiler.h"
+#include "../../Graphics/Graphics.h"
 #include "../../IO/Log.h"
 #include <sstream>
 #include <algorithm>
 #include <fstream>
+#include <cstdlib>
 
 #include "../../DebugNew.h"
 
@@ -30,6 +32,9 @@
 
 namespace Urho3D
 {
+
+// Enable verbose shader compilation debugging (WARNING: Severely impacts performance)
+#define VULKAN_SHADER_DEBUG_LOGGING 0
 
 /// \brief Convert Urho3D shader type to Vulkan shader stage
 /// \param type Urho3D ShaderType enum (VS, PS, etc.)
@@ -106,16 +111,22 @@ bool VulkanShaderCompiler::CompileGLSLToSPIRV(
         return false;
     }
 
-    fprintf(stderr, "PREPROCESS: Original length=%d, Preprocessed length=%d\n",
+#if VULKAN_SHADER_DEBUG_LOGGING
             (int)source.Length(), (int)preprocessed.Length());
-    fprintf(stderr, "PREPROCESS: First 400 chars of preprocessed: %.400s\n", preprocessed.CString());
-    fprintf(stderr, "PREPROCESS: Hex dump of first 100 bytes:\n");
+#endif
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
     const char* prep = preprocessed.CString();
     for (int i = 0; i < 100 && i < (int)preprocessed.Length(); ++i) {
-        fprintf(stderr, "%02x ", (unsigned char)prep[i]);
-        if ((i+1) % 20 == 0) fprintf(stderr, "\n");
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
     }
-    fprintf(stderr, "\n");
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
 
     // Try shaderc first (preferred, faster, more modern)
 #ifdef URHO3D_SHADERC
@@ -152,47 +163,130 @@ bool VulkanShaderCompiler::CompileGLSLToSPIRV(
 /// to fix glslang auto-location mapping failures that generate invalid location 1073741823.
 /// Also adds layout(binding=N, set=0) to uniform samplers to fix descriptor binding collisions.
 /// Skips built-in variables (gl_Position, gl_FragColor, etc.) and already-qualified variables.
+/// Extract sampler name from a "uniform samplerXXX name;" declaration line
+static String ExtractSamplerName(const String& line)
+{
+    // Find the last token before the semicolon
+    unsigned semi = line.Find(';');
+    if (semi == String::NPOS) return String::EMPTY;
+    // Walk backwards from semicolon to find the name
+    String beforeSemi = line.Substring(0, semi).Trimmed();
+    unsigned lastSpace = beforeSemi.FindLast(' ');
+    if (lastSpace == String::NPOS) return String::EMPTY;
+    return beforeSemi.Substring(lastSpace + 1);
+}
+
+/// Fixed sampler name → binding map for Vulkan (must match Graphics_Vulkan.cpp unitToBinding[])
+static int GetSamplerBinding(const String& name)
+{
+    // PS samplers: fixed bindings matching TU_* → binding in Graphics_Vulkan.cpp
+    if (name == "sDiffMap")             return 100;
+    if (name == "sDiffCubeMap")         return 101;
+    if (name == "sNormalMap")           return 102;
+    if (name == "sSpecMap")             return 103;
+    if (name == "sEmissiveMap")         return 104;
+    if (name == "sEnvMap")              return 105;
+    if (name == "sEnvCubeMap")          return 106;
+    if (name == "sLightRampMap")        return 107;
+    if (name == "sLightSpotMap")        return 108;
+    if (name == "sLightCubeMap")        return 109;
+    if (name == "sVolumeMap")           return 110;
+    if (name == "sAlbedoBuffer")        return 111;
+    if (name == "sNormalBuffer")        return 112;
+    if (name == "sDepthBuffer")         return 113;
+    if (name == "sLightBuffer")         return 114;
+    if (name == "sShadowMap")           return 115;
+    if (name == "sFaceSelectCubeMap")   return 116;
+    if (name == "sIndirectionCubeMap")  return 117;
+    if (name == "sZoneCubeMap")         return 118;
+    if (name == "sZoneVolumeMap")       return 119;
+    // Terrain shader aliases (same texture units as standard samplers)
+    if (name == "sWeightMap0")          return 100;  // TU_DIFFUSE
+    if (name == "sDetailMap1")          return 102;  // TU_NORMAL
+    if (name == "sDetailMap2")          return 103;  // TU_SPECULAR
+    if (name == "sDetailMap3")          return 104;  // TU_EMISSIVE
+    return -1;  // Unknown sampler — will use sequential fallback
+}
+
 static String AddExplicitLayoutQualifiers(const String& source)
 {
     String result = source;
     int inputLocation = 0;
     int outputLocation = 0;
     int uniformBlockBinding = 0;  // Uniform blocks start at binding 0
-    int samplerBinding = 100;     // Samplers start at binding 100 (well separated from uniform blocks)
+    int samplerBinding = 100;     // Fallback for unknown samplers
 
     // Process line by line
     Vector<String> lines = result.Split('\n');
-    fprintf(stderr, "LAYOUT_DEBUG: Processing %u lines\n", lines.Size());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
+
+    bool insideInstanced = false;  // Track #ifdef INSTANCED blocks
 
     for (unsigned i = 0; i < lines.Size(); ++i)
     {
         String& line = lines[i];
         String trimmed = line.Trimmed();
 
+        // Track #ifdef INSTANCED blocks
+        if (trimmed.StartsWith("#ifdef INSTANCED"))
+            insideInstanced = true;
+        else if (insideInstanced && (trimmed.StartsWith("#endif") || trimmed.StartsWith("#elif") || trimmed.StartsWith("#else")))
+            insideInstanced = false;
+
         // Debug: show lines that contain "attribute" or "varying"
         if (trimmed.Contains("attribute") || trimmed.Contains("varying") || trimmed.Contains("fragData"))
         {
-            fprintf(stderr, "LAYOUT_DEBUG[%u]: Found candidate line: %s\n", i, trimmed.CString());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
         }
 
         // Skip comments, empty lines, and lines with existing layout qualifiers
-        if (trimmed.Empty() || trimmed.StartsWith("//") || trimmed.StartsWith("/*") ||
-            trimmed.Contains("layout(location"))
+        if (trimmed.Empty() || trimmed.StartsWith("//") || trimmed.StartsWith("/*"))
         {
-            if (trimmed.Contains("attribute") || trimmed.Contains("varying") || trimmed.Contains("fragData"))
-                fprintf(stderr, "LAYOUT_DEBUG[%u]: SKIPPED (empty/comment/has layout)\n", i);
+            continue;
+        }
+
+        // For lines with existing layout(location=N), advance our counters past N
+        // to avoid assigning duplicate locations to subsequent auto-numbered variables
+        // (e.g. iTexCoord4 at location 10 inside #ifdef INSTANCED vs iObjectIndex after #endif)
+        if (trimmed.Contains("layout(location"))
+        {
+            unsigned pos = trimmed.Find("location");
+            if (pos != String::NPOS)
+            {
+                unsigned eqPos = trimmed.Find("=", pos);
+                if (eqPos != String::NPOS)
+                {
+                    unsigned numStart = eqPos + 1;
+                    while (numStart < trimmed.Length() && trimmed[numStart] == ' ')
+                        ++numStart;
+                    int loc = atoi(trimmed.CString() + numStart);
+                    bool lineIsInput = (trimmed.Contains(" in ") || trimmed.StartsWith("in "));
+                    bool lineIsOutput = (trimmed.Contains(" out ") || trimmed.StartsWith("out "));
+                    if (lineIsInput && loc >= inputLocation)
+                        inputLocation = loc + 1;
+                    if (lineIsOutput && loc >= outputLocation)
+                        outputLocation = loc + 1;
+                }
+            }
             continue;
         }
 
         // Check for 'in' or 'out' variable declarations (not in function parameters)
-        // Also handle 'attribute' (input) and 'varying' (input/output depending on shader stage)
-        bool isInput = (trimmed.StartsWith("in ") || trimmed.Contains(" in ") || trimmed.StartsWith("attribute "));
-        bool isOutput = (trimmed.StartsWith("out ") || trimmed.Contains(" out ") || trimmed.StartsWith("varying "));
+        // 'varying' is treated as INPUT for location assignment because:
+        //   - In PS: #define varying in → becomes input, uses inputLocation
+        //   - In VS: #define varying out → becomes output, but VS output locations
+        //     must match PS input locations, so using inputLocation is correct
+        // This ensures 'out vec4 fragData[N]' gets outputLocation=0 for MRT rendering
+        bool isInput = (trimmed.StartsWith("in ") || trimmed.Contains(" in ") || trimmed.StartsWith("attribute ") || trimmed.StartsWith("varying "));
+        bool isOutput = (trimmed.StartsWith("out ") || trimmed.Contains(" out "));
 
         if (trimmed.Contains("attribute") || trimmed.Contains("varying") || trimmed.Contains("fragData"))
         {
-            fprintf(stderr, "LAYOUT_DEBUG[%u]: isInput=%d, isOutput=%d, hasSemicolon=%d\n",
+#if VULKAN_SHADER_DEBUG_LOGGING
                     i, isInput, isOutput, trimmed.Contains(";"));
+#endif
         }
 
         if ((isInput || isOutput) && trimmed.Contains(";"))
@@ -201,7 +295,8 @@ static String AddExplicitLayoutQualifiers(const String& source)
             if (trimmed.Contains("gl_") || trimmed.Contains("uniform"))
             {
                 if (trimmed.Contains("attribute") || trimmed.Contains("varying") || trimmed.Contains("fragData"))
-                    fprintf(stderr, "LAYOUT_DEBUG[%u]: SKIPPED (gl_/uniform)\n", i);
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
                 continue;
             }
 
@@ -209,24 +304,32 @@ static String AddExplicitLayoutQualifiers(const String& source)
             if (isInput && !isOutput)
             {
                 line = "layout(location = " + String(inputLocation++) + ") " + trimmed;
-                fprintf(stderr, "LAYOUT: Added input location to: %s\n", line.CString());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
             }
             else if (isOutput && !isInput)
             {
                 line = "layout(location = " + String(outputLocation++) + ") " + trimmed;
-                fprintf(stderr, "LAYOUT: Added output location to: %s\n", line.CString());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
             }
         }
 
-        // NEW: Handle uniform sampler declarations (add binding qualifiers)
-        // Match: "uniform sampler2D name;" or "uniform samplerCube name;" etc.
+        // Handle uniform sampler declarations (add binding qualifiers)
+        // Uses fixed name→binding map so #ifdef branches don't shift binding numbers
         if (trimmed.StartsWith("uniform sampler") && trimmed.Contains(";") &&
             !trimmed.Contains("layout(binding"))
         {
-            // This is a sampler without a binding qualifier
-            // Add layout(binding=N, set=0) before the uniform keyword
-            line = "layout(binding = " + String(samplerBinding++) + ", set = 0) " + trimmed;
-            fprintf(stderr, "LAYOUT: Added sampler binding to: %s\n", line.CString());
+            String samplerName = ExtractSamplerName(trimmed);
+            int binding = GetSamplerBinding(samplerName);
+            if (binding < 0)
+            {
+                // Unknown sampler — use sequential fallback
+                binding = samplerBinding++;
+            }
+            line = "layout(binding = " + String(binding) + ", set = 0) " + trimmed;
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
         }
 
         // NEW: Handle uniform block declarations (add unique binding)
@@ -237,7 +340,8 @@ static String AddExplicitLayoutQualifiers(const String& source)
         {
             // This is a uniform block opening - assign unique binding
             line = "layout(binding = " + String(uniformBlockBinding++) + ", set = 0) " + trimmed;
-            fprintf(stderr, "LAYOUT: Added uniform block binding to: %s\n", line.CString());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
         }
     }
 
@@ -289,8 +393,10 @@ bool VulkanShaderCompiler::PreprocessShader(
     String& preprocessed,
     String& compilerOutput)
 {
-    fprintf(stderr, "PREPROCESS: Input source length=%d\n", (int)source.Length());
-    fprintf(stderr, "PREPROCESS: First 200 chars: %.200s\n", source.CString());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
 
     // Start with base preprocessing
     preprocessed = source;
@@ -304,12 +410,29 @@ bool VulkanShaderCompiler::PreprocessShader(
         size_t lineEnd = preprocessed.Find("\n", versionPos);
         if (lineEnd == String::NPOS)
             lineEnd = preprocessed.Length();
-        preprocessed = "#version 450\n" + preprocessed.Substring(lineEnd + 1);
+        preprocessed = "#version 450\n#extension GL_EXT_spec_constant_composites : enable\n" + preprocessed.Substring(lineEnd + 1);
     }
     else
     {
         // No version directive, add #version 450
-        preprocessed = "#version 450\n" + preprocessed;
+        preprocessed = "#version 450\n#extension GL_EXT_spec_constant_composites : enable\n" + preprocessed;
+    }
+
+    // Inject defines that must be present BEFORE #include expansion,
+    // since Uniforms.glsl checks these with #if !defined(GL3) || !defined(USE_CBUFFERS)
+    {
+        String preamble;
+        preamble += "#define GL3\n";
+        preamble += "#define USE_CBUFFERS\n";
+        preamble += "#define MAXBONES " + String(Graphics::GetMaxBones()) + "\n";
+
+        // Insert after #version and #extension lines (find second newline)
+        size_t firstNL = preprocessed.Find("\n");
+        size_t secondNL = (firstNL != String::NPOS) ? preprocessed.Find("\n", firstNL + 1) : String::NPOS;
+        if (secondNL != String::NPOS)
+            preprocessed = preprocessed.Substring(0, secondNL + 1) + preamble + preprocessed.Substring(secondNL + 1);
+        else
+            preprocessed = preamble + preprocessed;
     }
 
     // Process #include directives by expanding them inline
@@ -318,7 +441,8 @@ bool VulkanShaderCompiler::PreprocessShader(
     String result;
     size_t pos = 0;
     size_t includePos = preprocessed.Find("#include");
-    fprintf(stderr, "PREPROCESS: Looking for includes, first found at pos=%d\n", (int)includePos);
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
 
     while (includePos != String::NPOS)
     {
@@ -350,20 +474,23 @@ bool VulkanShaderCompiler::PreprocessShader(
 
             // Load include file from bin/CoreData/Shaders/GLSL/ directory
             String includePath = "bin/CoreData/Shaders/GLSL/" + includeFilename;
-            fprintf(stderr, "INCLUDE: Trying to load: %s\n", includePath.CString());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
             std::ifstream includeFile(includePath.CString());
             if (includeFile.is_open())
             {
                 std::string includeContent((std::istreambuf_iterator<char>(includeFile)),
                                           std::istreambuf_iterator<char>());
                 result += String(includeContent.c_str());
-                fprintf(stderr, "INCLUDE: Loaded successfully, size=%d bytes\n", (int)includeContent.size());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
                 includeFile.close();
             }
             else
             {
                 // Fallback: preserve #include if file not found
-                fprintf(stderr, "INCLUDE: File not found, preserving directive\n");
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
                 result += includeLine;
             }
         }
@@ -382,34 +509,17 @@ bool VulkanShaderCompiler::PreprocessShader(
     result += preprocessed.Substring(pos);
     preprocessed = result;
 
-    fprintf(stderr, "PREPROCESS: About to add layout qualifiers, source length=%d\n", (int)preprocessed.Length());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
 
     // Add explicit layout qualifiers for Vulkan compatibility AFTER includes are expanded
     // This fixes the "Location 1073741823" issue where auto-mapping fails
     preprocessed = AddExplicitLayoutQualifiers(preprocessed);
 
-    fprintf(stderr, "PREPROCESS: Layout qualifiers added, new length=%d\n", (int)preprocessed.Length());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
 
-    // DEBUG: Dump preprocessed shader with layout qualifiers to file for inspection
-    static int dumpCounter = 0;
-    String dumpPath = "/tmp/shader_preprocessed_" + String(dumpCounter++) + ".glsl";
-    FILE* dumpFile = fopen(dumpPath.CString(), "w");
-    if (dumpFile) {
-        fwrite(preprocessed.CString(), 1, preprocessed.Length(), dumpFile);
-        fclose(dumpFile);
-        fprintf(stderr, "PREPROCESS: Dumped preprocessed shader to %s\n", dumpPath.CString());
-    }
 
-    // DEBUG: Dump preprocessed shader with layout qualifiers for inspection
-    static int shaderDumpCount = 0;
-    if (shaderDumpCount++ < 2) {
-        char filename[256];
-        snprintf(filename, sizeof(filename), "/tmp/shader_with_layout_%d.glsl", shaderDumpCount);
-        std::ofstream shaderDump(filename);
-        shaderDump << preprocessed.CString();
-        shaderDump.close();
-        fprintf(stderr, "PREPROCESS: Dumped shader to %s (%d bytes)\n", filename, (int)preprocessed.Length());
-    }
 
     compilerOutput.Clear();
     return true;
@@ -431,6 +541,20 @@ bool VulkanShaderCompiler::CompileWithShaderc(
 
         // Set optimization level
         options.SetOptimizationLevel(shaderc_optimization_level_performance);
+
+        // Add MAXBONES for skeletal animation shaders
+        String maxBonesStr = String(Graphics::GetMaxBones());
+        options.AddMacroDefinition("MAXBONES", maxBonesStr.CString());
+
+        // Add GL3 and USE_CBUFFERS defines (matches glslang path)
+        options.AddMacroDefinition("GL3", "1");
+        options.AddMacroDefinition("USE_CBUFFERS", "1");
+
+        // Add shader type define (COMPILEVS or COMPILEPS)
+        if (type == VS)
+            options.AddMacroDefinition("COMPILEVS", "1");
+        else if (type == PS)
+            options.AddMacroDefinition("COMPILEPS", "1");
 
         // Add shader defines
         if (!defines.Empty())
@@ -493,6 +617,20 @@ bool VulkanShaderCompiler::CompileWithShaderc(
             return false;
         }
 
+        // DEBUG: Dump INSTANCED vertex shaders for location verification
+        if (type == VS && defines.Contains("INSTANCED"))
+        {
+            String dumpPath = "/tmp/instanced_vs.spv";
+            FILE* f = fopen(dumpPath.CString(), "wb");
+            if (f)
+            {
+                fwrite(&spirvBytecode[0], sizeof(uint32_t), spirvBytecode.Size(), f);
+                fclose(f);
+                URHO3D_LOGINFO("[SPIRV_DUMP] Wrote " + String(spirvBytecode.Size() * 4) +
+                               " bytes to " + dumpPath + " (defines: " + defines + ")");
+            }
+        }
+
         compilerOutput = "Success: Compiled to " + String(spirvBytecode.Size() * 4) + " bytes";
         return true;
     }
@@ -524,13 +662,6 @@ bool VulkanShaderCompiler::CompileWithGlslang(
     Vector<uint32_t>& spirvBytecode,
     String& compilerOutput)
 {
-    // DEBUG: Check if source has layout qualifiers
-    fprintf(stderr, "GLSLANG_INPUT: Source length=%d, has layout qualifiers: %s\n",
-            (int)source.Length(), source.Contains("layout(location") ? "YES" : "NO");
-    if (source.Contains("layout(location")) {
-        fprintf(stderr, "GLSLANG_INPUT: First layout qualifier found at position %d\n",
-                (int)source.Find("layout(location"));
-    }
 
     try
     {
@@ -551,14 +682,20 @@ bool VulkanShaderCompiler::CompileWithGlslang(
         glslang::TShader shader(stage);
 
         // Set environment FIRST (before setting strings)
-        // Use Vulkan mode for proper SPIR-V generation
-        // GLSL version 450 matches our #version 330 with GL3 defines (GLSL 330 -> GLSL 450 for Vulkan)
+        // Must use Vulkan client for correct SPIR-V (VertexIndex, OriginUpperLeft)
+        // Standalone uniforms (CUSTOM_MATERIAL_CBUFFER) will fail — that's a known limitation
         shader.setEnvInput(glslang::EShSourceGlsl, stage, glslang::EShClientVulkan, 450);
-        shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
-        shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
+        shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_1);
+        shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_3);
 
         // DISABLE auto-location mapping since we now add explicit layout(location=N) qualifiers
         shader.setAutoMapLocations(false);
+
+        // Override resource limits — default OpenGL limits are too low for our binding scheme (100+)
+        TBuiltInResource resources = *GetDefaultResources();
+        resources.maxCombinedTextureImageUnits = 256;
+        resources.maxTextureUnits = 256;
+        resources.maxTextureImageUnits = 256;
 
         // Auto-binding control:
         // - true: Compiler assigns bindings automatically (may or may not be unique)
@@ -583,6 +720,9 @@ bool VulkanShaderCompiler::CompileWithGlslang(
             definesBlock += "#define COMPILEVS\n";
         else if (type == PS)
             definesBlock += "#define COMPILEPS\n";
+
+        // Add MAXBONES for skeletal animation shaders
+        definesBlock += "#define MAXBONES " + String(Graphics::GetMaxBones()) + "\n";
 
         // Add user-provided defines
         if (!defines.Empty())
@@ -616,22 +756,12 @@ bool VulkanShaderCompiler::CompileWithGlslang(
                 // No #version found, prepend defines at the start
                 sourceWithDefines = definesBlock + sourceWithDefines;
             }
-            fprintf(stderr, "DEFINES: Inserted at position after #version, defines were: COMPILEVS/PS + %s\n", defines.CString());
+#if VULKAN_SHADER_DEBUG_LOGGING
+#endif
         }
 
         // Set shader source strings
         const char* shaderCString = sourceWithDefines.CString();
-        fprintf(stderr, "GLSLANG: Source length=%d, stage=%d\n", (int)sourceWithDefines.Length(), (int)stage);
-
-        // DEBUG: Write shader source to file for inspection
-        static int shaderCount = 0;
-        String debugPath = "/tmp/shader_with_defines_" + String(shaderCount++) + ".glsl";
-        std::ofstream debugFile(debugPath.CString());
-        if (debugFile.is_open()) {
-            debugFile << shaderCString;
-            debugFile.close();
-            fprintf(stderr, "GLSLANG: Wrote shader source to %s\n", debugPath.CString());
-        }
 
         shader.setStrings(&shaderCString, 1);
 
@@ -639,9 +769,18 @@ bool VulkanShaderCompiler::CompileWithGlslang(
         // EShMsgRelaxedErrors allows auto-assignment of input/output locations
         // Note: Removed EShMsgVulkanRules to allow OpenGL-style standalone uniforms (not in blocks)
         EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgSuppressWarnings | EShMsgRelaxedErrors);
-        if (!shader.parse(GetDefaultResources(), 330, false, messages))
+        if (!shader.parse(&resources, 330, false, messages))
         {
             compilerOutput = String(shader.getInfoLog()) + "\n" + String(shader.getInfoDebugLog());
+            // Dump failing source for debugging
+            static int failDump = 0;
+            if (failDump < 3)
+            {
+                String dumpFile = "/tmp/shader_fail_" + String(failDump) + ".glsl";
+                std::ofstream dump(dumpFile.CString());
+                if (dump.is_open()) { dump << shaderCString; dump.close(); }
+                failDump++;
+            }
             URHO3D_LOGERROR("glslang shader parsing failed: " + compilerOutput);
             return false;
         }
@@ -657,26 +796,16 @@ bool VulkanShaderCompiler::CompileWithGlslang(
             return false;
         }
 
-        // Translate to SPIR-V
+        // Translate to SPIR-V with optimization enabled
         std::vector<uint32_t> spirvTemp;
-        glslang::GlslangToSpv(*program.getIntermediate(stage), spirvTemp);
+        glslang::SpvOptions options;
+        options.disableOptimizer = false;  // Enable dead code elimination
+        glslang::GlslangToSpv(*program.getIntermediate(stage), spirvTemp, &options);
 
         if (spirvTemp.empty())
         {
             compilerOutput = "Error: SPIR-V generation produced empty bytecode";
             return false;
-        }
-
-        // DEBUG: Dump SPIR-V for inspection (always dump first 2 shaders per run)
-        static int spirvDumpCount = 0;
-        if (spirvDumpCount < 2) {
-            char filename[256];
-            snprintf(filename, sizeof(filename), "/tmp/shader_%s_%d.spv", type == VS ? "vertex" : "fragment", spirvDumpCount);
-            std::ofstream spirvDump(filename, std::ios::binary);
-            spirvDump.write((const char*)spirvTemp.data(), spirvTemp.size() * 4);
-            spirvDump.close();
-            fprintf(stderr, "GLSLANG: Dumped SPIR-V to %s (%zu bytes)\n", filename, spirvTemp.size() * 4);
-            spirvDumpCount++;
         }
 
         // Copy to Urho3D Vector

@@ -9,6 +9,7 @@
 #ifdef URHO3D_VULKAN
 
 #include "../Texture2D.h"
+#include "../TextureCube.h"
 #include "../../Graphics/Graphics.h"
 #include "../../IO/Log.h"
 #include "../../Resource/Image.h"
@@ -94,7 +95,12 @@ bool Texture2D::Create_Vulkan()
         return false;
 
     // Calculate mipmap levels
-    levels_ = CheckMaxLevels(width_, height_, requestedLevels_);
+    // For render targets, force 1 mip level since we don't regenerate mipmaps after rendering
+    // (OpenGL uses glGenerateMipmap; Vulkan equivalent vkCmdBlitImage not yet implemented)
+    if (usage_ == TEXTURE_RENDERTARGET || usage_ == TEXTURE_DEPTHSTENCIL)
+        levels_ = 1;
+    else
+        levels_ = CheckMaxLevels(width_, height_, requestedLevels_);
 
     // Map Urho3D format to Vulkan format
     VkFormat vkFormat = GetVulkanFormat(format_);
@@ -111,6 +117,10 @@ bool Texture2D::Create_Vulkan()
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (usage_ == TEXTURE_RENDERTARGET)
+        imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    else if (usage_ == TEXTURE_DEPTHSTENCIL)
+        imageInfo.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -182,9 +192,24 @@ bool Texture2D::Create_Vulkan()
     viewInfo.image = image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = vkFormat;
-    viewInfo.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    // Component swizzle for single-channel textures (fonts/alpha maps)
+    // R8 format: Map red channel to all RGB channels for grayscale, and to alpha for font rendering
+    if (vkFormat == VK_FORMAT_R8_UNORM || vkFormat == VK_FORMAT_R8_SRGB)
+    {
+        // For single-channel textures, replicate R to all channels: (R,R,R,R)
+        // This makes grayscale textures work correctly and fonts use alpha from red channel
+        viewInfo.components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
+                                VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R};
+    }
+    else
+    {
+        // For multi-channel textures, use identity mapping
+        viewInfo.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+    }
+    viewInfo.subresourceRange.aspectMask = (usage_ == TEXTURE_DEPTHSTENCIL)
+        ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = levels_;
     viewInfo.subresourceRange.baseArrayLayer = 0;
@@ -209,11 +234,12 @@ bool Texture2D::Create_Vulkan()
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 
     // Map filter mode (handle FILTER_DEFAULT by using graphics default)
-    // NOTE: Anisotropy is disabled because samplerAnisotropy device feature is VK_FALSE
-    // TODO: Query physical device features and enable if supported
     TextureFilterMode effectiveFilterMode = filterMode_;
     if (effectiveFilterMode == FILTER_DEFAULT)
         effectiveFilterMode = graphics_->GetDefaultTextureFilterMode();
+
+    URHO3D_LOGDEBUG("Create_Vulkan sampler: filterMode_=" + String((int)filterMode_) +
+                    " effective=" + String((int)effectiveFilterMode));
 
     switch (effectiveFilterMode)
     {
@@ -239,12 +265,24 @@ bool Texture2D::Create_Vulkan()
         samplerInfo.maxAnisotropy = 1.0f;
         break;
     case FILTER_ANISOTROPIC:
-        // Fallback to trilinear since anisotropy is not enabled on device
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        samplerInfo.anisotropyEnable = VK_FALSE;
-        samplerInfo.maxAnisotropy = 1.0f;
+        {
+            unsigned maxAniso = anisotropy_ ? anisotropy_ : graphics_->GetDefaultTextureAnisotropy();
+            samplerInfo.anisotropyEnable = VK_TRUE;
+            samplerInfo.maxAnisotropy = static_cast<float>(maxAniso);
+        }
+        break;
+    case FILTER_NEAREST_ANISOTROPIC:
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        {
+            unsigned maxAniso = anisotropy_ ? anisotropy_ : graphics_->GetDefaultTextureAnisotropy();
+            samplerInfo.anisotropyEnable = VK_TRUE;
+            samplerInfo.maxAnisotropy = static_cast<float>(maxAniso);
+        }
         break;
     default:
         samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -272,8 +310,8 @@ bool Texture2D::Create_Vulkan()
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 
     samplerInfo.mipLodBias = 0.0f;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.compareOp = VK_COMPARE_OP_NEVER;
+    samplerInfo.compareEnable = shadowCompare_ ? VK_TRUE : VK_FALSE;
+    samplerInfo.compareOp = shadowCompare_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_NEVER;
     samplerInfo.minLod = 0.0f;
     samplerInfo.maxLod = (float)levels_;
     samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
@@ -292,20 +330,40 @@ bool Texture2D::Create_Vulkan()
     sampler_ = vkSampler;
     dataPending_ = true;
 
+    // RTT: Create single-mip image view for framebuffer attachment
+    if (renderSurface_ && (usage_ == TEXTURE_RENDERTARGET || usage_ == TEXTURE_DEPTHSTENCIL))
+    {
+        if (levels_ == 1)
+        {
+            renderSurface_->renderTargetView_ = imageView;
+        }
+        else
+        {
+            VkImageViewCreateInfo rtViewInfo{};
+            rtViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            rtViewInfo.image = image;
+            rtViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            rtViewInfo.format = vkFormat;
+            rtViewInfo.subresourceRange.aspectMask = (usage_ == TEXTURE_DEPTHSTENCIL)
+                ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+            rtViewInfo.subresourceRange.baseMipLevel = 0;
+            rtViewInfo.subresourceRange.levelCount = 1;
+            rtViewInfo.subresourceRange.baseArrayLayer = 0;
+            rtViewInfo.subresourceRange.layerCount = 1;
+
+            VkImageView rtView;
+            if (vkCreateImageView(impl->GetDevice(), &rtViewInfo, nullptr, &rtView) == VK_SUCCESS)
+                renderSurface_->renderTargetView_ = rtView;
+            else
+                renderSurface_->renderTargetView_ = imageView;  // Fallback
+        }
+    }
+
     return true;
 }
 
 bool Texture2D::SetData_Vulkan(unsigned level, int x, int y, int width, int height, const void* data)
 {
-    // Track texture upload count for debugging
-    static int textureUploadCount = 0;
-    textureUploadCount++;
-    URHO3D_LOGINFO(String("========== TEXTURE UPLOAD #") + String(textureUploadCount) + " ==========");
-
-    URHO3D_LOGINFO("SetData_Vulkan(raw): level=" + String(level) + ", region=" + String(x) + "," +
-                   String(y) + "," + String(width) + "x" + String(height) +
-                   ", tex_size=" + String(width_) + "x" + String(height_) +
-                   ", levels=" + String(levels_) + ", format=" + String(format_));
 
     if (!data)
         return false;
@@ -366,7 +424,8 @@ bool Texture2D::SetData_Vulkan(unsigned level, int x, int y, int width, int heig
     // Transition image layout: UNDEFINED -> TRANSFER_DST_OPTIMAL
     // Note: Using UNDEFINED as source means we don't care about previous contents,
     // which is correct for texture uploads (we're overwriting the data anyway)
-    impl->TransitionImageLayout(commandBuffer, image, VK_FORMAT_R8G8B8A8_SRGB,
+    VkFormat vkFormat = GetVulkanFormat(format_);
+    impl->TransitionImageLayout(commandBuffer, image, vkFormat,
                                VK_IMAGE_LAYOUT_UNDEFINED,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                1);
@@ -396,6 +455,9 @@ bool Texture2D::SetData_Vulkan(unsigned level, int x, int y, int width, int heig
     // Copy texture data to staging buffer
     memcpy(allocationInfo.pMappedData, data, dataSize);
 
+    // DEBUG: Print first few pixels of RGBA textures to verify color data
+    // Debug: pixel data logging removed
+
     // Record buffer-to-image copy command
     VkBufferImageCopy region{};
     region.bufferOffset = 0;
@@ -412,7 +474,7 @@ bool Texture2D::SetData_Vulkan(unsigned level, int x, int y, int width, int heig
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     // Transition image layout: TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
-    impl->TransitionImageLayout(commandBuffer, image, VK_FORMAT_R8G8B8A8_SRGB,
+    impl->TransitionImageLayout(commandBuffer, image, vkFormat,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                1);
@@ -507,6 +569,17 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
         URHO3D_LOGDEBUG("SetData_Vulkan: using VkFormat=" + String(format) + " for " + String(components) + " components (Graphics::Get*Format not implemented for Vulkan)");
     }
 
+    // For compressed textures, limit mip levels to what's actually in the file
+    if (image->IsCompressed())
+    {
+        unsigned numCompressedLevels = image->GetNumCompressedLevels();
+        if (numCompressedLevels > 0)
+        {
+            requestedLevels_ = numCompressedLevels;
+            URHO3D_LOGDEBUG("SetData_Vulkan: Compressed texture, setting requestedLevels_=" + String(numCompressedLevels));
+        }
+    }
+
     // Set texture size if not already set (this sets format_)
     if (!width_ || !height_)
     {
@@ -541,6 +614,21 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
                    ", format=" + String((unsigned)format_));
 
     URHO3D_LOGDEBUG("SetData_Vulkan: About to get image data");
+
+    // Vulkan doesn't support 3-component (RGB) texture formats on most hardware.
+    // GetRGBFormat_Vulkan() returns VK_FORMAT_R8G8B8A8_UNORM, so the VkImage is RGBA.
+    // If the source image has fewer than 4 components, convert it to RGBA so the data
+    // matches the texture format. Without this, memcpy reads past the source buffer.
+    SharedPtr<Image> convertedImage;
+    if (!image->IsCompressed() && components == 3)
+    {
+        URHO3D_LOGDEBUG("SetData_Vulkan: Converting " + String(components) + "-component image to RGBA");
+        convertedImage = image->ConvertToRGBA();
+        if (convertedImage)
+            image = convertedImage;
+        else
+            URHO3D_LOGWARNING("SetData_Vulkan: ConvertToRGBA failed, proceeding with original data");
+    }
 
     // Get image data
     unsigned char* data = image->GetData();
@@ -613,6 +701,12 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
     levelHeight = height;
 
     SharedPtr<Image> currentLevel(image);
+    unsigned numCompressedLevels = image->GetNumCompressedLevels();
+    bool isCompressed = image->IsCompressed();
+
+    URHO3D_LOGDEBUG("SetData_Vulkan: Loading " + String(levels_) + " mip levels, image has " +
+                   String(numCompressedLevels) + " compressed levels, isCompressed=" + String(isCompressed));
+
     for (unsigned level = 0; level < levels_; ++level)
     {
         unsigned levelSize = GetDataSize(levelWidth, levelHeight);
@@ -620,21 +714,29 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
         if (level == 0)
         {
             // Copy base level from image data
+            URHO3D_LOGDEBUG("  Level " + String(level) + ": Copying base level, size=" + String(levelSize));
             memcpy(stagingData + offset, data, levelSize);
         }
-        else if (image->GetNumCompressedLevels() > level)
+        else if (numCompressedLevels > level)
         {
             // Use precomputed mip level from compressed image
             CompressedLevel compLevel = image->GetCompressedLevel(level);
+            URHO3D_LOGDEBUG("  Level " + String(level) + ": Using compressed level, has_data=" +
+                           String(compLevel.data_ != nullptr) + ", size=" + String(levelSize));
             if (compLevel.data_)
                 memcpy(stagingData + offset, compLevel.data_, levelSize);
         }
-        else if (currentLevel)
+        else if (!isCompressed && currentLevel)
         {
-            // Generate mip level by downsampling
+            // Generate mip level by downsampling (only for uncompressed textures)
+            URHO3D_LOGDEBUG("  Level " + String(level) + ": Generating mip level from previous");
             currentLevel = currentLevel->GetNextLevel();
             if (currentLevel && currentLevel->GetData())
                 memcpy(stagingData + offset, currentLevel->GetData(), levelSize);
+        }
+        else
+        {
+            URHO3D_LOGWARNING("  Level " + String(level) + ": No mip data available, leaving blank");
         }
 
         offset += levelSize;
@@ -858,6 +960,121 @@ bool Texture::IsCompressed_Vulkan() const
     }
 }
 
+void Texture::UpdateParameters_Vulkan()
+{
+    if (!parametersDirty_)
+        return;
+
+    parametersDirty_ = false;
+
+    // Recreate sampler with current parameters (filter mode, address mode, shadow compare, etc.)
+    // Vulkan samplers are immutable — must destroy and recreate when parameters change
+    auto* graphics = GetSubsystem<Graphics>();
+    if (!graphics)
+        return;
+
+    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
+    if (!impl || !impl->GetDevice())
+        return;
+
+    // Destroy old sampler
+    if (sampler_)
+    {
+        vkDestroySampler(impl->GetDevice(), (VkSampler)sampler_, nullptr);
+        sampler_ = nullptr;
+    }
+
+    // Recreate sampler with current parameters
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+
+    TextureFilterMode effectiveFilterMode = filterMode_;
+    if (effectiveFilterMode == FILTER_DEFAULT)
+        effectiveFilterMode = graphics->GetDefaultTextureFilterMode();
+
+    switch (effectiveFilterMode)
+    {
+    case FILTER_NEAREST:
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+        break;
+    case FILTER_BILINEAR:
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+        break;
+    case FILTER_TRILINEAR:
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+        break;
+    case FILTER_ANISOTROPIC:
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        {
+            unsigned maxAniso = anisotropy_ ? anisotropy_ : graphics->GetDefaultTextureAnisotropy();
+            samplerInfo.anisotropyEnable = VK_TRUE;
+            samplerInfo.maxAnisotropy = static_cast<float>(maxAniso);
+        }
+        break;
+    case FILTER_NEAREST_ANISOTROPIC:
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        {
+            unsigned maxAniso = anisotropy_ ? anisotropy_ : graphics->GetDefaultTextureAnisotropy();
+            samplerInfo.anisotropyEnable = VK_TRUE;
+            samplerInfo.maxAnisotropy = static_cast<float>(maxAniso);
+        }
+        break;
+    default:
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+    }
+
+    VkSamplerAddressMode addressModes[] = {
+        VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
+    };
+
+    unsigned uMode = addressModes_[COORD_U] < MAX_ADDRESSMODES ? addressModes_[COORD_U] : ADDRESS_WRAP;
+    unsigned vMode = addressModes_[COORD_V] < MAX_ADDRESSMODES ? addressModes_[COORD_V] : ADDRESS_WRAP;
+
+    samplerInfo.addressModeU = addressModes[uMode];
+    samplerInfo.addressModeV = addressModes[vMode];
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.compareEnable = shadowCompare_ ? VK_TRUE : VK_FALSE;
+    samplerInfo.compareOp = shadowCompare_ ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_NEVER;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = (float)levels_;
+    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+
+    VkSampler vkSampler;
+    if (vkCreateSampler(impl->GetDevice(), &samplerInfo, nullptr, &vkSampler) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("UpdateParameters_Vulkan: Failed to recreate sampler");
+        return;
+    }
+
+    sampler_ = vkSampler;
+}
+
 bool Texture::GetParametersDirty_Vulkan() const
 {
     return parametersDirty_;
@@ -970,6 +1187,551 @@ void Texture::RegenerateLevels_Vulkan()
         0, 0, nullptr, 0, nullptr, 1, &barrier);
 
     levelsDirty_ = false;
+}
+
+// ============================================================================
+// TextureCube Vulkan Implementation
+// ============================================================================
+
+// Helper: transition a single cube face (array layer) between image layouts
+static void TransitionCubeFaceLayout(VkCommandBuffer cmd, VkImage image,
+    uint32_t face, uint32_t mipLevels,
+    VkImageLayout oldLayout, VkImageLayout newLayout)
+{
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = mipLevels;
+    barrier.subresourceRange.baseArrayLayer = face;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkPipelineStageFlags srcStage, dstStage;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+    {
+        barrier.srcAccessMask = 0;
+        srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+    {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    else
+    {
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        srcStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    }
+
+    if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+    {
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    else if (newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    {
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    }
+    else
+    {
+        barrier.dstAccessMask = 0;
+        dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    }
+
+    vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
+
+void TextureCube::OnDeviceLost_Vulkan()
+{
+}
+
+void TextureCube::OnDeviceReset_Vulkan()
+{
+}
+
+void TextureCube::Release_Vulkan()
+{
+    if (!object_.ptr_)
+        return;
+
+    Graphics* graphics = GetSubsystem<Graphics>();
+    if (!graphics)
+        return;
+
+    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
+    if (!impl)
+        return;
+
+    if (shaderResourceView_)
+    {
+        vkDestroyImageView(impl->GetDevice(), (VkImageView)shaderResourceView_, nullptr);
+        shaderResourceView_ = nullptr;
+    }
+
+    if (sampler_)
+    {
+        vkDestroySampler(impl->GetDevice(), (VkSampler)sampler_, nullptr);
+        sampler_ = nullptr;
+    }
+
+    VkImage image = (VkImage)(void*)object_.ptr_;
+    VmaAllocation allocation = (VmaAllocation)vmaAllocation_;
+
+    if (image)
+    {
+        vmaDestroyImage(impl->GetAllocator(), image, allocation);
+        object_.ptr_ = nullptr;
+    }
+}
+
+bool TextureCube::Create_Vulkan()
+{
+    Release_Vulkan();
+
+    if (!width_ || !height_)
+        return false;
+
+    Graphics* graphics = GetSubsystem<Graphics>();
+    if (!graphics)
+        return false;
+
+    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
+    if (!impl)
+        return false;
+
+    levels_ = CheckMaxLevels(width_, height_, requestedLevels_);
+
+    VkFormat vkFormat = GetVulkanFormat(format_);
+
+    // Create 6-layer cube-compatible image
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = vkFormat;
+    imageInfo.extent = {(uint32_t)width_, (uint32_t)height_, 1};
+    imageInfo.mipLevels = levels_;
+    imageInfo.arrayLayers = MAX_CUBEMAP_FACES;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (usage_ == TEXTURE_RENDERTARGET)
+        imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+
+    VkImage image;
+    VmaAllocation allocation;
+
+    if (vmaCreateImage(impl->GetAllocator(), &imageInfo, &allocInfo, &image, &allocation, nullptr) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create Vulkan cubemap image");
+        return false;
+    }
+
+    object_.ptr_ = (void*)image;
+    vmaAllocation_ = allocation;
+
+    // Create cube image view (all 6 faces)
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    viewInfo.format = vkFormat;
+    viewInfo.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                           VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = levels_;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = MAX_CUBEMAP_FACES;
+
+    VkImageView imageView;
+    if (vkCreateImageView(impl->GetDevice(), &viewInfo, nullptr, &imageView) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create Vulkan cubemap image view");
+        vmaDestroyImage(impl->GetAllocator(), image, allocation);
+        object_.ptr_ = nullptr;
+        return false;
+    }
+
+    shaderResourceView_ = imageView;
+
+    // Create sampler — cubemaps use CLAMP_TO_EDGE on all axes
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+
+    TextureFilterMode effectiveFilterMode = filterMode_;
+    if (effectiveFilterMode == FILTER_DEFAULT)
+        effectiveFilterMode = graphics_->GetDefaultTextureFilterMode();
+
+    switch (effectiveFilterMode)
+    {
+    case FILTER_NEAREST:
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        break;
+    case FILTER_BILINEAR:
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        break;
+    case FILTER_ANISOTROPIC:
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        {
+            unsigned maxAniso = anisotropy_ ? anisotropy_ : graphics_->GetDefaultTextureAnisotropy();
+            samplerInfo.anisotropyEnable = VK_TRUE;
+            samplerInfo.maxAnisotropy = static_cast<float>(maxAniso);
+        }
+        break;
+    case FILTER_NEAREST_ANISOTROPIC:
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        {
+            unsigned maxAniso = anisotropy_ ? anisotropy_ : graphics_->GetDefaultTextureAnisotropy();
+            samplerInfo.anisotropyEnable = VK_TRUE;
+            samplerInfo.maxAnisotropy = static_cast<float>(maxAniso);
+        }
+        break;
+    default:
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+        break;
+    }
+
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_NEVER;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = (float)levels_;
+    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+
+    VkSampler vkSampler;
+    if (vkCreateSampler(impl->GetDevice(), &samplerInfo, nullptr, &vkSampler) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create Vulkan cubemap sampler");
+        vkDestroyImageView(impl->GetDevice(), imageView, nullptr);
+        vmaDestroyImage(impl->GetAllocator(), image, allocation);
+        object_.ptr_ = nullptr;
+        return false;
+    }
+
+    sampler_ = vkSampler;
+    dataPending_ = true;
+
+    return true;
+}
+
+bool TextureCube::SetData_Vulkan(CubeMapFace face, unsigned level, int x, int y, int width, int height, const void* data)
+{
+    if (!data || !object_.ptr_)
+        return false;
+
+    if (level >= levels_)
+        return false;
+
+    Graphics* graphics = GetSubsystem<Graphics>();
+    if (!graphics)
+        return false;
+
+    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
+    if (!impl)
+        return false;
+
+    unsigned dataSize = GetDataSize(width, height);
+    if (dataSize == 0)
+        return false;
+
+    VkImage image = (VkImage)(void*)object_.ptr_;
+
+    VkCommandBuffer commandBuffer = impl->BeginUploadCommandBuffer();
+    if (commandBuffer == VK_NULL_HANDLE)
+        return false;
+
+    // Transition this face to TRANSFER_DST
+    TransitionCubeFaceLayout(commandBuffer, image, face, levels_,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    // Create staging buffer
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = dataSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+    allocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VmaAllocation stagingAllocation = VK_NULL_HANDLE;
+    VmaAllocationInfo allocationInfo{};
+
+    if (vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo,
+                       &stagingBuffer, &stagingAllocation, &allocationInfo) != VK_SUCCESS)
+        return false;
+
+    memcpy(allocationInfo.pMappedData, data, dataSize);
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = level;
+    region.imageSubresource.baseArrayLayer = face;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {x, y, 0};
+    region.imageExtent = {(uint32_t)width, (uint32_t)height, 1};
+
+    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, image,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // Transition back to SHADER_READ_ONLY
+    TransitionCubeFaceLayout(commandBuffer, image, face, levels_,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    impl->EndUploadCommandBuffer(commandBuffer);
+    vmaDestroyBuffer(impl->GetAllocator(), stagingBuffer, stagingAllocation);
+
+    return true;
+}
+
+bool TextureCube::SetData_Vulkan(CubeMapFace face, Deserializer& source)
+{
+    SharedPtr<Image> image(new Image(context_));
+    if (!image->Load(source))
+        return false;
+
+    return SetData_Vulkan(face, image);
+}
+
+bool TextureCube::SetData_Vulkan(CubeMapFace face, Image* image, bool useAlpha)
+{
+    if (!image)
+        return false;
+
+    int width = image->GetWidth();
+    int height = image->GetHeight();
+    unsigned components = image->GetComponents();
+
+    if (width <= 0 || height <= 0 || components == 0)
+        return false;
+
+    Graphics* graphics = GetSubsystem<Graphics>();
+    if (!graphics)
+        return false;
+
+    // Determine format
+    unsigned format = 0;
+    if (!image->IsCompressed())
+    {
+        switch (components)
+        {
+        case 1: format = useAlpha ? Graphics::GetAlphaFormat() : Graphics::GetLuminanceFormat(); break;
+        case 2: format = Graphics::GetLuminanceAlphaFormat(); break;
+        case 3: format = Graphics::GetRGBFormat(); break;
+        case 4: format = Graphics::GetRGBAFormat(); break;
+        default: return false;
+        }
+    }
+    else
+    {
+        format = graphics->GetFormat(image->GetCompressedFormat());
+        if (!format)
+            return false;
+    }
+
+    // Fallback format assignment if Get*Format returns 0
+    if (format == 0)
+    {
+        switch (components)
+        {
+        case 1: format = VK_FORMAT_R8_UNORM; break;
+        case 2: format = VK_FORMAT_R8G8_UNORM; break;
+        case 3: format = VK_FORMAT_R8G8B8A8_UNORM; break;
+        case 4: format = VK_FORMAT_R8G8B8A8_UNORM; break;
+        }
+    }
+
+    // For compressed textures, limit mip levels to what's actually in the file
+    if (image->IsCompressed())
+    {
+        unsigned numCompressedLevels = image->GetNumCompressedLevels();
+        if (numCompressedLevels > 0)
+            requestedLevels_ = numCompressedLevels;
+    }
+
+    // Create texture on first face
+    if (!width_ || !height_)
+    {
+        if (!SetSize(width, format))
+            return false;
+    }
+
+    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
+    if (!impl)
+        return false;
+
+    VkImage vkImage = (VkImage)(void*)object_.ptr_;
+    if (!vkImage)
+        return false;
+
+    // Convert 3-component to RGBA (Vulkan doesn't support RGB8 on most hardware)
+    SharedPtr<Image> convertedImage;
+    if (!image->IsCompressed() && components == 3)
+    {
+        convertedImage = image->ConvertToRGBA();
+        if (convertedImage)
+            image = convertedImage;
+    }
+
+    unsigned char* data = image->GetData();
+    if (!data)
+        return false;
+
+    // Calculate total staging size for all mip levels of this face
+    unsigned totalSize = 0;
+    int levelWidth = width;
+    int levelHeight = height;
+    for (unsigned level = 0; level < levels_; ++level)
+    {
+        totalSize += GetDataSize(levelWidth, levelHeight);
+        levelWidth = Max(levelWidth >> 1, 1);
+        levelHeight = Max(levelHeight >> 1, 1);
+    }
+
+    VkCommandBuffer commandBuffer = impl->BeginUploadCommandBuffer();
+    if (commandBuffer == VK_NULL_HANDLE)
+        return false;
+
+    // Create staging buffer for all mip levels
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = totalSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+    allocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VmaAllocation stagingAllocation = VK_NULL_HANDLE;
+    VmaAllocationInfo allocationInfo{};
+
+    if (vmaCreateBuffer(impl->GetAllocator(), &bufferInfo, &allocInfo,
+                       &stagingBuffer, &stagingAllocation, &allocationInfo) != VK_SUCCESS)
+    {
+        impl->EndUploadCommandBuffer(commandBuffer);
+        return false;
+    }
+
+    // Copy mip levels to staging buffer
+    unsigned char* stagingData = (unsigned char*)allocationInfo.pMappedData;
+    unsigned offset = 0;
+    levelWidth = width;
+    levelHeight = height;
+
+    SharedPtr<Image> currentLevel(image);
+    unsigned numCompressedLevels = image->GetNumCompressedLevels();
+    bool isCompressed = image->IsCompressed();
+
+    for (unsigned level = 0; level < levels_; ++level)
+    {
+        unsigned levelSize = GetDataSize(levelWidth, levelHeight);
+
+        if (level == 0)
+            memcpy(stagingData + offset, data, levelSize);
+        else if (numCompressedLevels > level)
+        {
+            CompressedLevel compLevel = image->GetCompressedLevel(level);
+            if (compLevel.data_)
+                memcpy(stagingData + offset, compLevel.data_, levelSize);
+        }
+        else if (!isCompressed && currentLevel)
+        {
+            currentLevel = currentLevel->GetNextLevel();
+            if (currentLevel && currentLevel->GetData())
+                memcpy(stagingData + offset, currentLevel->GetData(), levelSize);
+        }
+
+        offset += levelSize;
+        levelWidth = Max(levelWidth >> 1, 1);
+        levelHeight = Max(levelHeight >> 1, 1);
+    }
+
+    // Transition this face to TRANSFER_DST
+    TransitionCubeFaceLayout(commandBuffer, vkImage, face, levels_,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    // Record copy commands for all mip levels of this face
+    Vector<VkBufferImageCopy> regions;
+    offset = 0;
+    levelWidth = width;
+    levelHeight = height;
+
+    for (unsigned level = 0; level < levels_; ++level)
+    {
+        VkBufferImageCopy region{};
+        region.bufferOffset = offset;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = level;
+        region.imageSubresource.baseArrayLayer = face;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = {0, 0, 0};
+        region.imageExtent = {(uint32_t)levelWidth, (uint32_t)levelHeight, 1};
+
+        regions.Push(region);
+
+        offset += GetDataSize(levelWidth, levelHeight);
+        levelWidth = Max(levelWidth >> 1, 1);
+        levelHeight = Max(levelHeight >> 1, 1);
+    }
+
+    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, vkImage,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          regions.Size(), &regions[0]);
+
+    // Transition back to SHADER_READ_ONLY
+    TransitionCubeFaceLayout(commandBuffer, vkImage, face, levels_,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    impl->EndUploadCommandBuffer(commandBuffer);
+    vmaDestroyBuffer(impl->GetAllocator(), stagingBuffer, stagingAllocation);
+
+    faceMemoryUse_[face] = totalSize;
+    dataPending_ = false;
+    return true;
+}
+
+bool TextureCube::GetData_Vulkan(CubeMapFace face, unsigned level, void* dest) const
+{
+    URHO3D_LOGWARNING("TextureCube::GetData not supported on Vulkan");
+    return false;
 }
 
 } // namespace Urho3D

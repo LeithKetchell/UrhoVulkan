@@ -410,10 +410,6 @@ void UI::RenderUpdate()
     const IntVector2& rootPos = rootElement_->GetPosition();
     // Note: the scissors operate on unscaled coordinates. Scissor scaling is only performed during render
     IntRect currentScissor = IntRect(rootPos.x_, rootPos.y_, rootPos.x_ + rootSize.x_, rootPos.y_ + rootSize.y_);
-    fprintf(stderr, "UI_HANDLERENDER: rootElement visible=%d, children=%u, size=%dx%d, scissor=(%d,%d)-(%d,%d)\n",
-            rootElement_->IsVisible(), rootElement_->GetNumChildren(),
-            rootSize.x_, rootSize.y_,
-            currentScissor.left_, currentScissor.top_, currentScissor.right_, currentScissor.bottom_);
     if (rootElement_->IsVisible())
         GetBatches(batches_, vertexData_, rootElement_, currentScissor);
 
@@ -970,15 +966,8 @@ void UI::SetVertexData(VertexBuffer* dest, const Vector<float>& vertexData)
     // Resize the vertex buffer first if too small or much too large
     i32 numVertices = vertexData.Size() / UI_VERTEX_SIZE;
     if (dest->GetVertexCount() < numVertices || dest->GetVertexCount() > numVertices * 2)
-        dest->SetSize(numVertices, VertexElements::Position | VertexElements::Color | VertexElements::TexCoord1, true);
-
-    // DIAGNOSTIC: Dump first vertex data
-    if (numVertices > 0 && vertexData.Size() >= UI_VERTEX_SIZE)
     {
-        fprintf(stderr, "VERTEX[0]: pos=(%.1f,%.1f,%.1f) color=0x%08X texcoord=(%.3f,%.3f)\n",
-                vertexData[0], vertexData[1], vertexData[2],
-                *((unsigned*)&vertexData[3]),
-                vertexData[4], vertexData[5]);
+        dest->SetSize(numVertices, VertexElements::Position | VertexElements::Color | VertexElements::TexCoord1, true);
     }
 
     dest->SetData(&vertexData[0]);
@@ -986,16 +975,11 @@ void UI::SetVertexData(VertexBuffer* dest, const Vector<float>& vertexData)
 
 void UI::Render(VertexBuffer* buffer, const Vector<UIBatch>& batches, unsigned batchStart, unsigned batchEnd)
 {
-    fprintf(stderr, "UI_RENDER: Called with %u batches (start=%u, end=%u)\n", batches.Size(), batchStart, batchEnd);
-
     // Engine does not render when window is closed or device is lost
     assert(graphics_ && graphics_->IsInitialized() && !graphics_->IsDeviceLost());
 
     if (batches.Empty())
-    {
-        fprintf(stderr, "UI_RENDER: Batches empty, returning early\n");
         return;
-    }
 
     unsigned alphaFormat = Graphics::GetAlphaFormat();
     RenderSurface* surface = graphics_->GetRenderTarget(0);
@@ -1011,8 +995,9 @@ void UI::Render(VertexBuffer* buffer, const Vector<UIBatch>& batches, unsigned b
     {
         // Flip the projection Y-axis for Vulkan (always) or OpenGL (when rendering to texture)
         // This ensures screen (0,0) maps to NDC top-left in both APIs
-        fprintf(stderr, "UI: Applying Y-flip for GAPI=%d (VULKAN=%d)\n", gapi, GAPI_VULKAN);
-        fflush(stderr);
+        // Disabled for performance - uncomment for debugging Y-flip
+        // fprintf(stderr, "UI: Applying Y-flip for GAPI=%d (VULKAN=%d)\n", gapi, GAPI_VULKAN);
+        // fflush(stderr);
         offset.y_ = -offset.y_;
         scale.y_ = -scale.y_;
     }
@@ -1025,10 +1010,6 @@ void UI::Render(VertexBuffer* buffer, const Vector<UIBatch>& batches, unsigned b
     projection.m22_ = 1.0f;
     projection.m23_ = 0.0f;
     projection.m33_ = 1.0f;
-
-    fprintf(stderr, "UI projection matrix: m00=%f, m03=%f, m11=%f, m13=%f\n",
-            projection.m00_, projection.m03_, projection.m11_, projection.m13_);
-    fflush(stderr);
 
     graphics_->ClearParameterSources();
 
@@ -1156,9 +1137,15 @@ void UI::Render(VertexBuffer* buffer, const Vector<UIBatch>& batches, unsigned b
         graphics_->SetScissorTest(true, scissor);
         if (!batch.customMaterial_)
         {
+            // VULKAN FIX: Clear currentMaterial_ so descriptor creation uses textures_[] array
+            // Otherwise stale material from previous scene batch will be used
+            graphics_->SetCurrentMaterial(nullptr);
             graphics_->SetTexture(0, batch.texture_);
         } else
         {
+            // VULKAN FIX: Set currentMaterial_ so descriptor creation uses material's textures
+            graphics_->SetCurrentMaterial(batch.customMaterial_);
+
             // Update custom shader parameters if needed
             if (graphics_->NeedParameterUpdate(SP_MATERIAL, reinterpret_cast<const void*>(batch.customMaterial_->GetShaderParameterHash())))
             {
@@ -1196,15 +1183,10 @@ void UI::GetBatches(Vector<UIBatch>& batches, Vector<float>& vertexData, UIEleme
     // Set clipping scissor for child elements. No need to draw if zero size
     element->AdjustScissor(currentScissor);
     if (currentScissor.left_ == currentScissor.right_ || currentScissor.top_ == currentScissor.bottom_)
-    {
-        fprintf(stderr, "GETBATCHES: Scissor zero size, returning\n");
         return;
-    }
 
     element->SortChildren();
     const Vector<SharedPtr<UIElement>>& children = element->GetChildren();
-    fprintf(stderr, "GETBATCHES: element=%p, children=%u, batches_before=%u\n",
-            (void*)element, children.Size(), batches.Size());
     if (children.Empty())
         return;
 

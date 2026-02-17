@@ -23,7 +23,7 @@ public:
     ProfilerUI(Context* context);
 
     /// Initialize profiler UI
-    void Initialize(UI* ui, VulkanProfiler* profiler);
+    void Initialize(UI* ui, VulkanProfiler* profiler, Graphics* graphics = nullptr);
 
     /// Update profiler display
     void Update();
@@ -33,6 +33,9 @@ public:
 
     /// Check if profiler UI is visible
     bool IsVisible() const { return window_ ? window_->IsVisible() : false; }
+
+    /// Set custom stats (mushroom count, batches, etc)
+    void SetCustomStats(const String& stats);
 
 private:
     /// Root window for profiler display
@@ -47,14 +50,17 @@ private:
     /// Text element for average frame time
     SharedPtr<Text> avgFrameTimeText_;
 
-    /// Text element for Phase 36A pipeline layout timing
-    SharedPtr<Text> pipelineLayoutText_;
+    /// Text element for custom stats
+    SharedPtr<Text> customStatsText_;
 
-    /// Text element for Phase 36A descriptor set layout timing
-    SharedPtr<Text> descriptorSetLayoutText_;
+    /// Text element for instance stats
+    SharedPtr<Text> instanceStatsText_;
 
     /// Profiler reference
     VulkanProfiler* profiler_;
+
+    /// Graphics reference for instance stats
+    Graphics* graphics_;
 };
 
 } // namespace Urho3D

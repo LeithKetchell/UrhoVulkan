@@ -4,6 +4,8 @@
 //
 
 #include "../../Graphics/Graphics.h"
+#include "../RenderSurface.h"
+#include "../Texture.h"
 #include "VulkanGraphicsImpl.h"
 #include "VulkanShaderCompiler.h"
 #include "VulkanShaderModule.h"
@@ -11,6 +13,7 @@
 #include "../VulkanDefs.h"
 #include "../GraphicsDefs.h"
 #include "../Texture2D.h"
+#include "../ShaderVariation.h"
 #include "../VertexBuffer.h"
 #include "../../IO/Log.h"
 #include <SDL/SDL.h>
@@ -22,6 +25,9 @@
 
 namespace Urho3D
 {
+
+// Enable verbose pipeline debugging (WARNING: Severely impacts performance)
+#define VULKAN_PIPELINE_DEBUG_LOGGING 1
 
 VulkanGraphicsImpl::VulkanGraphicsImpl()
 {
@@ -185,14 +191,6 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         return false;
     }
 
-    // Initialize pipeline cache (Phase B Quick Win #10)
-    pipelineCache_ = MakeShared<VulkanPipelineCache>(graphics->GetContext());
-    if (!pipelineCache_ || !pipelineCache_->Initialize(this))
-    {
-        URHO3D_LOGERROR("Failed to initialize pipeline cache");
-        return false;
-    }
-
     // Initialize sampler cache (Quick Win #4)
     samplerCache_ = MakeShared<VulkanSamplerCache>(graphics->GetContext(), this);
     if (!samplerCache_)
@@ -277,7 +275,13 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
     }
 
     // Quick Win #6: Initialize constant buffer pool for material parameters
+    // Use MAX_FRAMES_IN_FLIGHT regions - must match fence synchronization (not swapchain image count)
     constantBufferPool_ = MakeShared<VulkanConstantBufferPool>();
+    if (constantBufferPool_)
+    {
+        constantBufferPool_->SetRegionCount(MAX_FRAMES_IN_FLIGHT);
+        URHO3D_LOGINFO("Constant buffer pool will use " + String(MAX_FRAMES_IN_FLIGHT) + " regions (matching frames in flight)");
+    }
     if (!constantBufferPool_ || !constantBufferPool_->Initialize(this))
     {
         URHO3D_LOGERROR("Failed to initialize constant buffer pool");
@@ -308,6 +312,30 @@ void VulkanGraphicsImpl::Shutdown()
         vkDeviceWaitIdle(device_);
     }
 
+    // Destroy cached descriptor set layouts (PERFORMANCE FIX)
+    for (auto& pair : descriptorSetLayoutCache_)
+    {
+        if (pair.second_)
+            vkDestroyDescriptorSetLayout(device_, pair.second_, nullptr);
+    }
+    descriptorSetLayoutCache_.Clear();
+
+    // Destroy cached pipeline layouts (PERFORMANCE FIX)
+    for (auto& pair : pipelineLayoutCache_)
+    {
+        if (pair.second_)
+            vkDestroyPipelineLayout(device_, pair.second_, nullptr);
+    }
+    pipelineLayoutCache_.Clear();
+
+    // Destroy cached shader modules (PERFORMANCE FIX)
+    for (auto& pair : shaderModuleCache_)
+    {
+        if (pair.second_)
+            vkDestroyShaderModule(device_, pair.second_, nullptr);
+    }
+    shaderModuleCache_.Clear();
+
     // Destroy framebuffers
     for (auto framebuffer : framebuffers_)
     {
@@ -316,7 +344,21 @@ void VulkanGraphicsImpl::Shutdown()
     }
     framebuffers_.Clear();
 
-    // Destroy render pass
+    // Destroy cached render passes (RTT, shadow maps, etc.)
+    for (auto& pair : renderPassCache_)
+    {
+        if (pair.second_ && pair.second_ != renderPass_)
+            vkDestroyRenderPass(device_, pair.second_, nullptr);
+    }
+    renderPassCache_.Clear();
+    renderPassToDescHash_.Clear();
+
+    // Destroy main render pass and LOAD variant
+    if (renderPassLoad_)
+    {
+        vkDestroyRenderPass(device_, renderPassLoad_, nullptr);
+        renderPassLoad_ = nullptr;
+    }
     if (renderPass_)
     {
         vkDestroyRenderPass(device_, renderPass_, nullptr);
@@ -340,6 +382,23 @@ void VulkanGraphicsImpl::Shutdown()
         depthImageMemory_ = nullptr;
     }
 
+    // Destroy RTT depth buffer
+    if (rttDepthImageView_)
+    {
+        vkDestroyImageView(device_, rttDepthImageView_, nullptr);
+        rttDepthImageView_ = VK_NULL_HANDLE;
+    }
+    if (rttDepthImage_)
+    {
+        vkDestroyImage(device_, rttDepthImage_, nullptr);
+        rttDepthImage_ = VK_NULL_HANDLE;
+    }
+    if (rttDepthImageMemory_)
+    {
+        vkFreeMemory(device_, rttDepthImageMemory_, nullptr);
+        rttDepthImageMemory_ = VK_NULL_HANDLE;
+    }
+
     // Phase 30: Destroy MSAA color buffer if present
     if (msaaColorImageView_)
     {
@@ -353,12 +412,17 @@ void VulkanGraphicsImpl::Shutdown()
         msaaColorAllocation_ = nullptr;
     }
 
-    // Phase 34: Destroy G-Buffer for deferred rendering
-    if (renderTargetFramebuffer_ != VK_NULL_HANDLE)
+    // RTT: Destroy cached framebuffers
+    for (auto& pair : rttFramebufferCache_)
     {
-        vkDestroyFramebuffer(device_, renderTargetFramebuffer_, nullptr);
-        renderTargetFramebuffer_ = VK_NULL_HANDLE;
+        if (pair.second_)
+            vkDestroyFramebuffer(device_, pair.second_, nullptr);
     }
+    rttFramebufferCache_.Clear();
+    renderTargetFramebuffer_ = VK_NULL_HANDLE;
+    renderingToTexture_ = false;
+
+    // Phase 34: Destroy G-Buffer for deferred rendering
     DestroyGBuffer();
 
     // Phase 36: Destroy full-screen quad buffers
@@ -380,27 +444,23 @@ void VulkanGraphicsImpl::Shutdown()
         swapchain_ = nullptr;
     }
 
-    // Destroy synchronization primitives
-    for (auto fence : frameFences_)
+    // Clean up per-image renderComplete semaphores
+    for (auto& semaphores : imageSemaphores_)
     {
-        if (fence)
-            vkDestroyFence(device_, fence, nullptr);
+        if (semaphores.renderComplete != VK_NULL_HANDLE)
+            vkDestroySemaphore(device_, semaphores.renderComplete, nullptr);
     }
-    frameFences_.Clear();
+    imageSemaphores_.Clear();
 
-    for (auto semaphore : imageAcquiredSemaphores_)
+    // Clean up per-frame resources
+    for (auto& frame : frames_)
     {
-        if (semaphore)
-            vkDestroySemaphore(device_, semaphore, nullptr);
+        if (frame.imageAcquired != VK_NULL_HANDLE)
+            vkDestroySemaphore(device_, frame.imageAcquired, nullptr);
+        if (frame.fence != VK_NULL_HANDLE)
+            vkDestroyFence(device_, frame.fence, nullptr);
     }
-    imageAcquiredSemaphores_.Clear();
-
-    for (auto semaphore : renderCompleteSemaphores_)
-    {
-        if (semaphore)
-            vkDestroySemaphore(device_, semaphore, nullptr);
-    }
-    renderCompleteSemaphores_.Clear();
+    frames_.Clear();
 
     // Destroy timeline semaphore if present (Phase 33)
     if (timelineRenderSemaphore_)
@@ -409,12 +469,16 @@ void VulkanGraphicsImpl::Shutdown()
         timelineRenderSemaphore_ = nullptr;
     }
 
-    // Destroy descriptor pool
-    if (descriptorPool_)
+    // Destroy descriptor pools (Per-image fix: one per swapchain image)
+    for (unsigned i = 0; i < descriptorPools_.Size(); ++i)
     {
-        vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
-        descriptorPool_ = nullptr;
+        if (descriptorPools_[i])
+        {
+            vkDestroyDescriptorPool(device_, descriptorPools_[i], nullptr);
+            descriptorPools_[i] = VK_NULL_HANDLE;
+        }
     }
+    descriptorPools_.Clear();
 
     // Phase 36A: Destroy descriptor set layouts
     if (materialDescriptorLayout_)
@@ -459,6 +523,12 @@ void VulkanGraphicsImpl::Shutdown()
         samplerCache_ = nullptr;
     }
 
+    // Destroy secondary command buffer pool (per-thread command pools and buffers)
+    if (secondaryCommandBufferPool_)
+    {
+        secondaryCommandBufferPool_ = nullptr;
+    }
+
     // Destroy thread-local upload command pools
     {
         MutexLock lock(threadUploadCommandPoolsMutex_);
@@ -472,12 +542,44 @@ void VulkanGraphicsImpl::Shutdown()
         threadUploadCommandPools_.Clear();
     }
 
-    // Destroy command pool
+    // Destroy command pool (frees all command buffers allocated from it)
     if (commandPool_)
     {
         vkDestroyCommandPool(device_, commandPool_, nullptr);
         commandPool_ = nullptr;
     }
+
+    // Release constant buffer pool before VMA allocator
+    if (constantBufferPool_)
+    {
+        constantBufferPool_->Release();
+        constantBufferPool_ = nullptr;
+    }
+
+    // Release manager buffers before VMA allocator
+    if (instanceBufferManager_)
+    {
+        instanceBufferManager_->Release();
+        instanceBufferManager_ = nullptr;
+    }
+    if (indirectDrawManager_)
+    {
+        indirectDrawManager_->Release();
+        indirectDrawManager_ = nullptr;
+    }
+    if (stagingBufferManager_)
+    {
+        stagingBufferManager_->Release();
+        stagingBufferManager_ = nullptr;
+    }
+
+    // Destroy the global pipeline layout (created at init, not in cache)
+    if (globalPipelineLayout_ != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(device_, globalPipelineLayout_, nullptr);
+        globalPipelineLayout_ = VK_NULL_HANDLE;
+    }
+    currentPipelineLayout_ = VK_NULL_HANDLE;
 
     // Destroy memory allocator
     if (allocator_)
@@ -493,7 +595,14 @@ void VulkanGraphicsImpl::Shutdown()
         surface_ = nullptr;
     }
 
-    // Destroy debug messenger
+    // Destroy device before instance-level objects
+    if (device_)
+    {
+        vkDestroyDevice(device_, nullptr);
+        device_ = nullptr;
+    }
+
+    // Destroy debug messenger (instance-level, must be after device)
     if (debugMessenger_ && instance_)
     {
         auto vkDestroyDebugUtilsMessengerEXT =
@@ -501,13 +610,7 @@ void VulkanGraphicsImpl::Shutdown()
                 instance_, "vkDestroyDebugUtilsMessengerEXT");
         if (vkDestroyDebugUtilsMessengerEXT)
             vkDestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
-    }
-
-    // Destroy device
-    if (device_)
-    {
-        vkDestroyDevice(device_, nullptr);
-        device_ = nullptr;
+        debugMessenger_ = nullptr;
     }
 
     // Destroy instance
@@ -531,150 +634,117 @@ void VulkanGraphicsImpl::Shutdown()
 
 bool VulkanGraphicsImpl::AcquireNextImage()
 {
-    if (!swapchain_)
+    if (!swapchain_ || imageSemaphores_.Empty())
         return false;
 
-    // Wait for fence from previous frame
-    WaitForFrameFence();
+    // Get current frame resources
+    FrameResources& frame = frames_[currentFrame_];
 
-    VkFence frameFence = frameFences_[frameIndex_];
+    // Wait for this frame to complete (guarantees all resources are free)
+    // Use 5-second timeout to avoid hanging on shutdown
+    VkResult fenceResult = vkWaitForFences(device_, 1, &frame.fence, VK_TRUE, 5000000000ULL);
+    if (fenceResult == VK_TIMEOUT)
+    {
+        URHO3D_LOGWARNING("Fence wait timed out (5s), GPU may be stuck or app shutting down");
+        return false;
+    }
+    vkResetFences(device_, 1, &frame.fence);
 
-    // Reset fence for this frame
-    vkResetFences(device_, 1, &frameFence);
-
-    // Acquire next swapchain image FIRST to get currentImageIndex_
-    // NOTE: Must use frame-based semaphore since we don't know image index yet
-    currentImageAcquiredSemaphore_ = imageAcquiredSemaphores_[frameIndex_ % imageAcquiredSemaphores_.Size()];
+    // Acquire next swapchain image using THIS frame's imageAcquired semaphore
+    uint32_t imageIndex = 0;
     VkResult result = vkAcquireNextImageKHR(
         device_,
         swapchain_,
         UINT64_MAX,
-        currentImageAcquiredSemaphore_,
-        nullptr,
-        &currentImageIndex_
+        frame.imageAcquired,  // Per-frame semaphore (signaled when image is available)
+        VK_NULL_HANDLE,
+        &imageIndex
     );
 
-    if (result != VK_SUCCESS)
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
         URHO3D_LOGERROR("Failed to acquire swapchain image: " + String((int)result));
         return false;
     }
+
+    // Store which image this frame will render to
+    frame.imageIndex = imageIndex;
+
+    // Update global index for compatibility (can remove later)
+    currentImageIndex_ = frame.imageIndex;
 
     return true;
 }
 
 void VulkanGraphicsImpl::Present()
 {
-    if (!swapchain_)
+    if (!swapchain_ || imageSemaphores_.Empty())
         return;
 
-    VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
-    VkFence frameFence = frameFences_[frameIndex_];
+    FrameResources& frame = frames_[currentFrame_];
 
-    // PHASE 33: Submit command buffer with optional timeline semaphore signaling
-    if (cmdBuffer && graphicsQueue_)
+    // Get the renderComplete semaphore for THIS image
+    VkSemaphore imageRenderComplete = imageSemaphores_[frame.imageIndex].renderComplete;
+
+    if (frame.commandBuffer && graphicsQueue_)
     {
-        // Prepare semaphore signal structures
-        VkSemaphore signalSemaphores[2]{};
-        uint32_t signalSemaphoreCount = 0;
+        // Submit: wait on frame.imageAcquired, signal THIS image's renderComplete
+        VkSemaphore waitSemaphores[] = { frame.imageAcquired };
+        VkSemaphore signalSemaphores[] = { imageRenderComplete };
+        VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 
-        // CRITICAL FIX: Use currentImageIndex_ for renderComplete semaphore (not frameIndex_)
-        // Each swapchain image needs its own semaphore to avoid reuse before present completes
-        signalSemaphores[signalSemaphoreCount++] = renderCompleteSemaphores_[currentImageIndex_];
-
-        // Prepare timeline semaphore signaling if available (Phase 33)
-        VkTimelineSemaphoreSubmitInfo timelineSubmitInfo{};
-        if (supportsTimelineSemaphores_ && timelineRenderSemaphore_ != VK_NULL_HANDLE)
-        {
-            // Timeline semaphore will be signaled with incremented counter
-            uint64_t signalValue = timelineRenderCounter_ + 1;
-            timelineSubmitInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO_KHR;
-            timelineSubmitInfo.signalSemaphoreValueCount = 1;
-            timelineSubmitInfo.pSignalSemaphoreValues = &signalValue;
-
-            // Add timeline semaphore to signal list
-            signalSemaphores[signalSemaphoreCount++] = timelineRenderSemaphore_;
-        }
-
-        // Submit rendered command buffer to graphics queue
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.pNext = (supportsTimelineSemaphores_ && timelineRenderSemaphore_ != VK_NULL_HANDLE)
-            ? &timelineSubmitInfo : nullptr;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &cmdBuffer;
         submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = &currentImageAcquiredSemaphore_;  // Use semaphore from BeginFrame
-        submitInfo.signalSemaphoreCount = signalSemaphoreCount;
+        submitInfo.pWaitSemaphores = waitSemaphores;
+        submitInfo.pWaitDstStageMask = waitStages;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &frame.commandBuffer;
+        submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
-        // Wait for image acquired before rendering, signal completion after render
-        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        submitInfo.pWaitDstStageMask = &waitStage;
-
-        VkResult submitResult = vkQueueSubmit(graphicsQueue_, 1, &submitInfo, frameFence);
+        VkResult submitResult = vkQueueSubmit(graphicsQueue_, 1, &submitInfo, frame.fence);
         if (submitResult != VK_SUCCESS)
         {
             URHO3D_LOGERROR("Failed to submit command buffer: " + String((int)submitResult));
-
-            // Detect device loss at submission point
-            if (submitResult == VK_ERROR_DEVICE_LOST)
-            {
-                deviceLost_ = true;
-                URHO3D_LOGERROR("DEVICE LOST detected at vkQueueSubmit (frame submission, detection point)");
-                fprintf(stderr, "DEVICE_LOST: Detected at vkQueueSubmit (frame submission)\n");
-                fflush(stderr);
-            }
-
             return;
         }
-
-        // Increment timeline counter after successful submission (Phase 33)
-        SignalTimelineRenderSemaphore();
     }
 
-    // Present rendered image to swapchain
+    // Present: wait on THIS image's renderComplete semaphore
+    VkSemaphore waitSemaphores[] = { imageRenderComplete };
+    VkSwapchainKHR swapchains[] = { swapchain_ };
+    uint32_t imageIndices[] = { frame.imageIndex };
+
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    presentInfo.pNext = nullptr;  // CRITICAL: Must be nullptr
     presentInfo.waitSemaphoreCount = 1;
-    // CRITICAL FIX: Use currentImageIndex_ (not frameIndex_) to match signal semaphore
-    presentInfo.pWaitSemaphores = &renderCompleteSemaphores_[currentImageIndex_];
+    presentInfo.pWaitSemaphores = waitSemaphores;
     presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &swapchain_;
-    presentInfo.pImageIndices = &currentImageIndex_;
-    presentInfo.pResults = nullptr;  // CRITICAL: Must be nullptr when not used
+    presentInfo.pSwapchains = swapchains;
+    presentInfo.pImageIndices = imageIndices;
 
     VkResult presentResult = vkQueuePresentKHR(presentQueue_, &presentInfo);
-
     if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR)
     {
-        URHO3D_LOGERROR("Failed to present swapchain image: " + String((int)presentResult));
-
-        // Detect device loss at present point
-        if (presentResult == VK_ERROR_DEVICE_LOST)
-        {
-            deviceLost_ = true;
-            URHO3D_LOGERROR("DEVICE LOST detected at vkQueuePresentKHR (detection point)");
-            fprintf(stderr, "DEVICE_LOST: Detected at vkQueuePresentKHR\n");
-            fflush(stderr);
-        }
+        URHO3D_LOGWARNING("Present failed: " + String((int)presentResult));
     }
 
     // Advance to next frame
-    frameIndex_ = (frameIndex_ + 1) % VULKAN_FRAME_COUNT;
+    currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
+    frameIndex_ = (frameIndex_ + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 VkCommandBuffer VulkanGraphicsImpl::GetFrameCommandBuffer() const
 {
-    if (frameIndex_ < commandBuffers_.Size())
-        return commandBuffers_[frameIndex_];
-    return nullptr;
+    if (currentFrame_ < frames_.Size())
+        return frames_[currentFrame_].commandBuffer;
+    return VK_NULL_HANDLE;
 }
 
 void VulkanGraphicsImpl::WaitForFrameFence()
 {
-    if (frameIndex_ >= frameFences_.Size())
+    if (frameIndex_ >= frames_.Size())
         return;
 
     // PHASE 33: Prefer timeline semaphore waits for non-blocking synchronization
@@ -687,8 +757,8 @@ void VulkanGraphicsImpl::WaitForFrameFence()
     else
     {
         // Fallback: CPU-blocking fence wait with timeout to detect hangs
-        VkFence fence = frameFences_[frameIndex_];
-        if (fence)
+        VkFence fence = (frameIndex_ < frames_.Size()) ? frames_[frameIndex_].fence : VK_NULL_HANDLE;
+        if (fence != VK_NULL_HANDLE)
         {
             VkResult waitResult = vkWaitForFences(device_, 1, &fence, VK_TRUE, 10000000000ULL); // 10 seconds
 
@@ -705,8 +775,6 @@ void VulkanGraphicsImpl::WaitForFrameFence()
                 {
                     deviceLost_ = true;
                     URHO3D_LOGERROR("DEVICE LOST detected at vkWaitForFences (frame fence, detection point)");
-                    fprintf(stderr, "DEVICE_LOST: Detected at vkWaitForFences (frame fence)\n");
-                    fflush(stderr);
                 }
             }
         }
@@ -739,51 +807,79 @@ void VulkanGraphicsImpl::BeginRenderPass()
 
     URHO3D_LOGDEBUG("BeginRenderPass: Starting render pass");
 
-    // Phase 34 Step 3: Handle deferred rendering framebuffer rebuild if needed
+    // Handle framebuffer rebuild if render targets changed
     if (renderTargetsDirty_)
-    {
         RebuildRenderTargetFramebuffer();
-        // If rebuild failed, fall back to swapchain rendering
-    }
 
-    // Phase 34 Step 3: Determine which framebuffer to use (deferred G-Buffer or forward swapchain)
-    VkFramebuffer currentFramebuffer = GetCurrentFramebuffer();
-    VkRenderPass currentRenderPass = renderPass_;
-    uint32_t clearValueCount = 2;  // Default: color + depth
+    // Determine which framebuffer and render pass to use
+    VkFramebuffer currentFramebuffer;
+    VkRenderPass currentRenderPass;
+    VkExtent2D renderExtent;
+    uint32_t colorAttachmentCount;
 
-    // If we have a deferred framebuffer and render targets are ACTUALLY SET (not just framebuffer exists), use deferred pass
-    // Only use G-Buffer when renderTargetsDirty_ was triggered by SetRenderTarget, not just by unconditional init
-    bool hasActiveRenderTargets = (graphics_ && graphics_->GetRenderTarget(0) != nullptr);
-    if (hasActiveRenderTargets && renderTargetFramebuffer_ != VK_NULL_HANDLE && renderTargetRenderPass_ != VK_NULL_HANDLE)
+    if (renderingToTexture_ && renderTargetFramebuffer_ != VK_NULL_HANDLE && renderTargetRenderPass_ != VK_NULL_HANDLE)
     {
         currentFramebuffer = renderTargetFramebuffer_;
-        currentRenderPass = renderTargetRenderPass_;  // Use G-Buffer render pass, not swapchain render pass!
-        // G-Buffer has 4 color attachments + 1 depth = 5 attachments total
-        clearValueCount = 5;
-        URHO3D_LOGDEBUGF("[Thread %lu] BeginRenderPass: Using G-Buffer render pass with %u attachments",
-                         (unsigned long)Thread::GetCurrentThreadID(), clearValueCount);
+        currentRenderPass = renderTargetRenderPass_;
+        renderExtent = {(uint32_t)rttWidth_, (uint32_t)rttHeight_};
+        colorAttachmentCount = 0;
+        if (graphics_)
+        {
+            for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
+            {
+                if (graphics_->GetRenderTarget(i))
+                    colorAttachmentCount = i + 1;
+            }
+        }
+
+        // Check if any current RT was already written this frame → use LOAD to preserve content
+        bool anyAlreadyWritten = false;
+        if (graphics_)
+        {
+            for (unsigned i = 0; i < colorAttachmentCount; ++i)
+            {
+                RenderSurface* rt = graphics_->GetRenderTarget(i);
+                if (rt && writtenRenderTargets_.Contains((void*)rt))
+                {
+                    anyAlreadyWritten = true;
+                    break;
+                }
+            }
+        }
+        if (anyAlreadyWritten)
+        {
+            // Create LOAD variant render pass (compatible with same framebuffer)
+            RenderPassDescriptor loadDesc = renderTargetRPDescriptor_;
+            loadDesc.colorLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            VkRenderPass loadPass = GetOrCreateRenderPass(loadDesc);
+            if (loadPass != VK_NULL_HANDLE)
+                currentRenderPass = loadPass;
+        }
     }
     else
     {
-        URHO3D_LOGDEBUGF("[Thread %lu] BeginRenderPass: Using swapchain render pass with %u attachments",
-                         (unsigned long)Thread::GetCurrentThreadID(), clearValueCount);
+        currentFramebuffer = GetCurrentFramebuffer();
+        // Use LOAD variant if swapchain was already rendered to this frame
+        // This preserves color+depth from the base pass after shadow map rendering
+        currentRenderPass = swapchainPassUsedThisFrame_ ? renderPassLoad_ : renderPass_;
+        renderExtent = swapchainExtent_;
+        colorAttachmentCount = 1;
     }
 
-    // Prepare clear values for all attachments
-    // For deferred: RGBA positions, RGBA normals, RGBA albedo, RGBA specular, depth
-    VkClearValue clearValues[5]{};
-    for (uint32_t i = 0; i < clearValueCount - 1; ++i)
-    {
-        clearValues[i].color = {{0.0f, 0.0f, 0.0f, 1.0f}};  // Clear to black
-    }
-    clearValues[clearValueCount - 1].depthStencil = {1.0f, 0};  // Depth: clear to 1.0
+    // Prepare clear values: N color attachments + 1 depth
+    // Uses values stored by Clear_Vulkan (defaults to black if Clear not called)
+    uint32_t clearValueCount = colorAttachmentCount + 1;
+    VkClearValue clearValues[MAX_RENDERTARGETS + 1]{};
+    for (uint32_t i = 0; i < colorAttachmentCount; ++i)
+        clearValues[i].color = {{clearColor_[0], clearColor_[1], clearColor_[2], clearColor_[3]}};
+    clearValues[colorAttachmentCount].depthStencil = {clearDepth_, clearStencil_};
 
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = currentRenderPass;
     renderPassInfo.framebuffer = currentFramebuffer;
     renderPassInfo.renderArea.offset = {0, 0};
-    renderPassInfo.renderArea.extent = swapchainExtent_;
+    renderPassInfo.renderArea.extent = renderExtent;
     renderPassInfo.clearValueCount = clearValueCount;
     renderPassInfo.pClearValues = clearValues;
 
@@ -794,9 +890,23 @@ void VulkanGraphicsImpl::BeginRenderPass()
                      (unsigned long long)currentFramebuffer, (unsigned long long)currentRenderPass);
 
     vkCmdBeginRenderPass(cmdBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    URHO3D_LOGINFO("BeginRenderPass: Render pass ACTIVE, framebuffer=" + String((unsigned long long)currentFramebuffer));
+    URHO3D_LOGDEBUG("BeginRenderPass: Render pass ACTIVE, framebuffer=" + String((unsigned long long)currentFramebuffer));
 
     renderPassActive_ = true;
+
+    // Save render targets active during this render pass (for tracking in EndRenderPass)
+    activePassColorCount_ = colorAttachmentCount;
+    for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
+    {
+        if (renderingToTexture_ && graphics_ && i < colorAttachmentCount)
+            activePassRenderTargets_[i] = (void*)graphics_->GetRenderTarget(i);
+        else
+            activePassRenderTargets_[i] = nullptr;
+    }
+
+    // Track swapchain usage for LOAD variant selection on re-entry
+    if (!renderingToTexture_)
+        swapchainPassUsedThisFrame_ = true;
 }
 
 void VulkanGraphicsImpl::EndRenderPass()
@@ -816,11 +926,78 @@ void VulkanGraphicsImpl::EndRenderPass()
         return;
     }
 
+    // Track which render targets were written (for LOAD vs CLEAR on re-entry)
+    // Use SAVED targets from BeginRenderPass, not current ones (which may have changed)
+    for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
+    {
+        if (activePassRenderTargets_[i])
+            writtenRenderTargets_.Insert(activePassRenderTargets_[i]);
+    }
+
     // End the active render pass (transitions image to finalLayout: PRESENT_SRC_KHR)
     URHO3D_LOGDEBUG("EndRenderPass: Calling vkCmdEndRenderPass");
     vkCmdEndRenderPass(cmdBuffer);
     renderPassActive_ = false;
+    lastBoundPipeline_ = VK_NULL_HANDLE;  // Pipeline binding invalidated by render pass change
     URHO3D_LOGDEBUG("EndRenderPass: Render pass ended successfully");
+}
+
+void VulkanGraphicsImpl::EnsureRenderPassStarted()
+{
+    // If render targets changed while pass is active, check if framebuffer actually changes
+    if (renderTargetsDirty_ && renderPassActive_)
+    {
+        bool wasRTT = renderingToTexture_;
+        VkFramebuffer oldFB = renderTargetFramebuffer_;
+        RebuildRenderTargetFramebuffer();
+        bool isRTT = renderingToTexture_;
+        VkFramebuffer newFB = renderTargetFramebuffer_;
+
+        // Restart if switching swapchain↔RTT, or between different RTTs (e.g. shadow maps)
+        if (wasRTT != isRTT || (wasRTT && isRTT && oldFB != newFB))
+        {
+            EndRenderPass();
+
+            // Insert barrier to ensure previous writes are visible when sampled
+            if (wasRTT && !isRTT)
+            {
+                VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
+                if (cmdBuffer)
+                {
+                    VkMemoryBarrier memBarrier{};
+                    memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                    memBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+                    vkCmdPipelineBarrier(cmdBuffer,
+                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+                }
+            }
+        }
+    }
+
+    if (!renderPassActive_)
+    {
+        // Insert memory barrier to synchronize host writes (instance buffer) with vertex input
+        // This must happen BEFORE render pass begins
+        VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
+        if (cmdBuffer)
+        {
+            VkMemoryBarrier memBarrier{};
+            memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            memBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+
+            vkCmdPipelineBarrier(cmdBuffer,
+                VK_PIPELINE_STAGE_HOST_BIT,
+                VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+        }
+
+        BeginRenderPass();
+    }
 }
 
 void VulkanGraphicsImpl::NextSubpass()
@@ -867,9 +1044,6 @@ VkCommandBuffer VulkanGraphicsImpl::BeginUploadCommandBuffer()
                 return VK_NULL_HANDLE;
             }
 
-            URHO3D_LOGDEBUG(String("Created thread-local upload command pool for thread ") +
-                           String((unsigned long long)currentThread));
-
             threadUploadCommandPools_[currentThread] = newPool;
             threadPool = newPool;
         }
@@ -893,10 +1067,6 @@ VkCommandBuffer VulkanGraphicsImpl::BeginUploadCommandBuffer()
         URHO3D_LOGERROR("Failed to allocate upload command buffer from thread-local pool");
         return VK_NULL_HANDLE;
     }
-
-    URHO3D_LOGDEBUG(String("BeginUploadCommandBuffer: Allocated cmdBuf=") +
-                   String((unsigned long long)(uintptr_t)commandBuffer) +
-                   " from pool=" + String((unsigned long long)(uintptr_t)threadPool));
 
     // Begin recording
     VkCommandBufferBeginInfo beginInfo{};
@@ -973,8 +1143,6 @@ void VulkanGraphicsImpl::EndUploadCommandBuffer(VkCommandBuffer commandBuffer)
         return;
     }
 
-    URHO3D_LOGDEBUG("EndUploadCommandBuffer: About to submit to graphics queue with fence");
-
     // Protect queue submission with mutex (vkQueueSubmit is NOT thread-safe)
     VkResult submitResult;
     {
@@ -991,22 +1159,14 @@ void VulkanGraphicsImpl::EndUploadCommandBuffer(VkCommandBuffer commandBuffer)
         {
             deviceLost_ = true;
             URHO3D_LOGERROR("DEVICE LOST detected at vkQueueSubmit (upload submission, detection point)");
-            fprintf(stderr, "DEVICE_LOST: Detected at vkQueueSubmit (upload submission)\n");
-            fflush(stderr);
         }
 
         vkDestroyFence(device_, uploadFence, nullptr);
         vkFreeCommandBuffers(device_, threadPool, 1, &commandBuffer);
         return;
     }
-    URHO3D_LOGDEBUG("EndUploadCommandBuffer: Queue submit succeeded, waiting for fence");
-
-    // Check fence status before waiting
-    VkResult fenceStatus = vkGetFenceStatus(device_, uploadFence);
-    URHO3D_LOGDEBUG(String("EndUploadCommandBuffer: Initial fence status=") + String((int)fenceStatus));
 
     // Wait for completion with a timeout to detect hangs
-    URHO3D_LOGDEBUG("EndUploadCommandBuffer: Calling vkWaitForFences with 10 second timeout...");
     VkResult waitResult = vkWaitForFences(device_, 1, &uploadFence, VK_TRUE, 10000000000ULL); // 10 seconds
 
     if (waitResult == VK_TIMEOUT)
@@ -1014,7 +1174,7 @@ void VulkanGraphicsImpl::EndUploadCommandBuffer(VkCommandBuffer commandBuffer)
         URHO3D_LOGERROR("EndUploadCommandBuffer: Fence wait TIMED OUT after 10 seconds!");
 
         // Check fence status again
-        fenceStatus = vkGetFenceStatus(device_, uploadFence);
+        VkResult fenceStatus = vkGetFenceStatus(device_, uploadFence);
         URHO3D_LOGERROR(String("EndUploadCommandBuffer: Fence status after timeout=") + String((int)fenceStatus));
 
         // Try to check queue status with a short timeout
@@ -1035,15 +1195,11 @@ void VulkanGraphicsImpl::EndUploadCommandBuffer(VkCommandBuffer commandBuffer)
         {
             deviceLost_ = true;
             URHO3D_LOGERROR("DEVICE LOST detected at vkDeviceWaitIdle (upload timeout, detection point)");
-            fprintf(stderr, "DEVICE_LOST: Detected at vkDeviceWaitIdle (upload timeout)\n");
-            fflush(stderr);
         }
         else if (queueStatus == VK_ERROR_DEVICE_LOST)
         {
             deviceLost_ = true;
             URHO3D_LOGERROR("DEVICE LOST detected at vkQueueWaitIdle (upload timeout, detection point)");
-            fprintf(stderr, "DEVICE_LOST: Detected at vkQueueWaitIdle (upload timeout)\n");
-            fflush(stderr);
         }
         else if (queueStatus == VK_SUCCESS && deviceStatus == VK_SUCCESS)
         {
@@ -1064,8 +1220,6 @@ void VulkanGraphicsImpl::EndUploadCommandBuffer(VkCommandBuffer commandBuffer)
         {
             deviceLost_ = true;
             URHO3D_LOGERROR("DEVICE LOST detected at vkWaitForFences (upload fence, detection point)");
-            fprintf(stderr, "DEVICE_LOST: Detected at vkWaitForFences (upload fence)\n");
-            fflush(stderr);
         }
 
         vkDestroyFence(device_, uploadFence, nullptr);
@@ -1086,6 +1240,8 @@ void VulkanGraphicsImpl::EndUploadCommandBuffer(VkCommandBuffer commandBuffer)
 
 VkFramebuffer VulkanGraphicsImpl::GetCurrentFramebuffer() const
 {
+    if (renderingToTexture_ && renderTargetFramebuffer_ != VK_NULL_HANDLE)
+        return renderTargetFramebuffer_;
     if (currentImageIndex_ < framebuffers_.Size())
         return framebuffers_[currentImageIndex_];
     return nullptr;
@@ -1093,16 +1249,8 @@ VkFramebuffer VulkanGraphicsImpl::GetCurrentFramebuffer() const
 
 VkRenderPass VulkanGraphicsImpl::GetRenderPass() const
 {
-    // Return the G-Buffer render pass if render targets are active, otherwise swapchain
-    if (graphics_ && graphics_->GetRenderTarget(0) != nullptr &&
-        renderTargetRenderPass_ != VK_NULL_HANDLE)
-    {
-        URHO3D_LOGDEBUGF("[Thread %lu] GetRenderPass: Returning G-Buffer render pass (render target is set)",
-                         (unsigned long)Thread::GetCurrentThreadID());
+    if (renderingToTexture_ && renderTargetRenderPass_ != VK_NULL_HANDLE)
         return renderTargetRenderPass_;
-    }
-    URHO3D_LOGDEBUGF("[Thread %lu] GetRenderPass: Returning swapchain render pass (no render target)",
-                     (unsigned long)Thread::GetCurrentThreadID());
     return renderPass_;
 }
 
@@ -1189,7 +1337,7 @@ bool VulkanGraphicsImpl::CreateInstance()
     appInfo.applicationVersion = VK_MAKE_API_VERSION(0, 1, 9, 0);
     appInfo.pEngineName = "Urho3D";
     appInfo.engineVersion = VK_MAKE_API_VERSION(0, 1, 9, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_0;
+    appInfo.apiVersion = VK_API_VERSION_1_1;
 
     VkInstanceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -1654,9 +1802,10 @@ bool VulkanGraphicsImpl::CreateLogicalDevice()
     }
 
     VkPhysicalDeviceFeatures deviceFeatures{};
-    deviceFeatures.samplerAnisotropy = VK_FALSE;
+    deviceFeatures.samplerAnisotropy = VK_TRUE;
     deviceFeatures.sampleRateShading = VK_FALSE;
     deviceFeatures.shaderClipDistance = VK_TRUE;  // CRITICAL: Required for gl_ClipDistance in shaders
+    deviceFeatures.robustBufferAccess = VK_TRUE;  // CRITICAL: Allow pipelines with missing vertex attributes
 
     const char* deviceExtensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
@@ -1826,6 +1975,22 @@ bool VulkanGraphicsImpl::CreateSwapchain(int width, int height)
             return false;
         }
     }
+
+    // Create per-image renderComplete semaphores (fixes validation error about semaphore reuse)
+    // imageAcquired semaphores are per-frame (created with command buffers)
+    imageSemaphores_.Resize(swapchainImages_.Size());
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    for (size_t i = 0; i < imageSemaphores_.Size(); ++i)
+    {
+        if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &imageSemaphores_[i].renderComplete) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("Failed to create renderComplete semaphore for swapchain image " + String((unsigned)i));
+            return false;
+        }
+    }
+    URHO3D_LOGINFO("Created renderComplete semaphores for " + String((unsigned)imageSemaphores_.Size()) + " swapchain images");
 
     URHO3D_LOGINFO(String("Swapchain created with ") + String((int)swapchainImageCount) +
                    " images at " + String((int)swapchainExtent_.width) + "x" +
@@ -2152,97 +2317,268 @@ void VulkanGraphicsImpl::DestroyFullScreenQuad()
     }
 }
 
-// Phase 34 Step 1: Build framebuffer for G-Buffer deferred rendering
+// Generic RTT: Build framebuffer from whatever render targets are currently set
 bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
 {
-    // Phase 34 Step 1: Create framebuffer for G-Buffer (4 color + depth attachments)
-    // This framebuffer is used for the geometry pass in deferred rendering
+    renderTargetsDirty_ = false;
 
-    // CRITICAL: Don't create G-Buffer framebuffer if no render targets are set
-    // If all render targets are null, we should use the swapchain instead (forward rendering)
-    bool hasAnyRenderTarget = false;
-    if (graphics_)
+    if (!graphics_)
+        return false;
+
+    // DIAG: Log render target state
     {
+        String rtState = "RebuildRTFB: RT state: ";
         for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
         {
-            if (graphics_->GetRenderTarget(i) != nullptr)
-            {
-                hasAnyRenderTarget = true;
-                break;
-            }
+            RenderSurface* rt = graphics_->GetRenderTarget(i);
+            if (rt)
+                rtState += String(i) + "=" + String(rt->GetWidth()) + "x" + String(rt->GetHeight()) + " ";
+            else
+                rtState += String(i) + "=null ";
+        }
+        RenderSurface* ds = graphics_->GetDepthStencil();
+        rtState += "DS=" + String(ds ? "set" : "null");
+        URHO3D_LOGWARNING(rtState);
+    }
+
+    // Check if any color render targets are set
+    bool hasColorTarget = false;
+    unsigned colorCount = 0;
+    for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
+    {
+        if (graphics_->GetRenderTarget(i))
+        {
+            hasColorTarget = true;
+            colorCount = i + 1;
         }
     }
 
-    if (!hasAnyRenderTarget)
+    // Check for depth-only rendering (shadow maps): no color targets but depth stencil set
+    RenderSurface* ds = graphics_->GetDepthStencil();
+    bool hasDepthOnly = !hasColorTarget && ds;
+
+    if (!hasColorTarget && !hasDepthOnly)
     {
-        URHO3D_LOGDEBUG("RebuildRenderTargetFramebuffer: No render targets set, skipping G-Buffer creation (will use swapchain)");
-        return true;  // Not an error - just means we're using swapchain rendering
+        // No color render targets and no depth-only target — switch to swapchain
+        renderingToTexture_ = false;
+        renderTargetFramebuffer_ = VK_NULL_HANDLE;
+        renderTargetRenderPass_ = VK_NULL_HANDLE;
+        rttWidth_ = 0;
+        rttHeight_ = 0;
+        return true;
     }
 
-    if (gBufferPositionImage_ == VK_NULL_HANDLE ||
-        gBufferNormalImage_ == VK_NULL_HANDLE ||
-        gBufferAlbedoImage_ == VK_NULL_HANDLE ||
-        gBufferSpecularImage_ == VK_NULL_HANDLE)
+    // Get dimensions from first color target, or from depth stencil for depth-only
+    if (hasColorTarget)
     {
-        URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: G-Buffer not initialized");
-        return false;
+        RenderSurface* firstRT = nullptr;
+        for (unsigned i = 0; i < colorCount; ++i)
+        {
+            if (graphics_->GetRenderTarget(i))
+            {
+                firstRT = graphics_->GetRenderTarget(i);
+                break;
+            }
+        }
+        rttWidth_ = firstRT->GetWidth();
+        rttHeight_ = firstRT->GetHeight();
+    }
+    else
+    {
+        rttWidth_ = ds->GetWidth();
+        rttHeight_ = ds->GetHeight();
     }
 
-    // Phase 34 Step 1: Create render pass descriptor for G-Buffer (4 color + depth)
+    // Build render pass descriptor from actual render target formats
     RenderPassDescriptor descriptor;
-    descriptor.colorAttachmentCount = 4;
-    descriptor.colorFormats[0] = VK_FORMAT_R32G32B32A32_SFLOAT;  // Position
-    descriptor.colorFormats[1] = VK_FORMAT_R16G16B16A16_SFLOAT;  // Normal
-    descriptor.colorFormats[2] = VK_FORMAT_R8G8B8A8_UNORM;       // Albedo
-    descriptor.colorFormats[3] = VK_FORMAT_R8G8B8A8_UNORM;       // Specular
-    descriptor.depthFormat = VK_FORMAT_D32_SFLOAT;
-    descriptor.subpassCount = 1;                                 // Single subpass for geometry pass
-    descriptor.sampleCount = VK_SAMPLE_COUNT_1_BIT;              // No MSAA for G-Buffer
+    descriptor.colorAttachmentCount = colorCount;
+    descriptor.isRenderToTexture = true;
+    descriptor.subpassCount = 1;
+    descriptor.sampleCount = VK_SAMPLE_COUNT_1_BIT;
 
-    // Get or create the G-Buffer render pass
+    // Always create CLEAR variant here — LOAD selection happens in BeginRenderPass
+    // (because by RebuildRTFB time, the previous render pass hasn't ended yet)
+    descriptor.colorLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+
+    for (unsigned i = 0; i < colorCount; ++i)
+    {
+        RenderSurface* rt = graphics_->GetRenderTarget(i);
+        if (rt)
+            descriptor.colorFormats[i] = (VkFormat)rt->GetParentTexture()->GetFormat();
+        else
+            descriptor.colorFormats[i] = descriptor.colorFormats[0];
+    }
+
+    // ds was declared above when checking for depth-only rendering
+    if (ds)
+        descriptor.depthFormat = (VkFormat)ds->GetParentTexture()->GetFormat();
+    else
+        descriptor.depthFormat = VK_FORMAT_D32_SFLOAT;
+
+    // Get or create render pass (CLEAR variant — LOAD selected at BeginRenderPass time)
     renderTargetRenderPass_ = GetOrCreateRenderPass(descriptor);
+    renderTargetRPDescriptor_ = descriptor;  // Save for LOAD variant creation in BeginRenderPass
     if (renderTargetRenderPass_ == VK_NULL_HANDLE)
     {
-        URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create G-Buffer render pass");
-        return false;
-    }
-    VkRenderPass gBufferRenderPass = renderTargetRenderPass_;  // For local use
-
-    // Phase 34 Step 1: Prepare attachment image views
-    VkImageView attachments[5] = {
-        gBufferPositionView_,       // [0] Position
-        gBufferNormalView_,         // [1] Normal
-        gBufferAlbedoView_,         // [2] Albedo
-        gBufferSpecularView_,       // [3] Specular
-        depthImageView_             // [4] Depth
-    };
-
-    // Create framebuffer with G-Buffer attachments
-    VkFramebufferCreateInfo framebufferInfo{};
-    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebufferInfo.renderPass = gBufferRenderPass;
-    framebufferInfo.attachmentCount = 5;
-    framebufferInfo.pAttachments = attachments;
-    framebufferInfo.width = swapchainExtent_.width;
-    framebufferInfo.height = swapchainExtent_.height;
-    framebufferInfo.layers = 1;
-
-    // Phase 34 Step 1: Destroy old framebuffer if it exists
-    if (renderTargetFramebuffer_ != VK_NULL_HANDLE)
-    {
-        vkDestroyFramebuffer(device_, renderTargetFramebuffer_, nullptr);
-    }
-
-    // Create new G-Buffer framebuffer
-    if (vkCreateFramebuffer(device_, &framebufferInfo, nullptr, &renderTargetFramebuffer_) != VK_SUCCESS)
-    {
-        URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create G-Buffer framebuffer");
-        renderTargetFramebuffer_ = VK_NULL_HANDLE;
+        URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create RTT render pass");
         return false;
     }
 
-    renderTargetsDirty_ = false;
-    URHO3D_LOGDEBUG("RebuildRenderTargetFramebuffer: G-Buffer framebuffer created successfully");
+    // Collect VkImageViews for framebuffer attachments
+    Vector<VkImageView> attachmentViews;
+    unsigned long long cacheKey = 0;
+
+    for (unsigned i = 0; i < colorCount; ++i)
+    {
+        VkImageView view = VK_NULL_HANDLE;
+        RenderSurface* rt = graphics_->GetRenderTarget(i);
+        if (rt)
+            view = (VkImageView)rt->GetRenderTargetView();
+
+        if (view == VK_NULL_HANDLE)
+        {
+            Texture* parentTex = rt ? rt->GetParentTexture() : nullptr;
+            URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: RT " + String(i) + " null VkImageView"
+                + " rt=" + String(rt != nullptr)
+                + " parent=" + String(parentTex != nullptr)
+                + " name=" + (parentTex ? parentTex->GetName() : "?")
+                + " size=" + (parentTex ? String(parentTex->GetWidth()) + "x" + String(parentTex->GetHeight()) : "?")
+                + " fmt=" + (parentTex ? String(parentTex->GetFormat()) : "?")
+                + " usage=" + (parentTex ? String((int)parentTex->GetUsage()) : "?"));
+            return false;
+        }
+        attachmentViews.Push(view);
+        cacheKey = cacheKey * 31 + (unsigned long long)(uintptr_t)view;
+    }
+
+    // Add depth attachment
+    VkImageView depthView = VK_NULL_HANDLE;
+    if (ds)
+    {
+        depthView = (VkImageView)ds->GetRenderTargetView();
+    }
+    else
+    {
+        // Create per-RTT depth buffer matching RTT dimensions (NOT swapchain depth)
+        if (rttDepthWidth_ != rttWidth_ || rttDepthHeight_ != rttHeight_ || rttDepthImageView_ == VK_NULL_HANDLE)
+        {
+            // Destroy old RTT depth buffer if dimensions changed
+            if (rttDepthImageView_)
+            {
+                vkDestroyImageView(device_, rttDepthImageView_, nullptr);
+                rttDepthImageView_ = VK_NULL_HANDLE;
+            }
+            if (rttDepthImage_)
+            {
+                vkDestroyImage(device_, rttDepthImage_, nullptr);
+                rttDepthImage_ = VK_NULL_HANDLE;
+            }
+            if (rttDepthImageMemory_)
+            {
+                vkFreeMemory(device_, rttDepthImageMemory_, nullptr);
+                rttDepthImageMemory_ = VK_NULL_HANDLE;
+            }
+
+            // Create depth image matching RTT dimensions
+            VkImageCreateInfo depthImageInfo{};
+            depthImageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            depthImageInfo.imageType = VK_IMAGE_TYPE_2D;
+            depthImageInfo.extent.width = (uint32_t)rttWidth_;
+            depthImageInfo.extent.height = (uint32_t)rttHeight_;
+            depthImageInfo.extent.depth = 1;
+            depthImageInfo.mipLevels = 1;
+            depthImageInfo.arrayLayers = 1;
+            depthImageInfo.format = descriptor.depthFormat;
+            depthImageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            depthImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            depthImageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            depthImageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            depthImageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            if (vkCreateImage(device_, &depthImageInfo, nullptr, &rttDepthImage_) != VK_SUCCESS)
+            {
+                URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create RTT depth image");
+                return false;
+            }
+
+            VkMemoryRequirements memReqs;
+            vkGetImageMemoryRequirements(device_, rttDepthImage_, &memReqs);
+
+            VkMemoryAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocInfo.allocationSize = memReqs.size;
+            allocInfo.memoryTypeIndex = FindMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+            if (vkAllocateMemory(device_, &allocInfo, nullptr, &rttDepthImageMemory_) != VK_SUCCESS)
+            {
+                URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to allocate RTT depth memory");
+                return false;
+            }
+
+            vkBindImageMemory(device_, rttDepthImage_, rttDepthImageMemory_, 0);
+
+            VkImageViewCreateInfo viewInfo{};
+            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image = rttDepthImage_;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = descriptor.depthFormat;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            viewInfo.subresourceRange.baseMipLevel = 0;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.baseArrayLayer = 0;
+            viewInfo.subresourceRange.layerCount = 1;
+
+            if (vkCreateImageView(device_, &viewInfo, nullptr, &rttDepthImageView_) != VK_SUCCESS)
+            {
+                URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create RTT depth image view");
+                return false;
+            }
+
+            rttDepthWidth_ = rttWidth_;
+            rttDepthHeight_ = rttHeight_;
+            URHO3D_LOGINFO("Created RTT depth buffer: " + String(rttWidth_) + "x" + String(rttHeight_));
+        }
+        depthView = rttDepthImageView_;
+    }
+
+    if (depthView != VK_NULL_HANDLE)
+    {
+        attachmentViews.Push(depthView);
+        cacheKey = cacheKey * 31 + (unsigned long long)(uintptr_t)depthView;
+    }
+
+    cacheKey = cacheKey * 31 + (unsigned long long)rttWidth_;
+    cacheKey = cacheKey * 31 + (unsigned long long)rttHeight_;
+
+    // Check framebuffer cache
+    if (rttFramebufferCache_.Contains(cacheKey))
+    {
+        renderTargetFramebuffer_ = rttFramebufferCache_[cacheKey];
+        renderingToTexture_ = true;
+        return true;
+    }
+
+    // Create new framebuffer
+    VkFramebufferCreateInfo fbInfo{};
+    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbInfo.renderPass = renderTargetRenderPass_;
+    fbInfo.attachmentCount = attachmentViews.Size();
+    fbInfo.pAttachments = attachmentViews.Buffer();
+    fbInfo.width = (uint32_t)rttWidth_;
+    fbInfo.height = (uint32_t)rttHeight_;
+    fbInfo.layers = 1;
+
+    VkFramebuffer fb = VK_NULL_HANDLE;
+    if (vkCreateFramebuffer(device_, &fbInfo, nullptr, &fb) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Failed to create RTT framebuffer");
+        return false;
+    }
+
+    rttFramebufferCache_[cacheKey] = fb;
+    renderTargetFramebuffer_ = fb;
+    renderingToTexture_ = true;
+    URHO3D_LOGWARNING("RebuildRTFB: Created MRT framebuffer " + String(rttWidth_) + "x" + String(rttHeight_) + " with " + String(attachmentViews.Size()) + " attachments");
     return true;
 }
 
@@ -2317,6 +2653,8 @@ bool VulkanGraphicsImpl::CreateRenderPass()
         subpass.pResolveAttachments = &resolveRef;  // Resolve MSAA to swapchain
     }
 
+    // Single dependency: External -> subpass 0 for swapchain image acquisition
+    // Instance buffer synchronization is handled by pipeline barrier in EnsureRenderPassStarted()
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
@@ -2340,13 +2678,49 @@ bool VulkanGraphicsImpl::CreateRenderPass()
         return false;
     }
 
+    // Create LOAD variant for mid-frame re-entry (e.g. after shadow map rendering)
+    // Uses LOAD instead of CLEAR so color+depth from base pass are preserved
+    VkAttachmentLoadOp origColorLoad = attachments[0].loadOp;
+    VkAttachmentLoadOp origDepthLoad = attachments[1].loadOp;
+    VkImageLayout origColorInitial = attachments[0].initialLayout;
+    VkImageLayout origDepthInitial = attachments[1].initialLayout;
+
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[0].initialLayout = attachments[0].finalLayout;  // Was transitioned to finalLayout by previous pass
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    if (vkCreateRenderPass(device_, &renderPassInfo, nullptr, &renderPassLoad_) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("Failed to create LOAD render pass variant");
+        return false;
+    }
+
+    // Restore original values (for clarity, not strictly needed)
+    attachments[0].loadOp = origColorLoad;
+    attachments[0].initialLayout = origColorInitial;
+    attachments[1].loadOp = origDepthLoad;
+    attachments[1].initialLayout = origDepthInitial;
+
+    // Register swapchain render passes in reverse lookup for stable hashing
+    RenderPassDescriptor swapDesc;
+    swapDesc.colorAttachmentCount = 1;
+    swapDesc.colorFormats[0] = swapchainFormat_;
+    swapDesc.depthFormat = VK_FORMAT_D32_SFLOAT;
+    swapDesc.subpassCount = 1;
+    swapDesc.sampleCount = actualSampleCount_;
+    swapDesc.isRenderToTexture = false;
+    uint32_t swapDescHash = swapDesc.Hash();
+    renderPassToDescHash_[(uintptr_t)renderPass_] = swapDescHash;
+    renderPassToDescHash_[(uintptr_t)renderPassLoad_] = swapDescHash;
+
     if (useMSAA)
     {
         URHO3D_LOGINFO(String("Render pass created with MSAA (") + String((int)actualSampleCount_) + "x) and resolve");
     }
     else
     {
-        URHO3D_LOGINFO("Render pass created (1x MSAA)");
+        URHO3D_LOGINFO("Render pass created (1x MSAA) + LOAD variant");
     }
     return true;
 }
@@ -2366,11 +2740,13 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     // Phase 35: Support multiple color attachments for deferred rendering
 
     // Validate attachment configuration
-    if (descriptor.colorAttachmentCount == 0 || descriptor.colorAttachmentCount > RenderPassDescriptor::MAX_COLOR_ATTACHMENTS)
+    if (descriptor.colorAttachmentCount > RenderPassDescriptor::MAX_COLOR_ATTACHMENTS)
     {
         URHO3D_LOGERROR("GetOrCreateRenderPass: Invalid color attachment count " + String(descriptor.colorAttachmentCount));
         return VK_NULL_HANDLE;
     }
+
+    bool depthOnly = (descriptor.colorAttachmentCount == 0);
 
     // Total attachments = color attachments + depth
     uint32_t totalAttachmentCount = descriptor.colorAttachmentCount + 1;
@@ -2381,29 +2757,43 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     // Color attachments (indices 0 to colorAttachmentCount-1)
     for (uint32_t i = 0; i < descriptor.colorAttachmentCount; ++i)
     {
-        attachments[i].flags = 0;  // No special flags needed
+        attachments[i].flags = 0;
         attachments[i].format = descriptor.colorFormats[i];
         attachments[i].samples = descriptor.sampleCount;
-        attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[i].loadOp = descriptor.colorLoadOp;
         attachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         attachments[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        attachments[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        // Phase 35: First color attachment is presentation target, others are intermediate
-        attachments[i].finalLayout = (i == 0) ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        // LOAD: content already valid from previous pass (SHADER_READ_ONLY after RTT, PRESENT after swapchain)
+        // CLEAR: content undefined, will be cleared
+        if (descriptor.colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD && descriptor.isRenderToTexture)
+            attachments[i].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        else
+            attachments[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (descriptor.isRenderToTexture)
+            attachments[i].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        else
+            attachments[i].finalLayout = (i == 0) ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
 
     // Depth attachment (after all color attachments)
     uint32_t depthIndex = descriptor.colorAttachmentCount;
-    attachments[depthIndex].flags = 0;  // No special flags needed
+    attachments[depthIndex].flags = 0;
     attachments[depthIndex].format = descriptor.depthFormat;
     attachments[depthIndex].samples = descriptor.sampleCount;
-    attachments[depthIndex].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[depthIndex].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    // When color uses LOAD (re-entry), depth should also LOAD to preserve scene depth for light volumes
+    attachments[depthIndex].loadOp = (descriptor.colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD && !depthOnly)
+        ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    // Shadow maps (depth-only): STORE depth for later sampling; others: don't care
+    attachments[depthIndex].storeOp = depthOnly ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[depthIndex].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[depthIndex].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[depthIndex].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[depthIndex].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    // For LOAD: depth was already written (DEPTH_STENCIL_ATTACHMENT_OPTIMAL from previous pass)
+    attachments[depthIndex].initialLayout = (attachments[depthIndex].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
+        ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    // Shadow maps: transition to shader-readable layout; others: stay as depth attachment
+    attachments[depthIndex].finalLayout = depthOnly ?
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     // Color attachment references for all color attachments
     Vector<VkAttachmentReference> colorRefs;
@@ -2518,8 +2908,9 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
         return VK_NULL_HANDLE;
     }
 
-    // Cache and return the render pass
+    // Cache and return the render pass (both forward and reverse lookup)
     renderPassCache_[descriptorHash] = renderPass;
+    renderPassToDescHash_[(uintptr_t)renderPass] = descriptorHash;
     URHO3D_LOGDEBUG("Created and cached render pass for descriptor hash: " + String((int)descriptorHash));
 
     return renderPass;
@@ -2578,6 +2969,7 @@ bool VulkanGraphicsImpl::CreateFramebuffers()
 
 bool VulkanGraphicsImpl::CreateCommandBuffers()
 {
+    // Create command pool
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -2589,66 +2981,57 @@ bool VulkanGraphicsImpl::CreateCommandBuffers()
         return false;
     }
 
-    commandBuffers_.Resize(VULKAN_FRAME_COUNT);
+    // Allocate per-frame resources
+    frames_.Resize(MAX_FRAMES_IN_FLIGHT);
 
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = commandPool_;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = (uint32_t)commandBuffers_.Size();
+    allocInfo.commandBufferCount = 1;
 
-    if (vkAllocateCommandBuffers(device_, &allocInfo, !commandBuffers_.Empty() ? &commandBuffers_[0] : nullptr) != VK_SUCCESS)
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;  // Start signaled
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
     {
-        URHO3D_LOGERROR("Failed to allocate command buffers");
-        return false;
+        FrameResources& frame = frames_[i];
+
+        // Command buffer
+        if (vkAllocateCommandBuffers(device_, &allocInfo, &frame.commandBuffer) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("Failed to allocate command buffer for frame " + String(i));
+            return false;
+        }
+
+        // Per-frame imageAcquired semaphore
+        if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frame.imageAcquired) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("Failed to create imageAcquired semaphore for frame " + String(i));
+            return false;
+        }
+
+        // Fence (start signaled so first frame doesn't wait)
+        if (vkCreateFence(device_, &fenceInfo, nullptr, &frame.fence) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("Failed to create fence for frame " + String(i));
+            return false;
+        }
     }
 
-    URHO3D_LOGINFO("Command buffers created");
+    URHO3D_LOGINFO("Created " + String(MAX_FRAMES_IN_FLIGHT) + " frame resource bundles");
     return true;
 }
 
 bool VulkanGraphicsImpl::CreateSynchronizationPrimitives()
 {
-    // CRITICAL FIX: Semaphores must match swapchain image count, NOT hardcoded frame count
-    // Swapchain may have 4 images while VULKAN_FRAME_COUNT=3, causing semaphore reuse errors
-    uint32_t swapchainImageCount = static_cast<uint32_t>(swapchainImages_.Size());
+    // Per-frame resources (fences and semaphores) are now created in CreateCommandBuffers()
+    // This function only creates timeline semaphore for advanced GPU-CPU synchronization (Phase 33)
 
-    frameFences_.Resize(VULKAN_FRAME_COUNT);  // Fences can use frame count (CPU-side pacing)
-    imageAcquiredSemaphores_.Resize(swapchainImageCount);  // One per swapchain image
-    renderCompleteSemaphores_.Resize(swapchainImageCount);  // One per swapchain image
-
-    URHO3D_LOGINFO(String("Creating synchronization: ") + String(VULKAN_FRAME_COUNT) + " fences, " +
-                   String(swapchainImageCount) + " semaphore pairs (matching swapchain image count)");
-
-    VkFenceCreateInfo fenceInfo{};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-    VkSemaphoreCreateInfo semaphoreInfo{};
-    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-    // Create fences (frame-based)
-    for (uint32_t i = 0; i < VULKAN_FRAME_COUNT; ++i)
-    {
-        if (vkCreateFence(device_, &fenceInfo, nullptr, &frameFences_[i]) != VK_SUCCESS)
-        {
-            URHO3D_LOGERROR("Failed to create frame fence");
-            return false;
-        }
-    }
-
-    // Create semaphores (one pair per swapchain image)
-    for (uint32_t i = 0; i < swapchainImageCount; ++i)
-    {
-        if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &imageAcquiredSemaphores_[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &renderCompleteSemaphores_[i]) != VK_SUCCESS)
-        {
-            URHO3D_LOGERROR("Failed to create semaphore pair for swapchain image " + String(i));
-            return false;
-        }
-    }
-
-    // Create timeline semaphore for advanced GPU-CPU synchronization (Phase 33)
     if (!CreateTimelineSemaphore())
     {
         URHO3D_LOGWARNING("Failed to create timeline semaphore, will use binary semaphores");
@@ -2661,7 +3044,7 @@ bool VulkanGraphicsImpl::CreateSynchronizationPrimitives()
 bool VulkanGraphicsImpl::CreateMemoryAllocator()
 {
     VmaAllocatorCreateInfo allocatorInfo{};
-    allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_0;
+    allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_1;
     allocatorInfo.physicalDevice = physicalDevice_;
     allocatorInfo.device = device_;
     allocatorInfo.instance = instance_;
@@ -2695,13 +3078,22 @@ bool VulkanGraphicsImpl::CreateDescriptorPool()
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = VULKAN_DESCRIPTOR_POOL_SIZE;
 
-    if (vkCreateDescriptorPool(device_, &poolInfo, nullptr, &descriptorPool_) != VK_SUCCESS)
+    // SYNC FIX: Create one descriptor pool per FRAME (not per swapchain image)
+    // CRITICAL: Must match constant buffer pool synchronization (MAX_FRAMES_IN_FLIGHT).
+    // Fences are per-frame, so descriptor pool reset must be per-frame too.
+    // Using swapchain image count would cause mismatch with constant buffers.
+    descriptorPools_.Resize(MAX_FRAMES_IN_FLIGHT);
+
+    for (unsigned i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
     {
-        URHO3D_LOGERROR("Failed to create descriptor pool");
-        return false;
+        if (vkCreateDescriptorPool(device_, &poolInfo, nullptr, &descriptorPools_[i]) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("Failed to create descriptor pool for frame " + String(i));
+            return false;
+        }
     }
 
-    URHO3D_LOGINFO("Descriptor pool created with uniform buffers and image samplers");
+    URHO3D_LOGINFO("Created " + String(MAX_FRAMES_IN_FLIGHT) + " descriptor pools (one per frame in flight) with uniform buffers and image samplers");
     return true;
 }
 
@@ -2727,10 +3119,10 @@ bool VulkanGraphicsImpl::CreateDescriptorSetLayouts()
     materialBindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     materialBindings[0].pImmutableSamplers = nullptr;
 
-    // Bindings 1-8: Texture samplers
+    // Bindings 100-115: Texture samplers (match shader layout qualifiers)
     for (unsigned i = 0; i < MAX_TEXTURE_UNITS; ++i)
     {
-        materialBindings[i + 1].binding = i + 1;
+        materialBindings[i + 1].binding = 100 + i;  // Start at 100 to match shader bindings
         materialBindings[i + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         materialBindings[i + 1].descriptorCount = 1;
         materialBindings[i + 1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -2773,19 +3165,78 @@ bool VulkanGraphicsImpl::CreateDescriptorSetLayouts()
     }
     URHO3D_LOGDEBUG("Created G-Buffer texture descriptor set layout (Set 1)");
 
-    // Set 2: Constant buffer layout (light parameters for deferred lighting)
-    // Binding: 1 uniform buffer for light data
-    VkDescriptorSetLayoutBinding constantBufferBinding{};
-    constantBufferBinding.binding = 0;
-    constantBufferBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    constantBufferBinding.descriptorCount = 1;
-    constantBufferBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
-    constantBufferBinding.pImmutableSamplers = nullptr;
+    // Set 2: Constant buffer layout (all uniform buffers for vertex and fragment shaders)
+    // Multiple bindings for different uniform blocks (based on Uniforms.glsl std140 layout)
+    // Binding 0: FrameVS (cDeltaTime, cElapsedTime)
+    // Binding 1: CameraVS (cCameraPos, cNearClip, cFarClip, cDepthMode, cFrustumSize, cView, cViewInv, cViewProj, cClipPlane)
+    // Binding 5: ObjectVS (cModel)
+    // Binding 6: FramePS (cDeltaTimePS, cElapsedTimePS)
+    // Binding 7: CameraPS (cCameraPosPS, cDepthReconstruct, cGBufferInvSize, cNearClipPS, cFarClipPS)
+    // Binding 8: ZonePS (cAmbientColor, cFogParams, cFogColor, cZoneMin, cZoneMax)
+    // Binding 9: LightPS (cLightColor, cLightPosPS, cLightDirPS, cShadowParams, cLightMatricesPS[4])
+    // Binding 10: MaterialPS (cMatDiffColor, cMatEmissiveColor, cMatEnvMapColor, cMatSpecColor)
+    VkDescriptorSetLayoutBinding constantBufferBindings[8];
+
+    // Binding 0: FrameVS
+    constantBufferBindings[0].binding = 0;
+    constantBufferBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBindings[0].descriptorCount = 1;
+    constantBufferBindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    constantBufferBindings[0].pImmutableSamplers = nullptr;
+
+    // Binding 1: CameraVS
+    constantBufferBindings[1].binding = 1;
+    constantBufferBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBindings[1].descriptorCount = 1;
+    constantBufferBindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    constantBufferBindings[1].pImmutableSamplers = nullptr;
+
+    // Binding 5: ObjectVS
+    constantBufferBindings[2].binding = 5;
+    constantBufferBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBindings[2].descriptorCount = 1;
+    constantBufferBindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    constantBufferBindings[2].pImmutableSamplers = nullptr;
+
+    // Binding 6: FramePS
+    constantBufferBindings[3].binding = 6;
+    constantBufferBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBindings[3].descriptorCount = 1;
+    constantBufferBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    constantBufferBindings[3].pImmutableSamplers = nullptr;
+
+    // Binding 7: CameraPS
+    constantBufferBindings[4].binding = 7;
+    constantBufferBindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBindings[4].descriptorCount = 1;
+    constantBufferBindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    constantBufferBindings[4].pImmutableSamplers = nullptr;
+
+    // Binding 8: ZonePS
+    constantBufferBindings[5].binding = 8;
+    constantBufferBindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBindings[5].descriptorCount = 1;
+    constantBufferBindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    constantBufferBindings[5].pImmutableSamplers = nullptr;
+
+    // Binding 9: LightPS
+    constantBufferBindings[6].binding = 9;
+    constantBufferBindings[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBindings[6].descriptorCount = 1;
+    constantBufferBindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    constantBufferBindings[6].pImmutableSamplers = nullptr;
+
+    // Binding 10: MaterialPS
+    constantBufferBindings[7].binding = 10;
+    constantBufferBindings[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    constantBufferBindings[7].descriptorCount = 1;
+    constantBufferBindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    constantBufferBindings[7].pImmutableSamplers = nullptr;
 
     VkDescriptorSetLayoutCreateInfo constantBufferLayoutInfo{};
     constantBufferLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    constantBufferLayoutInfo.bindingCount = 1;
-    constantBufferLayoutInfo.pBindings = &constantBufferBinding;
+    constantBufferLayoutInfo.bindingCount = 8;
+    constantBufferLayoutInfo.pBindings = constantBufferBindings;
 
     if (vkCreateDescriptorSetLayout(device_, &constantBufferLayoutInfo, nullptr, &constantBufferLayout_) != VK_SUCCESS)
     {
@@ -2843,6 +3294,7 @@ bool VulkanGraphicsImpl::CreateDescriptorSetLayouts()
         URHO3D_LOGERROR("Failed to create global pipeline layout");
         return false;
     }
+    globalPipelineLayout_ = currentPipelineLayout_;
 
     URHO3D_LOGINFO("Global pipeline layout created and set as current");
 
@@ -3059,13 +3511,6 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, Vk
                                             VkImageLayout oldLayout, VkImageLayout newLayout,
                                             uint32_t mipLevels)
 {
-    URHO3D_LOGDEBUG("TransitionImageLayout: cmdBuf=" + String((unsigned long long)(uintptr_t)commandBuffer) +
-                    ", image=" + String((unsigned long long)(uintptr_t)image) +
-                    ", format=" + String((unsigned)format) +
-                    ", old=" + String((unsigned)oldLayout) +
-                    ", new=" + String((unsigned)newLayout) +
-                    ", mips=" + String(mipLevels));
-
     // Use provided command buffer instead of getting frame command buffer
     if (commandBuffer == VK_NULL_HANDLE)
     {
@@ -3210,15 +3655,15 @@ void VulkanGraphicsImpl::ReportPoolStatistics() const
         URHO3D_LOGWARNING("ReportPoolStatistics: Material descriptor manager not initialized");
     }
 
-    // Gather descriptor pool statistics if available
-    if (descriptorPool_)
+    // Gather descriptor pool statistics if available (Triple-buffering: 3 pools)
+    if (descriptorPools_[0])
     {
-        URHO3D_LOGINFO("Descriptor Pool:");
+        URHO3D_LOGINFO("Descriptor Pools (per-frame):");
 
         // Count active descriptor sets (indirect count from pool state)
         // Note: VulkanDescriptorPool doesn't expose statistics directly yet
         // This is a placeholder for future enhancement with detailed descriptor stats
-        URHO3D_LOGINFO("  Descriptor pool allocated (basic tracking only)");
+        URHO3D_LOGINFO("  " + String(VULKAN_FRAME_COUNT) + " descriptor pools allocated (one per frame, basic tracking only)");
     }
 
     // Gather secondary command buffer pool statistics
@@ -3290,6 +3735,20 @@ VkDescriptorSetLayout VulkanGraphicsImpl::CreateReflectionBasedLayout(
         bindings.Push(pair.second_);
     }
 
+    // DEBUG: Disabled for performance
+    // static int layoutDebugCount = 0;
+    // if (layoutDebugCount < 5)
+    // {
+    //             layoutDebugCount, bindings.Size());
+    //     for (const auto& binding : bindings)
+    //     {
+    //         const char* typeStr = (binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+    //                               ? "UBO" : "SAMPLER";
+    //                 binding.binding, typeStr, binding.descriptorCount, binding.stageFlags);
+    //     }
+    //     layoutDebugCount++;
+    // }
+
     // Create descriptor set layout
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -3305,7 +3764,70 @@ VkDescriptorSetLayout VulkanGraphicsImpl::CreateReflectionBasedLayout(
         return VK_NULL_HANDLE;
     }
 
-    URHO3D_LOGDEBUG("CreateReflectionBasedLayout: Created layout with " + String(bindings.Size()) + " bindings");
+    // Disabled for performance - this happens per draw call
+    // URHO3D_LOGDEBUG("CreateReflectionBasedLayout: Created layout with " + String(bindings.Size()) + " bindings");
+    return layout;
+}
+
+/// Get or create cached descriptor set layout - PERFORMANCE FIX
+VkDescriptorSetLayout VulkanGraphicsImpl::GetOrCreateDescriptorSetLayout(
+    const Vector<SPIRVResource>& vsResources,
+    const Vector<SPIRVResource>& psResources)
+{
+    // Compute hash of binding configuration using Urho3D hashing
+    unsigned layoutHash = 0;
+    for (const auto& res : vsResources)
+    {
+        CombineHash(layoutHash, res.set);
+        CombineHash(layoutHash, res.binding);
+        CombineHash(layoutHash, (unsigned)res.descriptorType);
+    }
+    for (const auto& res : psResources)
+    {
+        CombineHash(layoutHash, res.set);
+        CombineHash(layoutHash, res.binding);
+        CombineHash(layoutHash, (unsigned)res.descriptorType);
+    }
+
+    // Check cache first
+    auto it = descriptorSetLayoutCache_.Find(layoutHash);
+    if (it != descriptorSetLayoutCache_.End())
+    {
+        return it->second_;
+    }
+
+    // Not cached - create new layout
+    VkDescriptorSetLayout layout = CreateReflectionBasedLayout(vsResources, psResources);
+    if (layout)
+    {
+        descriptorSetLayoutCache_[layoutHash] = layout;
+    }
+    return layout;
+}
+
+/// Get or create cached pipeline layout - PERFORMANCE FIX
+VkPipelineLayout VulkanGraphicsImpl::GetOrCreatePipelineLayout(VkDescriptorSetLayout descriptorSetLayout)
+{
+    unsigned long long layoutKey = (unsigned long long)descriptorSetLayout;
+
+    // Check cache first
+    auto it = pipelineLayoutCache_.Find(layoutKey);
+    if (it != pipelineLayoutCache_.End())
+    {
+        return it->second_;
+    }
+
+    // Not cached - create new pipeline layout
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = &descriptorSetLayout;
+
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &layout) == VK_SUCCESS)
+    {
+        pipelineLayoutCache_[layoutKey] = layout;
+    }
     return layout;
 }
 
@@ -3322,104 +3844,104 @@ bool VulkanGraphicsImpl::CreateShaderModules(ShaderVariation* vertexShader, Shad
     if (gsModule)
         *gsModule = VK_NULL_HANDLE;
 
-    // Compile vertex shader if provided
+    // Compile vertex shader if provided (cached)
     if (vertexShader)
     {
-        Vector<uint32_t> spirvBytecode;
-        String errorOutput;
-
-        if (!VulkanShaderModule::GetOrCompileSPIRV(vertexShader, spirvBytecode, errorOutput))
+        auto it = shaderModuleCache_.Find(vertexShader);
+        if (it != shaderModuleCache_.End())
         {
-            URHO3D_LOGERROR("CreateShaderModules: Failed to compile vertex shader: " + errorOutput);
-            return false;
-        }
-
-        vsModule = VulkanShaderModule::CreateShaderModule(device_, spirvBytecode);
-        if (!vsModule)
-        {
-            URHO3D_LOGERROR("CreateShaderModules: Failed to create vertex shader module");
-            return false;
-        }
-
-        // Reflect SPIR-V to extract bindings and store in ShaderVariation
-        VulkanSPIRVReflect reflector;
-        Vector<SPIRVResource> resources;
-        if (reflector.ReflectShaderResources(spirvBytecode, VK_SHADER_STAGE_VERTEX_BIT, resources))
-        {
-            vertexShader->SetReflectedResources(resources);
-            URHO3D_LOGDEBUG("CreateShaderModules: Reflected " + String(resources.Size()) + " resources from vertex shader SPIR-V");
+            vsModule = it->second_;
         }
         else
         {
-            URHO3D_LOGWARNING("CreateShaderModules: Failed to reflect vertex shader resources");
+            Vector<uint32_t> spirvBytecode;
+            String errorOutput;
+
+            if (!VulkanShaderModule::GetOrCompileSPIRV(vertexShader, spirvBytecode, errorOutput))
+            {
+                URHO3D_LOGERROR("CreateShaderModules: Failed to compile vertex shader: " + errorOutput);
+                return false;
+            }
+
+            vsModule = VulkanShaderModule::CreateShaderModule(device_, spirvBytecode);
+            if (!vsModule)
+            {
+                URHO3D_LOGERROR("CreateShaderModules: Failed to create vertex shader module");
+                return false;
+            }
+
+            shaderModuleCache_[vertexShader] = vsModule;
+
+            // Reflect SPIR-V to extract bindings and store in ShaderVariation (only if not already reflected)
+            if (vertexShader->GetReflectedResources().Empty())
+            {
+                VulkanSPIRVReflect reflector;
+                Vector<SPIRVResource> resources;
+                if (reflector.ReflectShaderResources(spirvBytecode, VK_SHADER_STAGE_VERTEX_BIT, resources))
+                {
+                    vertexShader->SetReflectedResources(resources);
+                }
+            }
         }
     }
 
-    // Compile fragment/pixel shader if provided
+    // Compile fragment/pixel shader if provided (cached)
     if (pixelShader)
     {
-        Vector<uint32_t> spirvBytecode;
-        String errorOutput;
-
-        if (!VulkanShaderModule::GetOrCompileSPIRV(pixelShader, spirvBytecode, errorOutput))
+        auto it = shaderModuleCache_.Find(pixelShader);
+        if (it != shaderModuleCache_.End())
         {
-            URHO3D_LOGERROR("CreateShaderModules: Failed to compile pixel shader: " + errorOutput);
-            // Clean up vertex shader module on failure
-            if (vsModule)
-            {
-                VulkanShaderModule::DestroyShaderModule(device_, vsModule);
-                vsModule = VK_NULL_HANDLE;
-            }
-            return false;
-        }
-
-        fsModule = VulkanShaderModule::CreateShaderModule(device_, spirvBytecode);
-        if (!fsModule)
-        {
-            URHO3D_LOGERROR("CreateShaderModules: Failed to create fragment shader module");
-            // Clean up vertex shader module on failure
-            if (vsModule)
-            {
-                VulkanShaderModule::DestroyShaderModule(device_, vsModule);
-                vsModule = VK_NULL_HANDLE;
-            }
-            return false;
-        }
-
-        // Reflect SPIR-V to extract bindings and store in ShaderVariation
-        VulkanSPIRVReflect reflector;
-        Vector<SPIRVResource> resources;
-        if (reflector.ReflectShaderResources(spirvBytecode, VK_SHADER_STAGE_FRAGMENT_BIT, resources))
-        {
-            pixelShader->SetReflectedResources(resources);
-            URHO3D_LOGDEBUG("CreateShaderModules: Reflected " + String(resources.Size()) + " resources from pixel shader SPIR-V");
+            fsModule = it->second_;
         }
         else
         {
-            URHO3D_LOGWARNING("CreateShaderModules: Failed to reflect pixel shader resources");
+            Vector<uint32_t> spirvBytecode;
+            String errorOutput;
+
+            if (!VulkanShaderModule::GetOrCompileSPIRV(pixelShader, spirvBytecode, errorOutput))
+            {
+                URHO3D_LOGERROR("CreateShaderModules: Failed to compile pixel shader: " + errorOutput);
+                return false;
+            }
+
+            fsModule = VulkanShaderModule::CreateShaderModule(device_, spirvBytecode);
+            if (!fsModule)
+            {
+                URHO3D_LOGERROR("CreateShaderModules: Failed to create fragment shader module");
+                return false;
+            }
+
+            shaderModuleCache_[pixelShader] = fsModule;
+
+            // Reflect SPIR-V to extract bindings and store in ShaderVariation (only if not already reflected)
+            if (pixelShader->GetReflectedResources().Empty())
+            {
+                VulkanSPIRVReflect reflector;
+                Vector<SPIRVResource> resources;
+                if (reflector.ReflectShaderResources(spirvBytecode, VK_SHADER_STAGE_FRAGMENT_BIT, resources))
+                {
+                    pixelShader->SetReflectedResources(resources);
+                }
+            }
         }
     }
 
-    // Compile geometry shader if provided (Phase 36+: Geometry Shader Support)
+    // Compile geometry shader if provided (Phase 36+: Geometry Shader Support) (cached)
     if (geometryShader && gsModule)
     {
+        auto it = shaderModuleCache_.Find(geometryShader);
+        if (it != shaderModuleCache_.End())
+        {
+            *gsModule = it->second_;
+        }
+        else
+        {
         Vector<uint32_t> spirvBytecode;
         String errorOutput;
 
         if (!VulkanShaderModule::GetOrCompileSPIRV(geometryShader, spirvBytecode, errorOutput))
         {
             URHO3D_LOGERROR("CreateShaderModules: Failed to compile geometry shader: " + errorOutput);
-            // Clean up previous shader modules on failure
-            if (vsModule)
-            {
-                VulkanShaderModule::DestroyShaderModule(device_, vsModule);
-                vsModule = VK_NULL_HANDLE;
-            }
-            if (fsModule)
-            {
-                VulkanShaderModule::DestroyShaderModule(device_, fsModule);
-                fsModule = VK_NULL_HANDLE;
-            }
             return false;
         }
 
@@ -3427,18 +3949,10 @@ bool VulkanGraphicsImpl::CreateShaderModules(ShaderVariation* vertexShader, Shad
         if (!(*gsModule))
         {
             URHO3D_LOGERROR("CreateShaderModules: Failed to create geometry shader module");
-            // Clean up previous shader modules on failure
-            if (vsModule)
-            {
-                VulkanShaderModule::DestroyShaderModule(device_, vsModule);
-                vsModule = VK_NULL_HANDLE;
-            }
-            if (fsModule)
-            {
-                VulkanShaderModule::DestroyShaderModule(device_, fsModule);
-                fsModule = VK_NULL_HANDLE;
-            }
             return false;
+        }
+
+        shaderModuleCache_[geometryShader] = *gsModule;
         }
     }
 
@@ -3491,15 +4005,34 @@ static VkStencilOp ConvertStencilOp(StencilOp op)
     }
 }
 
+/// \brief Convert Urho3D PrimitiveType to Vulkan primitive topology
+static VkPrimitiveTopology ConvertPrimitiveType(PrimitiveType type)
+{
+    switch (type)
+    {
+    case TRIANGLE_LIST:  return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    case LINE_LIST:      return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    case POINT_LIST:     return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+    case TRIANGLE_STRIP: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    case LINE_STRIP:     return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+    case TRIANGLE_FAN:   return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+    default:             return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    }
+}
+
 // Phase 32 Step 3 & Phase 33 Step 2: Pipeline creation with graphics state and shader modules
 VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     VkPipelineLayout layout,
     VkRenderPass renderPass,
     const VulkanPipelineState& state,
     VertexBuffer* vertexBuffer,
+    VertexBuffer* instanceBuffer,
     VkShaderModule vsModule,
     VkShaderModule fsModule,
-    VkShaderModule gsModule)
+    VkShaderModule gsModule,
+    ShaderVariation* vertexShader,
+    ShaderVariation* pixelShader,
+    ShaderVariation* geometryShader)
 {
     if (!pipelineCache_)
     {
@@ -3507,8 +4040,27 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
         return VK_NULL_HANDLE;
     }
 
-    // Calculate hash of pipeline state for caching
+    // Content-based hash — stable across sessions for disk cache.
+    // Uses shader name+defines and render pass format instead of Vulkan handle pointers.
     uint64_t stateHash = state.Hash();
+    stateHash = stateHash * 31 + (instanceBuffer ? 1 : 0);
+    stateHash = stateHash * 31 + (vertexBuffer ? vertexBuffer->GetBufferHash(0) : 0);
+    if (vertexShader)
+        stateHash = stateHash * 31 + (uint64_t)StringHash(vertexShader->GetFullName()).Value();
+    if (pixelShader)
+        stateHash = stateHash * 31 + (uint64_t)StringHash(pixelShader->GetFullName()).Value();
+    if (geometryShader)
+        stateHash = stateHash * 31 + (uint64_t)StringHash(geometryShader->GetFullName()).Value();
+    auto rpIt = renderPassToDescHash_.Find((uintptr_t)renderPass);
+    stateHash = stateHash * 31 + (rpIt != renderPassToDescHash_.End() ? rpIt->second_ : 0);
+
+    // PERFORMANCE FIX: Early-out on pipeline cache hit — skip 300+ lines of VkCreateInfo building
+    VkPipeline cachedPipeline = pipelineCache_->FindCachedPipeline(stateHash);
+    if (cachedPipeline != VK_NULL_HANDLE)
+    {
+        pipelineCache_->IncrementHits();
+        return cachedPipeline;
+    }
 
     // Build rasterization state from CullMode and FillMode
     VkPipelineRasterizationStateCreateInfo rasterizationState{};
@@ -3518,13 +4070,15 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     rasterizationState.cullMode = ConvertCullMode(state.cullMode);
     rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizationState.lineWidth = 1.0f;
+    // Always enable depth bias (controlled dynamically via vkCmdSetDepthBias)
+    rasterizationState.depthBiasEnable = VK_TRUE;
 
     // Build color blend state from blend mode
     VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blendAttachment.colorWriteMask = state.colorWrite ?
+        (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT) : 0;
 
-    // Map blend modes to Vulkan blend factors
     switch (state.blendMode)
     {
     case BLEND_REPLACE:
@@ -3589,10 +4143,38 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
         break;
     }
 
+    // Determine color attachment count from current render target configuration
+    // Shadow maps (depth-only) = 0, regular RTT = 1, G-Buffer = 4, swapchain = 1
+    uint32_t attachmentCount = 1; // default for swapchain
+    if (renderPass == renderTargetRenderPass_ && graphics_)
+    {
+        attachmentCount = 0;
+        for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
+        {
+            if (graphics_->GetRenderTarget(i))
+                attachmentCount = i + 1;
+        }
+    }
+
+    // DIAG: Log blend attachment count for pipeline creation
+    {
+        static int pipeDiag = 0;
+        if (pipeDiag++ < 20)
+            URHO3D_LOGWARNING("Pipeline blend attachments=" + String(attachmentCount) + " renderPass==rttRP=" + String(renderPass == renderTargetRenderPass_) + " renderingToTex=" + String(renderingToTexture_));
+    }
+
+    // Create blend attachments for all color attachments (all use same blend mode)
+    Vector<VkPipelineColorBlendAttachmentState> blendAttachments;
+    blendAttachments.Resize(attachmentCount);
+    for (uint32_t i = 0; i < attachmentCount; ++i)
+    {
+        blendAttachments[i] = blendAttachment;  // Copy same blend state to all attachments
+    }
+
     VkPipelineColorBlendStateCreateInfo colorBlendState{};
     colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlendState.attachmentCount = 1;
-    colorBlendState.pAttachments = &blendAttachment;
+    colorBlendState.attachmentCount = attachmentCount;
+    colorBlendState.pAttachments = blendAttachments.Buffer();
     colorBlendState.logicOpEnable = false;
 
     // Build depth-stencil state
@@ -3601,6 +4183,7 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     depthStencilState.depthTestEnable = (state.depthTest != CMP_ALWAYS);
     depthStencilState.depthWriteEnable = state.depthWrite;
     depthStencilState.depthCompareOp = ConvertCompareMode(state.depthTest);
+
 
     // Stencil state (front and back faces same)
     if (state.stencilTest)
@@ -3623,110 +4206,207 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     // Full structures would come from vertex/input assembly setup
     VkPipelineInputAssemblyStateCreateInfo inputAssemblyState{};
     inputAssemblyState.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssemblyState.topology = ConvertPrimitiveType(state.primitiveType);
     inputAssemblyState.primitiveRestartEnable = false;
 
     // CRITICAL FIX: Build vertex input state from vertex buffer layout
-    // ALWAYS CREATE ALL 8 VERTEX ATTRIBUTES TO MATCH SHADER EXPECTATIONS
+    // Only create attributes that actually exist in the vertex buffer
     Vector<VkVertexInputBindingDescription> bindingDescriptions;
     Vector<VkVertexInputAttributeDescription> attributeDescriptions;
 
+    // Standard vertex attribute locations — used to fill dummy entries for locations
+    // not provided by vertex or instance buffers (SPIR-V doesn't strip unused interface vars)
+    struct DefaultAttr { unsigned location; VkFormat format; };
+    static const DefaultAttr standardLocations[] = {
+        {0, VK_FORMAT_R32G32B32A32_SFLOAT},   // iPos (vec4)
+        {1, VK_FORMAT_R32G32B32_SFLOAT},       // iNormal (vec3)
+        {2, VK_FORMAT_R32G32B32A32_SFLOAT},    // iColor (vec4)
+        {3, VK_FORMAT_R32G32_SFLOAT},           // iTexCoord (vec2)
+        {4, VK_FORMAT_R32G32_SFLOAT},           // iTexCoord1 (vec2)
+        {5, VK_FORMAT_R32G32B32A32_SFLOAT},    // iTangent (vec4)
+        {6, VK_FORMAT_R32G32B32A32_SFLOAT},    // iBlendWeights (vec4)
+        {7, VK_FORMAT_R32G32B32A32_SFLOAT},    // iBlendIndices (vec4)
+        {8, VK_FORMAT_R32G32B32_SFLOAT},       // iCubeTexCoord (vec3)
+        {9, VK_FORMAT_R32G32B32A32_SFLOAT},    // iCubeTexCoord1 (vec4)
+        {10, VK_FORMAT_R32G32B32A32_SFLOAT},   // iTexCoord4 (vec4) — instanced matrix row 0
+        {11, VK_FORMAT_R32G32B32A32_SFLOAT},   // iTexCoord5 (vec4) — instanced matrix row 1
+        {12, VK_FORMAT_R32G32B32A32_SFLOAT},   // iTexCoord6 (vec4) — instanced matrix row 2
+        {13, VK_FORMAT_R32_SFLOAT},             // iObjectIndex (float) — instanced shaders
+    };
+    static const unsigned numStandardLocations = sizeof(standardLocations) / sizeof(standardLocations[0]);
+
     if (vertexBuffer)
     {
+        const Vector<VertexElement>& elements = vertexBuffer->GetElements();
+
         // Create binding description (one binding at index 0)
         VkVertexInputBindingDescription binding{};
         binding.binding = 0;
         binding.stride = vertexBuffer->GetVertexSize();
         binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
         bindingDescriptions.Push(binding);
-
-        // Pre-allocate all 14 vertex attribute locations (0-13) to match shader layout
-        // Fill missing locations with dummy vec4(0) from offset 0
-        attributeDescriptions.Resize(14);
-        for (unsigned i = 0; i < 14; ++i)
-        {
-            attributeDescriptions[i].binding = 0;
-            attributeDescriptions[i].location = i;
-            attributeDescriptions[i].format = VK_FORMAT_R32G32B32A32_SFLOAT;  // vec4 default
-            attributeDescriptions[i].offset = 0;  // Dummy: all read from start
-        }
-
-        // Override with actual vertex buffer elements where available
-        const Vector<VertexElement>& elements = vertexBuffer->GetElements();
         for (unsigned i = 0; i < elements.Size(); ++i)
         {
             const VertexElement& element = elements[i];
 
+            VkVertexInputAttributeDescription attr{};
+            attr.binding = 0;
+
             // Map vertex element semantic to shader input location
             // Shader locations: 0=iPos, 1=iNormal, 2=iColor, 3=iTexCoord, 4=iTexCoord1, 5=iTangent, etc.
-            unsigned location = 0;
             switch (element.semantic_)
             {
                 case SEM_POSITION:
-                    location = 0;
+                    attr.location = 0;
                     break;
                 case SEM_NORMAL:
-                    location = 1;
+                    attr.location = 1;
                     break;
                 case SEM_COLOR:
-                    location = 2;
+                    attr.location = 2;
                     break;
                 case SEM_TEXCOORD:
-                    location = 3 + element.index_;  // iTexCoord=3, iTexCoord1=4
+                    attr.location = 3 + element.index_;  // iTexCoord=3, iTexCoord1=4
                     break;
                 case SEM_TANGENT:
-                    location = 5;
+                    attr.location = 5;
                     break;
                 case SEM_BLENDWEIGHTS:
-                    location = 6;
+                    attr.location = 6;
                     break;
                 case SEM_BLENDINDICES:
-                    location = 7;
+                    attr.location = 7;
                     break;
                 default:
-                    location = i;  // Fallback to sequential
+                    attr.location = i;  // Fallback to sequential
                     break;
             }
+
 
             // Map VertexElementType to VkFormat
             switch (element.type_)
             {
             case TYPE_INT:
-                attributeDescriptions[location].format = VK_FORMAT_R32_SINT;
+                attr.format = VK_FORMAT_R32_SINT;
                 break;
             case TYPE_FLOAT:
-                attributeDescriptions[location].format = VK_FORMAT_R32_SFLOAT;
+                attr.format = VK_FORMAT_R32_SFLOAT;
                 break;
             case TYPE_VECTOR2:
-                attributeDescriptions[location].format = VK_FORMAT_R32G32_SFLOAT;
+                attr.format = VK_FORMAT_R32G32_SFLOAT;
                 break;
             case TYPE_VECTOR3:
-                attributeDescriptions[location].format = VK_FORMAT_R32G32B32_SFLOAT;
+                attr.format = VK_FORMAT_R32G32B32_SFLOAT;
                 break;
             case TYPE_VECTOR4:
-                attributeDescriptions[location].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+                attr.format = VK_FORMAT_R32G32B32A32_SFLOAT;
                 break;
             case TYPE_UBYTE4:
-                attributeDescriptions[location].format = VK_FORMAT_R8G8B8A8_UNORM;
+                attr.format = VK_FORMAT_R8G8B8A8_USCALED;  // Byte→float without normalization (5 → 5.0, not 0.0196)
                 break;
             case TYPE_UBYTE4_NORM:
-                attributeDescriptions[location].format = VK_FORMAT_R8G8B8A8_UNORM;
+                attr.format = VK_FORMAT_R8G8B8A8_UNORM;
                 break;
             default:
-                attributeDescriptions[location].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+                attr.format = VK_FORMAT_R32G32B32A32_SFLOAT;
                 break;
             }
 
             // Set actual offset for this attribute
-            attributeDescriptions[location].offset = element.offset_;
+            attr.offset = element.offset_;
 
-            URHO3D_LOGDEBUG("Vertex element " + String(i) + ": semantic=" + String((int)element.semantic_) +
-                           ", location=" + String(location) + ", offset=" + String(element.offset_) +
-                           ", format=" + String((int)attributeDescriptions[location].format));
+            attributeDescriptions.Push(attr);
+
+            // Verbose logging disabled for performance
+            // URHO3D_LOGDEBUG("Vertex element " + String(i) + ": semantic=" + String((int)element.semantic_) +
+            //                ", location=" + String(attr.location) + ", offset=" + String(attr.offset) +
+            //                ", format=" + String((int)attr.format));
         }
 
-        URHO3D_LOGDEBUG("Vertex input state: " + String(bindingDescriptions.Size()) + " bindings, " +
-                        String(attributeDescriptions.Size()) + " attributes (14 total, with dummies), stride=" + String(binding.stride));
+    }
+    else
+    {
+    }
+
+    // Add instance buffer attributes if present (binding 1, per-instance rate)
+    if (instanceBuffer)
+    {
+        const Vector<VertexElement>& elements = instanceBuffer->GetElements();
+        // Create binding description for instance buffer (binding 1, per-instance rate)
+        VkVertexInputBindingDescription binding{};
+        binding.binding = 1;
+        binding.stride = instanceBuffer->GetVertexSize();
+        binding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+        bindingDescriptions.Push(binding);
+
+        // Add attribute descriptions for instance matrix (TEXCOORD4/5/6 → locations 10/11/12)
+        // Shader preprocessor assigns locations sequentially, so instance attributes come after
+        // all geometry attributes (iPos=0, iNormal=1, iColor=2, iTexCoord=3, iTexCoord1=4,
+        // iTangent=5, iBlendWeights=6, iBlendIndices=7, iCubeTexCoord=8, iCubeTexCoord1=9)
+        for (unsigned i = 0; i < elements.Size(); ++i)
+        {
+            const VertexElement& element = elements[i];
+
+            VkVertexInputAttributeDescription attr{};
+            attr.binding = 1;  // Instance buffer is binding 1
+
+            // Map instance buffer elements to shader locations
+            // Shader Transform.glsl declares: layout(location = 10/11/12) for iTexCoord4/5/6
+            if (element.semantic_ == SEM_TEXCOORD)
+            {
+                attr.location = 10 + (element.index_ - 4);  // TEXCOORD4 → 10, TEXCOORD5 → 11, TEXCOORD6 → 12
+            }
+            else
+            {
+                attr.location = 10 + i;  // Fallback to sequential locations starting at 10
+            }
+
+            // Map VertexElementType to VkFormat (should be TYPE_VECTOR4 for instance matrix)
+            switch (element.type_)
+            {
+            case TYPE_VECTOR4:
+                attr.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+                break;
+            case TYPE_VECTOR3:
+                attr.format = VK_FORMAT_R32G32B32_SFLOAT;
+                break;
+            case TYPE_VECTOR2:
+                attr.format = VK_FORMAT_R32G32_SFLOAT;
+                break;
+            case TYPE_FLOAT:
+                attr.format = VK_FORMAT_R32_SFLOAT;
+                break;
+            default:
+                attr.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+                break;
+            }
+
+            attr.offset = element.offset_;
+
+
+            attributeDescriptions.Push(attr);
+        }
+    }
+
+    // Fill dummy attributes for any shader locations not provided by vertex or instance buffers.
+    // This MUST happen after both vertex and instance attributes are added to avoid duplicates.
+    {
+        unsigned providedLocations = 0;
+        for (unsigned i = 0; i < attributeDescriptions.Size(); ++i)
+            providedLocations |= (1u << attributeDescriptions[i].location);
+
+        for (unsigned i = 0; i < numStandardLocations; ++i)
+        {
+            if (!(providedLocations & (1u << standardLocations[i].location)))
+            {
+                VkVertexInputAttributeDescription dummy{};
+                dummy.binding = 0;
+                dummy.location = standardLocations[i].location;
+                dummy.format = standardLocations[i].format;
+                dummy.offset = 0;
+                attributeDescriptions.Push(dummy);
+            }
+        }
     }
 
     VkPipelineVertexInputStateCreateInfo vertexInputState{};
@@ -3735,6 +4415,7 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     vertexInputState.pVertexBindingDescriptions = bindingDescriptions.Empty() ? nullptr : &bindingDescriptions[0];
     vertexInputState.vertexAttributeDescriptionCount = attributeDescriptions.Size();
     vertexInputState.pVertexAttributeDescriptions = attributeDescriptions.Empty() ? nullptr : &attributeDescriptions[0];
+
 
     VkPipelineMultisampleStateCreateInfo multisampleState{};
     multisampleState.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -3760,10 +4441,10 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     viewportState.scissorCount = 1;
     viewportState.pScissors = &scissor;
 
-    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
     VkPipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
+    dynamicState.dynamicStateCount = 3;
     dynamicState.pDynamicStates = dynamicStates;
 
     // Phase 33 Step 2: Prepare shader stages (vertex, geometry, and fragment shaders)
@@ -3771,10 +4452,12 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     // Phase 36+: Added geometry shader support
     Vector<VkPipelineShaderStageCreateInfo> shaderStages;
 
+    // DIAGNOSTIC: depthTest, depthWrite (disabled for performance)
+
     // Add vertex shader stage if provided
     if (vsModule != VK_NULL_HANDLE)
     {
-        fprintf(stderr, "PIPELINE: Adding VERTEX shader module=%llu\n", (unsigned long long)(uintptr_t)vsModule);
+        // DIAGNOSTIC: VS module (disabled for performance)
         VkPipelineShaderStageCreateInfo vsStage{};
         vsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vsStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -3784,7 +4467,8 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     }
     else
     {
-        fprintf(stderr, "PIPELINE: ERROR - Vertex shader module is NULL!\n");
+#if VULKAN_PIPELINE_DEBUG_LOGGING
+#endif
     }
 
     // Add geometry shader stage if provided (Phase 36+: Geometry Shader Support)
@@ -3801,7 +4485,8 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     // Add fragment shader stage if provided
     if (fsModule != VK_NULL_HANDLE)
     {
-        fprintf(stderr, "PIPELINE: Adding FRAGMENT shader module=%llu\n", (unsigned long long)(uintptr_t)fsModule);
+#if VULKAN_PIPELINE_DEBUG_LOGGING
+#endif
         VkPipelineShaderStageCreateInfo fsStage{};
         fsStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         fsStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -3811,7 +4496,8 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     }
     else
     {
-        fprintf(stderr, "PIPELINE: ERROR - Fragment shader module is NULL!\n");
+#if VULKAN_PIPELINE_DEBUG_LOGGING
+#endif
     }
 
     // Build graphics pipeline create info
@@ -3830,8 +4516,7 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     pipelineInfo.stageCount = shaderStages.Size();        // Phase 33: Set from shader modules
     pipelineInfo.pStages = shaderStages.Size() > 0 ? &shaderStages[0] : nullptr;  // Phase 33: Bind stages
 
-    fprintf(stderr, "PIPELINE: Creating pipeline with %u shader stages, pStages=%p\n",
-            pipelineInfo.stageCount, (void*)pipelineInfo.pStages);
+    // DIAGNOSTIC: stageCount, pStages (disabled for performance)
 
     // Use pipeline cache for creation (handles memory + disk caching)
     VkPipeline pipeline = pipelineCache_->GetOrCreatePipeline(stateHash, pipelineInfo);
@@ -3869,7 +4554,8 @@ VkDescriptorSet VulkanGraphicsImpl::GetMaterialDescriptor(Material* material)
 // Phase 36B: Texture Descriptor Management
 VkDescriptorSet VulkanGraphicsImpl::CreateTextureDescriptorSet()
 {
-    if (!device_ || !descriptorPool_ || gbufferTextureLayout_ == VK_NULL_HANDLE)
+    VkDescriptorPool pool = GetDescriptorPool();  // Get current frame's pool
+    if (!device_ || !pool || gbufferTextureLayout_ == VK_NULL_HANDLE)
     {
         URHO3D_LOGERROR("CreateTextureDescriptorSet: Invalid state (device, pool, or layout is null)");
         return VK_NULL_HANDLE;
@@ -3878,7 +4564,7 @@ VkDescriptorSet VulkanGraphicsImpl::CreateTextureDescriptorSet()
     // Allocate descriptor set from pool using G-Buffer texture layout (Set 1)
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorPool = pool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &gbufferTextureLayout_;
 
@@ -3987,7 +4673,8 @@ void VulkanGraphicsImpl::BindTextureDescriptorSet(VkDescriptorSet descriptorSet)
 // Phase 36C: Constant Buffer Descriptor Management
 VkDescriptorSet VulkanGraphicsImpl::CreateConstantBufferDescriptorSet(const void* data, uint32_t dataSize)
 {
-    if (!device_ || !descriptorPool_ || constantBufferLayout_ == VK_NULL_HANDLE)
+    VkDescriptorPool pool = GetDescriptorPool();  // Get current frame's pool
+    if (!device_ || !pool || constantBufferLayout_ == VK_NULL_HANDLE)
     {
         URHO3D_LOGERROR("CreateConstantBufferDescriptorSet: Invalid state (device, pool, or layout is null)");
         return VK_NULL_HANDLE;
@@ -4017,7 +4704,7 @@ VkDescriptorSet VulkanGraphicsImpl::CreateConstantBufferDescriptorSet(const void
     // Allocate descriptor set from pool using constant buffer layout (Set 2)
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorPool = pool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &constantBufferLayout_;
 
@@ -4087,7 +4774,8 @@ void VulkanGraphicsImpl::BindConstantBufferDescriptorSet(VkDescriptorSet descrip
 // Phase 36D: Input Attachment Descriptor Management
 VkDescriptorSet VulkanGraphicsImpl::CreateInputAttachmentDescriptorSet()
 {
-    if (!device_ || !descriptorPool_ || inputAttachmentLayout_ == VK_NULL_HANDLE)
+    VkDescriptorPool pool = GetDescriptorPool();  // Get current frame's pool
+    if (!device_ || !pool || inputAttachmentLayout_ == VK_NULL_HANDLE)
     {
         URHO3D_LOGERROR("CreateInputAttachmentDescriptorSet: Invalid state (device, pool, or layout is null)");
         return VK_NULL_HANDLE;
@@ -4104,7 +4792,7 @@ VkDescriptorSet VulkanGraphicsImpl::CreateInputAttachmentDescriptorSet()
     // Allocate descriptor set from pool using input attachment layout (Set 3)
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorPool = pool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &inputAttachmentLayout_;
 

@@ -325,9 +325,10 @@ void VulkanBatchDispatcher::SubmitIndirectDraws(VkCommandBuffer cmdBuffer)
         // Phase 15.2: Bind instance buffer if this batch uses instancing
         if (batchInfo.instanceBuffer_ != VK_NULL_HANDLE)
         {
-            // Bind instance buffer as additional vertex stream (stream 2)
+            // Bind instance buffer as additional vertex stream (binding 1)
+            // Pipeline expects instance data at binding 1 (see VulkanGraphicsImpl.cpp CreateGraphicsPipeline)
             VkDeviceSize offset = batchInfo.instanceBufferOffset_;
-            vkCmdBindVertexBuffers(cmdBuffer, 2, 1, &batchInfo.instanceBuffer_, &offset);
+            vkCmdBindVertexBuffers(cmdBuffer, 1, 1, &batchInfo.instanceBuffer_, &offset);
         }
 
         // Phase 14.2.2: Update push constants for this batch's world transform

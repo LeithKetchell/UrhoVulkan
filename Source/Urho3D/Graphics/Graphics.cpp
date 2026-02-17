@@ -25,6 +25,9 @@
 #include "../Graphics/TerrainPatch.h"
 #include "../Graphics/Zone.h"
 #include "../GraphicsAPI/GraphicsImpl.h"
+#ifdef URHO3D_VULKAN
+#include "../GraphicsAPI/Vulkan/VulkanGraphicsImpl.h"
+#endif
 #include "../GraphicsAPI/Shader.h"
 #include "../GraphicsAPI/ShaderPrecache.h"
 #include "../GraphicsAPI/Texture2D.h"
@@ -312,6 +315,27 @@ Vector3 Graphics::GetDisplayDPI(int monitor) const
     Vector3 result;
     SDL_GetDisplayDPI(monitor, &result.z_, &result.x_, &result.y_);
     return result;
+}
+
+unsigned Graphics::GetFrameIndex() const
+{
+#ifdef URHO3D_VULKAN
+    if (GetGAPI() == GAPI_VULKAN)
+    {
+        VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+        return vkImpl ? vkImpl->GetFrameIndex() : 0;
+    }
+#endif
+    return 0;
+}
+
+unsigned Graphics::GetMaxFramesInFlight()
+{
+#ifdef URHO3D_VULKAN
+    if (GetGAPI() == GAPI_VULKAN)
+        return 4;  // Must match VulkanGraphicsImpl::MAX_FRAMES_IN_FLIGHT
+#endif
+    return 1;
 }
 
 void Graphics::Maximize()
@@ -635,6 +659,14 @@ Graphics::~Graphics()
         return;
     }
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+    {
+        Destructor_Vulkan();
+        return;
+    }
+#endif
 }
 
 bool Graphics::SetScreenMode(int width, int height, const ScreenModeParams& params, bool maximize)
@@ -672,6 +704,11 @@ void Graphics::SetSRGB(bool enable)
     if (gapi == GAPI_D3D11)
         return SetSRGB_D3D11(enable);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetSRGB_Vulkan(enable);
+#endif
 }
 
 void Graphics::SetDither(bool enable)
@@ -686,6 +723,11 @@ void Graphics::SetDither(bool enable)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetDither_D3D11(enable);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDither_Vulkan(enable);
 #endif
 }
 
@@ -702,6 +744,11 @@ void Graphics::SetFlushGPU(bool enable)
     if (gapi == GAPI_D3D11)
         return SetFlushGPU_D3D11(enable);;
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetFlushGPU_Vulkan(enable);
+#endif
 }
 
 void Graphics::SetForceGL2(bool enable)
@@ -716,6 +763,11 @@ void Graphics::SetForceGL2(bool enable)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetForceGL2_D3D11(enable);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetForceGL2_Vulkan(enable);
 #endif
 }
 
@@ -732,6 +784,11 @@ void Graphics::Close()
     if (gapi == GAPI_D3D11)
         return Close_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return Close_Vulkan();
+#endif
 }
 
 bool Graphics::TakeScreenShot(Image& destImage)
@@ -746,6 +803,11 @@ bool Graphics::TakeScreenShot(Image& destImage)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return TakeScreenShot_D3D11(destImage);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return TakeScreenShot_Vulkan(destImage);
 #endif
 
     return {}; // Prevent warning
@@ -827,6 +889,11 @@ bool Graphics::ResolveToTexture(Texture2D* destination, const IntRect& viewport)
         return ResolveToTexture_D3D11(destination, viewport);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ResolveToTexture_Vulkan(destination, viewport);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -844,6 +911,11 @@ bool Graphics::ResolveToTexture(Texture2D* texture)
         return ResolveToTexture_D3D11(texture);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ResolveToTexture_Vulkan(texture);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -859,6 +931,11 @@ bool Graphics::ResolveToTexture(TextureCube* texture)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return ResolveToTexture_D3D11(texture);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ResolveToTexture_Vulkan(texture);
 #endif
 
     return {}; // Prevent warning
@@ -956,7 +1033,7 @@ void Graphics::DrawInstanced(PrimitiveType type, unsigned indexStart, unsigned i
 
 #ifdef URHO3D_VULKAN
     if (gapi == GAPI_VULKAN)
-        return DrawInstanced_Vulkan(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount, instanceCount);
+        return DrawInstanced_Vulkan(type, indexStart, indexCount, baseVertexIndex, minVertex, vertexCount, instanceCount, 0);
 #endif
 
 #ifdef URHO3D_D3D11
@@ -1054,6 +1131,11 @@ void Graphics::SetIndexBuffer(IndexBuffer* buffer)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetIndexBuffer_D3D11(buffer);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetIndexBuffer_Vulkan(buffer);
 #endif
 }
 
@@ -1333,6 +1415,11 @@ bool Graphics::HasShaderParameter(StringHash param)
         return HasShaderParameter_D3D11(param);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return HasShaderParameter_Vulkan(param);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -1348,6 +1435,11 @@ bool Graphics::HasTextureUnit(TextureUnit unit)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return HasTextureUnit_D3D11(unit);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return HasTextureUnit_Vulkan(unit);
 #endif
 
     return {}; // Prevent warning
@@ -1366,6 +1458,11 @@ void Graphics::ClearParameterSource(ShaderParameterGroup group)
     if (gapi == GAPI_D3D11)
         return ClearParameterSource_D3D11(group);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ClearParameterSource_Vulkan(group);
+#endif
 }
 
 void Graphics::ClearParameterSources()
@@ -1381,6 +1478,11 @@ void Graphics::ClearParameterSources()
     if (gapi == GAPI_D3D11)
         return ClearParameterSources_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ClearParameterSources_Vulkan();
+#endif
 }
 
 void Graphics::ClearTransformSources()
@@ -1395,6 +1497,11 @@ void Graphics::ClearTransformSources()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return ClearTransformSources_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ClearTransformSources_Vulkan();
 #endif
 }
 
@@ -1431,6 +1538,11 @@ void Graphics::SetDefaultTextureFilterMode(TextureFilterMode mode)
     if (gapi == GAPI_D3D11)
         return SetDefaultTextureFilterMode_D3D11(mode);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDefaultTextureFilterMode_Vulkan(mode);
+#endif
 }
 
 void Graphics::SetDefaultTextureAnisotropy(unsigned level)
@@ -1445,6 +1557,11 @@ void Graphics::SetDefaultTextureAnisotropy(unsigned level)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetDefaultTextureAnisotropy_D3D11(level);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDefaultTextureAnisotropy_Vulkan(level);
 #endif
 }
 
@@ -1481,6 +1598,11 @@ void Graphics::ResetRenderTarget(unsigned index)
     if (gapi == GAPI_D3D11)
         return ResetRenderTarget_D3D11(index);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ResetRenderTarget_Vulkan(index);
+#endif
 }
 
 void Graphics::ResetDepthStencil()
@@ -1495,6 +1617,11 @@ void Graphics::ResetDepthStencil()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return ResetDepthStencil_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return ResetDepthStencil_Vulkan();
 #endif
 }
 
@@ -1531,6 +1658,11 @@ void Graphics::SetRenderTarget(unsigned index, Texture2D* texture)
     if (gapi == GAPI_D3D11)
         return SetRenderTarget_D3D11(index, texture);
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetRenderTarget_Vulkan(index, texture);
+#endif
 }
 
 void Graphics::SetDepthStencil(RenderSurface* depthStencil)
@@ -1565,6 +1697,11 @@ void Graphics::SetDepthStencil(Texture2D* texture)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return SetDepthStencil_D3D11(texture);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDepthStencil_Vulkan(texture);
 #endif
 }
 
@@ -1661,7 +1798,10 @@ void Graphics::SetDepthBias(float constantBias, float slopeScaledBias)
     if (gapi == GAPI_D3D11)
         return SetDepthBias_D3D11(constantBias, slopeScaledBias);
 #endif
-    // TODO: Implement SetDepthBias_Vulkan (currently skipped)
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetDepthBias_Vulkan(constantBias, slopeScaledBias);
+#endif
 }
 
 void Graphics::SetDepthTest(CompareMode mode)
@@ -1737,7 +1877,10 @@ void Graphics::SetLineAntiAlias(bool enable)
     if (gapi == GAPI_D3D11)
         return SetLineAntiAlias_D3D11(enable);
 #endif
-    // TODO: Implement SetLineAntiAlias_Vulkan (currently skipped)
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return SetLineAntiAlias_Vulkan(enable);
+#endif
 }
 
 void Graphics::SetScissorTest(bool enable, const Rect& rect, bool borderInclusive)
@@ -1863,6 +2006,11 @@ bool Graphics::GetDither() const
         return GetDither_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetDither_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -1902,6 +2050,11 @@ Vector<int> Graphics::GetMultiSampleLevels() const
         return GetMultiSampleLevels_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetMultiSampleLevels_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -1917,6 +2070,11 @@ unsigned Graphics::GetFormat(CompressedFormat format) const
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetFormat_D3D11(format);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetFormat_Vulkan(format);
 #endif
 
     return {}; // Prevent warning
@@ -1980,6 +2138,11 @@ VertexBuffer* Graphics::GetVertexBuffer(unsigned index) const
         return GetVertexBuffer_D3D11(index);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetVertexBuffer_Vulkan(index);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -1995,6 +2158,11 @@ TextureUnit Graphics::GetTextureUnit(const String& name)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetTextureUnit_D3D11(name);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetTextureUnit_Vulkan(name);
 #endif
 
     return {}; // Prevent warning
@@ -2014,6 +2182,11 @@ const String& Graphics::GetTextureUnitName(TextureUnit unit)
         return GetTextureUnitName_D3D11(unit);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetTextureUnitName_Vulkan(unit);
+#endif
+
     return String::EMPTY; // Prevent warning
 }
 
@@ -2029,6 +2202,11 @@ Texture* Graphics::GetTexture(unsigned index) const
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetTexture_D3D11(index);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetTexture_Vulkan(index);
 #endif
 
     return {}; // Prevent warning
@@ -2048,6 +2226,11 @@ RenderSurface* Graphics::GetRenderTarget(unsigned index) const
         return GetRenderTarget_D3D11(index);
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRenderTarget_Vulkan(index);
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2063,6 +2246,11 @@ IntVector2 Graphics::GetRenderTargetDimensions() const
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetRenderTargetDimensions_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRenderTargetDimensions_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2081,6 +2269,11 @@ void Graphics::OnWindowResized()
     if (gapi == GAPI_D3D11)
         return OnWindowResized_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return OnWindowResized_Vulkan();
+#endif
 }
 
 void Graphics::OnWindowMoved()
@@ -2096,6 +2289,11 @@ void Graphics::OnWindowMoved()
     if (gapi == GAPI_D3D11)
         return OnWindowMoved_D3D11();
 #endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return OnWindowMoved_Vulkan();
+#endif
 }
 
 ConstantBuffer* Graphics::GetOrCreateConstantBuffer(ShaderType type, unsigned index, unsigned size)
@@ -2110,6 +2308,11 @@ ConstantBuffer* Graphics::GetOrCreateConstantBuffer(ShaderType type, unsigned in
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetOrCreateConstantBuffer_D3D11(type, index, size);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetOrCreateConstantBuffer_Vulkan(type, index, size);
 #endif
 
     return {}; // Prevent warning
@@ -2129,6 +2332,11 @@ unsigned Graphics::GetMaxBones()
         return GetMaxBones_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetMaxBones_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2144,6 +2352,11 @@ bool Graphics::GetGL3Support()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetGL3Support_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetGL3Support_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2163,6 +2376,11 @@ unsigned Graphics::GetAlphaFormat()
         return GetAlphaFormat_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetAlphaFormat_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2178,6 +2396,11 @@ unsigned Graphics::GetLuminanceFormat()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetLuminanceFormat_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetLuminanceFormat_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2197,6 +2420,11 @@ unsigned Graphics::GetLuminanceAlphaFormat()
         return GetLuminanceAlphaFormat_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetLuminanceAlphaFormat_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2212,6 +2440,11 @@ unsigned Graphics::GetRGBFormat()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetRGBFormat_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRGBFormat_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2231,6 +2464,11 @@ unsigned Graphics::GetRGBAFormat()
         return GetRGBAFormat_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRGBAFormat_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2246,6 +2484,11 @@ unsigned Graphics::GetRGBA16Format()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetRGBA16Format_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRGBA16Format_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2265,6 +2508,11 @@ unsigned Graphics::GetRGBAFloat16Format()
         return GetRGBAFloat16Format_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRGBAFloat16Format_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2280,6 +2528,11 @@ unsigned Graphics::GetRGBAFloat32Format()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetRGBAFloat32Format_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRGBAFloat32Format_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2299,6 +2552,11 @@ unsigned Graphics::GetRG16Format()
         return GetRG16Format_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRG16Format_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2314,6 +2572,11 @@ unsigned Graphics::GetRGFloat16Format()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetRGFloat16Format_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRGFloat16Format_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2333,6 +2596,11 @@ unsigned Graphics::GetRGFloat32Format()
         return GetRGFloat32Format_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetRGFloat32Format_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2348,6 +2616,11 @@ unsigned Graphics::GetFloat16Format()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetFloat16Format_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetFloat16Format_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2367,6 +2640,11 @@ unsigned Graphics::GetFloat32Format()
         return GetFloat32Format_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetFloat32Format_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2382,6 +2660,11 @@ unsigned Graphics::GetLinearDepthFormat()
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetLinearDepthFormat_D3D11();
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetLinearDepthFormat_Vulkan();
 #endif
 
     return {}; // Prevent warning
@@ -2401,6 +2684,11 @@ unsigned Graphics::GetDepthStencilFormat()
         return GetDepthStencilFormat_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetDepthStencilFormat_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2418,6 +2706,11 @@ unsigned Graphics::GetReadableDepthFormat()
         return GetReadableDepthFormat_D3D11();
 #endif
 
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetReadableDepthFormat_Vulkan();
+#endif
+
     return {}; // Prevent warning
 }
 
@@ -2433,6 +2726,11 @@ unsigned Graphics::GetFormat(const String& formatName)
 #ifdef URHO3D_D3D11
     if (gapi == GAPI_D3D11)
         return GetFormat_D3D11(formatName);
+#endif
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetFormat_Vulkan(formatName);
 #endif
 
     return {}; // Prevent warning

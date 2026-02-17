@@ -7,6 +7,7 @@
 #include "../Precompiled.h"
 #include "../Shader.h"
 #include "../ShaderVariation.h"
+#include "../../Graphics/Graphics.h"
 #include "VulkanGraphicsImpl.h"
 #include "VulkanShaderModule.h"
 #include "../../IO/Log.h"
@@ -45,10 +46,10 @@ bool ShaderVariation::Create_Vulkan()
 void ShaderVariation::Release_Vulkan()
 {
     // Shader module destruction is handled by graphics pipeline cleanup
-    // Clear cached bytecode if needed
-    Vector<unsigned char> empty;
-    byteCode_.Clear();
+    // The cached VkShaderModule in object_.ptr_ will be destroyed when the pipeline is destroyed
+    // Do NOT destroy it here as it may still be in use by active pipelines
 
+    byteCode_.Clear();
     URHO3D_LOGDEBUG("Released Vulkan shader variation");
 }
 

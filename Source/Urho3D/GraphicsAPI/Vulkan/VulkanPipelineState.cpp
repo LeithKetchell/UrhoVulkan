@@ -18,6 +18,7 @@ namespace Urho3D
 unsigned VulkanPipelineState::Hash() const
 {
     unsigned hash = 0;
+    hash = hash * 31 + primitiveType;
     hash = hash * 31 + cullMode;
     hash = hash * 31 + fillMode;
     hash = hash * 31 + polygonOffsetEnable;
@@ -32,7 +33,8 @@ unsigned VulkanPipelineState::Hash() const
 
 bool VulkanPipelineState::operator==(const VulkanPipelineState& other) const
 {
-    return cullMode == other.cullMode &&
+    return primitiveType == other.primitiveType &&
+           cullMode == other.cullMode &&
            fillMode == other.fillMode &&
            polygonOffsetEnable == other.polygonOffsetEnable &&
            depthTest == other.depthTest &&

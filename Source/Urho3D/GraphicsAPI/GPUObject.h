@@ -46,6 +46,8 @@ public:
     Graphics* GetGraphics() const;
     /// Return the object pointer. Applicable only on Direct3D.
     void* GetGPUObject() const { return object_.ptr_; }
+    /// Set the object pointer. Applicable only on Direct3D and Vulkan.
+    void SetGPUObject(void* object) { object_.ptr_ = object; }
     /// Return the object name. Applicable only on OpenGL.
     u32 GetGPUObjectName() const { return object_.name_; }
     /// Return whether data is lost due to context loss.

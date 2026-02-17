@@ -307,7 +307,11 @@ bool Engine::Initialize(const VariantMap& parameters)
             renderer->SetShadowQuality(SHADOWQUALITY_SIMPLE_16BIT);
         renderer->SetMaterialQuality((MaterialQuality)GetParameter(parameters, EP_MATERIAL_QUALITY, QUALITY_HIGH).GetI32());
         renderer->SetTextureQuality((MaterialQuality)GetParameter(parameters, EP_TEXTURE_QUALITY, QUALITY_HIGH).GetI32());
-        renderer->SetTextureFilterMode((TextureFilterMode)GetParameter(parameters, EP_TEXTURE_FILTER_MODE, FILTER_TRILINEAR).GetI32());
+        {
+            // Vulkan benefits from anisotropic filtering by default (device feature enabled)
+            TextureFilterMode defaultFilter = (Graphics::GetGAPI() == GAPI_VULKAN) ? FILTER_ANISOTROPIC : FILTER_TRILINEAR;
+            renderer->SetTextureFilterMode((TextureFilterMode)GetParameter(parameters, EP_TEXTURE_FILTER_MODE, defaultFilter).GetI32());
+        }
         renderer->SetTextureAnisotropy(GetParameter(parameters, EP_TEXTURE_ANISOTROPY, 4).GetI32());
 
         if (GetParameter(parameters, EP_SOUND, true).GetBool())
@@ -1026,10 +1030,10 @@ void Engine::HandleExitRequested(StringHash eventType, VariantMap& eventData)
 
 void Engine::DoExit()
 {
-    auto* graphics = GetSubsystem<Graphics>();
-    if (graphics)
-        graphics->Close();
-
+    // Set exiting flag FIRST so the frame loop exits cleanly.
+    // Graphics cleanup happens in the destructor after the last frame completes.
+    // Calling graphics->Close() here while mid-frame can hang vkDeviceWaitIdle
+    // if the command buffer hasn't been submitted yet (Vulkan).
     exiting_ = true;
 #if defined(__EMSCRIPTEN__) && defined(URHO3D_TESTING)
     emscripten_force_exit(EXIT_SUCCESS);    // Some how this is required to signal emrun to stop

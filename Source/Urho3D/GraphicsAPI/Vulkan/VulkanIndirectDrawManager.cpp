@@ -29,7 +29,18 @@ VulkanIndirectDrawManager::VulkanIndirectDrawManager(Context* context, VulkanGra
 
 VulkanIndirectDrawManager::~VulkanIndirectDrawManager()
 {
-    // Vulkan resources will be cleaned up in VulkanGraphicsImpl shutdown
+    Release();
+}
+
+void VulkanIndirectDrawManager::Release()
+{
+    if (commandBuffer_ != VK_NULL_HANDLE && graphics_ && graphics_->GetAllocator())
+    {
+        vmaDestroyBuffer(graphics_->GetAllocator(), commandBuffer_, allocation_);
+        commandBuffer_ = VK_NULL_HANDLE;
+        allocation_ = nullptr;
+    }
+    mappedData_ = nullptr;
 }
 
 bool VulkanIndirectDrawManager::Initialize(uint32_t maxCommands)

@@ -60,6 +60,9 @@ public:
     /// Destructor - releases GPU resources
     ~VulkanIndirectDrawManager();
 
+    /// Release GPU resources
+    void Release();
+
     /// \brief Initialize indirect command buffer
     /// \param maxCommands Maximum number of indirect draw commands to support
     /// \returns True if initialization successful
