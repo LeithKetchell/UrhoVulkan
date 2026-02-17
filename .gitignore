@@ -136,8 +136,11 @@ Thumbs.db
 CMakeDoxyFile.in
 CMakeDoxygenDefaults.cmake
 
+# Claude Code local files
+.claude/
+Claude/
+
 # Security: Credentials and secrets
-.claude/settings.local.json
 .env
 .env.local
 .env.*.local
