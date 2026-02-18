@@ -393,7 +393,12 @@ VkDescriptorSet VulkanMaterialDescriptorManager::CreateDescriptorSet(Material* m
             VkDescriptorImageInfo imageInfo{};
             imageInfo.sampler = sampler;
             imageInfo.imageView = textures[i]->GetVkImageView();
-            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            // Depth textures used as render targets are in DEPTH_STENCIL_READ_ONLY layout after render pass
+            unsigned fmt = textures[i]->GetFormat();
+            bool isDepth = (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT ||
+                            fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT);
+            imageInfo.imageLayout = isDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             imageInfos.Push(imageInfo);
 
             VkWriteDescriptorSet write{};
@@ -667,7 +672,14 @@ bool VulkanMaterialDescriptorManager::UpdateTextureBindings(Material* material, 
         // Phase 20.3.2 - Fill descriptor image info
         imageInfos[writeCount].sampler = sampler;
         imageInfos[writeCount].imageView = GetTextureImageView(textures[i]);
-        imageInfos[writeCount].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // Depth textures used as render targets are in DEPTH_STENCIL_READ_ONLY layout after render pass
+        {
+            unsigned fmt = textures[i]->GetFormat();
+            bool isDepthFmt = (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT ||
+                               fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT);
+            imageInfos[writeCount].imageLayout = isDepthFmt ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
 
         // Phase 20.3.3 - Prepare descriptor write for this texture
         textureWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

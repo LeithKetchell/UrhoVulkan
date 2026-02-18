@@ -130,6 +130,18 @@ public:
     const Vector<SPIRVResource>& GetReflectedResources() const { return reflectedResources_; }
     /// Set reflected SPIR-V resources (Vulkan only).
     void SetReflectedResources(const Vector<SPIRVResource>& resources) { reflectedResources_ = resources; }
+
+    /// Custom uniform block member info (for bare uniforms wrapped into CustomVS/CustomPS blocks).
+    struct CustomUniformInfo
+    {
+        unsigned binding;      ///< Descriptor binding number
+        unsigned offset;       ///< Byte offset within block (std140 layout)
+        unsigned blockSize;    ///< Total size of the custom uniform block
+    };
+    /// Return custom uniform map (parameter hash → binding/offset/blockSize).
+    const HashMap<StringHash, CustomUniformInfo>& GetCustomUniformMap() const { return customUniformMap_; }
+    /// Set custom uniform map (populated during shader compilation).
+    void SetCustomUniformMap(const HashMap<StringHash, CustomUniformInfo>& map) { customUniformMap_ = map; }
 #endif
 
     /// OpenGL vertex semantic names. Used internally.
@@ -207,6 +219,9 @@ private:
 #ifdef URHO3D_VULKAN
     /// Reflected SPIR-V resources (Vulkan only). Stores binding info extracted from compiled SPIR-V.
     Vector<SPIRVResource> reflectedResources_;
+    /// Custom uniform block member info (bare uniforms wrapped by AddExplicitLayoutQualifiers).
+    /// Maps parameter name hash (without 'c' prefix, e.g. "BloomMix") to binding/offset/blockSize.
+    HashMap<StringHash, CustomUniformInfo> customUniformMap_;
 #endif
 };
 

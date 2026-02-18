@@ -42,10 +42,10 @@ void IndexBuffer::Release_Vulkan()
     object_.ptr2_ = nullptr;
     dataPending_ = false;
 
-    // Only destroy if graphics subsystem still exists
+    // Defer deletion until GPU is done using this buffer
     if (impl && buffer)
     {
-        vmaDestroyBuffer(impl->GetAllocator(), buffer, allocation);
+        impl->DeferBufferDeletion(buffer, allocation);
     }
 }
 
@@ -232,17 +232,10 @@ void IndexBuffer::Unlock_Vulkan()
                         vmaFlushAllocation(impl->GetAllocator(), allocation, uploadOffset, uploadSize);
                         vmaUnmapMemory(impl->GetAllocator(), allocation);
 
-                        static int ibScratchLog = 0;
-                        if (ibScratchLog < 10)
-                        {
-                            URHO3D_LOGWARNING("[IB_SCRATCH_GPU] Upload OK: idxSize=" + String(indexSize_) +
-                                ", lockCount=" + String(lockCount_) + ", uploadSize=" + String((unsigned)uploadSize));
-                            ibScratchLog++;
-                        }
                     }
                     else
                     {
-                        URHO3D_LOGERROR("[IB_SCRATCH_GPU] vmaMapMemory FAILED! VkResult=" + String((int)mapResult));
+                        URHO3D_LOGERROR("Failed to map index buffer scratch memory");
                     }
                 }
             }

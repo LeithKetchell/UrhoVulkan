@@ -204,6 +204,11 @@ bool Graphics::BeginFrame_Vulkan()
     vkImpl->swapchainPassUsedThisFrame_ = false;
     vkImpl->writtenRenderTargets_.Clear();
 
+    // Force framebuffer rebuild every frame when using hybrid framebuffers
+    // (swapchain color + custom depth RTT). The swapchain image index changes each
+    // frame, so the hybrid framebuffer must reference the correct swapchain image view.
+    vkImpl->renderTargetsDirty_ = true;
+
     // Reset pipeline bind tracking for new frame
     vkImpl->lastBoundPipeline_ = VK_NULL_HANDLE;
 
@@ -578,9 +583,6 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
     Vector<VkDescriptorImageInfo> imageInfos;
     Vector<VkDescriptorBufferInfo> bufferInfos;
     Vector<VkWriteDescriptorSet> writes;
-    imageInfos.Reserve(MAX_TEXTURE_UNITS);
-    bufferInfos.Reserve(11);
-    writes.Reserve(11 + MAX_TEXTURE_UNITS);
 
     // Get constant buffer for uniform buffer descriptors
     VkBuffer constantBuffer = vkImpl->GetCurrentConstantBuffer();
@@ -613,6 +615,25 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
         }
     }
 
+    // Count expected texture bindings from reflected resources (may exceed MAX_TEXTURE_UNITS
+    // when SPIR-V declares all samplers from Samplers.glsl)
+    unsigned expectedTextureCount = 0;
+    if (pixelShader_)
+    {
+        const Vector<SPIRVResource>& psRes = pixelShader_->GetReflectedResources();
+        for (const auto& res : psRes)
+        {
+            if (res.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                ++expectedTextureCount;
+        }
+    }
+
+    // Reserve enough space to prevent vector reallocation that would invalidate
+    // pBufferInfo/pImageInfo pointers stored in VkWriteDescriptorSet entries
+    bufferInfos.Reserve(uniformBufferBindings.Size());
+    imageInfos.Reserve(expectedTextureCount);
+    writes.Reserve(uniformBufferBindings.Size() + expectedTextureCount);
+
     // Create descriptor writes for ALL uniform buffer bindings (even if some have no data)
     if (constantBuffer != VK_NULL_HANDLE && constantBufferSize > 0 && !uniformBufferBindings.Empty())
     {
@@ -638,13 +659,20 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
                 // Binding not in current upload - check cached data from earlier draw this frame
                 if (cachedBindingBuffers_.Contains(binding))
                 {
-                    // Use cached buffer and offset from previous upload this frame
-                    // This handles case where camera/zone uploaded in first draw,
-                    // subsequent draws only upload model matrix
-                    bufferInfo.buffer = cachedBindingBuffers_[binding];
-                    bufferInfo.offset = cachedBindingOffsets_[binding];
-                    bufferInfo.range = cachedBindingSizes_[binding];
-
+                    // Validate cached buffer is the same as current constant buffer
+                    // (stale handles from freed buffers cause validation errors)
+                    if (cachedBindingBuffers_[binding] == constantBuffer)
+                    {
+                        bufferInfo.buffer = cachedBindingBuffers_[binding];
+                        bufferInfo.offset = cachedBindingOffsets_[binding];
+                        bufferInfo.range = cachedBindingSizes_[binding];
+                    }
+                    else
+                    {
+                        // Cached buffer doesn't match current — use fallback
+                        bufferInfo.offset = baseOffset;
+                        bufferInfo.range = 16;
+                    }
                 }
                 else
                 {
@@ -652,7 +680,6 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
                     // pointing to start of buffer with a small non-zero range (Vulkan requires range > 0)
                     bufferInfo.offset = baseOffset;
                     bufferInfo.range = 16;  // Minimum valid range (one vec4)
-
                 }
             }
 
@@ -698,9 +725,18 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
         }
     }
 
-    // Get default texture to fill missing bindings
-    Renderer* renderer = GetSubsystem<Renderer>();
-    Texture* defaultTexture = renderer ? renderer->GetDefaultLightRamp() : nullptr;
+    // Get a valid fallback texture to fill missing bindings
+    // Must have a valid VkImageView — use first available bound texture
+    Texture* defaultTexture = nullptr;
+    for (unsigned unit = 0; unit < MAX_TEXTURE_UNITS; ++unit)
+    {
+        if (textures_[unit] && textures_[unit]->GetVkImageView() &&
+            textures_[unit]->GetSampler_Vulkan())
+        {
+            defaultTexture = textures_[unit];
+            break;
+        }
+    }
 
     // Build map of which texture units have textures
     HashMap<unsigned, Texture*> bindingToTexture;  // binding -> texture
@@ -866,7 +902,6 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
     // Update descriptor set with uniform buffer and texture bindings
     if (!writes.Empty())
     {
-
         vkUpdateDescriptorSets(device, writes.Size(), &writes[0], 0, nullptr);
     }
     // (empty descriptor set writes are a valid edge case)
@@ -1464,8 +1499,7 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
     // Set depth bias (dynamic state)
     vkCmdSetDepthBias(cmdBuffer, 0.0f, 0.0f, slopeScaledDepthBias_);
 
-    // STEP 5 FIX: Bind material descriptors AFTER pipeline binding (Vulkan requirement)
-    // Descriptor sets must be bound after vkCmdBindPipeline to remain valid
+    // Bind material descriptors AFTER pipeline binding (Vulkan requirement)
     if (!BindMaterialDescriptors_Vulkan(nullptr))
     {
         URHO3D_LOGDEBUG("Failed to bind reflection-based material descriptors");
@@ -1473,14 +1507,13 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
 
     // Record draw command
     vkCmdDraw(cmdBuffer, vertexCount, 1, vertexStart, 0);
-    // URHO3D_LOGDEBUG("vkCmdDraw completed successfully");
 
     // Shader modules cached — do NOT destroy here
 }
 
 void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount)
 {
-
+    // INDEXED DRAW OVERLOAD (used by fullscreen quads / post-process)
     if (!impl_ || indexCount == 0)
     {
         return;
@@ -1648,9 +1681,6 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     }
 
     // Record indexed draw command
-    // NOTE: OpenGL glDrawElements ignores minVertex (it's just a driver hint).
-    // Vulkan vkCmdDrawIndexed vertexOffset is ADDED to every index value.
-    // Urho3D indices are absolute within shared buffers, so vertexOffset must be 0.
     vkCmdDrawIndexed(cmdBuffer, indexCount, 1, indexStart, 0, 0);
 
     // Shader modules are cached in VulkanGraphicsImpl::shaderModuleCache_ — do NOT destroy here
@@ -3096,11 +3126,40 @@ void Graphics::UploadPendingShaderParameters_Vulkan()
         unsigned binding = blockInfo.binding;
         unsigned offset = blockInfo.offset;
 
-        // Skip unknown parameters (binding=0xFFFFFFFF)
+        // For unknown parameters, check current shader's custom uniform map
+        // (bare uniforms wrapped into CustomVS/CustomPS blocks by AddExplicitLayoutQualifiers)
         if (binding == 0xFFFFFFFF)
         {
-            skippedCount++;
-            continue;
+            bool found = false;
+            if (vertexShader_)
+            {
+                const auto& customMap = vertexShader_->GetCustomUniformMap();
+                auto customIt = customMap.Find(paramHash);
+                if (customIt != customMap.End())
+                {
+                    binding = customIt->second_.binding;
+                    offset = customIt->second_.offset;
+                    blockInfo.blockSize = customIt->second_.blockSize;
+                    found = true;
+                }
+            }
+            if (!found && pixelShader_)
+            {
+                const auto& customMap = pixelShader_->GetCustomUniformMap();
+                auto customIt = customMap.Find(paramHash);
+                if (customIt != customMap.End())
+                {
+                    binding = customIt->second_.binding;
+                    offset = customIt->second_.offset;
+                    blockInfo.blockSize = customIt->second_.blockSize;
+                    found = true;
+                }
+            }
+            if (!found)
+            {
+                skippedCount++;
+                continue;
+            }
         }
 
         // Determine parameter size based on type
@@ -3138,8 +3197,24 @@ void Graphics::UploadPendingShaderParameters_Vulkan()
     for (auto it = pendingShaderParameters_.Begin(); it != pendingShaderParameters_.End(); ++it)
     {
         UniformBlockInfo blockInfo = GetUniformBlockInfo(it->first_);
+        // Check custom uniform maps for unknown parameters
         if (blockInfo.binding == 0xFFFFFFFF)
-            continue;  // Skip unknown parameters
+        {
+            if (vertexShader_)
+            {
+                auto customIt = vertexShader_->GetCustomUniformMap().Find(it->first_);
+                if (customIt != vertexShader_->GetCustomUniformMap().End())
+                { blockInfo.binding = customIt->second_.binding; blockInfo.blockSize = customIt->second_.blockSize; }
+            }
+            if (blockInfo.binding == 0xFFFFFFFF && pixelShader_)
+            {
+                auto customIt = pixelShader_->GetCustomUniformMap().Find(it->first_);
+                if (customIt != pixelShader_->GetCustomUniformMap().End())
+                { blockInfo.binding = customIt->second_.binding; blockInfo.blockSize = customIt->second_.blockSize; }
+            }
+            if (blockInfo.binding == 0xFFFFFFFF)
+                continue;
+        }
 
         // Use the declared blockSize from shader reflection
         unsigned binding = blockInfo.binding;
@@ -4007,7 +4082,9 @@ unsigned Graphics::GetLinearDepthFormat_Vulkan()
 
 unsigned Graphics::GetDepthStencilFormat_Vulkan()
 {
-    return VK_FORMAT_D24_UNORM_S8_UINT;
+    // D24_UNORM_S8_UINT not supported on all GPUs (e.g. AMD GCN/RDNA).
+    // D32_SFLOAT is universally supported and matches the swapchain depth format.
+    return VK_FORMAT_D32_SFLOAT;
 }
 
 unsigned Graphics::GetReadableDepthFormat_Vulkan()

@@ -43,10 +43,10 @@ void VertexBuffer::Release_Vulkan()
     object_.ptr2_ = nullptr;
     dataPending_ = false;
 
-    // Only destroy if graphics subsystem still exists
+    // Defer deletion until GPU is done using this buffer
     if (impl && buffer)
     {
-        vmaDestroyBuffer(impl->GetAllocator(), buffer, allocation);
+        impl->DeferBufferDeletion(buffer, allocation);
     }
 }
 
@@ -148,21 +148,6 @@ bool VertexBuffer::SetDataRange_Vulkan(const void* data, i32 start, i32 count, b
     if (shadowData_)
     {
         memcpy(shadowData_.Get() + start * vertexSize_, data, (size_t)count * vertexSize_);
-    }
-
-    // DEBUG: Always log vertex buffer updates
-    URHO3D_LOGDEBUG(String("SetDataRange_Vulkan: start=") + String(start) + ", count=" + String(count) +
-                   ", vertexSize=" + String(vertexSize_) + ", shadowData=" + String(shadowData_ != nullptr));
-
-    // DEBUG: Dump first vertex data to check position/color
-    if (count >= 1 && vertexSize_ >= 24)
-    {
-        const float* floatData = (const float*)data;
-        const unsigned char* byteData = (const unsigned char*)data;
-        URHO3D_LOGDEBUG(String("VERTEX_DATA[0]: pos=(") + String(floatData[0]) + "," +
-                       String(floatData[1]) + "," + String(floatData[2]) + "), color_bytes=(" +
-                       String((int)byteData[12]) + "," + String((int)byteData[13]) + "," +
-                       String((int)byteData[14]) + "," + String((int)byteData[15]) + ")");
     }
 
     return UpdateToGPU_Vulkan();
@@ -294,28 +279,16 @@ void VertexBuffer::Unlock_Vulkan()
 
                         vmaUnmapMemory(impl->GetAllocator(), allocation);
 
-                        // DIAGNOSTIC: Log scratch-to-GPU upload
-                        static int scratchUploadLog = 0;
-                        if (scratchUploadLog < 10)
-                        {
-                            const float* fd = reinterpret_cast<const float*>(lockScratchData_ ? lockScratchData_ : (byte*)0);
-                            URHO3D_LOGWARNING("[SCRATCH_GPU] Upload OK: vtxSize=" + String(vertexSize_) +
-                                ", lockCount=" + String(lockCount_) + ", uploadSize=" + String((unsigned)uploadSize) +
-                                ", uploadOffset=" + String((unsigned)uploadOffset) +
-                                ", vkBuf=" + String(object_.ptr_ != nullptr));
-                            scratchUploadLog++;
-                        }
                     }
                     else
                     {
-                        URHO3D_LOGERROR("[SCRATCH_GPU] vmaMapMemory FAILED! VkResult=" + String((int)mapResult) +
-                            ", vtxSize=" + String(vertexSize_) + ", lockCount=" + String(lockCount_));
+                        URHO3D_LOGERROR("Failed to map vertex buffer scratch memory");
                     }
                 }
             }
             else
             {
-                URHO3D_LOGERROR("[SCRATCH_GPU] No GPU object! Cannot upload scratch data, vtxSize=" + String(vertexSize_));
+                URHO3D_LOGERROR("No GPU object for vertex buffer scratch upload");
             }
         }
 

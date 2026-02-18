@@ -1639,12 +1639,6 @@ void View::ExecuteRenderPathCommands()
                     BatchQueue& queue = actualView->batchQueues_[command.passIndex_];
 
                     // DIAG: Log scenepass execution
-                    {
-                        static int diagCount = 0;
-                        if (diagCount++ < 30)
-                            URHO3D_LOGWARNING("CMD_SCENEPASS: pass=" + command.pass_ + " empty=" + String(queue.IsEmpty()) + " outputs=" + String(command.outputs_.Size()));
-                    }
-
                     if (!queue.IsEmpty())
                     {
                         URHO3D_PROFILE(RenderScenePass);
@@ -1955,7 +1949,16 @@ void View::RenderQuad(RenderPathCommand& command)
     graphics_->SetScissorTest(false);
     graphics_->SetStencilTest(false);
 
-    DrawFullscreenQuad(false);
+    // Clear stale material so post-process textures (substitute RTT) take priority
+    // over the last scene material's textures in descriptor set creation
+    graphics_->SetCurrentMaterial(nullptr);
+
+    // Vulkan: use identity projection for post-process quads — camera projection
+    // combined with Draw_Vulkan's positive viewport makes UVs camera-dependent
+    if (Graphics::GetGAPI() == GAPI_VULKAN)
+        DrawFullscreenQuad(true);
+    else
+        DrawFullscreenQuad(false);
 }
 
 bool View::IsNecessary(const RenderPathCommand& command)
@@ -2073,6 +2076,10 @@ void View::AllocateScreenBuffers()
         if ((deferred_ || hasScenePassToRTs) && !renderTarget_)
             needSubstitute = true;
         if (!renderTarget_ && hasCustomDepth)
+            needSubstitute = true;
+        // Vulkan cannot blit swapchain to texture (ResolveToTexture not implemented),
+        // so post-process commands that read "viewport" need a substitute RTT
+        if (!renderTarget_ && hasViewportRead)
             needSubstitute = true;
     }
 #endif

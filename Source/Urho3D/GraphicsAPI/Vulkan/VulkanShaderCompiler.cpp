@@ -10,6 +10,7 @@
 
 #include "VulkanShaderCompiler.h"
 #include "../../Graphics/Graphics.h"
+#include "../../GraphicsAPI/ShaderVariation.h"
 #include "../../IO/Log.h"
 #include <sstream>
 #include <algorithm>
@@ -90,12 +91,18 @@ VkShaderStageFlagBits VulkanShaderCompiler::GetShaderStage(ShaderType type)
 /// - Preprocessing failure -> "Shader preprocessing failed: <details>"
 /// - Compilation failure -> Compiler-specific error message
 /// - No compiler available -> "Error: No shader compiler available..."
+
+// Forward declaration (defined below)
+static String AddExplicitLayoutQualifiers(const String& source,
+    HashMap<StringHash, ShaderVariation::CustomUniformInfo>& customUniformMap);
+
 bool VulkanShaderCompiler::CompileGLSLToSPIRV(
     const String& source,
     const String& defines,
     ShaderType type,
     Vector<uint32_t>& spirvBytecode,
-    String& compilerOutput)
+    String& compilerOutput,
+    HashMap<StringHash, ShaderVariation::CustomUniformInfo>* customUniformMap)
 {
     if (source.Empty())
     {
@@ -110,6 +117,83 @@ bool VulkanShaderCompiler::CompileGLSLToSPIRV(
         compilerOutput = "Shader preprocessing failed: " + compilerOutput;
         return false;
     }
+
+    // Strip dead preprocessor branches that Vulkan always skips.
+    // GL3 and USE_CBUFFERS are always defined for Vulkan (added in PreprocessShader preamble).
+    // Uniforms.glsl has: #if !defined(GL3) || !defined(USE_CBUFFERS) ... #else ... #endif
+    // The dead branch contains bare uniforms that confuse AddExplicitLayoutQualifiers
+    // (it creates phantom CustomVS/CustomPS blocks with wasted binding numbers).
+    {
+        Vector<String> lines = preprocessed.Split('\n');
+        int state = 0;   // 0=normal, 1=stripping dead branch, 2=keeping live branch (after #else)
+        int ifDepth = 0;  // nesting depth within the tracked #if block
+
+        for (unsigned i = 0; i < lines.Size(); ++i)
+        {
+            String trimmed = lines[i].Trimmed();
+
+            if (state == 0)
+            {
+                if (trimmed.Contains("!defined(GL3)") || trimmed.Contains("!defined(USE_CBUFFERS)"))
+                {
+                    state = 1;
+                    ifDepth = 1;
+                    lines[i] = "";
+                }
+            }
+            else if (state == 1)  // Stripping dead branch
+            {
+                if (trimmed.StartsWith("#if"))
+                    ifDepth++;
+                else if (trimmed.StartsWith("#endif"))
+                {
+                    ifDepth--;
+                    if (ifDepth == 0)
+                    {
+                        // Reached end of outer block with no #else — remove and done
+                        state = 0;
+                    }
+                }
+                else if (trimmed.StartsWith("#else") && ifDepth == 1)
+                {
+                    // Switch to live branch — keep content but track for final #endif
+                    state = 2;
+                }
+                lines[i] = "";  // Strip everything in dead branch (including #else line)
+            }
+            else if (state == 2)  // Keeping live branch, waiting for closing #endif
+            {
+                if (trimmed.StartsWith("#if"))
+                    ifDepth++;
+                else if (trimmed.StartsWith("#endif"))
+                {
+                    ifDepth--;
+                    if (ifDepth == 0)
+                    {
+                        // This is the outer #endif that closes the original #if — remove it
+                        lines[i] = "";
+                        state = 0;
+                    }
+                    // else: nested #endif inside live branch — keep it
+                }
+                // All other lines in live branch — keep as-is
+            }
+        }
+
+        preprocessed.Clear();
+        for (unsigned i = 0; i < lines.Size(); ++i)
+        {
+            preprocessed += lines[i];
+            if (i < lines.Size() - 1)
+                preprocessed += "\n";
+        }
+    }
+
+    // Add explicit layout qualifiers for Vulkan compatibility AFTER includes are expanded
+    HashMap<StringHash, ShaderVariation::CustomUniformInfo> localCustomMap;
+    preprocessed = AddExplicitLayoutQualifiers(preprocessed, localCustomMap);
+    if (customUniformMap)
+        *customUniformMap = localCustomMap;
 
 #if VULKAN_SHADER_DEBUG_LOGGING
             (int)source.Length(), (int)preprocessed.Length());
@@ -208,7 +292,47 @@ static int GetSamplerBinding(const String& name)
     return -1;  // Unknown sampler — will use sequential fallback
 }
 
-static String AddExplicitLayoutQualifiers(const String& source)
+/// Compute std140 alignment for a GLSL type declaration string
+static void GetStd140Layout(const String& typeStr, unsigned& alignment, unsigned& size)
+{
+    if (typeStr == "float" || typeStr == "int" || typeStr == "uint" || typeStr == "bool")
+    { alignment = 4; size = 4; }
+    else if (typeStr == "vec2" || typeStr == "ivec2" || typeStr == "uvec2")
+    { alignment = 8; size = 8; }
+    else if (typeStr == "vec3" || typeStr == "ivec3" || typeStr == "uvec3")
+    { alignment = 16; size = 12; }
+    else if (typeStr == "vec4" || typeStr == "ivec4" || typeStr == "uvec4")
+    { alignment = 16; size = 16; }
+    else if (typeStr == "mat3")
+    { alignment = 16; size = 48; }  // 3 × vec4 columns
+    else if (typeStr == "mat4" || typeStr == "mat3x4")
+    { alignment = 16; size = 64; }  // 4 × vec4 columns
+    else
+    { alignment = 16; size = 16; }  // Conservative default
+}
+
+/// Extract GLSL type and variable name from a declaration like "float cBloomThreshold;"
+static bool ParseUniformDecl(const String& decl, String& type, String& name)
+{
+    String trimmed = decl.Trimmed();
+    // Remove trailing semicolon
+    if (trimmed.EndsWith(";"))
+        trimmed = trimmed.Substring(0, trimmed.Length() - 1).Trimmed();
+    // Split into type and name
+    unsigned spacePos = trimmed.Find(' ');
+    if (spacePos == String::NPOS)
+        return false;
+    type = trimmed.Substring(0, spacePos).Trimmed();
+    name = trimmed.Substring(spacePos + 1).Trimmed();
+    // Remove array suffix if present (e.g., "cFoo[4]" → "cFoo")
+    unsigned bracketPos = name.Find('[');
+    if (bracketPos != String::NPOS)
+        name = name.Substring(0, bracketPos);
+    return !type.Empty() && !name.Empty();
+}
+
+static String AddExplicitLayoutQualifiers(const String& source,
+    HashMap<StringHash, ShaderVariation::CustomUniformInfo>& customUniformMap)
 {
     String result = source;
     int inputLocation = 0;
@@ -342,6 +466,130 @@ static String AddExplicitLayoutQualifiers(const String& source)
             line = "layout(binding = " + String(uniformBlockBinding++) + ", set = 0) " + trimmed;
 #if VULKAN_SHADER_DEBUG_LOGGING
 #endif
+        }
+    }
+
+    // Wrap any remaining bare uniforms (not samplers, not in blocks, not layout-qualified)
+    // into uniform blocks per #ifdef section. Required for Vulkan GLSL where standalone uniforms
+    // are illegal. Source still has #ifdef COMPILEVS/#ifdef COMPILEPS guards (not yet resolved),
+    // so we must create separate blocks per section to keep them inside the correct guards.
+    // IMPORTANT: each separate #ifdef COMPILEVS/COMPILEPS section gets its OWN block, because
+    // they may be in different preprocessor branches (#if/#else) and consolidating would move
+    // uniforms into a dead branch.
+    {
+        struct UniformGroup
+        {
+            Vector<String> uniforms;
+            Vector<unsigned> lineNums;
+            char type; // 'V' = VS, 'P' = PS, 'O' = other
+        };
+        Vector<UniformGroup> groups;
+        UniformGroup currentVS, currentPS, currentOther;
+        currentVS.type = 'V'; currentPS.type = 'P'; currentOther.type = 'O';
+
+        int ifdefDepth = 0;
+        bool inCompileVS = false;
+        bool inCompilePS = false;
+
+        for (unsigned i = 0; i < lines.Size(); ++i)
+        {
+            String trimmed = lines[i].Trimmed();
+
+            // Track #ifdef/#if/#ifndef nesting for COMPILEVS/COMPILEPS
+            if (trimmed.StartsWith("#ifdef COMPILEVS"))
+            { inCompileVS = true; ifdefDepth = 1; }
+            else if (trimmed.StartsWith("#ifdef COMPILEPS"))
+            { inCompilePS = true; ifdefDepth = 1; }
+            else if ((inCompileVS || inCompilePS) &&
+                     (trimmed.StartsWith("#ifdef") || trimmed.StartsWith("#if ") || trimmed.StartsWith("#ifndef")))
+            { ifdefDepth++; }
+            else if ((inCompileVS || inCompilePS) && trimmed.StartsWith("#endif"))
+            {
+                ifdefDepth--;
+                if (ifdefDepth <= 0)
+                {
+                    // Section ended — flush accumulated uniforms as a group
+                    if (inCompileVS && currentVS.uniforms.Size() > 0)
+                    { groups.Push(currentVS); currentVS = UniformGroup(); currentVS.type = 'V'; }
+                    if (inCompilePS && currentPS.uniforms.Size() > 0)
+                    { groups.Push(currentPS); currentPS = UniformGroup(); currentPS.type = 'P'; }
+                    inCompileVS = false; inCompilePS = false; ifdefDepth = 0;
+                }
+            }
+
+            // Match bare uniforms
+            if (trimmed.StartsWith("uniform ") && trimmed.Contains(";") &&
+                !trimmed.Contains("sampler") && !trimmed.Contains("layout("))
+            {
+                String decl = trimmed.Substring(8); // skip "uniform "
+                if (inCompileVS)
+                { currentVS.uniforms.Push(decl); currentVS.lineNums.Push(i); }
+                else if (inCompilePS)
+                { currentPS.uniforms.Push(decl); currentPS.lineNums.Push(i); }
+                else
+                { currentOther.uniforms.Push(decl); currentOther.lineNums.Push(i); }
+            }
+        }
+
+        // Flush any remaining groups
+        if (currentVS.uniforms.Size() > 0) groups.Push(currentVS);
+        if (currentPS.uniforms.Size() > 0) groups.Push(currentPS);
+        if (currentOther.uniforms.Size() > 0) groups.Push(currentOther);
+
+        // Wrap each group into its own uniform block at its first line position
+        int vsBlockNum = 0, psBlockNum = 0, otherBlockNum = 0;
+        for (unsigned g = 0; g < groups.Size(); ++g)
+        {
+            UniformGroup& grp = groups[g];
+            if (grp.uniforms.Size() == 0) continue;
+
+            String blockName;
+            if (grp.type == 'V')
+                blockName = (vsBlockNum++ == 0) ? "CustomVS" : "CustomVS" + String(vsBlockNum);
+            else if (grp.type == 'P')
+                blockName = (psBlockNum++ == 0) ? "CustomPS" : "CustomPS" + String(psBlockNum);
+            else
+                blockName = (otherBlockNum++ == 0) ? "CustomUniforms" : "CustomUniforms" + String(otherBlockNum);
+
+            for (unsigned i = 0; i < grp.lineNums.Size(); ++i)
+                lines[grp.lineNums[i]] = "";
+            unsigned blockBinding = uniformBlockBinding++;
+            String block = "layout(binding = " + String(blockBinding) + ", set = 0) uniform " + blockName + "\n{";
+            for (unsigned i = 0; i < grp.uniforms.Size(); ++i)
+                block += "\n    " + grp.uniforms[i];
+            block += "\n};";
+            lines[grp.lineNums[0]] = block;
+
+            // Compute std140 offsets for custom block members and store in map
+            unsigned currentOffset = 0;
+            for (unsigned i = 0; i < grp.uniforms.Size(); ++i)
+            {
+                String type, name;
+                if (ParseUniformDecl(grp.uniforms[i], type, name))
+                {
+                    unsigned alignment, size;
+                    GetStd140Layout(type, alignment, size);
+                    // Align current offset
+                    currentOffset = (currentOffset + alignment - 1) & ~(alignment - 1);
+                    // Store with 'c' prefix stripped for Urho3D parameter name convention
+                    // Urho3D uses "BloomMix" internally, shader has "cBloomMix"
+                    String paramName = name.StartsWith("c") ? name.Substring(1) : name;
+                    ShaderVariation::CustomUniformInfo info;
+                    info.binding = blockBinding;
+                    info.offset = currentOffset;
+                    info.blockSize = 0;  // Will be set after loop
+                    customUniformMap[StringHash(paramName)] = info;
+                    currentOffset += size;
+                }
+            }
+            // Round up to 16-byte boundary (std140 block size rule) and set on all members
+            unsigned blockSize = (currentOffset + 15) & ~15u;
+            for (auto it = customUniformMap.Begin(); it != customUniformMap.End(); ++it)
+            {
+                if (it->second_.binding == blockBinding)
+                    it->second_.blockSize = blockSize;
+            }
+
         }
     }
 
@@ -512,9 +760,8 @@ bool VulkanShaderCompiler::PreprocessShader(
 #if VULKAN_SHADER_DEBUG_LOGGING
 #endif
 
-    // Add explicit layout qualifiers for Vulkan compatibility AFTER includes are expanded
-    // This fixes the "Location 1073741823" issue where auto-mapping fails
-    preprocessed = AddExplicitLayoutQualifiers(preprocessed);
+    // NOTE: AddExplicitLayoutQualifiers is called by CompileGLSLToSPIRV after this function returns,
+    // so custom uniform metadata can be captured there.
 
 #if VULKAN_SHADER_DEBUG_LOGGING
 #endif

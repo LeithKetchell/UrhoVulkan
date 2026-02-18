@@ -14,8 +14,8 @@
 
 namespace Urho3D
 
-// Enable verbose debug logging to diagnose texture rendering issue
-#define VULKAN_DEBUG_LOGGING 1
+// Debug logging disabled — only enable for descriptor troubleshooting
+// #define VULKAN_DEBUG_LOGGING 1
 
 {
 
@@ -246,75 +246,11 @@ void VulkanSPIRVReflect::ExtractResourceMetadata(
         idx += wordCount;
     }
 
-    // === PASS 3: Track which variables are actually loaded ===
-    // Only filter fragment shader combined image samplers (textures)
-    // Vertex shader resources and uniform buffers are always included
-    HashMap<uint32_t, bool> loadedVariables;  // Variable ID → is actually used
-
-    if (shaderStage == VK_SHADER_STAGE_FRAGMENT_BIT)
-    {
-        idx = 5;  // Skip SPIR-V header again
-        while (idx < spirv.Size())
-        {
-            uint32_t word = spirv[idx];
-            uint16_t wordCount = word >> 16;
-            uint16_t opcode = word & 0xFFFF;
-
-            if (wordCount == 0)
-                break;
-
-            // OpLoad: result_type, result_id, pointer_id
-            if (opcode == OpLoad && wordCount >= 4)
-            {
-                uint32_t pointerId = spirv[idx + 3];  // Variable being loaded
-                loadedVariables[pointerId] = true;
-            }
-
-            idx += wordCount;
-        }
-
-        // Filter resources - keep only loaded samplers, or non-samplers
-        Vector<SPIRVResource> filteredResources;
-        for (unsigned i = 0; i < resources.Size(); ++i)
-        {
-            const SPIRVResource& res = resources[i];
-
-            if (res.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-            {
-                // For samplers in fragment shader, only include if actually loaded
-                // Safety check: ensure we have a variable ID mapping for this resource
-                auto it = resourceIndexToVariableId.Find(i);
-                if (it != resourceIndexToVariableId.End())
-                {
-                    uint32_t variableId = it->second_;
-                    if (loadedVariables.Contains(variableId))
-                    {
-                        filteredResources.Push(res);
-#if VULKAN_DEBUG_LOGGING
-#endif
-                    }
-#if VULKAN_DEBUG_LOGGING
-                    else
-                    {
-                    }
-#endif
-                }
-                else
-                {
-                    // No variable ID mapping - this shouldn't happen, but include the resource to be safe
-                    filteredResources.Push(res);
-                }
-            }
-            else
-            {
-                // Always include uniform buffers and other non-sampler resources
-                filteredResources.Push(res);
-            }
-        }
-
-        // Replace resources with filtered list
-        resources = filteredResources;
-    }
+    // Pass 3 DISABLED: The OpLoad detection was filtering ALL samplers including
+    // actively used ones (sDiffMap in Bloom/CopyFramebuffer). Root cause: the OpLoad
+    // opcode scan doesn't find loads, possibly due to SPIR-V optimizer transformations.
+    // All declared samplers are now included in the pipeline layout. Unused ones get
+    // a valid fallback texture binding in CreateReflectionBasedDescriptorSet_Vulkan.
 
     // DEBUG: Disabled for performance
     // static int reflectionDebugCount = 0;

@@ -112,6 +112,11 @@ struct RenderPassDescriptor
     /// Whether this render pass targets a texture (SHADER_READ_ONLY finalLayout) vs swapchain (PRESENT_SRC)
     bool isRenderToTexture{false};
 
+    /// Swapchain color + custom depth RTT (ForwardHWDepth): color uses PRESENT_SRC,
+    /// depth uses READ_ONLY for later sampling. Both isRenderToTexture and isSwapchainHybrid
+    /// can be true — isSwapchainHybrid overrides color finalLayout to PRESENT_SRC.
+    bool isSwapchainHybrid{false};
+
     /// Load operation for color attachments (CLEAR for first use, LOAD to preserve content)
     VkAttachmentLoadOp colorLoadOp{VK_ATTACHMENT_LOAD_OP_CLEAR};
 
@@ -138,6 +143,7 @@ struct RenderPassDescriptor
 
         h = ((h << 5) + h) + sampleCount;
         h = ((h << 5) + h) + (isRenderToTexture ? 1u : 0u);
+        h = ((h << 5) + h) + (isSwapchainHybrid ? 1u : 0u);
         h = ((h << 5) + h) + colorLoadOp;
         return h;
     }
@@ -155,6 +161,7 @@ struct RenderPassDescriptor
             inputAttachmentCount != other.inputAttachmentCount ||
             sampleCount != other.sampleCount ||
             isRenderToTexture != other.isRenderToTexture ||
+            isSwapchainHybrid != other.isSwapchainHybrid ||
             colorLoadOp != other.colorLoadOp)
             return false;
 
@@ -391,6 +398,12 @@ public:
         return currentFrame_ < descriptorPools_.Size() ? descriptorPools_[currentFrame_] : VK_NULL_HANDLE;
     }
     /// @}
+
+    /// \brief Queue a VkBuffer for deferred deletion (destroyed after frame fence signals)
+    void DeferBufferDeletion(VkBuffer buffer, VmaAllocation allocation);
+
+    /// \brief Process deferred deletions for current frame (call after fence wait)
+    void ProcessDeferredDeletions();
 
     /// \brief Get physical device properties for limits validation
     /// \returns VkPhysicalDeviceProperties including device limits and capabilities
@@ -1008,6 +1021,13 @@ private:
     // Descriptor management (Per-image fix: one pool per swapchain image, not per frame)
     // Must match swapchain image count to avoid resetting pools while images are presenting
     Vector<VkDescriptorPool> descriptorPools_;
+
+    // Deferred buffer deletion queue — buffers destroyed after frame fence signals
+    struct DeferredBufferDeletion {
+        VkBuffer buffer;
+        VmaAllocation allocation;
+    };
+    Vector<DeferredBufferDeletion> deferredDeletions_[4]; // One queue per frame in flight
 
     // Enhanced sampler cache with expanded configurations (Quick Win #4)
     SharedPtr<VulkanSamplerCache> samplerCache_;

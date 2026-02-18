@@ -305,11 +305,40 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
     return true;
 }
 
+void VulkanGraphicsImpl::DeferBufferDeletion(VkBuffer buffer, VmaAllocation allocation)
+{
+    if (!buffer) return;
+    uint32_t frame = currentFrame_ < MAX_FRAMES_IN_FLIGHT ? currentFrame_ : 0;
+    deferredDeletions_[frame].Push({buffer, allocation});
+}
+
+void VulkanGraphicsImpl::ProcessDeferredDeletions()
+{
+    uint32_t frame = currentFrame_ < MAX_FRAMES_IN_FLIGHT ? currentFrame_ : 0;
+    for (auto& del : deferredDeletions_[frame])
+    {
+        if (del.buffer && allocator_)
+            vmaDestroyBuffer(allocator_, del.buffer, del.allocation);
+    }
+    deferredDeletions_[frame].Clear();
+}
+
 void VulkanGraphicsImpl::Shutdown()
 {
     if (device_)
     {
         vkDeviceWaitIdle(device_);
+    }
+
+    // Flush all deferred deletions
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        for (auto& del : deferredDeletions_[i])
+        {
+            if (del.buffer && allocator_)
+                vmaDestroyBuffer(allocator_, del.buffer, del.allocation);
+        }
+        deferredDeletions_[i].Clear();
     }
 
     // Destroy cached descriptor set layouts (PERFORMANCE FIX)
@@ -650,16 +679,26 @@ bool VulkanGraphicsImpl::AcquireNextImage()
     }
     vkResetFences(device_, 1, &frame.fence);
 
+    // Process deferred deletions for this frame (GPU finished using these resources)
+    ProcessDeferredDeletions();
+
     // Acquire next swapchain image using THIS frame's imageAcquired semaphore
+    // Use finite timeout — UINT64_MAX blocks forever if window is obscured/minimized
     uint32_t imageIndex = 0;
     VkResult result = vkAcquireNextImageKHR(
         device_,
         swapchain_,
-        UINT64_MAX,
+        100000000ULL,  // 100ms timeout — retry on next frame if window obscured
         frame.imageAcquired,  // Per-frame semaphore (signaled when image is available)
         VK_NULL_HANDLE,
         &imageIndex
     );
+
+    if (result == VK_TIMEOUT)
+    {
+        // Window likely obscured/minimized — skip this frame, don't log (normal behavior)
+        return false;
+    }
 
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
@@ -834,7 +873,10 @@ void VulkanGraphicsImpl::BeginRenderPass()
 
         // Check if any current RT was already written this frame → use LOAD to preserve content
         bool anyAlreadyWritten = false;
-        if (graphics_)
+        // Hybrid framebuffer: swapchain color was already written if swapchainPassUsedThisFrame_
+        if (renderTargetRPDescriptor_.isSwapchainHybrid && swapchainPassUsedThisFrame_)
+            anyAlreadyWritten = true;
+        if (!anyAlreadyWritten && graphics_)
         {
             for (unsigned i = 0; i < colorAttachmentCount; ++i)
             {
@@ -905,26 +947,19 @@ void VulkanGraphicsImpl::BeginRenderPass()
     }
 
     // Track swapchain usage for LOAD variant selection on re-entry
-    if (!renderingToTexture_)
+    // Hybrid framebuffers (swapchain color + custom depth) also write to swapchain
+    if (!renderingToTexture_ || renderTargetRPDescriptor_.isSwapchainHybrid)
         swapchainPassUsedThisFrame_ = true;
 }
 
 void VulkanGraphicsImpl::EndRenderPass()
 {
-    URHO3D_LOGDEBUG("EndRenderPass: ENTRY, renderPassActive_=" + String(renderPassActive_));
-
     if (!renderPassActive_)
-    {
-        URHO3D_LOGWARNING("EndRenderPass: Render pass not active, skipping vkCmdEndRenderPass");
         return;
-    }
 
     VkCommandBuffer cmdBuffer = GetFrameCommandBuffer();
     if (!cmdBuffer)
-    {
-        URHO3D_LOGERROR("EndRenderPass: cmdBuffer is null!");
         return;
-    }
 
     // Track which render targets were written (for LOAD vs CLEAR on re-entry)
     // Use SAVED targets from BeginRenderPass, not current ones (which may have changed)
@@ -934,12 +969,9 @@ void VulkanGraphicsImpl::EndRenderPass()
             writtenRenderTargets_.Insert(activePassRenderTargets_[i]);
     }
 
-    // End the active render pass (transitions image to finalLayout: PRESENT_SRC_KHR)
-    URHO3D_LOGDEBUG("EndRenderPass: Calling vkCmdEndRenderPass");
     vkCmdEndRenderPass(cmdBuffer);
     renderPassActive_ = false;
     lastBoundPipeline_ = VK_NULL_HANDLE;  // Pipeline binding invalidated by render pass change
-    URHO3D_LOGDEBUG("EndRenderPass: Render pass ended successfully");
 }
 
 void VulkanGraphicsImpl::EnsureRenderPassStarted()
@@ -973,6 +1005,9 @@ void VulkanGraphicsImpl::EnsureRenderPassStarted()
                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                         0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+
+                    // Depth RTT layout transition is handled by render pass finalLayout
+                    // (ATTACHMENT_OPTIMAL -> READ_ONLY_OPTIMAL set when isRenderToTexture)
                 }
             }
         }
@@ -1377,9 +1412,10 @@ bool VulkanGraphicsImpl::CreateInstance()
             const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
             void* pUserData) -> VkBool32
         {
-            if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+            // Only log errors, not warnings (per-draw warnings cause I/O freeze)
+            if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
             {
-                URHO3D_LOGWARNING(String("[VULKAN VALIDATION] ") + pCallbackData->pMessage);
+                URHO3D_LOGERROR(String("[VULKAN VALIDATION] ") + pCallbackData->pMessage);
             }
             return VK_FALSE;
         };
@@ -1387,8 +1423,7 @@ bool VulkanGraphicsImpl::CreateInstance()
         auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT");
         if (func != nullptr)
         {
-            VkDebugUtilsMessengerEXT debugMessenger;
-            func(instance_, &debugCreateInfo, nullptr, &debugMessenger);
+            func(instance_, &debugCreateInfo, nullptr, &debugMessenger_);
             URHO3D_LOGINFO("Vulkan debug messenger created");
         }
     }
@@ -1657,16 +1692,11 @@ bool VulkanGraphicsImpl::DetectTimelineSemaphoreSupport()
 
     vkGetPhysicalDeviceFeatures2(physicalDevice_, &features2);
 
-    supportsTimelineSemaphores_ = (timelineFeatures.timelineSemaphore == VK_TRUE);
-
-    if (supportsTimelineSemaphores_)
-    {
-        URHO3D_LOGINFO("Timeline semaphore (VK_KHR_timeline_semaphore) support detected");
-    }
-    else
-    {
-        URHO3D_LOGINFO("Timeline semaphore support not available, will use binary semaphores");
-    }
+    // Physical device reports timeline semaphore support, but we don't enable the feature
+    // on the logical device (would need pNext chain + extension). Force-disable to use
+    // reliable fence-based synchronization instead.
+    supportsTimelineSemaphores_ = false;
+    URHO3D_LOGINFO("Timeline semaphores disabled (feature not enabled on logical device), using fence-based sync");
 
     return true;
 }
@@ -2325,21 +2355,6 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
     if (!graphics_)
         return false;
 
-    // DIAG: Log render target state
-    {
-        String rtState = "RebuildRTFB: RT state: ";
-        for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
-        {
-            RenderSurface* rt = graphics_->GetRenderTarget(i);
-            if (rt)
-                rtState += String(i) + "=" + String(rt->GetWidth()) + "x" + String(rt->GetHeight()) + " ";
-            else
-                rtState += String(i) + "=null ";
-        }
-        RenderSurface* ds = graphics_->GetDepthStencil();
-        rtState += "DS=" + String(ds ? "set" : "null");
-        URHO3D_LOGWARNING(rtState);
-    }
 
     // Check if any color render targets are set
     bool hasColorTarget = false;
@@ -2353,11 +2368,30 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
         }
     }
 
-    // Check for depth-only rendering (shadow maps): no color targets but depth stencil set
+    // Check for custom depth stencil (e.g. ForwardHWDepth's readable depth RTT, or shadow maps)
     RenderSurface* ds = graphics_->GetDepthStencil();
-    bool hasDepthOnly = !hasColorTarget && ds;
 
-    if (!hasColorTarget && !hasDepthOnly)
+    // Detect "swapchain color + custom depth RTT" case (ForwardHWDepth):
+    // No explicit color render targets (null = swapchain implicit), but custom depth is set.
+    // If the custom depth matches swapchain dimensions, create a hybrid framebuffer
+    // with swapchain color image + custom depth image.
+    // Shadow maps have different dimensions than the swapchain, so they still get depth-only.
+    bool hasSwapchainColorWithCustomDepth = false;
+    if (!hasColorTarget && ds)
+    {
+        unsigned dsWidth = ds->GetWidth();
+        unsigned dsHeight = ds->GetHeight();
+        if (dsWidth == swapchainExtent_.width && dsHeight == swapchainExtent_.height)
+        {
+            // Custom depth matches swapchain size — this is ForwardHWDepth style:
+            // render color to swapchain, depth to custom RTT for later sampling
+            hasSwapchainColorWithCustomDepth = true;
+        }
+    }
+
+    bool hasDepthOnly = !hasColorTarget && ds && !hasSwapchainColorWithCustomDepth;
+
+    if (!hasColorTarget && !hasDepthOnly && !hasSwapchainColorWithCustomDepth)
     {
         // No color render targets and no depth-only target — switch to swapchain
         renderingToTexture_ = false;
@@ -2368,8 +2402,13 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
         return true;
     }
 
-    // Get dimensions from first color target, or from depth stencil for depth-only
-    if (hasColorTarget)
+    // Get dimensions
+    if (hasSwapchainColorWithCustomDepth)
+    {
+        rttWidth_ = swapchainExtent_.width;
+        rttHeight_ = swapchainExtent_.height;
+    }
+    else if (hasColorTarget)
     {
         RenderSurface* firstRT = nullptr;
         for (unsigned i = 0; i < colorCount; ++i)
@@ -2391,8 +2430,6 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
 
     // Build render pass descriptor from actual render target formats
     RenderPassDescriptor descriptor;
-    descriptor.colorAttachmentCount = colorCount;
-    descriptor.isRenderToTexture = true;
     descriptor.subpassCount = 1;
     descriptor.sampleCount = VK_SAMPLE_COUNT_1_BIT;
 
@@ -2400,13 +2437,29 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
     // (because by RebuildRTFB time, the previous render pass hasn't ended yet)
     descriptor.colorLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 
-    for (unsigned i = 0; i < colorCount; ++i)
+    if (hasSwapchainColorWithCustomDepth)
     {
-        RenderSurface* rt = graphics_->GetRenderTarget(i);
-        if (rt)
-            descriptor.colorFormats[i] = (VkFormat)rt->GetParentTexture()->GetFormat();
-        else
-            descriptor.colorFormats[i] = descriptor.colorFormats[0];
+        // Hybrid framebuffer: swapchain color + custom depth RTT
+        // isRenderToTexture = true so depth finalLayout = READ_ONLY (for later sampling)
+        // isSwapchainHybrid = true so color finalLayout = PRESENT_SRC (swapchain, not SHADER_READ_ONLY)
+        descriptor.colorAttachmentCount = 1;
+        descriptor.isRenderToTexture = true;
+        descriptor.isSwapchainHybrid = true;
+        descriptor.colorFormats[0] = swapchainFormat_;
+    }
+    else
+    {
+        descriptor.colorAttachmentCount = colorCount;
+        descriptor.isRenderToTexture = true;
+
+        for (unsigned i = 0; i < colorCount; ++i)
+        {
+            RenderSurface* rt = graphics_->GetRenderTarget(i);
+            if (rt)
+                descriptor.colorFormats[i] = (VkFormat)rt->GetParentTexture()->GetFormat();
+            else
+                descriptor.colorFormats[i] = descriptor.colorFormats[0];
+        }
     }
 
     // ds was declared above when checking for depth-only rendering
@@ -2428,27 +2481,42 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
     Vector<VkImageView> attachmentViews;
     unsigned long long cacheKey = 0;
 
-    for (unsigned i = 0; i < colorCount; ++i)
+    if (hasSwapchainColorWithCustomDepth)
     {
-        VkImageView view = VK_NULL_HANDLE;
-        RenderSurface* rt = graphics_->GetRenderTarget(i);
-        if (rt)
-            view = (VkImageView)rt->GetRenderTargetView();
-
-        if (view == VK_NULL_HANDLE)
+        // Use current swapchain image as color attachment
+        VkImageView swapView = swapchainImageViews_[currentImageIndex_];
+        if (swapView == VK_NULL_HANDLE)
         {
-            Texture* parentTex = rt ? rt->GetParentTexture() : nullptr;
-            URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: RT " + String(i) + " null VkImageView"
-                + " rt=" + String(rt != nullptr)
-                + " parent=" + String(parentTex != nullptr)
-                + " name=" + (parentTex ? parentTex->GetName() : "?")
-                + " size=" + (parentTex ? String(parentTex->GetWidth()) + "x" + String(parentTex->GetHeight()) : "?")
-                + " fmt=" + (parentTex ? String(parentTex->GetFormat()) : "?")
-                + " usage=" + (parentTex ? String((int)parentTex->GetUsage()) : "?"));
+            URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: Swapchain image view null for hybrid FB");
             return false;
         }
-        attachmentViews.Push(view);
-        cacheKey = cacheKey * 31 + (unsigned long long)(uintptr_t)view;
+        attachmentViews.Push(swapView);
+        cacheKey = cacheKey * 31 + (unsigned long long)(uintptr_t)swapView;
+    }
+    else
+    {
+        for (unsigned i = 0; i < colorCount; ++i)
+        {
+            VkImageView view = VK_NULL_HANDLE;
+            RenderSurface* rt = graphics_->GetRenderTarget(i);
+            if (rt)
+                view = (VkImageView)rt->GetRenderTargetView();
+
+            if (view == VK_NULL_HANDLE)
+            {
+                Texture* parentTex = rt ? rt->GetParentTexture() : nullptr;
+                URHO3D_LOGERROR("RebuildRenderTargetFramebuffer: RT " + String(i) + " null VkImageView"
+                    + " rt=" + String(rt != nullptr)
+                    + " parent=" + String(parentTex != nullptr)
+                    + " name=" + (parentTex ? parentTex->GetName() : "?")
+                    + " size=" + (parentTex ? String(parentTex->GetWidth()) + "x" + String(parentTex->GetHeight()) : "?")
+                    + " fmt=" + (parentTex ? String(parentTex->GetFormat()) : "?")
+                    + " usage=" + (parentTex ? String((int)parentTex->GetUsage()) : "?"));
+                return false;
+            }
+            attachmentViews.Push(view);
+            cacheKey = cacheKey * 31 + (unsigned long long)(uintptr_t)view;
+        }
     }
 
     // Add depth attachment
@@ -2578,7 +2646,7 @@ bool VulkanGraphicsImpl::RebuildRenderTargetFramebuffer()
     rttFramebufferCache_[cacheKey] = fb;
     renderTargetFramebuffer_ = fb;
     renderingToTexture_ = true;
-    URHO3D_LOGWARNING("RebuildRTFB: Created MRT framebuffer " + String(rttWidth_) + "x" + String(rttHeight_) + " with " + String(attachmentViews.Size()) + " attachments");
+    URHO3D_LOGDEBUG("RebuildRTFB: Created MRT framebuffer " + String(rttWidth_) + "x" + String(rttHeight_) + " with " + String(attachmentViews.Size()) + " attachments");
     return true;
 }
 
@@ -2766,11 +2834,15 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
         attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         // LOAD: content already valid from previous pass (SHADER_READ_ONLY after RTT, PRESENT after swapchain)
         // CLEAR: content undefined, will be cleared
-        if (descriptor.colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD && descriptor.isRenderToTexture)
+        if (descriptor.colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD && descriptor.isRenderToTexture && !descriptor.isSwapchainHybrid)
             attachments[i].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        else if (descriptor.colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD && descriptor.isSwapchainHybrid)
+            attachments[i].initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         else
             attachments[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (descriptor.isRenderToTexture)
+        if (descriptor.isSwapchainHybrid)
+            attachments[i].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;  // Swapchain color needs PRESENT layout
+        else if (descriptor.isRenderToTexture)
             attachments[i].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         else
             attachments[i].finalLayout = (i == 0) ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -2784,15 +2856,26 @@ VkRenderPass VulkanGraphicsImpl::GetOrCreateRenderPass(const RenderPassDescripto
     // When color uses LOAD (re-entry), depth should also LOAD to preserve scene depth for light volumes
     attachments[depthIndex].loadOp = (descriptor.colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD && !depthOnly)
         ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
-    // Shadow maps (depth-only): STORE depth for later sampling; others: don't care
-    attachments[depthIndex].storeOp = depthOnly ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    // STORE depth for RTT (may be sampled later, e.g. ForwardHWDepth, shadow maps)
+    attachments[depthIndex].storeOp = (depthOnly || descriptor.isRenderToTexture)
+        ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[depthIndex].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[depthIndex].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    // For LOAD: depth was already written (DEPTH_STENCIL_ATTACHMENT_OPTIMAL from previous pass)
-    attachments[depthIndex].initialLayout = (attachments[depthIndex].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
-        ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
-    // Shadow maps: transition to shader-readable layout; others: stay as depth attachment
-    attachments[depthIndex].finalLayout = depthOnly ?
+    // For LOAD: depth was already written — initialLayout must match the finalLayout
+    // that the previous render pass left the image in (READ_ONLY for RTT/shadow, ATTACHMENT for swapchain)
+    if (attachments[depthIndex].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
+    {
+        attachments[depthIndex].initialLayout = (depthOnly || descriptor.isRenderToTexture)
+            ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+    else
+        attachments[depthIndex].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Transition depth to shader-readable layout when it may be sampled later:
+    // - Shadow maps (depthOnly): always sampled by scene shaders
+    // - RTT depth (ForwardHWDepth): sampled by post-process (e.g. motion blur)
+    // Swapchain depth stays ATTACHMENT_OPTIMAL (never sampled)
+    attachments[depthIndex].finalLayout = (depthOnly || descriptor.isRenderToTexture) ?
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     // Color attachment references for all color attachments
@@ -3446,7 +3529,11 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkImage image, VkFormat format,
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // Detect depth formats and use appropriate aspect mask
+    bool isDepth = (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ||
+                    format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+                    format == VK_FORMAT_D16_UNORM_S8_UINT);
+    barrier.subresourceRange.aspectMask = isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = mipLevels;
     barrier.subresourceRange.baseArrayLayer = 0;
@@ -3476,6 +3563,16 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkImage image, VkFormat format,
         srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     }
+    else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
 
     if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
     {
@@ -3496,6 +3593,16 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkImage image, VkFormat format,
     {
         dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
         barrier.dstAccessMask = 0;
+    }
+    else if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
+    else if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     }
 
     // Record pipeline barrier to handle the layout transition
@@ -3533,7 +3640,11 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, Vk
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // Detect depth formats and use appropriate aspect mask
+    bool isDepthFormat = (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ||
+                          format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+                          format == VK_FORMAT_D16_UNORM_S8_UINT);
+    barrier.subresourceRange.aspectMask = isDepthFormat ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = mipLevels;
     barrier.subresourceRange.baseArrayLayer = 0;
@@ -3563,6 +3674,16 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, Vk
         srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     }
+    else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
 
     if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
     {
@@ -3584,23 +3705,16 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, Vk
         dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
         barrier.dstAccessMask = 0;
     }
-
-    // Log all barrier parameters before calling vkCmdPipelineBarrier
-    URHO3D_LOGDEBUG("vkCmdPipelineBarrier: srcStage=" + String((unsigned)srcStageMask) +
-                    ", dstStage=" + String((unsigned)dstStageMask) +
-                    ", srcAccess=" + String((unsigned)barrier.srcAccessMask) +
-                    ", dstAccess=" + String((unsigned)barrier.dstAccessMask) +
-                    ", aspectMask=" + String((unsigned)barrier.subresourceRange.aspectMask) +
-                    ", mipLevels=" + String(barrier.subresourceRange.levelCount));
-
-    // Validate barrier structure
-    if (barrier.sType != VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+    else if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
     {
-        URHO3D_LOGERROR("TransitionImageLayout: Invalid barrier sType!");
-        return;
+        dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     }
-
-    URHO3D_LOGDEBUG("About to call vkCmdPipelineBarrier...");
+    else if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
 
     // Record pipeline barrier to handle the layout transition
     vkCmdPipelineBarrier(commandBuffer,
@@ -4157,11 +4271,6 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
     }
 
     // DIAG: Log blend attachment count for pipeline creation
-    {
-        static int pipeDiag = 0;
-        if (pipeDiag++ < 20)
-            URHO3D_LOGWARNING("Pipeline blend attachments=" + String(attachmentCount) + " renderPass==rttRP=" + String(renderPass == renderTargetRenderPass_) + " renderingToTex=" + String(renderingToTexture_));
-    }
 
     // Create blend attachments for all color attachments (all use same blend mode)
     Vector<VkPipelineColorBlendAttachmentState> blendAttachments;

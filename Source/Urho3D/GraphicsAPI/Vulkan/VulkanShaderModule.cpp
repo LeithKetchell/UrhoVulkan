@@ -115,12 +115,14 @@ bool VulkanShaderModule::GetOrCompileSPIRV(
     Vector<uint32_t> compiledSpirv;
     String compilerOutput;
 
+    HashMap<StringHash, ShaderVariation::CustomUniformInfo> customUniformMap;
     if (!VulkanShaderCompiler::CompileGLSLToSPIRV(
         shaderSource,
         defines,
         shaderType,
         compiledSpirv,
-        compilerOutput))
+        compilerOutput,
+        &customUniformMap))
     {
         errorOutput = "SPIR-V compilation failed: " + compilerOutput;
         URHO3D_LOGERROR(errorOutput);
@@ -147,6 +149,10 @@ bool VulkanShaderModule::GetOrCompileSPIRV(
     // Store in variation's bytecode field (Phase 9 enhancement: could add dedicated spirvBytecode_ field)
     // For now, we'll use the existing byteCode_ field which is not used in Vulkan backend
     variation->SetByteCode(cacheData);
+
+    // Store custom uniform map (bare uniforms wrapped into CustomVS/CustomPS blocks)
+    if (!customUniformMap.Empty())
+        variation->SetCustomUniformMap(customUniformMap);
 
     spirvBytecode = compiledSpirv;
 

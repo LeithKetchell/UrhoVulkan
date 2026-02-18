@@ -9,8 +9,10 @@
 #ifdef URHO3D_VULKAN
 
 #include "../../Container/Vector.h"
+#include "../../Container/HashMap.h"
 #include "../../Container/Str.h"
 #include "../GraphicsDefs.h"
+#include "../ShaderVariation.h"
 #include <vulkan/vulkan.h>
 
 namespace Urho3D
@@ -68,7 +70,8 @@ public:
         const String& defines,
         ShaderType type,
         Vector<uint32_t>& spirvBytecode,
-        String& compilerOutput
+        String& compilerOutput,
+        HashMap<StringHash, ShaderVariation::CustomUniformInfo>* customUniformMap = nullptr
     );
 
     /// \brief Get Vulkan shader stage from ShaderType
