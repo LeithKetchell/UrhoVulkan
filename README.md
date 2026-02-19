@@ -51,8 +51,8 @@ Before making pull requests, please read the [Contribution checklist](https://ur
 ## Credits
 
 ### Vulkan Backend & Engine Enhancements (v2.0.1)
-- Leith Bade — Vulkan backend, physics integration, soft body support, rendering enhancements
-- Claude (Anthropic) — AI pair programming assistant
+- Leith Ketchell (https://github.com/LeithKetchell) — Vulkan backend, physics integration, soft body support, rendering enhancements
+- Claude (https://github.com/anthropics) — AI pair programming assistant
 
 ### Original Engine
 Urho3D is greatly inspired by OGRE (http://www.ogre3d.org) and Horde3D
