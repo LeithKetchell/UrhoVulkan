@@ -6,12 +6,15 @@
 #pragma once
 
 #include "../IO/VectorBuffer.h"
+#include "../Physics/CollisionShape.h"
+#include "../Resource/Resource.h"
 #include "../Scene/Component.h"
 
 #include <Bullet/LinearMath/btMotionState.h>
 
 #include <memory>
 
+class btCollisionShape;
 class btCompoundShape;
 class btRigidBody;
 
@@ -20,8 +23,12 @@ namespace Urho3D
 
 class CollisionShape;
 class Constraint;
+class Model;
 class PhysicsWorld;
 class SmoothedTransform;
+
+struct CollisionGeometryData;
+
 
 /// Rigid body collision event signaling mode.
 enum CollisionEventMode
@@ -159,6 +166,41 @@ public:
     void DisableMassUpdate();
     /// Re-enable mass update and recalculate the mass/inertia by calling UpdateMass(). Call when collision shape changes are finished.
     void EnableMassUpdate();
+
+    // === Collision Shape API ===
+
+    /// Set a box collision shape.
+    void SetBoxShape(const Vector3& size, const Vector3& position = Vector3::ZERO,
+                     const Quaternion& rotation = Quaternion::IDENTITY);
+    /// Set a sphere collision shape.
+    void SetSphereShape(float diameter, const Vector3& position = Vector3::ZERO);
+    /// Set a capsule collision shape.
+    void SetCapsuleShape(float diameter, float height, const Vector3& position = Vector3::ZERO);
+    /// Set a cylinder collision shape.
+    void SetCylinderShape(float diameter, float height, const Vector3& position = Vector3::ZERO);
+    /// Set a cone collision shape.
+    void SetConeShape(float diameter, float height, const Vector3& position = Vector3::ZERO);
+    /// Set a static plane collision shape.
+    void SetStaticPlaneShape();
+    /// Set a triangle mesh collision shape from a model.
+    void SetTriMeshShape(Model* model, int lodLevel = 0);
+    /// Set a convex hull collision shape from a model.
+    void SetConvexHullShape(Model* model, int lodLevel = 0);
+    /// Add a child shape to the compound shape at the given local transform.
+    void AddChildShape(ShapeType type, const Vector3& size, const Vector3& position = Vector3::ZERO,
+                       const Quaternion& rotation = Quaternion::IDENTITY, float margin = 0.04f);
+    /// Remove all child shapes from the compound shape.
+    void ClearChildShapes();
+    /// Set collision margin for the shape.
+    void SetShapeMargin(float margin);
+    /// Return the shape margin.
+    float GetShapeMargin() const { return shapeMargin_; }
+    /// Return the current collision shape type (ShapeType enum value).
+    int GetShapeType() const { return shapeType_; }
+    /// Set shape model attribute for serialization.
+    void SetShapeModelAttr(const ResourceRef& value);
+    /// Return shape model attribute for serialization.
+    ResourceRef GetShapeModelAttr() const;
 
     /// Return physics world.
     PhysicsWorld* GetPhysicsWorld() const { return physicsWorld_; }
@@ -302,6 +344,8 @@ private:
     void HandleTargetRotation(StringHash eventType, VariantMap& eventData);
     /// Mark body dirty.
     void MarkBodyDirty() { readdBody_ = true; }
+    /// Apply the cached shape to the btRigidBody (handles offset wrapping in compound if needed).
+    void UpdateShapeToBody();
 
     /// Bullet rigid body.
     std::unique_ptr<btRigidBody> body_;
@@ -350,6 +394,30 @@ private:
     bool enableMassUpdate_;
     /// Internal flag whether has simulated at least once.
     mutable bool hasSimulated_;
+
+    // Shape state (new shape API)
+    /// Cached collision shape from PhysicsWorld shape cache (NOT owned by RigidBody).
+    btCollisionShape* cachedShape_{};
+    /// Shape type for serialization (ShapeType enum value).
+    int shapeType_{};
+    /// Shape size for serialization.
+    Vector3 shapeSize_{Vector3::ONE};
+    /// Shape offset position.
+    Vector3 shapePosition_{Vector3::ZERO};
+    /// Shape offset rotation.
+    Quaternion shapeRotation_{Quaternion::IDENTITY};
+    /// Shape margin.
+    float shapeMargin_{0.04f};
+    /// Whether a shape was set via the new API (vs legacy CollisionShape component).
+    bool hasOwnShape_{};
+    /// Model for mesh/convex shapes.
+    SharedPtr<Model> shapeModel_;
+    /// LOD level for mesh/convex shapes.
+    int shapeLodLevel_{0};
+    /// Geometry data for mesh/convex shapes (kept alive by SharedPtr).
+    SharedPtr<CollisionGeometryData> shapeGeometry_;
+    /// Owned mesh/convex collision shape (not in cache — unique per body due to scaling).
+    std::unique_ptr<btCollisionShape> ownedMeshShape_;
 };
 
 }

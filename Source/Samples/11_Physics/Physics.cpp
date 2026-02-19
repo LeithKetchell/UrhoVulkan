@@ -16,7 +16,6 @@
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/IO/File.h>
 #include <Urho3D/IO/FileSystem.h>
-#include <Urho3D/Physics/CollisionShape.h>
 #include <Urho3D/Physics/PhysicsWorld.h>
 #include <Urho3D/Physics/RigidBody.h>
 #include <Urho3D/Resource/ResourceCache.h>
@@ -123,14 +122,10 @@ void Physics::CreateScene()
         floorObject->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
         floorObject->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
 
-        // Make the floor physical by adding RigidBody and CollisionShape components. The RigidBody's default
-        // parameters make the object static (zero mass.) Note that a CollisionShape by itself will not participate
-        // in the physics simulation
-        /*RigidBody* body = */floorNode->CreateComponent<RigidBody>();
-        auto* shape = floorNode->CreateComponent<CollisionShape>();
-        // Set a box shape of size 1 x 1 x 1 for collision. The shape will be scaled with the scene node scale, so the
-        // rendering and physics representation sizes should match (the box model is also 1 x 1 x 1.)
-        shape->SetBox(Vector3::ONE);
+        // Make the floor physical by adding a RigidBody with its own collision shape. The RigidBody's default
+        // parameters make the object static (zero mass.) The shape is cached globally — all boxes share one btBoxShape.
+        auto* body = floorNode->CreateComponent<RigidBody>();
+        body->SetBoxShape(Vector3::ONE);
     }
 
     {
@@ -146,14 +141,12 @@ void Physics::CreateScene()
                 boxObject->SetMaterial(cache->GetResource<Material>("Materials/StoneEnvMapSmall.xml"));
                 boxObject->SetCastShadows(true);
 
-                // Create RigidBody and CollisionShape components like above. Give the RigidBody mass to make it movable
-                // and also adjust friction. The actual mass is not important; only the mass ratios between colliding
-                // objects are significant
+                // Create RigidBody with its own collision shape. Give the RigidBody mass to make it movable
+                // and also adjust friction. All boxes share one cached btBoxShape.
                 auto* body = boxNode->CreateComponent<RigidBody>();
                 body->SetMass(1.0f);
                 body->SetFriction(0.75f);
-                auto* shape = boxNode->CreateComponent<CollisionShape>();
-                shape->SetBox(Vector3::ONE);
+                body->SetBoxShape(Vector3::ONE);
             }
         }
     }
@@ -286,12 +279,11 @@ void Physics::SpawnObject()
     boxObject->SetMaterial(cache->GetResource<Material>("Materials/StoneEnvMapSmall.xml"));
     boxObject->SetCastShadows(true);
 
-    // Create physics components, use a smaller mass also
+    // Create physics components, use a smaller mass also. Shape is cached — all spawned boxes share one btBoxShape.
     auto* body = boxNode->CreateComponent<RigidBody>();
     body->SetMass(0.25f);
     body->SetFriction(0.75f);
-    auto* shape = boxNode->CreateComponent<CollisionShape>();
-    shape->SetBox(Vector3::ONE);
+    body->SetBoxShape(Vector3::ONE);
 
     const float OBJECT_VELOCITY = 10.0f;
 

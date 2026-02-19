@@ -88,16 +88,6 @@ void WorkQueue::CreateThreads(i32 numThreads)
         SharedPtr<WorkerThread> thread(new WorkerThread(this, i + 1));
         thread->Run();
         threads_.Push(thread);
-
-        // Pin thread to CPU core for better cache locality
-        thread->SetAffinity(i);
-    }
-
-    // Initialize per-thread work-stealing deques for lock-free work distribution
-    workerDeques_.Resize(numThreads);
-    for (i32 i = 0; i < numThreads; ++i)
-    {
-        workerDeques_[i] = new WorkStealingDeque(256);
     }
 #else
     URHO3D_LOGERROR("Can not create worker threads as threading is disabled");
@@ -110,13 +100,6 @@ SharedPtr<WorkItem> WorkQueue::GetFreeItem()
     {
         SharedPtr<WorkItem> item = poolItems_.Front();
         poolItems_.PopFront();
-
-        // BUGFIX: Reset claimed_ flag when reusing item from pool
-        // This was deferred from ReturnToPool() to prevent recycled items
-        // still in work-stealing deques from being re-executed
-        item->claimed_ = false;
-        item->completed_ = false;
-
         return item;
     }
     else
@@ -133,13 +116,6 @@ void WorkQueue::AddWorkItem(const SharedPtr<WorkItem>& item)
     if (!item)
     {
         URHO3D_LOGERROR("Null work item submitted to the work queue");
-        return;
-    }
-
-    // BUGFIX: Validate that work function is set
-    if (!item->workFunction_)
-    {
-        URHO3D_LOGERROR("Work item submitted with null work function");
         return;
     }
 
@@ -174,13 +150,6 @@ void WorkQueue::AddWorkItem(const SharedPtr<WorkItem>& item)
 
         if (!inserted)
             queue_.Push(item);
-    }
-
-    // Also add to work-stealing deques for lock-free distribution
-    // Start with deque 0, worker threads will use work-stealing to balance load
-    if (!workerDeques_.Empty() && workerDeques_[0])
-    {
-        workerDeques_[0]->Push(item.Get());
     }
 
     if (threads_.Size())
@@ -271,36 +240,16 @@ void WorkQueue::Complete(i32 priority)
         Resume();
 
         // Take work items also in the main thread until queue empty or no high-priority items anymore
-        i32 maxSkips = queue_.Size() + 10;  // Prevent infinite loop if all items are claimed
-        i32 skips = 0;
-        while (!queue_.Empty() && skips < maxSkips)
+        while (!queue_.Empty())
         {
             queueMutex_.Acquire();
             if (!queue_.Empty() && queue_.Front()->priority_ >= priority)
             {
                 WorkItem* item = queue_.Front();
-
-                // Try to claim the item BEFORE removing from queue
-                bool expected = false;
-                bool claimed = item->claimed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
-
-                if (claimed)
-                {
-                    // We claimed it - now remove from queue and execute
-                    queue_.PopFront();
-                    queueMutex_.Release();
-                    item->workFunction_(item, 0);
-                    item->completed_ = true;
-                    skips = 0;  // Reset skip counter since we made progress
-                }
-                else
-                {
-                    // Already claimed by worker thread - remove from queue since it's being handled elsewhere
-                    queue_.PopFront();
-                    queueMutex_.Release();
-                    skips++;
-                    Time::Sleep(0);  // Yield to let worker threads make progress
-                }
+                queue_.PopFront();
+                queueMutex_.Release();
+                item->workFunction_(item, 0);
+                item->completed_ = true;
             }
             else
             {
@@ -312,7 +261,6 @@ void WorkQueue::Complete(i32 priority)
         // Wait for threaded work to complete
         while (!IsCompleted(priority))
         {
-            Time::Sleep(0);  // Yield CPU to worker threads
         }
 
         // If no work at all remaining, pause worker threads by leaving the mutex locked
@@ -326,14 +274,8 @@ void WorkQueue::Complete(i32 priority)
         {
             WorkItem* item = queue_.Front();
             queue_.PopFront();
-
-            // Atomically claim the item (shouldn't be necessary without threads, but safe)
-            bool alreadyClaimed = item->claimed_.exchange(true, std::memory_order_acq_rel);
-            if (!alreadyClaimed)
-            {
-                item->workFunction_(item, 0);
-                item->completed_ = true;
-            }
+            item->workFunction_(item, 0);
+            item->completed_ = true;
         }
     }
 
@@ -344,17 +286,11 @@ void WorkQueue::Complete(i32 priority)
 bool WorkQueue::IsCompleted(i32 priority) const
 {
     assert(priority >= 0);
-    i32 incompleteCount = 0;
     for (List<SharedPtr<WorkItem>>::ConstIterator i = workItems_.Begin(); i != workItems_.End(); ++i)
     {
         if ((*i)->priority_ >= priority && !(*i)->completed_)
-        {
-            incompleteCount++;
-        }
+            return false;
     }
-
-    if (incompleteCount > 0)
-        return false;
 
     return true;
 }
@@ -368,159 +304,29 @@ void WorkQueue::ProcessItems(i32 threadIndex)
     for (;;)
     {
         if (shutDown_)
-        {
             return;
-        }
 
         if (pausing_ && !wasActive)
             Time::Sleep(0);
         else
         {
-            WorkItem* item = nullptr;
-            bool itemAlreadyClaimed = false;  // Track if we pre-claimed this item
-
-            // Try work-stealing first (lock-free)
-            if (threadIndex > 0 && threadIndex <= (i32)workerDeques_.Size())
+            queueMutex_.Acquire();
+            if (!queue_.Empty())
             {
-                i32 dequeIndex = threadIndex - 1;
+                wasActive = true;
 
-                // Try own deque first
-                if (workerDeques_[dequeIndex])
-                {
-                    item = (WorkItem*)workerDeques_[dequeIndex]->Pop();
-                    if (item)
-                        wasActive = true;  // BUGFIX: Mark as active when work found
-                }
-
-                // Try stealing from neighbors if own deque empty
-                if (!item)
-                {
-                    for (i32 i = 1; i < (i32)workerDeques_.Size(); ++i)
-                    {
-                        i32 neighbor = (dequeIndex + i) % workerDeques_.Size();
-                        if (workerDeques_[neighbor])
-                        {
-                            item = (WorkItem*)workerDeques_[neighbor]->Steal();
-                            if (item)
-                            {
-                                wasActive = true;  // BUGFIX: Mark as active when work stolen
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Fall back to mutex-based queue if work-stealing didn't find anything
-            if (!item)
-            {
-                queueMutex_.Acquire();
-                if (!queue_.Empty())
-                {
-                    WorkItem* candidateItem = queue_.Front();
-
-                    // Try to claim BEFORE removing from queue
-                    bool expected = false;
-                    bool claimed = candidateItem->claimed_.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
-
-                    if (claimed)
-                    {
-                        // Successfully claimed - remove from queue
-                        item = candidateItem;
-                        itemAlreadyClaimed = true;  // Mark as already claimed
-                        queue_.PopFront();
-                        wasActive = true;
-                        queueMutex_.Release();
-
-                        // DEBUG: Log successful claim from mutex queue (DISABLED - too verbose)
-                        // char itemBuf[32];
-                        // sprintf(itemBuf, "%p", (void*)item);
-                        // URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " CLAIMED item " +
-                        //                String(itemBuf) + " from mutex queue (priority=" + String(item->priority_) + ")");
-                    }
-                    else
-                    {
-                        // Already claimed - leave in queue, continue searching
-                        queueMutex_.Release();
-                        Time::Sleep(0);
-                        continue;
-                    }
-                }
-                else
-                {
-                    wasActive = false;
-
-                    queueMutex_.Release();
-                    Time::Sleep(0);
-                    continue;
-                }
+                WorkItem* item = queue_.Front();
+                queue_.PopFront();
+                queueMutex_.Release();
+                item->workFunction_(item, threadIndex);
+                item->completed_ = true;
             }
             else
             {
-                wasActive = true;
-            }
+                wasActive = false;
 
-            // Execute the work item
-            if (item)
-            {
-                bool shouldExecute = false;
-
-                if (itemAlreadyClaimed)
-                {
-                    // Item was pre-claimed from mutex queue - execute directly
-                    shouldExecute = true;
-                }
-                else
-                {
-                    // Item from work-stealing deque - need to claim it first
-                    // BUGFIX: Atomically claim to prevent double-execution (item might be in both queue_ and workerDeques_)
-                    bool alreadyClaimed = item->claimed_.exchange(true, std::memory_order_acq_rel);
-                    shouldExecute = !alreadyClaimed;
-
-                    // DEBUG: Logging disabled - too verbose
-                    // char itemBuf[32];
-                    // sprintf(itemBuf, "%p", (void*)item);
-                    // if (shouldExecute)
-                    // {
-                    //     URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " CLAIMED item " +
-                    //                    String(itemBuf) + " from deque (priority=" + String(item->priority_) + ")");
-                    // }
-                    // else
-                    // {
-                    //     URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " SKIPPED item " +
-                    //                    String(itemBuf) + " from deque (already claimed)");
-                    // }
-                }
-
-                if (shouldExecute)
-                {
-                    // DEBUG: Execution logging disabled - too verbose
-                    // char itemBuf[32], funcBuf[32];
-                    // sprintf(itemBuf, "%p", (void*)item);
-                    // sprintf(funcBuf, "%p", (void*)item->workFunction_);
-                    // URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " EXECUTING item " +
-                    //                String(itemBuf) + " (priority=" + String(item->priority_) +
-                    //                ", workFunction=" + String(funcBuf) + ")");
-
-                    // Execute the work item
-                    // BUGFIX: Defensive check for null work function
-                    if (item->workFunction_)
-                    {
-                        item->workFunction_(item, threadIndex);
-                    }
-                    else
-                    {
-                        // Null work function - this shouldn't happen but defensive check prevents crash
-                        URHO3D_LOGWARNING("Work item has null work function - marking completed to prevent leak");
-                    }
-                    // Always mark as completed to ensure proper cleanup
-                    item->completed_ = true;
-
-                    // DEBUG: Completion logging disabled - too verbose
-                    // URHO3D_LOGDEBUG("Thread " + String(threadIndex) + " COMPLETED item " +
-                    //                String(itemBuf) + " (priority=" + String(item->priority_) + ")");
-                }
-                // else: Another thread already claimed and is executing this item, skip it
+                queueMutex_.Release();
+                Time::Sleep(0);
             }
         }
     }
@@ -544,25 +350,6 @@ void WorkQueue::PurgeCompleted(i32 priority)
                 VariantMap& eventData = GetEventDataMap();
                 eventData[P_ITEM] = i->Get();
                 SendEvent(E_WORKITEMCOMPLETED, eventData);
-            }
-
-            // BUGFIX: Remove from queue_ before returning to pool
-            // Items were being returned to pool (workFunction_=nullptr, claimed_=false)
-            // but staying in queue_, causing worker threads to try to execute them again
-            WorkItem* itemPtr = i->Get();
-            if (threads_.Size())
-            {
-                queueMutex_.Acquire();
-                List<WorkItem*>::Iterator queueIter = queue_.Find(itemPtr);
-                if (queueIter != queue_.End())
-                    queue_.Erase(queueIter);
-                queueMutex_.Release();
-            }
-            else
-            {
-                List<WorkItem*>::Iterator queueIter = queue_.Find(itemPtr);
-                if (queueIter != queue_.End())
-                    queue_.Erase(queueIter);
             }
 
             ReturnToPool(*i);
@@ -601,10 +388,6 @@ void WorkQueue::ReturnToPool(SharedPtr<WorkItem>& item)
         item->priority_ = WI_MAX_PRIORITY;
         item->sendEvent_ = false;
         item->completed_ = false;
-        // BUGFIX: Don't reset claimed_ here! Item pointer may still be in work-stealing deques.
-        // If we reset claimed_, worker threads could retrieve and try to execute it again.
-        // claimed_ will be reset when item is actually reused from pool in GetFreeItem().
-        // item->claimed_ = false;
 
         poolItems_.Push(item);
     }
@@ -623,14 +406,8 @@ void WorkQueue::HandleBeginFrame(StringHash eventType, VariantMap& eventData)
         {
             WorkItem* item = queue_.Front();
             queue_.PopFront();
-
-            // Atomically claim the item (shouldn't be necessary without threads, but safe)
-            bool alreadyClaimed = item->claimed_.exchange(true, std::memory_order_acq_rel);
-            if (!alreadyClaimed)
-            {
-                item->workFunction_(item, 0);
-                item->completed_ = true;
-            }
+            item->workFunction_(item, 0);
+            item->completed_ = true;
         }
     }
 

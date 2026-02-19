@@ -5,6 +5,7 @@
 
 #include "../Core/Context.h"
 #include "../Core/Profiler.h"
+#include "../Graphics/Model.h"
 #include "../IO/Log.h"
 #include "../IO/MemoryBuffer.h"
 #include "../Physics/CollisionShape.h"
@@ -109,12 +110,57 @@ void RigidBody::RegisterObject(Context* context)
     URHO3D_ATTRIBUTE_EX("Is Kinematic", kinematic_, MarkBodyDirty, false, AM_DEFAULT);
     URHO3D_ATTRIBUTE_EX("Is Trigger", trigger_, MarkBodyDirty, false, AM_DEFAULT);
     URHO3D_ACCESSOR_ATTRIBUTE("Gravity Override", GetGravityOverride, SetGravityOverride, Vector3::ZERO, AM_DEFAULT);
+    // Own shape attributes (new shape API)
+    URHO3D_ATTRIBUTE("Has Own Shape", hasOwnShape_, false, AM_FILE);
+    URHO3D_ATTRIBUTE("Own Shape Type", shapeType_, 0, AM_FILE);
+    URHO3D_ATTRIBUTE("Shape Size", shapeSize_, Vector3::ONE, AM_FILE);
+    URHO3D_ATTRIBUTE("Shape Position", shapePosition_, Vector3::ZERO, AM_FILE);
+    URHO3D_ATTRIBUTE("Shape Rotation", shapeRotation_, Quaternion::IDENTITY, AM_FILE);
+    URHO3D_ATTRIBUTE("Shape Margin", shapeMargin_, 0.04f, AM_FILE);
+    URHO3D_ACCESSOR_ATTRIBUTE("Shape Model", GetShapeModelAttr, SetShapeModelAttr, ResourceRef(Model::GetTypeStatic()), AM_FILE);
+    URHO3D_ATTRIBUTE("Shape LOD Level", shapeLodLevel_, 0, AM_FILE);
 }
 
 void RigidBody::ApplyAttributes()
 {
     if (readdBody_)
         AddBodyToWorld();
+
+    // Recreate own shape from serialized attributes
+    if (hasOwnShape_ && physicsWorld_ && !cachedShape_)
+    {
+        switch (shapeType_)
+        {
+        case SHAPE_BOX:
+            SetBoxShape(shapeSize_, shapePosition_, shapeRotation_);
+            break;
+        case SHAPE_SPHERE:
+            SetSphereShape(shapeSize_.x_, shapePosition_);
+            break;
+        case SHAPE_CAPSULE:
+            SetCapsuleShape(shapeSize_.x_, shapeSize_.y_, shapePosition_);
+            break;
+        case SHAPE_CYLINDER:
+            SetCylinderShape(shapeSize_.x_, shapeSize_.y_, shapePosition_);
+            break;
+        case SHAPE_CONE:
+            SetConeShape(shapeSize_.x_, shapeSize_.y_, shapePosition_);
+            break;
+        case SHAPE_STATICPLANE:
+            SetStaticPlaneShape();
+            break;
+        case SHAPE_TRIANGLEMESH:
+            if (shapeModel_)
+                SetTriMeshShape(shapeModel_, shapeLodLevel_);
+            break;
+        case SHAPE_CONVEXHULL:
+            if (shapeModel_)
+                SetConvexHullShape(shapeModel_, shapeLodLevel_);
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 void RigidBody::OnSetEnabled()
@@ -560,6 +606,268 @@ void RigidBody::Activate()
 {
     if (body_ && mass_ > 0.0f)
         body_->activate(true);
+}
+
+void RigidBody::SetBoxShape(const Vector3& size, const Vector3& position, const Quaternion& rotation)
+{
+    shapeType_ = SHAPE_BOX;
+    shapeSize_ = size;
+    shapePosition_ = position;
+    shapeRotation_ = rotation;
+    hasOwnShape_ = true;
+
+    if (physicsWorld_)
+    {
+        // Apply node world scale to match CollisionShape behavior
+        Vector3 worldScale = node_ ? node_->GetWorldScale() : Vector3::ONE;
+        CollisionShapeKey key;
+        key.type_ = SHAPE_BOX;
+        key.size_ = size * worldScale;
+        key.margin_ = shapeMargin_;
+        key.model_ = nullptr;
+        key.lodLevel_ = 0;
+        cachedShape_ = physicsWorld_->GetOrCreateShape(key);
+        UpdateShapeToBody();
+    }
+}
+
+void RigidBody::SetSphereShape(float diameter, const Vector3& position)
+{
+    shapeType_ = SHAPE_SPHERE;
+    shapeSize_ = Vector3(diameter, diameter, diameter);
+    shapePosition_ = position;
+    shapeRotation_ = Quaternion::IDENTITY;
+    hasOwnShape_ = true;
+
+    if (physicsWorld_)
+    {
+        Vector3 worldScale = node_ ? node_->GetWorldScale() : Vector3::ONE;
+        CollisionShapeKey key;
+        key.type_ = SHAPE_SPHERE;
+        key.size_ = shapeSize_ * worldScale;
+        key.margin_ = shapeMargin_;
+        key.model_ = nullptr;
+        key.lodLevel_ = 0;
+        cachedShape_ = physicsWorld_->GetOrCreateShape(key);
+        UpdateShapeToBody();
+    }
+}
+
+void RigidBody::SetCapsuleShape(float diameter, float height, const Vector3& position)
+{
+    shapeType_ = SHAPE_CAPSULE;
+    shapeSize_ = Vector3(diameter, height, diameter);
+    shapePosition_ = position;
+    shapeRotation_ = Quaternion::IDENTITY;
+    hasOwnShape_ = true;
+
+    if (physicsWorld_)
+    {
+        Vector3 worldScale = node_ ? node_->GetWorldScale() : Vector3::ONE;
+        CollisionShapeKey key;
+        key.type_ = SHAPE_CAPSULE;
+        key.size_ = shapeSize_ * worldScale;
+        key.margin_ = shapeMargin_;
+        key.model_ = nullptr;
+        key.lodLevel_ = 0;
+        cachedShape_ = physicsWorld_->GetOrCreateShape(key);
+        UpdateShapeToBody();
+    }
+}
+
+void RigidBody::SetCylinderShape(float diameter, float height, const Vector3& position)
+{
+    shapeType_ = SHAPE_CYLINDER;
+    shapeSize_ = Vector3(diameter, height, diameter);
+    shapePosition_ = position;
+    shapeRotation_ = Quaternion::IDENTITY;
+    hasOwnShape_ = true;
+
+    if (physicsWorld_)
+    {
+        Vector3 worldScale = node_ ? node_->GetWorldScale() : Vector3::ONE;
+        CollisionShapeKey key;
+        key.type_ = SHAPE_CYLINDER;
+        key.size_ = shapeSize_ * worldScale;
+        key.margin_ = shapeMargin_;
+        key.model_ = nullptr;
+        key.lodLevel_ = 0;
+        cachedShape_ = physicsWorld_->GetOrCreateShape(key);
+        UpdateShapeToBody();
+    }
+}
+
+void RigidBody::SetConeShape(float diameter, float height, const Vector3& position)
+{
+    shapeType_ = SHAPE_CONE;
+    shapeSize_ = Vector3(diameter, height, diameter);
+    shapePosition_ = position;
+    shapeRotation_ = Quaternion::IDENTITY;
+    hasOwnShape_ = true;
+
+    if (physicsWorld_)
+    {
+        Vector3 worldScale = node_ ? node_->GetWorldScale() : Vector3::ONE;
+        CollisionShapeKey key;
+        key.type_ = SHAPE_CONE;
+        key.size_ = shapeSize_ * worldScale;
+        key.margin_ = shapeMargin_;
+        key.model_ = nullptr;
+        key.lodLevel_ = 0;
+        cachedShape_ = physicsWorld_->GetOrCreateShape(key);
+        UpdateShapeToBody();
+    }
+}
+
+void RigidBody::SetStaticPlaneShape()
+{
+    shapeType_ = SHAPE_STATICPLANE;
+    shapeSize_ = Vector3::ONE;
+    shapePosition_ = Vector3::ZERO;
+    shapeRotation_ = Quaternion::IDENTITY;
+    hasOwnShape_ = true;
+
+    if (physicsWorld_)
+    {
+        CollisionShapeKey key;
+        key.type_ = SHAPE_STATICPLANE;
+        key.size_ = Vector3::ONE;
+        key.margin_ = shapeMargin_;
+        key.model_ = nullptr;
+        key.lodLevel_ = 0;
+        cachedShape_ = physicsWorld_->GetOrCreateShape(key);
+        UpdateShapeToBody();
+    }
+}
+
+void RigidBody::SetShapeMargin(float margin)
+{
+    shapeMargin_ = Max(margin, 0.0f);
+}
+
+void RigidBody::SetTriMeshShape(Model* model, int lodLevel)
+{
+    if (!model)
+    {
+        URHO3D_LOGERROR("Null model for triangle mesh shape");
+        return;
+    }
+
+    shapeType_ = SHAPE_TRIANGLEMESH;
+    shapeModel_ = model;
+    shapeLodLevel_ = lodLevel;
+    shapePosition_ = Vector3::ZERO;
+    shapeRotation_ = Quaternion::IDENTITY;
+    hasOwnShape_ = true;
+
+    if (physicsWorld_)
+    {
+        // Use existing geometry cache
+        CollisionGeometryDataCache& cache = physicsWorld_->GetTriMeshCache();
+        Pair<Model*, i32> id = MakePair(model, (i32)lodLevel);
+        auto cachedGeometry = cache.Find(id);
+        if (cachedGeometry != cache.End())
+            shapeGeometry_ = cachedGeometry->second_;
+        else
+        {
+            shapeGeometry_ = CreateCollisionGeometryData(SHAPE_TRIANGLEMESH, model, lodLevel);
+            cache[id] = shapeGeometry_;
+        }
+
+        Vector3 scale = node_ ? node_->GetWorldScale() : Vector3::ONE;
+        ownedMeshShape_.reset(CreateCollisionGeometryDataShape(SHAPE_TRIANGLEMESH, shapeGeometry_, scale));
+        cachedShape_ = ownedMeshShape_.get();
+        UpdateShapeToBody();
+    }
+}
+
+void RigidBody::SetConvexHullShape(Model* model, int lodLevel)
+{
+    if (!model)
+    {
+        URHO3D_LOGERROR("Null model for convex hull shape");
+        return;
+    }
+
+    shapeType_ = SHAPE_CONVEXHULL;
+    shapeModel_ = model;
+    shapeLodLevel_ = lodLevel;
+    shapePosition_ = Vector3::ZERO;
+    shapeRotation_ = Quaternion::IDENTITY;
+    hasOwnShape_ = true;
+
+    if (physicsWorld_)
+    {
+        // Use existing geometry cache
+        CollisionGeometryDataCache& cache = physicsWorld_->GetConvexCache();
+        Pair<Model*, i32> id = MakePair(model, (i32)lodLevel);
+        auto cachedGeometry = cache.Find(id);
+        if (cachedGeometry != cache.End())
+            shapeGeometry_ = cachedGeometry->second_;
+        else
+        {
+            shapeGeometry_ = CreateCollisionGeometryData(SHAPE_CONVEXHULL, model, lodLevel);
+            cache[id] = shapeGeometry_;
+        }
+
+        Vector3 scale = node_ ? node_->GetWorldScale() : Vector3::ONE;
+        ownedMeshShape_.reset(CreateCollisionGeometryDataShape(SHAPE_CONVEXHULL, shapeGeometry_, scale));
+        cachedShape_ = ownedMeshShape_.get();
+        UpdateShapeToBody();
+    }
+}
+
+void RigidBody::AddChildShape(ShapeType type, const Vector3& size, const Vector3& position,
+                               const Quaternion& rotation, float margin)
+{
+    if (!physicsWorld_)
+        return;
+
+    // Get or create the primitive child shape from the cache
+    CollisionShapeKey key;
+    key.type_ = type;
+    key.size_ = size;
+    key.margin_ = margin;
+    key.model_ = nullptr;
+    key.lodLevel_ = 0;
+    btCollisionShape* childShape = physicsWorld_->GetOrCreateShape(key);
+    if (!childShape)
+        return;
+
+    // Add to the compound shape at the specified offset
+    btTransform offset;
+    offset.setOrigin(ToBtVector3(position));
+    offset.setRotation(ToBtQuaternion(rotation));
+    compoundShape_->addChildShape(offset, childShape);
+
+    hasOwnShape_ = true;
+    shapeType_ = SHAPE_BOX; // Compound — type is informational only
+
+    UpdateShapeToBody();
+}
+
+void RigidBody::ClearChildShapes()
+{
+    while (compoundShape_->getNumChildShapes())
+        compoundShape_->removeChildShapeByIndex(compoundShape_->getNumChildShapes() - 1);
+    while (shiftedCompoundShape_->getNumChildShapes())
+        shiftedCompoundShape_->removeChildShapeByIndex(shiftedCompoundShape_->getNumChildShapes() - 1);
+
+    cachedShape_ = nullptr;
+    ownedMeshShape_.reset();
+    shapeGeometry_.Reset();
+    hasOwnShape_ = false;
+}
+
+void RigidBody::SetShapeModelAttr(const ResourceRef& value)
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    shapeModel_ = cache->GetResource<Model>(value.name_);
+}
+
+ResourceRef RigidBody::GetShapeModelAttr() const
+{
+    return GetResourceRef(shapeModel_, Model::GetTypeStatic());
 }
 
 void RigidBody::ReAddBodyToWorld()
@@ -1015,6 +1323,33 @@ void RigidBody::RemoveBodyFromWorld()
         btDiscreteDynamicsWorld* world = physicsWorld_->GetWorld();
         world->removeRigidBody(body_.get());
         inWorld_ = false;
+    }
+}
+
+void RigidBody::UpdateShapeToBody()
+{
+    if (!body_ || !cachedShape_)
+        return;
+
+    // Always populate compoundShape_ so that UpdateMass() finds the shape and doesn't
+    // reset the body to an empty compound (which breaks soft-rigid collision)
+    while (compoundShape_->getNumChildShapes())
+        compoundShape_->removeChildShapeByIndex(compoundShape_->getNumChildShapes() - 1);
+
+    btTransform childTransform;
+    childTransform.setOrigin(ToBtVector3(shapePosition_));
+    childTransform.setRotation(ToBtQuaternion(shapeRotation_));
+    compoundShape_->addChildShape(childTransform, cachedShape_);
+
+    // Let UpdateMass() handle shifted compound, center of mass, and collision shape assignment
+    UpdateMass();
+
+    // Readd to world to reset collision cache
+    if (inWorld_ && physicsWorld_)
+    {
+        btDiscreteDynamicsWorld* world = physicsWorld_->GetWorld();
+        world->removeRigidBody(body_.get());
+        world->addRigidBody(body_.get(), (short)collisionLayer_, (short)collisionMask_);
     }
 }
 

@@ -8,6 +8,7 @@
 #include "../Math/BoundingBox.h"
 #include "../Math/Sphere.h"
 #include "../Math/Vector3.h"
+#include "../Physics/CollisionShape.h"
 #include "../Scene/Component.h"
 
 #include <Bullet/LinearMath/btIDebugDraw.h>
@@ -22,6 +23,9 @@ class btDiscreteDynamicsWorld;
 class btDispatcher;
 class btDynamicsWorld;
 class btPersistentManifold;
+class btSoftBody;
+class btSoftRigidDynamicsWorld;
+struct btSoftBodyWorldInfo;
 
 namespace Urho3D
 {
@@ -35,9 +39,38 @@ class Ray;
 class RigidBody;
 class Scene;
 class Serializer;
+class SoftBody;
 class XMLElement;
 
 struct CollisionGeometryData;
+
+/// Key for collision shape cache lookup.
+struct CollisionShapeKey
+{
+    ShapeType type_;
+    Vector3 size_;
+    float margin_;
+    Model* model_;
+    int lodLevel_;
+
+    bool operator ==(const CollisionShapeKey& rhs) const
+    {
+        return type_ == rhs.type_ && size_ == rhs.size_ && margin_ == rhs.margin_ &&
+               model_ == rhs.model_ && lodLevel_ == rhs.lodLevel_;
+    }
+
+    unsigned ToHash() const
+    {
+        unsigned hash = (unsigned)type_;
+        hash = hash * 31 + *reinterpret_cast<const unsigned*>(&size_.x_);
+        hash = hash * 31 + *reinterpret_cast<const unsigned*>(&size_.y_);
+        hash = hash * 31 + *reinterpret_cast<const unsigned*>(&size_.z_);
+        hash = hash * 31 + *reinterpret_cast<const unsigned*>(&margin_);
+        hash = hash * 31 + (unsigned)(size_t)model_;
+        hash = hash * 31 + (unsigned)lodLevel_;
+        return hash;
+    }
+};
 
 /// Physics raycast hit.
 struct URHO3D_API PhysicsRaycastResult
@@ -246,6 +279,12 @@ public:
     void AddCollisionShape(CollisionShape* shape);
     /// Remove a collision shape. Called by CollisionShape.
     void RemoveCollisionShape(CollisionShape* shape);
+    /// Add a soft body to keep track of. Called by SoftBody.
+    void AddSoftBody(SoftBody* body);
+    /// Remove a soft body. Called by SoftBody.
+    void RemoveSoftBody(SoftBody* body);
+    /// Return all tracked soft bodies.
+    const Vector<SoftBody*>& GetSoftBodies() const { return softBodies_; }
     /// Add a constraint to keep track of. Called by Constraint.
     void AddConstraint(Constraint* constraint);
     /// Remove a constraint. Called by Constraint.
@@ -261,6 +300,10 @@ public:
 
     /// Return the Bullet physics world.
     btDiscreteDynamicsWorld* GetWorld() { return world_.get(); }
+    /// Return the soft-rigid dynamics world (static_cast since we always create btSoftRigidDynamicsWorld).
+    btSoftRigidDynamicsWorld* GetSoftRigidWorld();
+    /// Return the soft body world info.
+    btSoftBodyWorldInfo& GetSoftBodyWorldInfo();
 
     /// Clean up the geometry cache.
     void CleanupGeometryCache();
@@ -273,6 +316,9 @@ public:
 
     /// Return GImpact trimesh collision geometry cache.
     CollisionGeometryDataCache& GetGImpactTrimeshCache() { return gimpactTrimeshCache_; }
+
+    /// Get or create a cached collision shape. Returns a borrowed pointer (owned by cache for scene lifetime).
+    btCollisionShape* GetOrCreateShape(const CollisionShapeKey& key);
 
     /// Set node dirtying to be disregarded.
     void SetApplyingTransforms(bool enable) { applyingTransforms_ = enable; }
@@ -323,6 +369,8 @@ private:
     Vector<CollisionShape*> collisionShapes_;
     /// Constraints in the world.
     Vector<Constraint*> constraints_;
+    /// Soft bodies in the world.
+    Vector<SoftBody*> softBodies_;
     /// Collision pairs on this frame.
     HashMap<Pair<WeakPtr<RigidBody>, WeakPtr<RigidBody>>, ManifoldPair> currentCollisions_;
     /// Collision pairs on the previous frame. Used to check if a collision is "new". Manifolds are not guaranteed to exist anymore.
@@ -335,6 +383,13 @@ private:
     CollisionGeometryDataCache convexCache_;
     /// Cache for GImpact trimesh geometry data by model and LOD level.
     CollisionGeometryDataCache gimpactTrimeshCache_;
+    /// Cached collision shape (owned by PhysicsWorld for scene lifetime).
+    struct CachedShape
+    {
+        std::shared_ptr<btCollisionShape> shape_;
+    };
+    /// Cache of shared collision shapes keyed by shape parameters.
+    HashMap<CollisionShapeKey, CachedShape> shapeCache_;
     /// Preallocated event data map for physics collision events.
     VariantMap physicsCollisionData_;
     /// Preallocated event data map for node collision events.

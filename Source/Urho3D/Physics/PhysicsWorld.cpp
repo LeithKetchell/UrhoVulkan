@@ -17,6 +17,7 @@
 #include "../Physics/PhysicsWorld.h"
 #include "../Physics/RaycastVehicle.h"
 #include "../Physics/RigidBody.h"
+#include "../Physics/SoftBody.h"
 #include "../Scene/Scene.h"
 #include "../Scene/SceneEvents.h"
 
@@ -24,10 +25,17 @@
 #include <Bullet/BulletCollision/CollisionDispatch/btDefaultCollisionConfiguration.h>
 #include <Bullet/BulletCollision/CollisionDispatch/btInternalEdgeUtility.h>
 #include <Bullet/BulletCollision/CollisionShapes/btBoxShape.h>
+#include <Bullet/BulletCollision/CollisionShapes/btCapsuleShape.h>
+#include <Bullet/BulletCollision/CollisionShapes/btConeShape.h>
+#include <Bullet/BulletCollision/CollisionShapes/btCylinderShape.h>
 #include <Bullet/BulletCollision/CollisionShapes/btSphereShape.h>
+#include <Bullet/BulletCollision/CollisionShapes/btStaticPlaneShape.h>
 #include <Bullet/BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
 #include <Bullet/BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolver.h>
 #include <Bullet/BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h>
+#include <Bullet/BulletSoftBody/btSoftRigidDynamicsWorld.h>
+#include <Bullet/BulletSoftBody/btSoftBodyRigidBodyCollisionConfiguration.h>
+#include <Bullet/BulletSoftBody/btSoftBody.h>
 
 extern ContactAddedCallback gContactAddedCallback;
 
@@ -137,14 +145,14 @@ PhysicsWorld::PhysicsWorld(Context* context) :
     if (PhysicsWorld::config.collisionConfig_)
         collisionConfiguration_ = PhysicsWorld::config.collisionConfig_;
     else
-        collisionConfiguration_ = new btDefaultCollisionConfiguration();
+        collisionConfiguration_ = new btSoftBodyRigidBodyCollisionConfiguration();
 
     collisionDispatcher_ = make_unique<btCollisionDispatcher>(collisionConfiguration_);
     btGImpactCollisionAlgorithm::registerAlgorithm(static_cast<btCollisionDispatcher*>(collisionDispatcher_.get()));
 
     broadphase_ = make_unique<btDbvtBroadphase>();
     solver_ = make_unique<btSequentialImpulseConstraintSolver>();
-    world_ = make_unique<btDiscreteDynamicsWorld>(collisionDispatcher_.get(), broadphase_.get(), solver_.get(), collisionConfiguration_);
+    world_ = make_unique<btSoftRigidDynamicsWorld>(collisionDispatcher_.get(), broadphase_.get(), solver_.get(), collisionConfiguration_);
 
     world_->setGravity(ToBtVector3(DEFAULT_GRAVITY));
     world_->getDispatchInfo().m_useContinuous = true;
@@ -153,13 +161,27 @@ PhysicsWorld::PhysicsWorld(Context* context) :
     world_->setInternalTickCallback(InternalPreTickCallback, static_cast<void*>(this), true);
     world_->setInternalTickCallback(InternalTickCallback, static_cast<void*>(this), false);
     world_->setSynchronizeAllMotionStates(true);
+
+    // Initialize soft body world info
+    auto* softWorld = static_cast<btSoftRigidDynamicsWorld*>(world_.get());
+    btSoftBodyWorldInfo& worldInfo = softWorld->getWorldInfo();
+    worldInfo.m_broadphase = broadphase_.get();
+    worldInfo.m_dispatcher = collisionDispatcher_.get();
+    worldInfo.m_gravity = ToBtVector3(DEFAULT_GRAVITY);
+    worldInfo.air_density = 1.2f;
+    worldInfo.water_density = 0;
+    worldInfo.water_offset = 0;
+    worldInfo.m_sparsesdf.Initialize();
 }
 
 PhysicsWorld::~PhysicsWorld()
 {
     if (scene_)
     {
-        // Force all remaining constraints, rigid bodies and collision shapes to release themselves
+        // Force all remaining soft bodies, constraints, rigid bodies and collision shapes to release themselves
+        for (Vector<SoftBody*>::Iterator i = softBodies_.Begin(); i != softBodies_.End(); ++i)
+            (*i)->ReleaseSoftBody();
+
         for (Vector<Constraint*>::Iterator i = constraints_.Begin(); i != constraints_.End(); ++i)
             (*i)->ReleaseConstraint();
 
@@ -169,6 +191,9 @@ PhysicsWorld::~PhysicsWorld()
         for (Vector<CollisionShape*>::Iterator i = collisionShapes_.Begin(); i != collisionShapes_.End(); ++i)
             (*i)->ReleaseShape();
     }
+
+    // Clear shape cache before destroying the world
+    shapeCache_.Clear();
 
     world_.reset();
     solver_.reset();
@@ -304,6 +329,7 @@ void PhysicsWorld::SetFps(i32 fps)
 void PhysicsWorld::SetGravity(const Vector3& gravity)
 {
     world_->setGravity(ToBtVector3(gravity));
+    static_cast<btSoftRigidDynamicsWorld*>(world_.get())->getWorldInfo().m_gravity = ToBtVector3(gravity);
 
     MarkNetworkUpdate();
 }
@@ -699,6 +725,26 @@ bool PhysicsWorld::GetSplitImpulse() const
     return world_->getSolverInfo().m_splitImpulse != 0;
 }
 
+void PhysicsWorld::AddSoftBody(SoftBody* body)
+{
+    softBodies_.Push(body);
+}
+
+void PhysicsWorld::RemoveSoftBody(SoftBody* body)
+{
+    softBodies_.Remove(body);
+}
+
+btSoftRigidDynamicsWorld* PhysicsWorld::GetSoftRigidWorld()
+{
+    return static_cast<btSoftRigidDynamicsWorld*>(world_.get());
+}
+
+btSoftBodyWorldInfo& PhysicsWorld::GetSoftBodyWorldInfo()
+{
+    return static_cast<btSoftRigidDynamicsWorld*>(world_.get())->getWorldInfo();
+}
+
 void PhysicsWorld::AddRigidBody(RigidBody* body)
 {
     rigidBodies_.Push(body);
@@ -760,6 +806,49 @@ void PhysicsWorld::CleanupGeometryCache()
     CleanupGeometryCacheImpl(gimpactTrimeshCache_);
 }
 
+btCollisionShape* PhysicsWorld::GetOrCreateShape(const CollisionShapeKey& key)
+{
+    auto it = shapeCache_.Find(key);
+    if (it != shapeCache_.End())
+        return it->second_.shape_.get();
+
+    // Create new shape based on type
+    std::unique_ptr<btCollisionShape> newShape;
+    switch (key.type_)
+    {
+    case SHAPE_BOX:
+        newShape = make_unique<btBoxShape>(ToBtVector3(key.size_ * 0.5f));
+        break;
+    case SHAPE_SPHERE:
+        newShape = make_unique<btSphereShape>(key.size_.x_ * 0.5f);
+        break;
+    case SHAPE_CAPSULE:
+        newShape = make_unique<btCapsuleShape>(key.size_.x_ * 0.5f, Max(key.size_.y_ - key.size_.x_, 0.0f));
+        break;
+    case SHAPE_CYLINDER:
+        newShape = make_unique<btCylinderShape>(btVector3(key.size_.x_ * 0.5f, key.size_.y_ * 0.5f, key.size_.x_ * 0.5f));
+        break;
+    case SHAPE_CONE:
+        newShape = make_unique<btConeShape>(key.size_.x_ * 0.5f, key.size_.y_);
+        break;
+    case SHAPE_STATICPLANE:
+        newShape = make_unique<btStaticPlaneShape>(btVector3(0.0f, 1.0f, 0.0f), 0.0f);
+        break;
+    default:
+        URHO3D_LOGERROR("Shape cache does not support mesh/terrain shape types — use CollisionShape for those");
+        return nullptr;
+    }
+
+    if (key.margin_ > 0.0f)
+        newShape->setMargin(key.margin_);
+
+    CachedShape cached;
+    cached.shape_ = std::move(newShape);
+    btCollisionShape* result = cached.shape_.get();
+    shapeCache_[key] = cached;
+    return result;
+}
+
 void PhysicsWorld::OnSceneSet(Scene* scene)
 {
     // Subscribe to the scene subsystem update, which will trigger the physics simulation step
@@ -769,7 +858,11 @@ void PhysicsWorld::OnSceneSet(Scene* scene)
         SubscribeToEvent(scene_, E_SCENESUBSYSTEMUPDATE, URHO3D_HANDLER(PhysicsWorld, HandleSceneSubsystemUpdate));
     }
     else
+    {
+        // Clear shape cache when scene is removed — bodies in new scene will re-acquire via GetOrCreateShape
+        shapeCache_.Clear();
         UnsubscribeFromEvent(E_SCENESUBSYSTEMUPDATE);
+    }
 }
 
 void PhysicsWorld::HandleSceneSubsystemUpdate(StringHash eventType, VariantMap& eventData)
@@ -1069,6 +1162,7 @@ void RegisterPhysicsLibrary(Context* context)
     CollisionShape::RegisterObject(context);
     RigidBody::RegisterObject(context);
     Constraint::RegisterObject(context);
+    SoftBody::RegisterObject(context);
     PhysicsWorld::RegisterObject(context);
     RaycastVehicle::RegisterObject(context);
 }

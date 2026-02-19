@@ -6,7 +6,6 @@
 #include "../Container/List.h"
 #include "../Core/Mutex.h"
 #include "../Core/Object.h"
-#include "../Core/WorkStealingDeque.h"
 
 #include <atomic>
 
@@ -43,9 +42,7 @@ public:
     /// Whether to send event on completion.
     bool sendEvent_{};
     /// Completed flag.
-    std::atomic<bool> completed_{};
-    /// Claimed flag to prevent double-execution when item is in both queue_ and workerDeques_.
-    std::atomic<bool> claimed_{};
+    volatile bool completed_{};
 
 private:
     bool pooled_{};
@@ -115,8 +112,6 @@ private:
 
     /// Worker threads.
     Vector<SharedPtr<WorkerThread>> threads_;
-    /// Per-thread work-stealing deques for lock-free work distribution.
-    Vector<SharedPtr<WorkStealingDeque>> workerDeques_;
     /// Work item pool for reuse to cut down on allocation. The bool is a flag for item pooling and whether it is available or not.
     List<SharedPtr<WorkItem>> poolItems_;
     /// Work item collection. Accessed only by the main thread.
@@ -126,9 +121,9 @@ private:
     /// Worker queue mutex.
     Mutex queueMutex_;
     /// Shutting down flag.
-    std::atomic<bool> shutDown_;
+    volatile bool shutDown_;
     /// Pausing flag. Indicates the worker threads should not contend for the queue mutex.
-    std::atomic<bool> pausing_;
+    volatile bool pausing_;
     /// Paused flag. Indicates the queue mutex being locked to prevent worker threads using up CPU time.
     bool paused_;
     /// Completing work in the main thread flag.

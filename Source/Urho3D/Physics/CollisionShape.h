@@ -325,4 +325,9 @@ private:
     bool retryCreation_;
 };
 
+/// Create collision geometry data from a model. Used by both CollisionShape and RigidBody mesh shape API.
+CollisionGeometryData* CreateCollisionGeometryData(ShapeType shapeType, Model* model, i32 lodLevel);
+/// Create a Bullet collision shape from collision geometry data. Caller owns the returned shape.
+btCollisionShape* CreateCollisionGeometryDataShape(ShapeType shapeType, CollisionGeometryData* geometry, const Vector3& scale);
+
 }
