@@ -26,8 +26,9 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 
 ### Physics Enhancements
 - Collision shapes integrated directly into RigidBody — no separate CollisionShape component required for common shapes (box, sphere, capsule, cylinder, cone, plane, trimesh, convex hull)
-- Global collision shape cache in PhysicsWorld — identical shapes shared across bodies (e.g. 500 boxes = 1 btBoxShape)
-- Compound shape API on RigidBody (AddChildShape / ClearChildShapes)
+- Global primitive shape cache in PhysicsWorld — identical shapes shared across bodies (e.g. 500 boxes = 1 btBoxShape), eliminating redundant memory allocation
+- Compound shape API on RigidBody (AddChildShape / ClearChildShapes) — compound children reference cached primitives, so a ragdoll with 10 capsules shares the same underlying btCapsuleShape instances
+- Mesh/convex hull shape support (SetTriMeshShape, SetConvexHullShape)
 - Soft body physics via btSoftBody integration (Sample 59)
 - Legacy CollisionShape component still supported for backward compatibility
 
