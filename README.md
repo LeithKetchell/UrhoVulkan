@@ -32,7 +32,9 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Legacy CollisionShape component still supported for backward compatibility
 
 ### Rendering
-- Motion blur post-process effect with camera-based reprojection (Sample 58)
+- FXAA anti-aliasing post-process
+- Bloom post-process
+- Motion blur post-process with camera-based reprojection (Sample 58)
 - Custom shader uniform support (bare GLSL uniforms wrapped into constant buffer blocks)
 
 ### Engine
