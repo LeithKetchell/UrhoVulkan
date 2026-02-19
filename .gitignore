@@ -21,6 +21,7 @@ build-*/
 
 # Output files
 /Source/**/*.a
+/Source/**/*.exe
 /Source/ThirdParty/Assimp/revision.h
 /Source/ThirdParty/Assimp/contrib/zlib/zconf.h
 /Source/ThirdParty/Assimp/include/assimp/config.h
