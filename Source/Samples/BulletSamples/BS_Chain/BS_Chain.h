@@ -2,13 +2,13 @@
 
 #include "Sample.h"
 
-/// Bullet SDK BasicExample — 125 falling cubes.
-class BS_BasicDemo : public Sample
+/// Chain bridge — linked rigid bodies with hinge constraints.
+class BS_Chain : public Sample
 {
-    URHO3D_OBJECT(BS_BasicDemo, Sample);
+    URHO3D_OBJECT(BS_Chain, Sample);
 
 public:
-    explicit BS_BasicDemo(Context* context) : Sample(context) {}
+    explicit BS_Chain(Context* context) : Sample(context) {}
 
     void Start() override;
 
@@ -19,5 +19,5 @@ private:
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
     void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
 
-    bool drawDebug_{false};
+    bool drawDebug_{true};
 };

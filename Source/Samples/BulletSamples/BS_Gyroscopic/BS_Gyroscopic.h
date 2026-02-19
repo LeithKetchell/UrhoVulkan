@@ -2,9 +2,7 @@
 
 #include "Sample.h"
 
-/// Honest port of Bullet SDK GyroscopicDemo.
-/// 4 spinning tops with different gyroscopic force modes (none, explicit,
-/// implicit world, implicit body) in zero gravity.
+/// Bullet SDK GyroscopicDemo — 4 gyroscopic modes in zero gravity.
 class BS_Gyroscopic : public Sample
 {
     URHO3D_OBJECT(BS_Gyroscopic, Sample);

@@ -1,10 +1,5 @@
-// Honest port of Bullet SDK RollingFrictionDemo to Urho3D.
-// Original: bulletphysics/bullet3/examples/RollingFrictionDemo/RollingFrictionDemo.cpp
-// License: zlib (Erwin Coumans, Bullet Physics)
-//
-// 5x5x5 grid of shapes (spheres, capsules, cones, cylinders) on a slightly
-// sloped plane. Rolling friction prevents indefinite rolling. Spinning friction
-// was added to Urho3D's RigidBody for this port.
+// Port of bulletphysics/bullet3/examples/RollingFrictionDemo/RollingFrictionDemo.cpp
+// Copyright (c) Erwin Coumans, zlib license
 
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>

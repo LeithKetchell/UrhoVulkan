@@ -1,8 +1,5 @@
-// Bullet SDK BasicExample ported to Urho3D/Vulkan.
-// Original: bulletphysics/bullet3/examples/BasicDemo/BasicExample.cpp
-// License: zlib (Erwin Coumans, Bullet Physics)
-//
-// Drops a 5x5x5 grid of 125 dynamic cubes onto a large static ground box.
+// Port of bulletphysics/bullet3/examples/BasicDemo/BasicExample.cpp
+// Copyright (c) Erwin Coumans, zlib license
 
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>

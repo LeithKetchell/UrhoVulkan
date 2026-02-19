@@ -118,6 +118,8 @@ public:
     /// Set contact processing threshold.
     /// @property
     void SetContactProcessingThreshold(float threshold);
+    /// Set contact stiffness and damping for soft contact response.
+    void SetContactStiffnessAndDamping(float stiffness, float damping);
     /// Set continuous collision detection swept sphere radius.
     /// @property
     void SetCcdRadius(float radius);

@@ -162,6 +162,10 @@ void ASRegisterManualLast_Physics(asIScriptEngine* engine)
         AS_METHODPR(RigidBody, GetSpinningFriction, () const, float), AS_CALL_THISCALL);
     engine->RegisterObjectMethod("RigidBody", "float get_spinningFriction() const",
         AS_METHODPR(RigidBody, GetSpinningFriction, () const, float), AS_CALL_THISCALL);
+
+    // Soft contact stiffness and damping
+    engine->RegisterObjectMethod("RigidBody", "void SetContactStiffnessAndDamping(float, float)",
+        AS_METHODPR(RigidBody, SetContactStiffnessAndDamping, (float, float), void), AS_CALL_THISCALL);
 }
 
 }

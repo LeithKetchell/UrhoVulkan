@@ -1,5 +1,5 @@
-// Port of bulletphysics/bullet3/examples/GyroscopicDemo/GyroscopicSetup.cpp
-// Copyright (c) Erwin Coumans, zlib license
+// Port of bulletphysics/bullet3/examples/RigidBody/RigidBodySoftContact.cpp
+// Copyright (c) Google Inc / Erwin Coumans, zlib license
 
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>
@@ -22,31 +22,18 @@
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
 
-// Raw Bullet access for gyroscopic flags
-#include <Bullet/BulletDynamics/Dynamics/btRigidBody.h>
-
-#include "BS_Gyroscopic.h"
+#include "BS_SoftContact.h"
 
 #include <Urho3D/DebugNew.h>
 
-URHO3D_DEFINE_APPLICATION_MAIN(BS_Gyroscopic)
+URHO3D_DEFINE_APPLICATION_MAIN(BS_SoftContact)
 
-// Bullet gyroscopic force flags (from btRigidBody.h)
-static const int GYRO_FLAGS[4] = {
-    0,                                      // No gyroscopic term
-    BT_ENABLE_GYROSCOPIC_FORCE_EXPLICIT,    // Explicit Euler
-    BT_ENABLE_GYROSCOPIC_FORCE_IMPLICIT_WORLD, // Implicit (world frame)
-    BT_ENABLE_GYROSCOPIC_FORCE_IMPLICIT_BODY   // Implicit (body frame)
-};
+// Original solver settings from Bullet demo
+// m_erp2 = 0, m_globalCfm = 0, numIterations = 3, SOLVER_SIMD, no splitImpulse
+// Ground: contactStiffnessAndDamping(300, 10)
+// Single compound sphere (mass=1) with slight rotation, dropped from y=3
 
-static const char* GYRO_NAMES[4] = {
-    "No Gyroscopic",
-    "Explicit",
-    "Implicit (World)",
-    "Implicit (Body)"
-};
-
-void BS_Gyroscopic::Start()
+void BS_SoftContact::Start()
 {
     Sample::Start();
     CreateScene();
@@ -55,7 +42,7 @@ void BS_Gyroscopic::Start()
     Sample::InitMouseMode(MM_RELATIVE);
 }
 
-void BS_Gyroscopic::CreateScene()
+void BS_SoftContact::CreateScene()
 {
     auto* cache = GetSubsystem<ResourceCache>();
 
@@ -64,7 +51,10 @@ void BS_Gyroscopic::CreateScene()
     scene_->CreateComponent<DebugRenderer>();
 
     auto* physicsWorld = scene_->CreateComponent<PhysicsWorld>();
-    physicsWorld->SetGravity(Vector3::ZERO);  // Zero gravity — original uses (0,0,0)
+    physicsWorld->SetGravity(Vector3(0.0f, -10.0f, 0.0f));
+    // Original: 3 solver iterations, no split impulse
+    physicsWorld->SetNumIterations(3);
+    physicsWorld->SetSplitImpulse(false);
 
     // Zone
     Node* zoneNode = scene_->CreateChild("Zone");
@@ -80,67 +70,69 @@ void BS_Gyroscopic::CreateScene()
     lightNode->SetDirection(Vector3(0.6f, -1.0f, 0.8f));
     auto* light = lightNode->CreateComponent<Light>();
     light->SetLightType(LIGHT_DIRECTIONAL);
+    light->SetCastShadows(true);
+    light->SetShadowBias(BiasParameters(0.00025f, 0.5f));
+    light->SetShadowCascade(CascadeParameters(10.0f, 50.0f, 200.0f, 0.0f, 0.8f));
 
-    // Ground plane
+    // === Soft contact ground ===
+    // Original: btBoxShape(50,50,50) at y=-50, stiffness=300, damping=10
     {
         Node* groundNode = scene_->CreateChild("Ground");
-        groundNode->SetPosition(Vector3(0.0f, -0.5f, 0.0f));
-        groundNode->SetScale(Vector3(200.0f, 1.0f, 200.0f));
+        groundNode->SetPosition(Vector3(0.0f, -50.0f, 0.0f));
+        groundNode->SetScale(Vector3(100.0f, 100.0f, 100.0f));
         auto* groundModel = groundNode->CreateComponent<StaticModel>();
         groundModel->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
         groundModel->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
 
         auto* groundBody = groundNode->CreateComponent<RigidBody>();
         groundBody->SetBoxShape(Vector3::ONE);
-        groundBody->SetFriction(1.414f);  // sqrt(2) from original
+        groundBody->SetFriction(0.5f);
+        // Soft contact: stiffness=300, damping=10 (from original)
+        groundBody->SetContactStiffnessAndDamping(300.0f, 10.0f);
     }
 
-    // === 4 spinning bodies with different gyroscopic modes ===
-    // Original positions: (-10,8,4), (-5,8,4), (0,8,4), (5,8,4)
-    // Original: compound shape (cylinder + box), angular velocity (0, 0.1, 10)
-    // We use boxes as visual, with compound shapes for the asymmetric inertia
-    Vector3 positions[4] = {
-        Vector3(-10.0f, 8.0f, 4.0f),
-        Vector3(-5.0f, 8.0f, 4.0f),
-        Vector3(0.0f, 8.0f, 4.0f),
-        Vector3(5.0f, 8.0f, 4.0f)
-    };
-
-    for (int i = 0; i < 4; i++)
+    // === Dynamic sphere with slight rotation ===
+    // Original: compound(sphere r=0.5), mass=1, rotation(1,1,1, PI/10), at y=3
+    // We drop multiple to make it more interesting (original only has 1x1x1 array)
     {
-        Node* node = scene_->CreateChild(GYRO_NAMES[i]);
-        node->SetPosition(positions[i]);
-        // Elongated box to visualize spin axis
-        node->SetScale(Vector3(2.0f, 0.2f, 0.2f));
+        // Drop a grid of spheres to show the soft bounce
+        for (int k = 0; k < 3; k++)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                for (int j = 0; j < 3; j++)
+                {
+                    float x = 2.0f * (float)i + 0.1f;
+                    float y = 3.0f + 2.0f * (float)k;
+                    float z = 2.0f * (float)j;
 
-        auto* model = node->CreateComponent<StaticModel>();
-        model->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-        model->SetMaterial(cache->GetResource<Material>("Materials/StoneEnvMapSmall.xml"));
+                    Node* node = scene_->CreateChild("Sphere");
+                    node->SetPosition(Vector3(x, y, z));
+                    // Original: slight rotation Quaternion(Vector3(1,1,1), PI/10)
+                    node->SetRotation(Quaternion(18.0f, Vector3(1.0f, 1.0f, 1.0f).Normalized()));
 
-        auto* body = node->CreateComponent<RigidBody>();
-        body->SetMass(1.0f);
-        body->SetBoxShape(Vector3::ONE);
-        body->SetFriction(1.0f);
-        body->SetLinearDamping(0.0f);
-        body->SetAngularDamping(0.0f);
+                    auto* model = node->CreateComponent<StaticModel>();
+                    model->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
+                    model->SetMaterial(cache->GetResource<Material>("Materials/StoneEnvMapSmall.xml"));
+                    model->SetCastShadows(true);
 
-        // Set angular velocity: original (0, 0.1, 10) — fast spin around Z, slow around Y
-        body->SetAngularVelocity(Vector3(0.0f, 0.1f, 10.0f));
-
-        // Raw Bullet: set gyroscopic force flags
-        btRigidBody* btBody = body->GetBody();
-        if (btBody)
-            btBody->setFlags(GYRO_FLAGS[i]);
+                    auto* body = node->CreateComponent<RigidBody>();
+                    body->SetMass(1.0f);
+                    // Original: compound with sphere child, r=0.5
+                    body->SetSphereShape(0.5f);
+                    body->SetFriction(0.5f);
+                }
+            }
+        }
     }
 
     // Labels
     auto* ui = GetSubsystem<UI>();
     auto* instructionText = ui->GetRoot()->CreateChild<Text>();
     instructionText->SetText(
-        "Bullet GyroscopicDemo — Zero Gravity\n"
-        "4 spinning bodies, each with a different gyroscopic mode:\n"
-        "None | Explicit | Implicit(World) | Implicit(Body)\n"
-        "Watch the precession differences in debug draw\n"
+        "Bullet RigidBodySoftContact\n"
+        "Ground has soft contact: stiffness=300, damping=10\n"
+        "Watch the compliant bounce vs rigid contact\n"
         "WASD+mouse | Space=debug draw"
     );
     instructionText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 12);
@@ -149,28 +141,28 @@ void BS_Gyroscopic::CreateScene()
     instructionText->SetVerticalAlignment(VA_CENTER);
     instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
 
-    // Camera — positioned to see all 4 bodies
+    // Camera — original: dist=3, pitch=-35, yaw=52, target(0, 0.46, 0)
     cameraNode_ = new Node(context_);
     auto* camera = cameraNode_->CreateComponent<Camera>();
     camera->SetFarClip(300.0f);
-    cameraNode_->SetPosition(Vector3(-2.4f, 10.0f, -20.0f));
-    cameraNode_->LookAt(Vector3(-2.4f, 8.0f, 4.0f));
+    cameraNode_->SetPosition(Vector3(3.0f, 5.0f, -8.0f));
+    cameraNode_->LookAt(Vector3(3.0f, 0.0f, 3.0f));
 }
 
-void BS_Gyroscopic::SetupViewport()
+void BS_SoftContact::SetupViewport()
 {
     auto* renderer = GetSubsystem<Renderer>();
     SharedPtr<Viewport> viewport(new Viewport(context_, scene_, cameraNode_->GetComponent<Camera>()));
     renderer->SetViewport(0, viewport);
 }
 
-void BS_Gyroscopic::SubscribeToEvents()
+void BS_SoftContact::SubscribeToEvents()
 {
-    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(BS_Gyroscopic, HandleUpdate));
-    SubscribeToEvent(E_POSTRENDERUPDATE, URHO3D_HANDLER(BS_Gyroscopic, HandlePostRenderUpdate));
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(BS_SoftContact, HandleUpdate));
+    SubscribeToEvent(E_POSTRENDERUPDATE, URHO3D_HANDLER(BS_SoftContact, HandlePostRenderUpdate));
 }
 
-void BS_Gyroscopic::HandleUpdate(StringHash eventType, VariantMap& eventData)
+void BS_SoftContact::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
     using namespace Update;
     float timeStep = eventData[P_TIMESTEP].GetFloat();
@@ -198,7 +190,7 @@ void BS_Gyroscopic::HandleUpdate(StringHash eventType, VariantMap& eventData)
         drawDebug_ = !drawDebug_;
 }
 
-void BS_Gyroscopic::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
+void BS_SoftContact::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
 {
     if (drawDebug_)
         scene_->GetComponent<PhysicsWorld>()->DrawDebugGeometry(true);

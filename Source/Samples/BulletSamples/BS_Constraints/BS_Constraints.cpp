@@ -1,12 +1,5 @@
-// Honest port of Bullet SDK AllConstraintDemo to Urho3D.
-// Original: bulletphysics/bullet3/examples/Constraints/ConstraintDemo.cpp
-// License: zlib (Erwin Coumans, Bullet Physics)
-//
-// All 14 constraint setups from the original, using Urho3D's extended
-// Constraint component (Point, Hinge, Slider, ConeTwist, 6DOF, 6DOF Spring,
-// Gear, 6DOF Spring2). Where Bullet features aren't wrapped (breaking
-// threshold, hinge motor, cone-twist softness), we reach through to the
-// raw btTypedConstraint via GetConstraint().
+// Port of bulletphysics/bullet3/examples/Constraints/ConstraintDemo.cpp
+// Copyright (c) Erwin Coumans, zlib license
 
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>

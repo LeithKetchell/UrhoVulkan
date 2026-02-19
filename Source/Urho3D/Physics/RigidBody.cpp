@@ -455,6 +455,15 @@ void RigidBody::SetContactProcessingThreshold(float threshold)
     }
 }
 
+void RigidBody::SetContactStiffnessAndDamping(float stiffness, float damping)
+{
+    if (body_)
+    {
+        body_->setContactStiffnessAndDamping(stiffness, damping);
+        MarkNetworkUpdate();
+    }
+}
+
 void RigidBody::SetCcdRadius(float radius)
 {
     radius = Max(radius, 0.0f);

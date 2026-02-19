@@ -2,8 +2,7 @@
 
 #include "Sample.h"
 
-/// Honest port of Bullet SDK AllConstraintDemo.
-/// Showcases all constraint types available through Urho3D's extended Constraint component.
+/// Bullet SDK AllConstraintDemo — all 14 constraint setups.
 class BS_Constraints : public Sample
 {
     URHO3D_OBJECT(BS_Constraints, Sample);

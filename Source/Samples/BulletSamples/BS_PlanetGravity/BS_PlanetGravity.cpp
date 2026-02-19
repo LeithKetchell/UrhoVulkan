@@ -1,5 +1,5 @@
-// Port of bulletphysics/bullet3/examples/GyroscopicDemo/GyroscopicSetup.cpp
-// Copyright (c) Erwin Coumans, zlib license
+// Radial gravity demo — per-body gravity pointing toward a planet center.
+// Uses Bullet's btRigidBody::setGravity() via Urho3D's SetGravityOverride().
 
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>
@@ -14,6 +14,7 @@
 #include <Urho3D/Graphics/StaticModel.h>
 #include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Input/Input.h>
+#include <Urho3D/Physics/PhysicsEvents.h>
 #include <Urho3D/Physics/PhysicsWorld.h>
 #include <Urho3D/Physics/RigidBody.h>
 #include <Urho3D/Resource/ResourceCache.h>
@@ -22,31 +23,13 @@
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
 
-// Raw Bullet access for gyroscopic flags
-#include <Bullet/BulletDynamics/Dynamics/btRigidBody.h>
-
-#include "BS_Gyroscopic.h"
+#include "BS_PlanetGravity.h"
 
 #include <Urho3D/DebugNew.h>
 
-URHO3D_DEFINE_APPLICATION_MAIN(BS_Gyroscopic)
+URHO3D_DEFINE_APPLICATION_MAIN(BS_PlanetGravity)
 
-// Bullet gyroscopic force flags (from btRigidBody.h)
-static const int GYRO_FLAGS[4] = {
-    0,                                      // No gyroscopic term
-    BT_ENABLE_GYROSCOPIC_FORCE_EXPLICIT,    // Explicit Euler
-    BT_ENABLE_GYROSCOPIC_FORCE_IMPLICIT_WORLD, // Implicit (world frame)
-    BT_ENABLE_GYROSCOPIC_FORCE_IMPLICIT_BODY   // Implicit (body frame)
-};
-
-static const char* GYRO_NAMES[4] = {
-    "No Gyroscopic",
-    "Explicit",
-    "Implicit (World)",
-    "Implicit (Body)"
-};
-
-void BS_Gyroscopic::Start()
+void BS_PlanetGravity::Start()
 {
     Sample::Start();
     CreateScene();
@@ -55,7 +38,7 @@ void BS_Gyroscopic::Start()
     Sample::InitMouseMode(MM_RELATIVE);
 }
 
-void BS_Gyroscopic::CreateScene()
+void BS_PlanetGravity::CreateScene()
 {
     auto* cache = GetSubsystem<ResourceCache>();
 
@@ -63,15 +46,16 @@ void BS_Gyroscopic::CreateScene()
     scene_->CreateComponent<Octree>();
     scene_->CreateComponent<DebugRenderer>();
 
+    // Zero world gravity — we apply per-body gravity in PreStep
     auto* physicsWorld = scene_->CreateComponent<PhysicsWorld>();
-    physicsWorld->SetGravity(Vector3::ZERO);  // Zero gravity — original uses (0,0,0)
+    physicsWorld->SetGravity(Vector3::ZERO);
 
     // Zone
     Node* zoneNode = scene_->CreateChild("Zone");
     auto* zone = zoneNode->CreateComponent<Zone>();
     zone->SetBoundingBox(BoundingBox(-1000.0f, 1000.0f));
-    zone->SetAmbientColor(Color(0.3f, 0.3f, 0.3f));
-    zone->SetFogColor(Color(0.2f, 0.2f, 0.3f));
+    zone->SetAmbientColor(Color(0.2f, 0.2f, 0.25f));
+    zone->SetFogColor(Color(0.05f, 0.05f, 0.1f));
     zone->SetFogStart(100.0f);
     zone->SetFogEnd(300.0f);
 
@@ -80,67 +64,62 @@ void BS_Gyroscopic::CreateScene()
     lightNode->SetDirection(Vector3(0.6f, -1.0f, 0.8f));
     auto* light = lightNode->CreateComponent<Light>();
     light->SetLightType(LIGHT_DIRECTIONAL);
+    light->SetCastShadows(true);
+    light->SetShadowBias(BiasParameters(0.00025f, 0.5f));
+    light->SetShadowCascade(CascadeParameters(10.0f, 50.0f, 200.0f, 0.0f, 0.8f));
 
-    // Ground plane
+    // Planet — large static sphere at the origin
+    planetCenter_ = Vector3::ZERO;
+    planetNode_ = scene_->CreateChild("Planet");
+    planetNode_->SetPosition(planetCenter_);
+    // Visual: use a scaled box as sphere approximation (we have Box.mdl)
+    // The collision shape IS a sphere
+    planetNode_->SetScale(Vector3(planetRadius_ * 2.0f, planetRadius_ * 2.0f, planetRadius_ * 2.0f));
+    auto* planetModel = planetNode_->CreateComponent<StaticModel>();
+    planetModel->SetModel(cache->GetResource<Model>("Models/Sphere.mdl"));
+    planetModel->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
+
+    auto* planetBody = planetNode_->CreateComponent<RigidBody>();
+    planetBody->SetSphereShape(planetRadius_ * 2.0f);
+
+    // Scatter boxes in orbit — spawn at varying distances and heights
+    int numObjects = 40;
+    for (int i = 0; i < numObjects; i++)
     {
-        Node* groundNode = scene_->CreateChild("Ground");
-        groundNode->SetPosition(Vector3(0.0f, -0.5f, 0.0f));
-        groundNode->SetScale(Vector3(200.0f, 1.0f, 200.0f));
-        auto* groundModel = groundNode->CreateComponent<StaticModel>();
-        groundModel->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-        groundModel->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
+        float angle = (float)i * (2.0f * M_PI / (float)numObjects);
+        // Two rings at different heights
+        float height = (i % 2 == 0) ? 0.0f : 3.0f;
+        float dist = planetRadius_ + 2.0f + (float)(i % 5) * 0.4f;
 
-        auto* groundBody = groundNode->CreateComponent<RigidBody>();
-        groundBody->SetBoxShape(Vector3::ONE);
-        groundBody->SetFriction(1.414f);  // sqrt(2) from original
-    }
+        float x = dist * cosf(angle);
+        float z = dist * sinf(angle);
 
-    // === 4 spinning bodies with different gyroscopic modes ===
-    // Original positions: (-10,8,4), (-5,8,4), (0,8,4), (5,8,4)
-    // Original: compound shape (cylinder + box), angular velocity (0, 0.1, 10)
-    // We use boxes as visual, with compound shapes for the asymmetric inertia
-    Vector3 positions[4] = {
-        Vector3(-10.0f, 8.0f, 4.0f),
-        Vector3(-5.0f, 8.0f, 4.0f),
-        Vector3(0.0f, 8.0f, 4.0f),
-        Vector3(5.0f, 8.0f, 4.0f)
-    };
-
-    for (int i = 0; i < 4; i++)
-    {
-        Node* node = scene_->CreateChild(GYRO_NAMES[i]);
-        node->SetPosition(positions[i]);
-        // Elongated box to visualize spin axis
-        node->SetScale(Vector3(2.0f, 0.2f, 0.2f));
+        Node* node = scene_->CreateChild("Orbiter");
+        float scale = 0.3f + (float)(i % 3) * 0.15f;
+        node->SetPosition(Vector3(x, height, z));
+        node->SetScale(Vector3(scale, scale, scale));
 
         auto* model = node->CreateComponent<StaticModel>();
         model->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
         model->SetMaterial(cache->GetResource<Material>("Materials/StoneEnvMapSmall.xml"));
+        model->SetCastShadows(true);
 
         auto* body = node->CreateComponent<RigidBody>();
         body->SetMass(1.0f);
         body->SetBoxShape(Vector3::ONE);
-        body->SetFriction(1.0f);
-        body->SetLinearDamping(0.0f);
-        body->SetAngularDamping(0.0f);
+        body->SetFriction(0.8f);
+        body->SetLinearDamping(0.05f);
 
-        // Set angular velocity: original (0, 0.1, 10) — fast spin around Z, slow around Y
-        body->SetAngularVelocity(Vector3(0.0f, 0.1f, 10.0f));
-
-        // Raw Bullet: set gyroscopic force flags
-        btRigidBody* btBody = body->GetBody();
-        if (btBody)
-            btBody->setFlags(GYRO_FLAGS[i]);
+        orbiters_.Push(node);
     }
 
     // Labels
     auto* ui = GetSubsystem<UI>();
     auto* instructionText = ui->GetRoot()->CreateChild<Text>();
     instructionText->SetText(
-        "Bullet GyroscopicDemo — Zero Gravity\n"
-        "4 spinning bodies, each with a different gyroscopic mode:\n"
-        "None | Explicit | Implicit(World) | Implicit(Body)\n"
-        "Watch the precession differences in debug draw\n"
+        "Planet Gravity — radial gravity toward center\n"
+        "40 boxes fall toward a sphere\n"
+        "Uses SetGravityOverride() per body each frame\n"
         "WASD+mouse | Space=debug draw"
     );
     instructionText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 12);
@@ -149,28 +128,50 @@ void BS_Gyroscopic::CreateScene()
     instructionText->SetVerticalAlignment(VA_CENTER);
     instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
 
-    // Camera — positioned to see all 4 bodies
+    // Camera
     cameraNode_ = new Node(context_);
     auto* camera = cameraNode_->CreateComponent<Camera>();
     camera->SetFarClip(300.0f);
-    cameraNode_->SetPosition(Vector3(-2.4f, 10.0f, -20.0f));
-    cameraNode_->LookAt(Vector3(-2.4f, 8.0f, 4.0f));
+    cameraNode_->SetPosition(Vector3(0.0f, 10.0f, -20.0f));
+    cameraNode_->LookAt(Vector3(0.0f, 0.0f, 0.0f));
 }
 
-void BS_Gyroscopic::SetupViewport()
+void BS_PlanetGravity::SetupViewport()
 {
     auto* renderer = GetSubsystem<Renderer>();
     SharedPtr<Viewport> viewport(new Viewport(context_, scene_, cameraNode_->GetComponent<Camera>()));
     renderer->SetViewport(0, viewport);
 }
 
-void BS_Gyroscopic::SubscribeToEvents()
+void BS_PlanetGravity::SubscribeToEvents()
 {
-    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(BS_Gyroscopic, HandleUpdate));
-    SubscribeToEvent(E_POSTRENDERUPDATE, URHO3D_HANDLER(BS_Gyroscopic, HandlePostRenderUpdate));
+    SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(BS_PlanetGravity, HandleUpdate));
+    SubscribeToEvent(E_PHYSICSPRESTEP, URHO3D_HANDLER(BS_PlanetGravity, HandlePhysicsPreStep));
+    SubscribeToEvent(E_POSTRENDERUPDATE, URHO3D_HANDLER(BS_PlanetGravity, HandlePostRenderUpdate));
 }
 
-void BS_Gyroscopic::HandleUpdate(StringHash eventType, VariantMap& eventData)
+void BS_PlanetGravity::HandlePhysicsPreStep(StringHash eventType, VariantMap& eventData)
+{
+    // Update gravity for every dynamic body to point toward planet center
+    for (unsigned i = 0; i < orbiters_.Size(); i++)
+    {
+        auto* body = orbiters_[i]->GetComponent<RigidBody>();
+        if (!body || body->GetMass() <= 0.0f)
+            continue;
+
+        Vector3 pos = orbiters_[i]->GetWorldPosition();
+        Vector3 dir = planetCenter_ - pos;
+        float dist = dir.Length();
+        if (dist < 0.01f)
+            continue;
+
+        // Gravity = G * M / r^2, simplified to constant strength
+        Vector3 gravity = dir.Normalized() * gravityStrength_;
+        body->SetGravityOverride(gravity);
+    }
+}
+
+void BS_PlanetGravity::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
     using namespace Update;
     float timeStep = eventData[P_TIMESTEP].GetFloat();
@@ -198,7 +199,7 @@ void BS_Gyroscopic::HandleUpdate(StringHash eventType, VariantMap& eventData)
         drawDebug_ = !drawDebug_;
 }
 
-void BS_Gyroscopic::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
+void BS_PlanetGravity::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
 {
     if (drawDebug_)
         scene_->GetComponent<PhysicsWorld>()->DrawDebugGeometry(true);

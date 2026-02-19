@@ -2,13 +2,13 @@
 
 #include "Sample.h"
 
-/// Bullet SDK BasicExample — 125 falling cubes.
-class BS_BasicDemo : public Sample
+/// Domino effect — a row of thin boxes that topple in sequence.
+class BS_Domino : public Sample
 {
-    URHO3D_OBJECT(BS_BasicDemo, Sample);
+    URHO3D_OBJECT(BS_Domino, Sample);
 
 public:
-    explicit BS_BasicDemo(Context* context) : Sample(context) {}
+    explicit BS_Domino(Context* context) : Sample(context) {}
 
     void Start() override;
 
@@ -20,4 +20,5 @@ private:
     void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
 
     bool drawDebug_{false};
+    bool triggered_{false};
 };
