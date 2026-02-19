@@ -87,6 +87,7 @@ void RigidBody::RegisterObject(Context* context)
     URHO3D_ACCESSOR_ATTRIBUTE("Anisotropic Friction", GetAnisotropicFriction, SetAnisotropicFriction, Vector3::ONE,
         AM_DEFAULT);
     URHO3D_ACCESSOR_ATTRIBUTE("Rolling Friction", GetRollingFriction, SetRollingFriction, DEFAULT_ROLLING_FRICTION, AM_DEFAULT);
+    URHO3D_ACCESSOR_ATTRIBUTE("Spinning Friction", GetSpinningFriction, SetSpinningFriction, 0.0f, AM_DEFAULT);
     URHO3D_ACCESSOR_ATTRIBUTE("Restitution", GetRestitution, SetRestitution, DEFAULT_RESTITUTION, AM_DEFAULT);
     URHO3D_ACCESSOR_ATTRIBUTE("Linear Velocity", GetLinearVelocity, SetLinearVelocity, Vector3::ZERO,
         AM_DEFAULT | AM_LATESTDATA);
@@ -423,6 +424,15 @@ void RigidBody::SetRollingFriction(float friction)
     if (body_)
     {
         body_->setRollingFriction(friction);
+        MarkNetworkUpdate();
+    }
+}
+
+void RigidBody::SetSpinningFriction(float friction)
+{
+    if (body_)
+    {
+        body_->setSpinningFriction(friction);
         MarkNetworkUpdate();
     }
 }
@@ -964,6 +974,11 @@ Vector3 RigidBody::GetAnisotropicFriction() const
 float RigidBody::GetRollingFriction() const
 {
     return body_ ? body_->getRollingFriction() : 0.0f;
+}
+
+float RigidBody::GetSpinningFriction() const
+{
+    return body_ ? body_->getSpinningFriction() : 0.0f;
 }
 
 float RigidBody::GetRestitution() const

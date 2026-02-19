@@ -21,7 +21,11 @@ enum ConstraintType
     CONSTRAINT_POINT = 0,
     CONSTRAINT_HINGE,
     CONSTRAINT_SLIDER,
-    CONSTRAINT_CONETWIST
+    CONSTRAINT_CONETWIST,
+    CONSTRAINT_6DOF,
+    CONSTRAINT_6DOF_SPRING,
+    CONSTRAINT_GEAR,
+    CONSTRAINT_6DOF_SPRING2
 };
 
 class PhysicsWorld;
@@ -95,6 +99,36 @@ public:
     /// @property
     void SetDisableCollision(bool disable);
 
+    /// Set 6DOF linear lower limit (world units per axis).
+    void SetLinearLowerLimit(const Vector3& limit);
+    /// Set 6DOF linear upper limit (world units per axis).
+    void SetLinearUpperLimit(const Vector3& limit);
+    /// Set 6DOF angular lower limit (degrees per axis).
+    void SetAngularLowerLimit(const Vector3& limit);
+    /// Set 6DOF angular upper limit (degrees per axis).
+    void SetAngularUpperLimit(const Vector3& limit);
+
+    /// Enable/disable motor on axis (0-2 linear, 3-5 angular). 6DOF types only.
+    void EnableMotor(int index, bool enable);
+    /// Set motor target velocity on axis. 6DOF types only.
+    void SetMotorTargetVelocity(int index, float velocity);
+    /// Set motor max force on axis. 6DOF types only.
+    void SetMotorMaxForce(int index, float force);
+
+    /// Enable/disable spring on axis (0-2 linear, 3-5 angular). 6DOF Spring types only.
+    void EnableSpring(int index, bool enable);
+    /// Set spring stiffness on axis. 6DOF Spring types only.
+    void SetSpringStiffness(int index, float stiffness);
+    /// Set spring damping on axis. 6DOF Spring types only.
+    void SetSpringDamping(int index, float damping);
+
+    /// Set gear ratio. Gear constraint only.
+    void SetGearRatio(float ratio);
+    /// Set gear axis on own body. Gear constraint only.
+    void SetGearAxisA(const Vector3& axis);
+    /// Set gear axis on other body. Gear constraint only.
+    void SetGearAxisB(const Vector3& axis);
+
     /// Return physics world.
     PhysicsWorld* GetPhysicsWorld() const { return physicsWorld_; }
 
@@ -152,6 +186,21 @@ public:
     /// Return whether collisions between connected bodies are disabled.
     /// @property
     bool GetDisableCollision() const { return disableCollision_; }
+
+    /// Return 6DOF linear lower limit.
+    const Vector3& GetLinearLowerLimit() const { return linearLowerLimit_; }
+    /// Return 6DOF linear upper limit.
+    const Vector3& GetLinearUpperLimit() const { return linearUpperLimit_; }
+    /// Return 6DOF angular lower limit (degrees).
+    const Vector3& GetAngularLowerLimit() const { return angularLowerLimit_; }
+    /// Return 6DOF angular upper limit (degrees).
+    const Vector3& GetAngularUpperLimit() const { return angularUpperLimit_; }
+    /// Return gear ratio.
+    float GetGearRatio() const { return gearRatio_; }
+    /// Return gear axis A.
+    const Vector3& GetGearAxisA() const { return gearAxisA_; }
+    /// Return gear axis B.
+    const Vector3& GetGearAxisB() const { return gearAxisB_; }
 
     /// Release the constraint.
     void ReleaseConstraint();
@@ -212,6 +261,26 @@ private:
     unsigned otherBodyNodeID_;
     /// Disable collision between connected bodies flag.
     bool disableCollision_;
+
+    /// 6DOF per-axis linear limits.
+    Vector3 linearLowerLimit_;
+    Vector3 linearUpperLimit_;
+    /// 6DOF per-axis angular limits (degrees).
+    Vector3 angularLowerLimit_;
+    Vector3 angularUpperLimit_;
+    /// 6DOF motor state (0-2 linear XYZ, 3-5 angular XYZ).
+    bool motorEnabled_[6]{};
+    float motorTargetVelocity_[6]{};
+    float motorMaxForce_[6]{};
+    /// 6DOF spring state (0-2 linear XYZ, 3-5 angular XYZ).
+    bool springEnabled_[6]{};
+    float springStiffness_[6]{};
+    float springDamping_[6]{};
+    /// Gear constraint parameters.
+    float gearRatio_;
+    Vector3 gearAxisA_;
+    Vector3 gearAxisB_;
+
     /// Recreate constraint flag.
     bool recreateConstraint_;
     /// Coordinate frames dirty flag.

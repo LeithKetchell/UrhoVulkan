@@ -9,6 +9,7 @@
 #include "../AngelScript/APITemplates.h"
 
 #include "../Physics/CollisionShape.h"
+#include "../Physics/Constraint.h"
 #include "../Physics/PhysicsWorld.h"
 #include "../Physics/RigidBody.h"
 
@@ -145,6 +146,34 @@ template <class T> PhysicsRaycastResult PhysicsWorld_ConvexCast(CollisionShape* 
     /* Work around by manually releasing the CollisionShape handle */                                                 \
     /* void PhysicsWorld::ConvexCast(PhysicsRaycastResult& result, CollisionShape* shape, const Vector3& startPos, const Quaternion& startRot, const Vector3& endPos, const Quaternion& endRot, unsigned collisionMask = M_MAX_UNSIGNED) | File: ../Physics/PhysicsWorld.h */ \
     engine->RegisterObjectMethod(className, "PhysicsRaycastResult ConvexCast(CollisionShape@, const Vector3&in, const Quaternion&in, const Vector3&in, const Quaternion&in, uint = 0xffff)", AS_FUNCTION_OBJLAST(PhysicsWorld_ConvexCast<T>), AS_CALL_CDECL_OBJLAST);
+
+// ========================================================================================
+
+#define REGISTER_MEMBERS_MANUAL_PART_Constraint() \
+    /* 6DOF per-axis limits */ \
+    engine->RegisterObjectMethod(className, "void SetLinearLowerLimit(const Vector3&in)", AS_METHODPR(T, SetLinearLowerLimit, (const Vector3&), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetLinearUpperLimit(const Vector3&in)", AS_METHODPR(T, SetLinearUpperLimit, (const Vector3&), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetAngularLowerLimit(const Vector3&in)", AS_METHODPR(T, SetAngularLowerLimit, (const Vector3&), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetAngularUpperLimit(const Vector3&in)", AS_METHODPR(T, SetAngularUpperLimit, (const Vector3&), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "const Vector3& GetLinearLowerLimit() const", AS_METHODPR(T, GetLinearLowerLimit, () const, const Vector3&), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "const Vector3& GetLinearUpperLimit() const", AS_METHODPR(T, GetLinearUpperLimit, () const, const Vector3&), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "const Vector3& GetAngularLowerLimit() const", AS_METHODPR(T, GetAngularLowerLimit, () const, const Vector3&), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "const Vector3& GetAngularUpperLimit() const", AS_METHODPR(T, GetAngularUpperLimit, () const, const Vector3&), AS_CALL_THISCALL); \
+    /* 6DOF motors */ \
+    engine->RegisterObjectMethod(className, "void EnableMotor(int, bool)", AS_METHODPR(T, EnableMotor, (int, bool), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetMotorTargetVelocity(int, float)", AS_METHODPR(T, SetMotorTargetVelocity, (int, float), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetMotorMaxForce(int, float)", AS_METHODPR(T, SetMotorMaxForce, (int, float), void), AS_CALL_THISCALL); \
+    /* 6DOF springs */ \
+    engine->RegisterObjectMethod(className, "void EnableSpring(int, bool)", AS_METHODPR(T, EnableSpring, (int, bool), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetSpringStiffness(int, float)", AS_METHODPR(T, SetSpringStiffness, (int, float), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetSpringDamping(int, float)", AS_METHODPR(T, SetSpringDamping, (int, float), void), AS_CALL_THISCALL); \
+    /* Gear */ \
+    engine->RegisterObjectMethod(className, "void SetGearRatio(float)", AS_METHODPR(T, SetGearRatio, (float), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetGearAxisA(const Vector3&in)", AS_METHODPR(T, SetGearAxisA, (const Vector3&), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "void SetGearAxisB(const Vector3&in)", AS_METHODPR(T, SetGearAxisB, (const Vector3&), void), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "float GetGearRatio() const", AS_METHODPR(T, GetGearRatio, () const, float), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "const Vector3& GetGearAxisA() const", AS_METHODPR(T, GetGearAxisA, () const, const Vector3&), AS_CALL_THISCALL); \
+    engine->RegisterObjectMethod(className, "const Vector3& GetGearAxisB() const", AS_METHODPR(T, GetGearAxisB, () const, const Vector3&), AS_CALL_THISCALL);
 
 }
 

@@ -109,6 +109,9 @@ public:
     /// Set rolling friction coefficient.
     /// @property
     void SetRollingFriction(float friction);
+    /// Set spinning friction coefficient.
+    /// @property
+    void SetSpinningFriction(float friction);
     /// Set restitution coefficient.
     /// @property
     void SetRestitution(float restitution);
@@ -256,6 +259,9 @@ public:
     /// Return rolling friction coefficient.
     /// @property
     float GetRollingFriction() const;
+    /// Return spinning friction coefficient.
+    /// @property
+    float GetSpinningFriction() const;
     /// Return restitution coefficient.
     /// @property
     float GetRestitution() const;

@@ -14,6 +14,10 @@
 #include "../Scene/Scene.h"
 
 #include <Bullet/BulletDynamics/ConstraintSolver/btConeTwistConstraint.h>
+#include <Bullet/BulletDynamics/ConstraintSolver/btGeneric6DofConstraint.h>
+#include <Bullet/BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
+#include <Bullet/BulletDynamics/ConstraintSolver/btGeneric6DofSpring2Constraint.h>
+#include <Bullet/BulletDynamics/ConstraintSolver/btGearConstraint.h>
 #include <Bullet/BulletDynamics/ConstraintSolver/btHingeConstraint.h>
 #include <Bullet/BulletDynamics/ConstraintSolver/btPoint2PointConstraint.h>
 #include <Bullet/BulletDynamics/ConstraintSolver/btSliderConstraint.h>
@@ -30,6 +34,10 @@ static const char* typeNames[] =
     "Hinge",
     "Slider",
     "ConeTwist",
+    "6Dof",
+    "6DofSpring",
+    "Gear",
+    "6DofSpring2",
     nullptr
 };
 
@@ -48,6 +56,13 @@ Constraint::Constraint(Context* context) :
     cfm_(0.0f),
     otherBodyNodeID_(0),
     disableCollision_(false),
+    linearLowerLimit_(Vector3::ZERO),
+    linearUpperLimit_(Vector3::ZERO),
+    angularLowerLimit_(Vector3::ZERO),
+    angularUpperLimit_(Vector3::ZERO),
+    gearRatio_(1.0f),
+    gearAxisA_(Vector3::UP),
+    gearAxisB_(Vector3::UP),
     recreateConstraint_(true),
     framesDirty_(false),
     retryCreation_(false)
@@ -78,6 +93,13 @@ void Constraint::RegisterObject(Context* context)
     URHO3D_ACCESSOR_ATTRIBUTE("ERP Parameter", GetERP, SetERP, 0.0f, AM_DEFAULT);
     URHO3D_ACCESSOR_ATTRIBUTE("CFM Parameter", GetCFM, SetCFM, 0.0f, AM_DEFAULT);
     URHO3D_ATTRIBUTE_EX("Disable Collision", disableCollision_, MarkConstraintDirty, false, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Linear Lower Limit", linearLowerLimit_, Vector3::ZERO, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Linear Upper Limit", linearUpperLimit_, Vector3::ZERO, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Angular Lower Limit", angularLowerLimit_, Vector3::ZERO, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Angular Upper Limit", angularUpperLimit_, Vector3::ZERO, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Gear Ratio", gearRatio_, 1.0f, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Gear Axis A", gearAxisA_, Vector3::UP, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Gear Axis B", gearAxisB_, Vector3::UP, AM_DEFAULT);
 }
 
 void Constraint::ApplyAttributes()
@@ -188,6 +210,9 @@ void Constraint::SetAxis(const Vector3& axis)
 
     case CONSTRAINT_SLIDER:
     case CONSTRAINT_CONETWIST:
+    case CONSTRAINT_6DOF:
+    case CONSTRAINT_6DOF_SPRING:
+    case CONSTRAINT_6DOF_SPRING2:
         rotation_ = Quaternion(Vector3::RIGHT, axis);
         break;
 
@@ -230,6 +255,9 @@ void Constraint::SetOtherAxis(const Vector3& axis)
 
     case CONSTRAINT_SLIDER:
     case CONSTRAINT_CONETWIST:
+    case CONSTRAINT_6DOF:
+    case CONSTRAINT_6DOF_SPRING:
+    case CONSTRAINT_6DOF_SPRING2:
         otherRotation_ = Quaternion(Vector3::RIGHT, axis);
         break;
 
@@ -391,6 +419,43 @@ void Constraint::ApplyFrames()
         }
         break;
 
+    case D6_CONSTRAINT_TYPE:
+        {
+            auto* dofConstraint = static_cast<btGeneric6DofConstraint*>(constraint_.get());
+            btTransform ownFrame(ToBtQuaternion(rotation_), ToBtVector3(ownBodyScaledPosition));
+            btTransform otherFrame(ToBtQuaternion(otherRotation_), ToBtVector3(otherBodyScaledPosition));
+            dofConstraint->setFrames(ownFrame, otherFrame);
+        }
+        break;
+
+    case D6_SPRING_CONSTRAINT_TYPE:
+        {
+            auto* springConstraint = static_cast<btGeneric6DofSpringConstraint*>(constraint_.get());
+            btTransform ownFrame(ToBtQuaternion(rotation_), ToBtVector3(ownBodyScaledPosition));
+            btTransform otherFrame(ToBtQuaternion(otherRotation_), ToBtVector3(otherBodyScaledPosition));
+            springConstraint->setFrames(ownFrame, otherFrame);
+        }
+        break;
+
+    case D6_SPRING_2_CONSTRAINT_TYPE:
+        {
+            auto* spring2Constraint = static_cast<btGeneric6DofSpring2Constraint*>(constraint_.get());
+            btTransform ownFrame(ToBtQuaternion(rotation_), ToBtVector3(ownBodyScaledPosition));
+            btTransform otherFrame(ToBtQuaternion(otherRotation_), ToBtVector3(otherBodyScaledPosition));
+            spring2Constraint->setFrames(ownFrame, otherFrame);
+        }
+        break;
+
+    case GEAR_CONSTRAINT_TYPE:
+        {
+            auto* gearConstraint = static_cast<btGearConstraint*>(constraint_.get());
+            btVector3 axisA = ToBtVector3(gearAxisA_);
+            btVector3 axisB = ToBtVector3(gearAxisB_);
+            gearConstraint->setAxisA(axisA);
+            gearConstraint->setAxisB(axisB);
+        }
+        break;
+
     default:
         break;
     }
@@ -497,6 +562,37 @@ void Constraint::CreateConstraint()
         }
         break;
 
+    case CONSTRAINT_6DOF:
+        {
+            btTransform ownFrame(ToBtQuaternion(rotation_), ToBtVector3(ownBodyScaledPosition));
+            btTransform otherFrame(ToBtQuaternion(otherRotation_), ToBtVector3(otherBodyScaledPosition));
+            constraint_ = make_unique<btGeneric6DofConstraint>(*ownBody, *otherBody, ownFrame, otherFrame, false);
+        }
+        break;
+
+    case CONSTRAINT_6DOF_SPRING:
+        {
+            btTransform ownFrame(ToBtQuaternion(rotation_), ToBtVector3(ownBodyScaledPosition));
+            btTransform otherFrame(ToBtQuaternion(otherRotation_), ToBtVector3(otherBodyScaledPosition));
+            constraint_ = make_unique<btGeneric6DofSpringConstraint>(*ownBody, *otherBody, ownFrame, otherFrame, false);
+        }
+        break;
+
+    case CONSTRAINT_GEAR:
+        {
+            constraint_ = make_unique<btGearConstraint>(*ownBody, *otherBody,
+                ToBtVector3(gearAxisA_), ToBtVector3(gearAxisB_), gearRatio_);
+        }
+        break;
+
+    case CONSTRAINT_6DOF_SPRING2:
+        {
+            btTransform ownFrame(ToBtQuaternion(rotation_), ToBtVector3(ownBodyScaledPosition));
+            btTransform otherFrame(ToBtQuaternion(otherRotation_), ToBtVector3(otherBodyScaledPosition));
+            constraint_ = make_unique<btGeneric6DofSpring2Constraint>(*ownBody, *otherBody, ownFrame, otherFrame);
+        }
+        break;
+
     default:
         break;
     }
@@ -550,6 +646,96 @@ void Constraint::ApplyLimits()
         }
         break;
 
+    case D6_CONSTRAINT_TYPE:
+        {
+            auto* dofConstraint = static_cast<btGeneric6DofConstraint*>(constraint_.get());
+            dofConstraint->setLinearLowerLimit(ToBtVector3(linearLowerLimit_));
+            dofConstraint->setLinearUpperLimit(ToBtVector3(linearUpperLimit_));
+            dofConstraint->setAngularLowerLimit(ToBtVector3(angularLowerLimit_ * M_DEGTORAD));
+            dofConstraint->setAngularUpperLimit(ToBtVector3(angularUpperLimit_ * M_DEGTORAD));
+
+            // Apply motors
+            btTranslationalLimitMotor* transMotor = dofConstraint->getTranslationalLimitMotor();
+            for (int i = 0; i < 3; i++)
+            {
+                transMotor->m_enableMotor[i] = motorEnabled_[i];
+                transMotor->m_targetVelocity[i] = motorTargetVelocity_[i];
+                transMotor->m_maxMotorForce[i] = motorMaxForce_[i];
+            }
+            for (int i = 0; i < 3; i++)
+            {
+                btRotationalLimitMotor* rotMotor = dofConstraint->getRotationalLimitMotor(i);
+                rotMotor->m_enableMotor = motorEnabled_[i + 3];
+                rotMotor->m_targetVelocity = motorTargetVelocity_[i + 3];
+                rotMotor->m_maxMotorForce = motorMaxForce_[i + 3];
+            }
+        }
+        break;
+
+    case D6_SPRING_CONSTRAINT_TYPE:
+        {
+            auto* springConstraint = static_cast<btGeneric6DofSpringConstraint*>(constraint_.get());
+            springConstraint->setLinearLowerLimit(ToBtVector3(linearLowerLimit_));
+            springConstraint->setLinearUpperLimit(ToBtVector3(linearUpperLimit_));
+            springConstraint->setAngularLowerLimit(ToBtVector3(angularLowerLimit_ * M_DEGTORAD));
+            springConstraint->setAngularUpperLimit(ToBtVector3(angularUpperLimit_ * M_DEGTORAD));
+
+            // Apply motors (inherited from 6DOF)
+            btTranslationalLimitMotor* transMotor = springConstraint->getTranslationalLimitMotor();
+            for (int i = 0; i < 3; i++)
+            {
+                transMotor->m_enableMotor[i] = motorEnabled_[i];
+                transMotor->m_targetVelocity[i] = motorTargetVelocity_[i];
+                transMotor->m_maxMotorForce[i] = motorMaxForce_[i];
+            }
+            for (int i = 0; i < 3; i++)
+            {
+                btRotationalLimitMotor* rotMotor = springConstraint->getRotationalLimitMotor(i);
+                rotMotor->m_enableMotor = motorEnabled_[i + 3];
+                rotMotor->m_targetVelocity = motorTargetVelocity_[i + 3];
+                rotMotor->m_maxMotorForce = motorMaxForce_[i + 3];
+            }
+
+            // Apply springs
+            for (int i = 0; i < 6; i++)
+            {
+                springConstraint->enableSpring(i, springEnabled_[i]);
+                springConstraint->setStiffness(i, springStiffness_[i]);
+                springConstraint->setDamping(i, springDamping_[i]);
+            }
+            springConstraint->setEquilibriumPoint();
+        }
+        break;
+
+    case D6_SPRING_2_CONSTRAINT_TYPE:
+        {
+            auto* spring2Constraint = static_cast<btGeneric6DofSpring2Constraint*>(constraint_.get());
+            spring2Constraint->setLinearLowerLimit(ToBtVector3(linearLowerLimit_));
+            spring2Constraint->setLinearUpperLimit(ToBtVector3(linearUpperLimit_));
+            spring2Constraint->setAngularLowerLimit(ToBtVector3(angularLowerLimit_ * M_DEGTORAD));
+            spring2Constraint->setAngularUpperLimit(ToBtVector3(angularUpperLimit_ * M_DEGTORAD));
+
+            // Apply motors and springs
+            for (int i = 0; i < 6; i++)
+            {
+                spring2Constraint->enableMotor(i, motorEnabled_[i]);
+                spring2Constraint->setTargetVelocity(i, motorTargetVelocity_[i]);
+                spring2Constraint->setMaxMotorForce(i, motorMaxForce_[i]);
+                spring2Constraint->enableSpring(i, springEnabled_[i]);
+                spring2Constraint->setStiffness(i, springStiffness_[i]);
+                spring2Constraint->setDamping(i, springDamping_[i]);
+            }
+            spring2Constraint->setEquilibriumPoint();
+        }
+        break;
+
+    case GEAR_CONSTRAINT_TYPE:
+        {
+            auto* gearConstraint = static_cast<btGearConstraint*>(constraint_.get());
+            gearConstraint->setRatio(gearRatio_);
+        }
+        break;
+
     default:
         break;
     }
@@ -558,6 +744,138 @@ void Constraint::ApplyLimits()
         constraint_->setParam(BT_CONSTRAINT_STOP_ERP, erp_);
     if (cfm_ != 0.0f)
         constraint_->setParam(BT_CONSTRAINT_STOP_CFM, cfm_);
+}
+
+void Constraint::SetLinearLowerLimit(const Vector3& limit)
+{
+    if (limit != linearLowerLimit_)
+    {
+        linearLowerLimit_ = limit;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetLinearUpperLimit(const Vector3& limit)
+{
+    if (limit != linearUpperLimit_)
+    {
+        linearUpperLimit_ = limit;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetAngularLowerLimit(const Vector3& limit)
+{
+    if (limit != angularLowerLimit_)
+    {
+        angularLowerLimit_ = limit;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetAngularUpperLimit(const Vector3& limit)
+{
+    if (limit != angularUpperLimit_)
+    {
+        angularUpperLimit_ = limit;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::EnableMotor(int index, bool enable)
+{
+    if (index >= 0 && index < 6)
+    {
+        motorEnabled_[index] = enable;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetMotorTargetVelocity(int index, float velocity)
+{
+    if (index >= 0 && index < 6)
+    {
+        motorTargetVelocity_[index] = velocity;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetMotorMaxForce(int index, float force)
+{
+    if (index >= 0 && index < 6)
+    {
+        motorMaxForce_[index] = force;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::EnableSpring(int index, bool enable)
+{
+    if (index >= 0 && index < 6)
+    {
+        springEnabled_[index] = enable;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetSpringStiffness(int index, float stiffness)
+{
+    if (index >= 0 && index < 6)
+    {
+        springStiffness_[index] = stiffness;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetSpringDamping(int index, float damping)
+{
+    if (index >= 0 && index < 6)
+    {
+        springDamping_[index] = damping;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetGearRatio(float ratio)
+{
+    if (ratio != gearRatio_)
+    {
+        gearRatio_ = ratio;
+        ApplyLimits();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetGearAxisA(const Vector3& axis)
+{
+    if (axis != gearAxisA_)
+    {
+        gearAxisA_ = axis;
+        if (constraint_)
+            ApplyFrames();
+        MarkNetworkUpdate();
+    }
+}
+
+void Constraint::SetGearAxisB(const Vector3& axis)
+{
+    if (axis != gearAxisB_)
+    {
+        gearAxisB_ = axis;
+        if (constraint_)
+            ApplyFrames();
+        MarkNetworkUpdate();
+    }
 }
 
 void Constraint::AdjustOtherBodyPosition()

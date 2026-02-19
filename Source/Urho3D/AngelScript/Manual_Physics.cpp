@@ -152,6 +152,16 @@ void ASRegisterManualLast_Physics(asIScriptEngine* engine)
         AS_METHODPR(RigidBody, GetShapeMargin, () const, float), AS_CALL_THISCALL);
     engine->RegisterObjectMethod("RigidBody", "int get_shapeType() const",
         AS_METHODPR(RigidBody, GetShapeType, () const, int), AS_CALL_THISCALL);
+
+    // Spinning friction
+    engine->RegisterObjectMethod("RigidBody", "void SetSpinningFriction(float)",
+        AS_METHODPR(RigidBody, SetSpinningFriction, (float), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("RigidBody", "void set_spinningFriction(float)",
+        AS_METHODPR(RigidBody, SetSpinningFriction, (float), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("RigidBody", "float GetSpinningFriction() const",
+        AS_METHODPR(RigidBody, GetSpinningFriction, () const, float), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("RigidBody", "float get_spinningFriction() const",
+        AS_METHODPR(RigidBody, GetSpinningFriction, () const, float), AS_CALL_THISCALL);
 }
 
 }

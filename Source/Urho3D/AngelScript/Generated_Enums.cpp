@@ -1481,6 +1481,10 @@ void ASRegisterGeneratedEnums(asIScriptEngine* engine)
     engine->RegisterEnumValue("ConstraintType", "CONSTRAINT_HINGE", CONSTRAINT_HINGE);
     engine->RegisterEnumValue("ConstraintType", "CONSTRAINT_SLIDER", CONSTRAINT_SLIDER);
     engine->RegisterEnumValue("ConstraintType", "CONSTRAINT_CONETWIST", CONSTRAINT_CONETWIST);
+    engine->RegisterEnumValue("ConstraintType", "CONSTRAINT_6DOF", CONSTRAINT_6DOF);
+    engine->RegisterEnumValue("ConstraintType", "CONSTRAINT_6DOF_SPRING", CONSTRAINT_6DOF_SPRING);
+    engine->RegisterEnumValue("ConstraintType", "CONSTRAINT_GEAR", CONSTRAINT_GEAR);
+    engine->RegisterEnumValue("ConstraintType", "CONSTRAINT_6DOF_SPRING2", CONSTRAINT_6DOF_SPRING2);
 
     // enum ShapeType | File: ../Physics/CollisionShape.h
     engine->RegisterEnum("ShapeType");
