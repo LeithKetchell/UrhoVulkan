@@ -601,7 +601,7 @@ void View::Render()
     // VULKAN Y-FLIP: Combining projection flip with negative viewport height
     // The negative viewport height in SetViewport_Vulkan fixes visibility issues
     // The projection flip here compensates for the resulting upside-down image
-    else if (Graphics::GetGAPI() == GAPI_VULKAN)
+    else if (Graphics::GetGAPI() == GAPI_VULKAN && !renderTarget_)
     {
         if (camera_)
             camera_->SetFlipVertical(!camera_->GetFlipVertical());
@@ -658,7 +658,7 @@ void View::Render()
             camera_->SetFlipVertical(!camera_->GetFlipVertical());
     }
     // Restore flip state for Vulkan (matches the flip enabled above)
-    else if (Graphics::GetGAPI() == GAPI_VULKAN)
+    else if (Graphics::GetGAPI() == GAPI_VULKAN && !renderTarget_)
     {
         if (camera_)
             camera_->SetFlipVertical(!camera_->GetFlipVertical());
@@ -1638,7 +1638,6 @@ void View::ExecuteRenderPathCommands()
                 {
                     BatchQueue& queue = actualView->batchQueues_[command.passIndex_];
 
-                    // DIAG: Log scenepass execution
                     if (!queue.IsEmpty())
                     {
                         URHO3D_PROFILE(RenderScenePass);
@@ -2077,10 +2076,11 @@ void View::AllocateScreenBuffers()
             needSubstitute = true;
         if (!renderTarget_ && hasCustomDepth)
             needSubstitute = true;
-        // Vulkan cannot blit swapchain to texture (ResolveToTexture not implemented),
-        // so post-process commands that read "viewport" need a substitute RTT
-        if (!renderTarget_ && hasViewportRead)
-            needSubstitute = true;
+        // Vulkan: ResolveToTexture not yet implemented, so substitute RT for viewport
+        // reads would just capture garbage. Render directly to swapchain instead.
+        // TODO: Re-enable when ResolveToTexture_Vulkan is implemented
+        // if (!renderTarget_ && hasViewportRead)
+        //     needSubstitute = true;
     }
 #endif
 

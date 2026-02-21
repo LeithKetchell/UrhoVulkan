@@ -671,6 +671,7 @@ bool VulkanShaderCompiler::PreprocessShader(
     {
         String preamble;
         preamble += "#define GL3\n";
+        preamble += "#define URHO_VULKAN\n";
         preamble += "#define USE_CBUFFERS\n";
         preamble += "#define MAXBONES " + String(Graphics::GetMaxBones()) + "\n";
 
@@ -958,6 +959,7 @@ bool VulkanShaderCompiler::CompileWithGlslang(
 
         // Add GL3 define for GLSL 330+ (enables modern GLSL features)
         definesBlock += "#define GL3\n";
+        definesBlock += "#define URHO_VULKAN\n";
 
         // Add USE_CBUFFERS to force uniform blocks (required for Vulkan SPIR-V)
         definesBlock += "#define USE_CBUFFERS\n";
