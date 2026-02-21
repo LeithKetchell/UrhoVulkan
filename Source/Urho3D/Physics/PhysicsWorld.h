@@ -22,9 +22,10 @@ class btConstraintSolver;
 class btDiscreteDynamicsWorld;
 class btDispatcher;
 class btDynamicsWorld;
+class btMultiBody;
 class btPersistentManifold;
 class btSoftBody;
-class btSoftRigidDynamicsWorld;
+class btSoftMultiBodyDynamicsWorld;
 struct btSoftBodyWorldInfo;
 
 namespace Urho3D
@@ -36,6 +37,7 @@ class Constraint;
 class Model;
 class Node;
 class Ray;
+class MultiBody;
 class RigidBody;
 class Scene;
 class Serializer;
@@ -285,6 +287,12 @@ public:
     void RemoveSoftBody(SoftBody* body);
     /// Return all tracked soft bodies.
     const Vector<SoftBody*>& GetSoftBodies() const { return softBodies_; }
+    /// Add a multi-body to keep track of. Called by MultiBody.
+    void AddMultiBody(MultiBody* body);
+    /// Remove a multi-body. Called by MultiBody.
+    void RemoveMultiBody(MultiBody* body);
+    /// Return all tracked multi-bodies.
+    const Vector<MultiBody*>& GetMultiBodies() const { return multiBodies_; }
     /// Add a constraint to keep track of. Called by Constraint.
     void AddConstraint(Constraint* constraint);
     /// Remove a constraint. Called by Constraint.
@@ -300,8 +308,10 @@ public:
 
     /// Return the Bullet physics world.
     btDiscreteDynamicsWorld* GetWorld() { return world_.get(); }
-    /// Return the soft-rigid dynamics world (static_cast since we always create btSoftRigidDynamicsWorld).
-    btSoftRigidDynamicsWorld* GetSoftRigidWorld();
+    /// Return the soft-multi-body dynamics world.
+    btSoftMultiBodyDynamicsWorld* GetSoftMultiBodyWorld();
+    /// Return the multi-body dynamics world (same pointer, for convenience).
+    btSoftMultiBodyDynamicsWorld* GetMultiBodyWorld() { return GetSoftMultiBodyWorld(); }
     /// Return the soft body world info.
     btSoftBodyWorldInfo& GetSoftBodyWorldInfo();
 
@@ -371,6 +381,8 @@ private:
     Vector<Constraint*> constraints_;
     /// Soft bodies in the world.
     Vector<SoftBody*> softBodies_;
+    /// Multi-bodies (Featherstone) in the world.
+    Vector<MultiBody*> multiBodies_;
     /// Collision pairs on this frame.
     HashMap<Pair<WeakPtr<RigidBody>, WeakPtr<RigidBody>>, ManifoldPair> currentCollisions_;
     /// Collision pairs on the previous frame. Used to check if a collision is "new". Manifolds are not guaranteed to exist anymore.

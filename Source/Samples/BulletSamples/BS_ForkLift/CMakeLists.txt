@@ -1,3 +1,9 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:7d1dad6a3f8c1a85879f23b2ebaa12e8ddec01a81b37cd2feda973b2ca276cdd
-size 343
+# Forklift vehicle demo
+if (NOT URHO3D_PHYSICS)
+    return ()
+endif ()
+
+set (TARGET_NAME BS_ForkLift)
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+setup_main_executable ()
+set_target_properties (${TARGET_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BULLET_SAMPLES_OUTPUT_DIR})

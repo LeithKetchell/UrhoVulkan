@@ -4,6 +4,8 @@
 
 class btRaycastVehicle;
 class btVehicleRaycaster;
+class btHingeConstraint;
+class btSliderConstraint;
 
 /// Bullet SDK ForkLiftDemo — raycast vehicle with lift and fork mechanism.
 class BS_ForkLift : public Sample
@@ -40,6 +42,10 @@ private:
     WeakPtr<Node> liftNode_;
     WeakPtr<Node> forkNode_;
     WeakPtr<Node> loadNode_;
+
+    // Raw Bullet constraints for lift/fork (not wrapped by Urho3D)
+    btHingeConstraint* liftHinge_{nullptr};
+    btSliderConstraint* forkSlider_{nullptr};
 
     bool drawDebug_{true};
 };

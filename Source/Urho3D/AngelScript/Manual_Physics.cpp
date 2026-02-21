@@ -6,6 +6,7 @@
 #include "../AngelScript/Manual_Physics.h"
 
 #include "../Graphics/Model.h"
+#include "../Physics/MultiBody.h"
 #include "../Physics/SoftBody.h"
 #include "../Scene/Scene.h"
 
@@ -19,11 +20,21 @@ static SoftBody* SoftBody_Factory()
     return new SoftBody(context);
 }
 
+// MultiBody factory function
+static MultiBody* MultiBody_Factory()
+{
+    Context* context = GetScriptContext();
+    return new MultiBody(context);
+}
+
 // This function is called before ASRegisterGenerated()
 void ASRegisterManualFirst_Physics(asIScriptEngine* engine)
 {
     // Register SoftBody type early so it's available for cross-references
     engine->RegisterObjectType("SoftBody", 0, asOBJ_REF);
+
+    // Register MultiBody type early
+    engine->RegisterObjectType("MultiBody", 0, asOBJ_REF);
 
     // Register SoftBodyType enum
     engine->RegisterEnum("SoftBodyType");
@@ -116,6 +127,67 @@ static void Register_SoftBody(asIScriptEngine* engine)
     engine->RegisterObjectMethod("SoftBody", "Material@+ get_material() const", AS_METHODPR(SoftBody, GetMaterial, () const, Material*), AS_CALL_THISCALL);
 }
 
+// Register MultiBody class members and behaviors
+static void Register_MultiBody(asIScriptEngine* engine)
+{
+    // Factory
+    engine->RegisterObjectBehaviour("MultiBody", asBEHAVE_FACTORY, "MultiBody@+ f()", AS_FUNCTION(MultiBody_Factory), AS_CALL_CDECL);
+
+    // Inheritance chain
+    RegisterSubclass<Component, MultiBody>(engine, "Component", "MultiBody");
+    RegisterSubclass<Animatable, MultiBody>(engine, "Animatable", "MultiBody");
+    RegisterSubclass<Serializable, MultiBody>(engine, "Serializable", "MultiBody");
+    RegisterSubclass<Object, MultiBody>(engine, "Object", "MultiBody");
+    RegisterSubclass<RefCounted, MultiBody>(engine, "RefCounted", "MultiBody");
+
+    // Setup
+    engine->RegisterObjectMethod("MultiBody", "void SetNumLinks(int)", AS_METHODPR(MultiBody, SetNumLinks, (int), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetBaseMass(float)", AS_METHODPR(MultiBody, SetBaseMass, (float), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetBaseInertia(const Vector3&in)", AS_METHODPR(MultiBody, SetBaseInertia, (const Vector3&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetFixedBase(bool)", AS_METHODPR(MultiBody, SetFixedBase, (bool), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetCanSleep(bool)", AS_METHODPR(MultiBody, SetCanSleep, (bool), void), AS_CALL_THISCALL);
+
+    // Link setup
+    engine->RegisterObjectMethod("MultiBody", "void SetupRevolute(int, float, const Vector3&in, int, const Quaternion&in, const Vector3&in, const Vector3&in, const Vector3&in, bool = true)",
+        AS_METHODPR(MultiBody, SetupRevolute, (int, float, const Vector3&, int, const Quaternion&, const Vector3&, const Vector3&, const Vector3&, bool), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetupSpherical(int, float, const Vector3&in, int, const Quaternion&in, const Vector3&in, const Vector3&in, bool = true)",
+        AS_METHODPR(MultiBody, SetupSpherical, (int, float, const Vector3&, int, const Quaternion&, const Vector3&, const Vector3&, bool), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetupPrismatic(int, float, const Vector3&in, int, const Quaternion&in, const Vector3&in, const Vector3&in, const Vector3&in, bool = true)",
+        AS_METHODPR(MultiBody, SetupPrismatic, (int, float, const Vector3&, int, const Quaternion&, const Vector3&, const Vector3&, const Vector3&, bool), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetupFixed(int, float, const Vector3&in, int, const Quaternion&in, const Vector3&in, const Vector3&in)",
+        AS_METHODPR(MultiBody, SetupFixed, (int, float, const Vector3&, int, const Quaternion&, const Vector3&, const Vector3&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetupPlanar(int, float, const Vector3&in, int, const Quaternion&in, const Vector3&in, const Vector3&in, bool = true)",
+        AS_METHODPR(MultiBody, SetupPlanar, (int, float, const Vector3&, int, const Quaternion&, const Vector3&, const Vector3&, bool), void), AS_CALL_THISCALL);
+
+    // Collision shapes
+    engine->RegisterObjectMethod("MultiBody", "void SetLinkBoxShape(int, const Vector3&in)", AS_METHODPR(MultiBody, SetLinkBoxShape, (int, const Vector3&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetLinkSphereShape(int, float)", AS_METHODPR(MultiBody, SetLinkSphereShape, (int, float), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetLinkCapsuleShape(int, float, float)", AS_METHODPR(MultiBody, SetLinkCapsuleShape, (int, float, float), void), AS_CALL_THISCALL);
+
+    // Visual node mapping
+    engine->RegisterObjectMethod("MultiBody", "void SetLinkNode(int, Node@+)", AS_METHODPR(MultiBody, SetLinkNode, (int, Node*), void), AS_CALL_THISCALL);
+
+    // Build
+    engine->RegisterObjectMethod("MultiBody", "void Build()", AS_METHODPR(MultiBody, Build, (), void), AS_CALL_THISCALL);
+
+    // Runtime control
+    engine->RegisterObjectMethod("MultiBody", "void SetJointPos(int, float)", AS_METHODPR(MultiBody, SetJointPos, (int, float), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetJointVel(int, float)", AS_METHODPR(MultiBody, SetJointVel, (int, float), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void AddJointTorque(int, float)", AS_METHODPR(MultiBody, AddJointTorque, (int, float), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetBaseVel(const Vector3&in)", AS_METHODPR(MultiBody, SetBaseVel, (const Vector3&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void SetBaseOmega(const Vector3&in)", AS_METHODPR(MultiBody, SetBaseOmega, (const Vector3&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void ApplyBaseForce(const Vector3&in)", AS_METHODPR(MultiBody, ApplyBaseForce, (const Vector3&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void ApplyBaseTorque(const Vector3&in)", AS_METHODPR(MultiBody, ApplyBaseTorque, (const Vector3&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void ApplyLinkForce(int, const Vector3&in)", AS_METHODPR(MultiBody, ApplyLinkForce, (int, const Vector3&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "void ApplyLinkTorque(int, const Vector3&in)", AS_METHODPR(MultiBody, ApplyLinkTorque, (int, const Vector3&), void), AS_CALL_THISCALL);
+
+    // Query
+    engine->RegisterObjectMethod("MultiBody", "float GetJointPos(int) const", AS_METHODPR(MultiBody, GetJointPos, (int) const, float), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "float GetJointVel(int) const", AS_METHODPR(MultiBody, GetJointVel, (int) const, float), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "int get_numLinks() const", AS_METHODPR(MultiBody, GetNumLinks, () const, int), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("MultiBody", "bool get_isBuilt() const", AS_METHODPR(MultiBody, IsBuilt, () const, bool), AS_CALL_THISCALL);
+}
+
 // This function is called after ASRegisterGenerated()
 void ASRegisterManualLast_Physics(asIScriptEngine* engine)
 {
@@ -124,6 +196,9 @@ void ASRegisterManualLast_Physics(asIScriptEngine* engine)
 
     // Register SoftBody class (after Drawable and other base classes are fully registered)
     Register_SoftBody(engine);
+
+    // Register MultiBody class
+    Register_MultiBody(engine);
 
     // === RigidBody shape API ===
     engine->RegisterObjectMethod("RigidBody", "void SetBoxShape(const Vector3&in, const Vector3&in = Vector3(0,0,0), const Quaternion&in = Quaternion())",

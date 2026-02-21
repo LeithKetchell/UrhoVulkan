@@ -23,7 +23,7 @@
 
 #include <Bullet/BulletSoftBody/btSoftBody.h>
 #include <Bullet/BulletSoftBody/btSoftBodyHelpers.h>
-#include <Bullet/BulletSoftBody/btSoftRigidDynamicsWorld.h>
+#include <Bullet/BulletSoftBody/btSoftMultiBodyDynamicsWorld.h>
 
 namespace Urho3D
 {
@@ -644,7 +644,7 @@ void SoftBody::AddBodyToWorld()
     ApplyConfig();
 
     // Add to world
-    btSoftRigidDynamicsWorld* softWorld = physicsWorld_->GetSoftRigidWorld();
+    btSoftMultiBodyDynamicsWorld* softWorld = physicsWorld_->GetSoftMultiBodyWorld();
     softWorld->addSoftBody(softBody_, collisionLayer_, collisionMask_);
     inWorld_ = true;
 
@@ -667,7 +667,7 @@ void SoftBody::RemoveBodyFromWorld()
 {
     if (softBody_ && inWorld_ && physicsWorld_)
     {
-        btSoftRigidDynamicsWorld* softWorld = physicsWorld_->GetSoftRigidWorld();
+        btSoftMultiBodyDynamicsWorld* softWorld = physicsWorld_->GetSoftMultiBodyWorld();
         if (softWorld)
             softWorld->removeSoftBody(softBody_);
     }

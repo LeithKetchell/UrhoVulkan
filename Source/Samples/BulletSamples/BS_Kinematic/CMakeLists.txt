@@ -1,3 +1,9 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:b5d5d07319bc49e99320c66fa7fe24ac226f4a78e53bcab4c6352790a6b1bbf6
-size 359
+# Kinematic body control
+if (NOT URHO3D_PHYSICS)
+    return ()
+endif ()
+
+set (TARGET_NAME BS_Kinematic)
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+setup_main_executable ()
+set_target_properties (${TARGET_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BULLET_SAMPLES_OUTPUT_DIR})

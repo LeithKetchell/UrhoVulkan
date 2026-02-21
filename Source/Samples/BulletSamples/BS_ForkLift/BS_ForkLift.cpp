@@ -56,9 +56,27 @@ static const float CUBE_HALF_EXTENTS = 1.0f;
 
 BS_ForkLift::~BS_ForkLift()
 {
-    // Vehicle is owned by the dynamics world after addVehicle, but raycaster is ours
-    delete vehicleRayCaster_;
+    if (scene_)
+    {
+        auto* physicsWorld = scene_->GetComponent<PhysicsWorld>();
+        if (physicsWorld)
+        {
+            btDiscreteDynamicsWorld* btWorld = physicsWorld->GetWorld();
+            if (btWorld)
+            {
+                if (liftHinge_)
+                    btWorld->removeConstraint(liftHinge_);
+                if (forkSlider_)
+                    btWorld->removeConstraint(forkSlider_);
+                if (vehicle_)
+                    btWorld->removeVehicle(vehicle_);
+            }
+        }
+    }
+    delete liftHinge_;
+    delete forkSlider_;
     delete vehicle_;
+    delete vehicleRayCaster_;
 }
 
 void BS_ForkLift::Start()
@@ -114,6 +132,8 @@ void BS_ForkLift::CreateScene()
         groundBody->SetFriction(1.414f);
     }
 
+    btDiscreteDynamicsWorld* btWorld = physicsWorld->GetWorld();
+
     // === Chassis ===
     // Original: compound shape — box(1,0.5,2) shifted up by 1 + support box(0.5,0.1,0.5) at (0,1,2.5)
     // Mass = 800
@@ -139,7 +159,6 @@ void BS_ForkLift::CreateScene()
         btChassis->setActivationState(DISABLE_DEACTIVATION);
 
         // === Create btRaycastVehicle ===
-        btDiscreteDynamicsWorld* btWorld = physicsWorld->GetWorld();
         vehicleRayCaster_ = new btDefaultVehicleRaycaster(btWorld);
 
         btRaycastVehicle::btVehicleTuning tuning;
@@ -180,8 +199,8 @@ void BS_ForkLift::CreateScene()
     }
 
     // === Lift mechanism ===
-    // Original: box(0.5,2.0,0.05) at (0,2.5,3.05), mass=10
-    // Hinged to chassis
+    // Raw Bullet btHingeConstraint (frame-based) — exact values from ForkLiftDemo.cpp
+    // Hinge axis = X, connecting front of chassis to bottom of lift column
     {
         liftNode_ = scene_->CreateChild("Lift");
         liftNode_->SetPosition(Vector3(0.0f, 2.5f, 3.05f));
@@ -196,21 +215,33 @@ void BS_ForkLift::CreateScene()
         liftBody->SetMass(10.0f);
         liftBody->SetBoxShape(Vector3::ONE);
 
-        // Hinge constraint: lift to chassis
-        auto* liftHinge = liftNode_->CreateComponent<Constraint>();
-        liftHinge->SetConstraintType(CONSTRAINT_HINGE);
-        liftHinge->SetOtherBody(chassisNode_->GetComponent<RigidBody>());
-        liftHinge->SetWorldPosition(Vector3(0.0f, 1.5f, 3.05f));
-        liftHinge->SetAxis(Vector3::RIGHT);
-        liftHinge->SetHighLimit(Vector2(0.0f, 0.0f));
-        liftHinge->SetLowLimit(Vector2(0.0f, 0.0f));
+        btRigidBody* btLift = liftBody->GetBody();
+        btRigidBody* btChassis = chassisNode_->GetComponent<RigidBody>()->GetBody();
+        btLift->setActivationState(DISABLE_DEACTIVATION);
+
+        // Frame-based hinge (original uses btTransform, not pivot+axis)
+        // Original chassis at Y=0, ours at Y=1, so adjust pivot A Y by -1
+        btTransform frameA, frameB;
+        frameA.setIdentity();
+        frameA.getBasis().setEulerZYX(0, M_PI_2, 0);
+        frameA.setOrigin(btVector3(0.0f, 0.0f, 3.05f));  // original (0,1,3.05) minus our Y=1 offset
+
+        frameB.setIdentity();
+        frameB.getBasis().setEulerZYX(0, M_PI_2, 0);
+        frameB.setOrigin(btVector3(0.0f, -1.5f, -0.05f));
+
+        liftHinge_ = new btHingeConstraint(*btChassis, *btLift, frameA, frameB);
+        liftHinge_->setLimit(-M_PI / 16.0f, M_PI / 8.0f);
+        liftHinge_->enableAngularMotor(false, 0, maxMotorImpulse);
+        btWorld->addConstraint(liftHinge_, true);
     }
 
     // === Fork mechanism ===
-    // Original: compound (crossbar + 2 tines), mass=5, slider to lift
+    // Raw btSliderConstraint — exact values from ForkLiftDemo.cpp
+    // Fork slides vertically along the lift column
     {
         forkNode_ = scene_->CreateChild("Fork");
-        forkNode_->SetPosition(Vector3(0.0f, 0.6f, 3.2f));
+        forkNode_->SetPosition(Vector3(0.0f, 0.6f, 3.2f));  // original Y=0.6, not 1.5
         forkNode_->SetScale(Vector3(2.0f, 0.2f, 0.2f));
 
         auto* model = forkNode_->CreateComponent<StaticModel>();
@@ -222,14 +253,27 @@ void BS_ForkLift::CreateScene()
         forkBody->SetMass(5.0f);
         forkBody->SetBoxShape(Vector3::ONE);
 
-        // Slider constraint: fork slides on lift
-        auto* forkSlider = forkNode_->CreateComponent<Constraint>();
-        forkSlider->SetConstraintType(CONSTRAINT_SLIDER);
-        forkSlider->SetOtherBody(liftNode_->GetComponent<RigidBody>());
-        forkSlider->SetWorldPosition(Vector3(0.0f, 0.6f, 3.1f));
-        forkSlider->SetAxis(Vector3::UP);
-        forkSlider->SetHighLimit(Vector2(0.1f, 0.0f));
-        forkSlider->SetLowLimit(Vector2(0.1f, 0.0f));
+        btRigidBody* btFork = forkBody->GetBody();
+        btRigidBody* btLift = liftNode_->GetComponent<RigidBody>()->GetBody();
+        btFork->setActivationState(DISABLE_DEACTIVATION);
+
+        // Exact frames from original ForkLiftDemo.cpp
+        btTransform frameInLift;
+        frameInLift.setIdentity();
+        frameInLift.getBasis().setEulerZYX(0, 0, M_PI / 2.0f);
+        frameInLift.setOrigin(btVector3(0.0f, -1.9f, 0.05f));
+
+        btTransform frameInFork;
+        frameInFork.setIdentity();
+        frameInFork.getBasis().setEulerZYX(0, 0, M_PI / 2.0f);
+        frameInFork.setOrigin(btVector3(0.0f, 0.0f, -0.1f));
+
+        forkSlider_ = new btSliderConstraint(*btLift, *btFork, frameInLift, frameInFork, true);
+        forkSlider_->setLowerLinLimit(0.1f);
+        forkSlider_->setUpperLinLimit(3.9f);
+        forkSlider_->setLowerAngLimit(0.0f);
+        forkSlider_->setUpperAngLimit(0.0f);
+        btWorld->addConstraint(forkSlider_, true);
     }
 
     // === Load (pallet) ===
@@ -370,70 +414,50 @@ void BS_ForkLift::HandleUpdate(StringHash eventType, VariantMap& eventData)
         // Lift/fork controls via raw Bullet constraints
         // Shift+Left/Right: tilt lift hinge
         // Shift+Up/Down: fork slider up/down
-        if (liftNode_)
+        if (liftHinge_)
         {
-            auto* liftConstraint = liftNode_->GetComponent<Constraint>();
-            if (liftConstraint)
+            if (input->GetKeyDown(KEY_LEFT))
             {
-                btTypedConstraint* btConstraint = liftConstraint->GetConstraint();
-                btHingeConstraint* hinge = static_cast<btHingeConstraint*>(btConstraint);
-                if (hinge)
-                {
-                    if (input->GetKeyDown(KEY_LEFT))
-                    {
-                        hinge->setLimit(-M_PI / 16.0f, M_PI / 8.0f);
-                        hinge->enableAngularMotor(true, -0.1f, maxMotorImpulse);
-                    }
-                    else if (input->GetKeyDown(KEY_RIGHT))
-                    {
-                        hinge->setLimit(-M_PI / 16.0f, M_PI / 8.0f);
-                        hinge->enableAngularMotor(true, 0.1f, maxMotorImpulse);
-                    }
-                    else
-                    {
-                        // Lock hinge at current angle
-                        float angle = hinge->getHingeAngle();
-                        hinge->enableAngularMotor(false, 0, 0);
-                        hinge->setLimit(angle, angle);
-                    }
-                }
+                liftHinge_->setLimit(-M_PI / 16.0f, M_PI / 8.0f);
+                liftHinge_->enableAngularMotor(true, -0.1f, maxMotorImpulse);
+            }
+            else if (input->GetKeyDown(KEY_RIGHT))
+            {
+                liftHinge_->setLimit(-M_PI / 16.0f, M_PI / 8.0f);
+                liftHinge_->enableAngularMotor(true, 0.1f, maxMotorImpulse);
+            }
+            else
+            {
+                float angle = liftHinge_->getHingeAngle();
+                liftHinge_->enableAngularMotor(false, 0, 0);
+                liftHinge_->setLimit(angle, angle);
             }
         }
 
-        if (forkNode_)
+        if (forkSlider_)
         {
-            auto* forkConstraint = forkNode_->GetComponent<Constraint>();
-            if (forkConstraint)
+            if (input->GetKeyDown(KEY_UP))
             {
-                btTypedConstraint* btConstraint = forkConstraint->GetConstraint();
-                btSliderConstraint* slider = static_cast<btSliderConstraint*>(btConstraint);
-                if (slider)
-                {
-                    if (input->GetKeyDown(KEY_UP))
-                    {
-                        slider->setLowerLinLimit(0.1f);
-                        slider->setUpperLinLimit(3.9f);
-                        slider->setPoweredLinMotor(true);
-                        slider->setMaxLinMotorForce(maxMotorImpulse);
-                        slider->setTargetLinMotorVelocity(1.0f);
-                    }
-                    else if (input->GetKeyDown(KEY_DOWN))
-                    {
-                        slider->setLowerLinLimit(0.1f);
-                        slider->setUpperLinLimit(3.9f);
-                        slider->setPoweredLinMotor(true);
-                        slider->setMaxLinMotorForce(maxMotorImpulse);
-                        slider->setTargetLinMotorVelocity(-1.0f);
-                    }
-                    else
-                    {
-                        // Lock fork at current position
-                        float pos = slider->getLinearPos();
-                        slider->setPoweredLinMotor(false);
-                        slider->setLowerLinLimit(pos);
-                        slider->setUpperLinLimit(pos);
-                    }
-                }
+                forkSlider_->setLowerLinLimit(0.1f);
+                forkSlider_->setUpperLinLimit(3.9f);
+                forkSlider_->setPoweredLinMotor(true);
+                forkSlider_->setMaxLinMotorForce(maxMotorImpulse);
+                forkSlider_->setTargetLinMotorVelocity(1.0f);
+            }
+            else if (input->GetKeyDown(KEY_DOWN))
+            {
+                forkSlider_->setLowerLinLimit(0.1f);
+                forkSlider_->setUpperLinLimit(3.9f);
+                forkSlider_->setPoweredLinMotor(true);
+                forkSlider_->setMaxLinMotorForce(maxMotorImpulse);
+                forkSlider_->setTargetLinMotorVelocity(-1.0f);
+            }
+            else
+            {
+                float pos = forkSlider_->getLinearPos();
+                forkSlider_->setPoweredLinMotor(false);
+                forkSlider_->setLowerLinLimit(pos);
+                forkSlider_->setUpperLinLimit(pos);
             }
         }
     }

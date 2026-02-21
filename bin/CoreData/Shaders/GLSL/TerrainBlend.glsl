@@ -45,11 +45,8 @@ uniform sampler2D sDetailMap1;
 uniform sampler2D sDetailMap2;
 uniform sampler2D sDetailMap3;
 
-#ifndef GL_ES
-uniform vec2 cDetailTiling;
-#else
-uniform mediump vec2 cDetailTiling;
-#endif
+// cDetailTiling hardcoded — CUSTOM_MATERIAL_CBUFFER upload broken on Vulkan
+const vec2 cDetailTiling = vec2(32.0, 32.0);
 
 void VS()
 {

@@ -1,5 +1,7 @@
-// Chain bridge — hinge-connected rigid body chain between two fixed anchors.
-// Demonstrates Bullet's constraint chain stability.
+// Port of bulletphysics/bullet3/examples/ExtendedTutorials/Chain.cpp
+// 10 boxes stacked vertically, connected by point-to-point constraints.
+// Top box is static (anchor), bottom 9 are dynamic. 2 constraints per pair.
+// Copyright (c) Erwin Coumans, zlib license
 
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>
@@ -29,9 +31,10 @@
 
 URHO3D_DEFINE_APPLICATION_MAIN(BS_Chain)
 
-static const int NUM_LINKS = 15;
-static const float LINK_LENGTH = 1.2f;
-static const float LINK_MASS = 1.0f;
+// Original values from Chain.cpp
+static const int NUM_BOXES = 10;
+// Original half-extents: (1, 1, 0.25) — Urho3D node scale = 2× half-extents
+static const Vector3 BOX_SCALE(2.0f, 2.0f, 0.5f);
 
 void BS_Chain::Start()
 {
@@ -71,11 +74,11 @@ void BS_Chain::CreateScene()
     light->SetShadowBias(BiasParameters(0.00025f, 0.5f));
     light->SetShadowCascade(CascadeParameters(10.0f, 50.0f, 200.0f, 0.0f, 0.8f));
 
-    // Ground
+    // Ground — original: btBoxShape(50,50,50) at y=-50
     {
         Node* groundNode = scene_->CreateChild("Ground");
-        groundNode->SetPosition(Vector3(0.0f, -5.0f, 0.0f));
-        groundNode->SetScale(Vector3(100.0f, 1.0f, 100.0f));
+        groundNode->SetPosition(Vector3(0.0f, -50.0f, 0.0f));
+        groundNode->SetScale(Vector3(100.0f, 100.0f, 100.0f));
         auto* groundModel = groundNode->CreateComponent<StaticModel>();
         groundModel->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
         groundModel->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
@@ -84,97 +87,60 @@ void BS_Chain::CreateScene()
         groundBody->SetBoxShape(Vector3::ONE);
     }
 
-    // Chain span
-    float totalSpan = NUM_LINKS * LINK_LENGTH;
-    float startX = -totalSpan / 2.0f;
-    float anchorY = 10.0f;
-
-    // Left anchor (static)
-    Node* leftAnchor = scene_->CreateChild("LeftAnchor");
-    leftAnchor->SetPosition(Vector3(startX - LINK_LENGTH / 2.0f, anchorY, 0.0f));
-    leftAnchor->SetScale(Vector3(1.0f, 1.0f, 1.0f));
-    auto* leftModel = leftAnchor->CreateComponent<StaticModel>();
-    leftModel->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-    leftModel->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
-    auto* leftBody = leftAnchor->CreateComponent<RigidBody>();
-    leftBody->SetBoxShape(Vector3::ONE);
-
-    // Chain links
-    Node* prevNode = leftAnchor;
-    for (int i = 0; i < NUM_LINKS; i++)
+    // 10 chain boxes — stacked vertically at (0, 5+i*2, 0)
+    // Boxes 0-8: mass=1 (dynamic), box 9: mass=0 (static anchor at top)
+    Node* boxes[NUM_BOXES];
+    for (int i = 0; i < NUM_BOXES; i++)
     {
-        float x = startX + LINK_LENGTH * (float)i;
+        Node* boxNode = scene_->CreateChild("ChainBox");
+        // Slight X offset on lower boxes so chain swings rather than balancing perfectly
+        float xOffset = (i < NUM_BOXES - 1) ? (NUM_BOXES - 1 - i) * 0.05f : 0.0f;
+        boxNode->SetPosition(Vector3(xOffset, 5.0f + i * 2.0f, 0.0f));
+        boxNode->SetScale(BOX_SCALE);
 
-        Node* linkNode = scene_->CreateChild("Link");
-        linkNode->SetPosition(Vector3(x, anchorY, 0.0f));
-        linkNode->SetScale(Vector3(LINK_LENGTH * 0.9f, 0.3f, 0.5f));
-
-        auto* model = linkNode->CreateComponent<StaticModel>();
+        auto* model = boxNode->CreateComponent<StaticModel>();
         model->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-        model->SetMaterial(cache->GetResource<Material>("Materials/StoneEnvMapSmall.xml"));
+        model->SetMaterial(cache->GetResource<Material>(i == NUM_BOXES - 1
+            ? "Materials/StoneTiled.xml" : "Materials/StoneEnvMapSmall.xml"));
         model->SetCastShadows(true);
 
-        auto* body = linkNode->CreateComponent<RigidBody>();
-        body->SetMass(LINK_MASS);
+        auto* body = boxNode->CreateComponent<RigidBody>();
         body->SetBoxShape(Vector3::ONE);
-        body->SetFriction(0.5f);
-        body->SetLinearDamping(0.05f);
-        body->SetAngularDamping(0.05f);
+        if (i < NUM_BOXES - 1)
+            body->SetMass(1.0f);
+        // else mass=0 (static anchor)
 
-        // Hinge to previous link
-        auto* constraint = linkNode->CreateComponent<Constraint>();
-        constraint->SetConstraintType(CONSTRAINT_HINGE);
-        constraint->SetOtherBody(prevNode->GetComponent<RigidBody>());
-        // Connect at the left edge of this link, right edge of previous
-        constraint->SetPosition(Vector3(-LINK_LENGTH * 0.45f / linkNode->GetScale().x_, 0.0f, 0.0f));
-        constraint->SetOtherPosition(Vector3(LINK_LENGTH * 0.45f / prevNode->GetScale().x_, 0.0f, 0.0f));
-        constraint->SetAxis(Vector3::FORWARD);
-        constraint->SetOtherAxis(Vector3::FORWARD);
-
-        prevNode = linkNode;
+        boxes[i] = boxNode;
     }
 
-    // Right anchor (static)
-    Node* rightAnchor = scene_->CreateChild("RightAnchor");
-    rightAnchor->SetPosition(Vector3(startX + NUM_LINKS * LINK_LENGTH + LINK_LENGTH / 2.0f, anchorY, 0.0f));
-    rightAnchor->SetScale(Vector3(1.0f, 1.0f, 1.0f));
-    auto* rightModel = rightAnchor->CreateComponent<StaticModel>();
-    rightModel->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-    rightModel->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
-    auto* rightBody = rightAnchor->CreateComponent<RigidBody>();
-    rightBody->SetBoxShape(Vector3::ONE);
-
-    // Connect last link to right anchor
-    auto* endConstraint = rightAnchor->CreateComponent<Constraint>();
-    endConstraint->SetConstraintType(CONSTRAINT_HINGE);
-    endConstraint->SetOtherBody(prevNode->GetComponent<RigidBody>());
-    endConstraint->SetPosition(Vector3(-0.5f, 0.0f, 0.0f));
-    endConstraint->SetOtherPosition(Vector3(LINK_LENGTH * 0.45f / prevNode->GetScale().x_, 0.0f, 0.0f));
-    endConstraint->SetAxis(Vector3::FORWARD);
-    endConstraint->SetOtherAxis(Vector3::FORWARD);
-
-    // Drop a heavy ball onto the middle of the chain
+    // Point-to-point constraints — 2 per adjacent pair (left and right)
+    // Original pivots: body i top = (-0.5, 1, 0) and (0.5, 1, 0)
+    //                  body i+1 bottom = (-0.5, -1, 0) and (0.5, -1, 0)
+    // In Urho3D, Constraint positions are in node-local scaled space (divided by node scale)
+    for (int i = 0; i < NUM_BOXES - 1; i++)
     {
-        Node* ballNode = scene_->CreateChild("Ball");
-        ballNode->SetPosition(Vector3(0.0f, anchorY + 8.0f, 0.0f));
+        // Left constraint
+        auto* leftConstraint = boxes[i]->CreateComponent<Constraint>();
+        leftConstraint->SetConstraintType(CONSTRAINT_POINT);
+        leftConstraint->SetOtherBody(boxes[i + 1]->GetComponent<RigidBody>());
+        // Pivot in body i: (-0.5, 1, 0) in physics space → divide by half-extents for normalized
+        leftConstraint->SetPosition(Vector3(-0.5f / BOX_SCALE.x_, 1.0f / BOX_SCALE.y_, 0.0f));
+        leftConstraint->SetOtherPosition(Vector3(-0.5f / BOX_SCALE.x_, -1.0f / BOX_SCALE.y_, 0.0f));
 
-        auto* model = ballNode->CreateComponent<StaticModel>();
-        model->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-        model->SetMaterial(cache->GetResource<Material>("Materials/StoneEnvMapSmall.xml"));
-        model->SetCastShadows(true);
-
-        auto* body = ballNode->CreateComponent<RigidBody>();
-        body->SetMass(10.0f);
-        body->SetSphereShape(1.0f);
-        body->SetFriction(0.5f);
+        // Right constraint
+        auto* rightConstraint = boxes[i]->CreateComponent<Constraint>();
+        rightConstraint->SetConstraintType(CONSTRAINT_POINT);
+        rightConstraint->SetOtherBody(boxes[i + 1]->GetComponent<RigidBody>());
+        rightConstraint->SetPosition(Vector3(0.5f / BOX_SCALE.x_, 1.0f / BOX_SCALE.y_, 0.0f));
+        rightConstraint->SetOtherPosition(Vector3(0.5f / BOX_SCALE.x_, -1.0f / BOX_SCALE.y_, 0.0f));
     }
 
     // Labels
     auto* ui = GetSubsystem<UI>();
     auto* instructionText = ui->GetRoot()->CreateChild<Text>();
     instructionText->SetText(
-        "Chain Bridge — 15 hinge-linked rigid bodies\n"
-        "A heavy ball drops onto the chain\n"
+        "Bullet Chain — 10 vertical boxes, point-to-point constraints\n"
+        "Top box anchored, bottom 9 swing freely\n"
         "WASD+mouse | Space=debug draw"
     );
     instructionText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 12);
@@ -183,12 +149,12 @@ void BS_Chain::CreateScene()
     instructionText->SetVerticalAlignment(VA_CENTER);
     instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
 
-    // Camera
+    // Camera — positioned to see the full vertical chain
     cameraNode_ = new Node(context_);
     auto* camera = cameraNode_->CreateComponent<Camera>();
     camera->SetFarClip(300.0f);
-    cameraNode_->SetPosition(Vector3(0.0f, 12.0f, -20.0f));
-    cameraNode_->LookAt(Vector3(0.0f, 8.0f, 0.0f));
+    cameraNode_->SetPosition(Vector3(0.0f, 15.0f, -25.0f));
+    cameraNode_->LookAt(Vector3(0.0f, 15.0f, 0.0f));
 }
 
 void BS_Chain::SetupViewport()

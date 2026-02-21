@@ -1,3 +1,9 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:ea63214fe4ac4fdba531279b36765742f367fde30ff43e9679e7f30e647f978b
-size 320
+# Hello Physics — single falling box
+if (NOT URHO3D_PHYSICS)
+    return ()
+endif ()
+
+set (TARGET_NAME BS_HelloPhysics)
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+setup_main_executable ()
+set_target_properties (${TARGET_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BULLET_SAMPLES_OUTPUT_DIR})

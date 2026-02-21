@@ -1,3 +1,9 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:2cc68715faf5334a98e5332215e851756aadd8da7e650fdd16bfcf393b19ee7c
-size 326
+# Domino chain reaction
+if (NOT URHO3D_PHYSICS)
+    return ()
+endif ()
+
+set (TARGET_NAME BS_Domino)
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+setup_main_executable ()
+set_target_properties (${TARGET_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BULLET_SAMPLES_OUTPUT_DIR})

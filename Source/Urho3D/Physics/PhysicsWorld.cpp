@@ -16,6 +16,7 @@
 #include "../Physics/PhysicsUtils.h"
 #include "../Physics/PhysicsWorld.h"
 #include "../Physics/RaycastVehicle.h"
+#include "../Physics/MultiBody.h"
 #include "../Physics/RigidBody.h"
 #include "../Physics/SoftBody.h"
 #include "../Scene/Scene.h"
@@ -33,7 +34,8 @@
 #include <Bullet/BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
 #include <Bullet/BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolver.h>
 #include <Bullet/BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h>
-#include <Bullet/BulletSoftBody/btSoftRigidDynamicsWorld.h>
+#include <Bullet/BulletDynamics/Featherstone/btMultiBodyConstraintSolver.h>
+#include <Bullet/BulletSoftBody/btSoftMultiBodyDynamicsWorld.h>
 #include <Bullet/BulletSoftBody/btSoftBodyRigidBodyCollisionConfiguration.h>
 #include <Bullet/BulletSoftBody/btSoftBody.h>
 
@@ -151,8 +153,9 @@ PhysicsWorld::PhysicsWorld(Context* context) :
     btGImpactCollisionAlgorithm::registerAlgorithm(static_cast<btCollisionDispatcher*>(collisionDispatcher_.get()));
 
     broadphase_ = make_unique<btDbvtBroadphase>();
-    solver_ = make_unique<btSequentialImpulseConstraintSolver>();
-    world_ = make_unique<btSoftRigidDynamicsWorld>(collisionDispatcher_.get(), broadphase_.get(), solver_.get(), collisionConfiguration_);
+    solver_ = make_unique<btMultiBodyConstraintSolver>();
+    world_ = make_unique<btSoftMultiBodyDynamicsWorld>(collisionDispatcher_.get(), broadphase_.get(),
+        static_cast<btMultiBodyConstraintSolver*>(solver_.get()), collisionConfiguration_);
 
     world_->setGravity(ToBtVector3(DEFAULT_GRAVITY));
     world_->getDispatchInfo().m_useContinuous = true;
@@ -163,7 +166,7 @@ PhysicsWorld::PhysicsWorld(Context* context) :
     world_->setSynchronizeAllMotionStates(true);
 
     // Initialize soft body world info
-    auto* softWorld = static_cast<btSoftRigidDynamicsWorld*>(world_.get());
+    auto* softWorld = static_cast<btSoftMultiBodyDynamicsWorld*>(world_.get());
     btSoftBodyWorldInfo& worldInfo = softWorld->getWorldInfo();
     worldInfo.m_broadphase = broadphase_.get();
     worldInfo.m_dispatcher = collisionDispatcher_.get();
@@ -178,7 +181,10 @@ PhysicsWorld::~PhysicsWorld()
 {
     if (scene_)
     {
-        // Force all remaining soft bodies, constraints, rigid bodies and collision shapes to release themselves
+        // Force all remaining multi-bodies, soft bodies, constraints, rigid bodies and collision shapes to release themselves
+        for (Vector<MultiBody*>::Iterator i = multiBodies_.Begin(); i != multiBodies_.End(); ++i)
+            (*i)->ReleaseMultiBody();
+
         for (Vector<SoftBody*>::Iterator i = softBodies_.Begin(); i != softBodies_.End(); ++i)
             (*i)->ReleaseSoftBody();
 
@@ -329,7 +335,7 @@ void PhysicsWorld::SetFps(i32 fps)
 void PhysicsWorld::SetGravity(const Vector3& gravity)
 {
     world_->setGravity(ToBtVector3(gravity));
-    static_cast<btSoftRigidDynamicsWorld*>(world_.get())->getWorldInfo().m_gravity = ToBtVector3(gravity);
+    static_cast<btSoftMultiBodyDynamicsWorld*>(world_.get())->getWorldInfo().m_gravity = ToBtVector3(gravity);
 
     MarkNetworkUpdate();
 }
@@ -735,14 +741,24 @@ void PhysicsWorld::RemoveSoftBody(SoftBody* body)
     softBodies_.Remove(body);
 }
 
-btSoftRigidDynamicsWorld* PhysicsWorld::GetSoftRigidWorld()
+btSoftMultiBodyDynamicsWorld* PhysicsWorld::GetSoftMultiBodyWorld()
 {
-    return static_cast<btSoftRigidDynamicsWorld*>(world_.get());
+    return static_cast<btSoftMultiBodyDynamicsWorld*>(world_.get());
 }
 
 btSoftBodyWorldInfo& PhysicsWorld::GetSoftBodyWorldInfo()
 {
-    return static_cast<btSoftRigidDynamicsWorld*>(world_.get())->getWorldInfo();
+    return static_cast<btSoftMultiBodyDynamicsWorld*>(world_.get())->getWorldInfo();
+}
+
+void PhysicsWorld::AddMultiBody(MultiBody* body)
+{
+    multiBodies_.Push(body);
+}
+
+void PhysicsWorld::RemoveMultiBody(MultiBody* body)
+{
+    multiBodies_.Remove(body);
 }
 
 void PhysicsWorld::AddRigidBody(RigidBody* body)
@@ -899,6 +915,10 @@ void PhysicsWorld::PostStep(float timeStep)
     if (profiler)
         profiler->EndBlock();
 #endif
+
+    // Update multi-body visual transforms from physics state
+    for (Vector<MultiBody*>::Iterator i = multiBodies_.Begin(); i != multiBodies_.End(); ++i)
+        (*i)->UpdateTransforms();
 
     SendCollisionEvents();
 
@@ -1163,6 +1183,7 @@ void RegisterPhysicsLibrary(Context* context)
     RigidBody::RegisterObject(context);
     Constraint::RegisterObject(context);
     SoftBody::RegisterObject(context);
+    MultiBody::RegisterObject(context);
     PhysicsWorld::RegisterObject(context);
     RaycastVehicle::RegisterObject(context);
 }

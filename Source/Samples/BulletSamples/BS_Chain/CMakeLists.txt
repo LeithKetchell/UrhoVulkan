@@ -1,3 +1,9 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:16b87bf3caceab58795d4e0aab5c6c07dcc10bb231d3540ef257d1c56b49746e
-size 317
+# Chain bridge — hinge-linked rigid bodies
+if (NOT URHO3D_PHYSICS)
+    return ()
+endif ()
+
+set (TARGET_NAME BS_Chain)
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+setup_main_executable ()
+set_target_properties (${TARGET_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BULLET_SAMPLES_OUTPUT_DIR})
