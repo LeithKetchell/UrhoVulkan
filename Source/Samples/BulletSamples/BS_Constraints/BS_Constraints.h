@@ -21,6 +21,4 @@ private:
 
     /// Helper: create a box node with rigid body.
     Node* CreateBox(const Vector3& position, float mass, const Vector3& size = Vector3::ONE);
-
-    bool drawDebug_{true};
 };

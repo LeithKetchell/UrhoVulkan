@@ -18,5 +18,4 @@ private:
     WeakPtr<Node> link1_;
     WeakPtr<Node> link2_;
     float simTime_{0.0f};
-    bool drawDebug_{false};
 };

@@ -49,12 +49,21 @@ public:
 protected:
     /// Return XML patch instructions for screen joystick layout for a specific sample app, if any.
     virtual String GetScreenJoystickPatchString() const { return String::EMPTY; }
+    /// Move camera with WASD + mouse look. Override for custom camera controls.
+    virtual void MoveCamera(float timeStep);
+    /// Spawn a physics object from the camera position. Override to customize projectile.
+    virtual void SpawnObject();
+    /// Create on-screen instruction text. Override to customize.
+    virtual void CreateInstructions(const String& text = String::EMPTY);
     /// Initialize touch input on mobile platform.
     void InitTouchInput();
     /// Initialize mouse mode on non-web platform.
     void InitMouseMode(MouseMode mode);
     /// Control logo visibility.
     void SetLogoVisible(bool enable);
+
+    /// Flag for drawing physics debug geometry.
+    bool drawDebug_{false};
 
     /// Logo sprite.
     SharedPtr<Sprite> logoSprite_;

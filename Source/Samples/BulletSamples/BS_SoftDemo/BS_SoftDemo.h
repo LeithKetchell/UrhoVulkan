@@ -29,6 +29,5 @@ private:
 
     static const int NUM_DEMOS = 9;
     int currentDemo_{0};
-    bool drawDebug_{false};
     WeakPtr<Text> demoText_;
 };

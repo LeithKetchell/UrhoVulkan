@@ -32,6 +32,4 @@ private:
     /// Handle the post-render update event for debug drawing.
     void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
 
-    /// Flag for drawing debug geometry.
-    bool drawDebug_{false};
 };

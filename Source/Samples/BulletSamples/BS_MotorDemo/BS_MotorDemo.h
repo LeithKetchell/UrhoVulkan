@@ -33,5 +33,4 @@ private:
     float time_{};
     float cyclePeriod_{2000.0f};   // ms
     float muscleStrength_{0.5f};
-    bool drawDebug_{false};
 };

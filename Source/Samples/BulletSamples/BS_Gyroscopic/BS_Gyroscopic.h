@@ -18,6 +18,4 @@ private:
     void SubscribeToEvents();
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
     void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
-
-    bool drawDebug_{true};
 };

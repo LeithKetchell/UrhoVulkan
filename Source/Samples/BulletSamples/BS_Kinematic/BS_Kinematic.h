@@ -21,5 +21,4 @@ private:
     void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
 
     WeakPtr<Node> groundNode_;
-    bool drawDebug_{true};
 };

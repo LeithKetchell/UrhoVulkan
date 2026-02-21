@@ -9,18 +9,24 @@
 #include <Urho3D/Engine/EngineDefs.h>
 #include <Urho3D/Graphics/Camera.h>
 #include <Urho3D/Graphics/Graphics.h>
+#include <Urho3D/Graphics/Material.h>
+#include <Urho3D/Graphics/Model.h>
 #include <Urho3D/Graphics/Renderer.h>
+#include <Urho3D/Graphics/StaticModel.h>
 #include <Urho3D/GraphicsAPI/Texture2D.h>
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/Input/InputEvents.h>
 #include <Urho3D/IO/FileSystem.h>
 #include <Urho3D/IO/Log.h>
+#include <Urho3D/Physics/RigidBody.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Resource/XMLFile.h>
 #include <Urho3D/Scene/Scene.h>
 #include <Urho3D/Scene/SceneEvents.h>
 #include <Urho3D/UI/Cursor.h>
+#include <Urho3D/UI/Font.h>
 #include <Urho3D/UI/Sprite.h>
+#include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
 
 Sample::Sample(Context* context) :
@@ -393,4 +399,81 @@ void Sample::HandleMouseModeChange(StringHash /*eventType*/, VariantMap& eventDa
     Input* input = GetSubsystem<Input>();
     bool mouseLocked = eventData[MouseModeChanged::P_MOUSELOCKED].GetBool();
     input->SetMouseVisible(!mouseLocked);
+}
+
+void Sample::MoveCamera(float timeStep)
+{
+    if (GetSubsystem<UI>()->GetFocusElement())
+        return;
+
+    auto* input = GetSubsystem<Input>();
+
+    const float MOVE_SPEED = 20.0f;
+    const float MOUSE_SENSITIVITY = 0.1f;
+
+    IntVector2 mouseMove = input->GetMouseMove();
+    yaw_ += MOUSE_SENSITIVITY * mouseMove.x_;
+    pitch_ += MOUSE_SENSITIVITY * mouseMove.y_;
+    pitch_ = Clamp(pitch_, -90.0f, 90.0f);
+    cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
+
+    if (input->GetKeyDown(KEY_W))
+        cameraNode_->Translate(Vector3::FORWARD * MOVE_SPEED * timeStep);
+    if (input->GetKeyDown(KEY_S))
+        cameraNode_->Translate(Vector3::BACK * MOVE_SPEED * timeStep);
+    if (input->GetKeyDown(KEY_A))
+        cameraNode_->Translate(Vector3::LEFT * MOVE_SPEED * timeStep);
+    if (input->GetKeyDown(KEY_D))
+        cameraNode_->Translate(Vector3::RIGHT * MOVE_SPEED * timeStep);
+
+    if (input->GetMouseButtonPress(MOUSEB_LEFT))
+        SpawnObject();
+
+    if (input->GetKeyPress(KEY_SPACE))
+        drawDebug_ = !drawDebug_;
+}
+
+void Sample::SpawnObject()
+{
+    if (!scene_ || !cameraNode_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    Node* boxNode = scene_->CreateChild("SmallBox");
+    boxNode->SetPosition(cameraNode_->GetPosition());
+    boxNode->SetRotation(cameraNode_->GetRotation());
+    boxNode->SetScale(0.25f);
+    auto* boxObject = boxNode->CreateComponent<StaticModel>();
+    boxObject->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
+    boxObject->SetMaterial(cache->GetResource<Material>("Materials/StoneEnvMapSmall.xml"));
+    boxObject->SetCastShadows(true);
+
+    auto* body = boxNode->CreateComponent<RigidBody>();
+    body->SetMass(0.25f);
+    body->SetFriction(0.75f);
+    body->SetBoxShape(Vector3::ONE);
+
+    const float OBJECT_VELOCITY = 10.0f;
+    body->SetLinearVelocity(cameraNode_->GetRotation() * Vector3(0.0f, 0.25f, 1.0f) * OBJECT_VELOCITY);
+}
+
+void Sample::CreateInstructions(const String& text)
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* ui = GetSubsystem<UI>();
+
+    String instructions = text;
+    if (instructions.Empty())
+        instructions = "Use WASD keys and mouse to move\n"
+                       "LMB to spawn physics objects\n"
+                       "Space to toggle debug geometry";
+
+    auto* instructionText = ui->GetRoot()->CreateChild<Text>();
+    instructionText->SetText(instructions);
+    instructionText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 15);
+    instructionText->SetTextAlignment(HA_CENTER);
+    instructionText->SetHorizontalAlignment(HA_CENTER);
+    instructionText->SetVerticalAlignment(VA_CENTER);
+    instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
 }

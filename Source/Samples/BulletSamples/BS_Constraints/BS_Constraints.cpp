@@ -41,6 +41,7 @@ void BS_Constraints::Start()
     Sample::Start();
     CreateScene();
     SetupViewport();
+    CreateInstructions();
     SubscribeToEvents();
     Sample::InitMouseMode(MM_RELATIVE);
 }
@@ -410,27 +411,7 @@ void BS_Constraints::HandleUpdate(StringHash eventType, VariantMap& eventData)
     using namespace Update;
     float timeStep = eventData[P_TIMESTEP].GetFloat();
 
-    auto* input = GetSubsystem<Input>();
-    const float MOVE_SPEED = 20.0f;
-    const float MOUSE_SENSITIVITY = 0.1f;
-
-    IntVector2 mouseMove = input->GetMouseMove();
-    yaw_ += MOUSE_SENSITIVITY * mouseMove.x_;
-    pitch_ += MOUSE_SENSITIVITY * mouseMove.y_;
-    pitch_ = Clamp(pitch_, -90.0f, 90.0f);
-    cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
-
-    if (input->GetKeyDown(KEY_W))
-        cameraNode_->Translate(Vector3::FORWARD * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_S))
-        cameraNode_->Translate(Vector3::BACK * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_A))
-        cameraNode_->Translate(Vector3::LEFT * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_D))
-        cameraNode_->Translate(Vector3::RIGHT * MOVE_SPEED * timeStep);
-
-    if (input->GetKeyPress(KEY_SPACE))
-        drawDebug_ = !drawDebug_;
+    MoveCamera(timeStep);
 }
 
 void BS_Constraints::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)

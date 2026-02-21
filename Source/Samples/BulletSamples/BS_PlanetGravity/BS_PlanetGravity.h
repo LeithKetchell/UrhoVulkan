@@ -26,5 +26,4 @@ private:
     float planetRadius_{5.0f};
     float gravityStrength_{15.0f};
     Vector<Node*> orbiters_;
-    bool drawDebug_{false};
 };
