@@ -427,13 +427,13 @@ void Sample::MoveCamera(float timeStep)
         cameraNode_->Translate(Vector3::RIGHT * MOVE_SPEED * timeStep);
 
     if (input->GetMouseButtonPress(MOUSEB_LEFT))
-        SpawnObject();
+        SpewForthObject();
 
     if (input->GetKeyPress(KEY_SPACE))
         drawDebug_ = !drawDebug_;
 }
 
-void Sample::SpawnObject()
+void Sample::SpewForthObject()
 {
     if (!scene_ || !cameraNode_)
         return;
