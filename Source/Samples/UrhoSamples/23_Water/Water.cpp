@@ -88,6 +88,12 @@ void Water::CreateScene()
     zone->SetFogStart(500.0f);
     zone->SetFogEnd(750.0f);
 
+    // Store Zone and original fog settings for underwater switching
+    zone_ = zone;
+    origFogColor_ = zone->GetFogColor();
+    origFogStart_ = zone->GetFogStart();
+    origFogEnd_ = zone->GetFogEnd();
+
     // Create a directional light to the world. Enable cascaded shadows on it
     Node* lightNode = scene_->CreateChild("DirectionalLight");
     lightNode->SetDirection(Vector3(0.6f, -1.0f, 0.8f));
@@ -283,6 +289,33 @@ void Water::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     // Move the camera, scale movement with time step
     MoveCamera(timeStep);
+
+    // Check if camera is underwater and switch fog accordingly
+    float waterY = waterNode_->GetWorldPosition().y_;
+    float cameraY = cameraNode_->GetWorldPosition().y_;
+    if (zone_)
+    {
+        if (cameraY < waterY && !isUnderwater_)
+        {
+            // Submerging — switch to underwater fog
+            zone_->SetFogColor(underwaterFogColor_);
+            zone_->SetFogStart(underwaterFogStart_);
+            zone_->SetFogEnd(underwaterFogEnd_);
+            zone_->SetHeightFog(true);
+            zone_->SetFogHeight(waterY);
+            zone_->SetFogHeightScale(-underwaterFogScale_);
+            isUnderwater_ = true;
+        }
+        else if (cameraY >= waterY && isUnderwater_)
+        {
+            // Surfacing — restore original fog
+            zone_->SetFogColor(origFogColor_);
+            zone_->SetFogStart(origFogStart_);
+            zone_->SetFogEnd(origFogEnd_);
+            zone_->SetHeightFog(false);
+            isUnderwater_ = false;
+        }
+    }
 
     // Update profiler display
     if (profilerUI_)

@@ -2076,11 +2076,9 @@ void View::AllocateScreenBuffers()
             needSubstitute = true;
         if (!renderTarget_ && hasCustomDepth)
             needSubstitute = true;
-        // Vulkan: ResolveToTexture not yet implemented, so substitute RT for viewport
-        // reads would just capture garbage. Render directly to swapchain instead.
-        // TODO: Re-enable when ResolveToTexture_Vulkan is implemented
-        // if (!renderTarget_ && hasViewportRead)
-        //     needSubstitute = true;
+        // Vulkan: Use substitute RT for viewport reads (avoids needing ResolveToTexture)
+        if (!renderTarget_ && hasViewportRead)
+            needSubstitute = true;
     }
 #endif
 

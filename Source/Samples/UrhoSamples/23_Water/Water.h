@@ -4,6 +4,7 @@
 #pragma once
 
 #include <Urho3D/Math/Plane.h>
+#include <Urho3D/Graphics/Zone.h>
 
 #include "Sample.h"
 #include <Urho3D/Graphics/ProfilerUI.h>
@@ -54,4 +55,17 @@ private:
     /// Clipping plane for reflection rendering. Slightly biased downward from the reflection plane to avoid artifacts.
     Plane waterClipPlane_;
     SharedPtr<ProfilerUI> profilerUI_;
+    /// Zone component for dynamic fog switching.
+    WeakPtr<Zone> zone_;
+    /// Original above-water fog settings.
+    Color origFogColor_;
+    float origFogStart_{};
+    float origFogEnd_{};
+    /// Configurable underwater fog settings.
+    Color underwaterFogColor_{0.0f, 0.3f, 0.4f};
+    float underwaterFogStart_{1.0f};
+    float underwaterFogEnd_{80.0f};
+    float underwaterFogScale_{0.5f};
+    /// Whether camera is currently underwater.
+    bool isUnderwater_{false};
 };

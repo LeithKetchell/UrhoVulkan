@@ -591,7 +591,6 @@ void DebugRenderer::Render()
     }
 
     graphics->SetBlendMode(BLEND_ALPHA);
-    graphics->SetDepthWrite(false);
 
     if (triangles_.Size())
     {
@@ -600,6 +599,7 @@ void DebugRenderer::Render()
         graphics->Draw(TRIANGLE_LIST, start, count);
         start += count;
     }
+    graphics->SetDepthWrite(false);
     if (noDepthTriangles_.Size())
     {
         count = noDepthTriangles_.Size() * 3;

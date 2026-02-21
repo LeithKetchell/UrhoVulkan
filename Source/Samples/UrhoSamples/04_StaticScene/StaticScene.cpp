@@ -10,9 +10,11 @@
 #include <Urho3D/Graphics/Model.h>
 #include <Urho3D/Graphics/Octree.h>
 #include <Urho3D/Graphics/Renderer.h>
+#include <Urho3D/Graphics/Skybox.h>
 #include <Urho3D/Graphics/StaticModel.h>
 #include <Urho3D/Graphics/View.h>
 #include <Urho3D/Graphics/Viewport.h>
+#include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
@@ -97,6 +99,26 @@ void StaticScene::CreateScene()
     mushroomObject->SetModel(cache->GetResource<Model>("Models/Mushroom.mdl"));
     mushroomObject->SetMaterial(cache->GetResource<Material>("Materials/Mushroom.xml"));
     mushroomObject->SetCastShadows(true);
+
+    // Zone with height fog
+    Node* zoneNode = scene_->CreateChild("Zone");
+    auto* zone = zoneNode->CreateComponent<Zone>();
+    zone->SetBoundingBox(BoundingBox(-100.0f, 100.0f));
+    zone->SetAmbientColor(Color(0.15f, 0.15f, 0.15f));
+    zone->SetFogColor(Color(0.0f, 0.4f, 0.25f)); // greener underwater tint
+    // DISTANCE FOG DISABLED
+    zone->SetFogStart(10000.0f);
+    zone->SetFogEnd(10000.0f);
+    // HEIGHT FOG ONLY
+    zone->SetHeightFog(true);
+    zone->SetFogHeight(3.0f);        // fog plane raised to Y=3
+    zone->SetFogHeightScale(-0.375f);
+
+    // Black skybox so background is distinct from fog color
+    Node* skyNode = scene_->CreateChild("Sky");
+    auto* skybox = skyNode->CreateComponent<Skybox>();
+    skybox->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
+    skybox->SetMaterial(cache->GetResource<Material>("Materials/BlackSkybox.xml"));
 
     // Camera looking at the mushroom from above-ish
     cameraNode_ = scene_->CreateChild("Camera");

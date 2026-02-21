@@ -38,9 +38,7 @@ void VS()
     // Also because the quadTexCoord is based on the clip position, and Y is flipped when rendering to a texture
     // on OpenGL, must flip again to cancel it out
     vReflectUV = GetQuadTexCoord(gl_Position);
-    #ifndef URHO_VULKAN
     vReflectUV.y = 1.0 - vReflectUV.y;
-    #endif
     vReflectUV *= gl_Position.w;
     vWaterUV = iTexCoord * cNoiseTiling + cElapsedTime * cNoiseSpeed;
     vNormal = GetWorldNormal(modelMatrix);
