@@ -15,9 +15,11 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Full Vulkan rendering backend alongside legacy OpenGL and Direct3D 11
 - All 55+ samples build and run on Vulkan
 - GLSL to SPIR-V runtime shader compilation via glslang
+- `URHO_VULKAN` shader define for Vulkan-specific shader paths
 - Native VkPipelineCache with on-disk persistence
 - Shader module caching and redundant bind elimination
 - Hybrid framebuffer support (swapchain color + custom depth RTT)
+- RTT Y-flip fix — water reflections and render-to-texture samples render correctly
 - Shadow mapping with projection-matrix depth bias
 - TextureCube / skybox support
 - Anisotropic filtering
@@ -29,6 +31,7 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Global primitive shape cache in PhysicsWorld — identical shapes shared across bodies (e.g. 500 boxes = 1 btBoxShape), eliminating redundant memory allocation
 - Compound shape API on RigidBody (AddChildShape / ClearChildShapes) — compound children reference cached primitives, so a ragdoll with 10 capsules shares the same underlying btCapsuleShape instances
 - Mesh/convex hull shape support (SetTriMeshShape, SetConvexHullShape)
+- MultiBody component — btMultiBody integration for articulated rigid body chains
 - Soft body physics via btSoftBody integration (Sample 59)
 - Legacy CollisionShape component still supported for backward compatibility
 
@@ -38,8 +41,13 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Motion blur post-process with camera-based reprojection (Sample 58)
 - Custom shader uniform support (bare GLSL uniforms wrapped into constant buffer blocks)
 
+### Bullet SDK Samples
+- Faithful ports of Bullet SDK examples as standalone Urho3D samples
+- Build with `-DURHO3D_BULLET_SAMPLES=1`
+- Includes: BasicDemo, Chain, CollisionFilter, Constraints, Domino, ForkLift, Gyroscopic, Heightfield, HelloPhysics, Hinge2Vehicle, Kinematic, MotorDemo, Planar2D, PlanetGravity, Raycast, RollingFriction, SoftContact, SoftDemo, Stacking, TwoJoint, and more
+
 ### Engine
-- AngelScript bindings for new RigidBody shape API
+- AngelScript bindings for new RigidBody shape API and MultiBody
 - Multi-viewport instancing fix for deferred GPU execution
 
 ## License
