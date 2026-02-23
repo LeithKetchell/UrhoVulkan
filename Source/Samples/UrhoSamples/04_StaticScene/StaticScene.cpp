@@ -10,7 +10,6 @@
 #include <Urho3D/Graphics/Model.h>
 #include <Urho3D/Graphics/Octree.h>
 #include <Urho3D/Graphics/Renderer.h>
-#include <Urho3D/Graphics/Skybox.h>
 #include <Urho3D/Graphics/StaticModel.h>
 #include <Urho3D/Graphics/View.h>
 #include <Urho3D/Graphics/Viewport.h>
@@ -100,25 +99,14 @@ void StaticScene::CreateScene()
     mushroomObject->SetMaterial(cache->GetResource<Material>("Materials/Mushroom.xml"));
     mushroomObject->SetCastShadows(true);
 
-    // Zone with height fog
+    // Zone
     Node* zoneNode = scene_->CreateChild("Zone");
     auto* zone = zoneNode->CreateComponent<Zone>();
     zone->SetBoundingBox(BoundingBox(-100.0f, 100.0f));
     zone->SetAmbientColor(Color(0.15f, 0.15f, 0.15f));
-    zone->SetFogColor(Color(0.0f, 0.4f, 0.25f)); // greener underwater tint
-    // DISTANCE FOG DISABLED
-    zone->SetFogStart(10000.0f);
-    zone->SetFogEnd(10000.0f);
-    // HEIGHT FOG ONLY
-    zone->SetHeightFog(true);
-    zone->SetFogHeight(3.0f);        // fog plane raised to Y=3
-    zone->SetFogHeightScale(-0.375f);
-
-    // Black skybox so background is distinct from fog color
-    Node* skyNode = scene_->CreateChild("Sky");
-    auto* skybox = skyNode->CreateComponent<Skybox>();
-    skybox->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-    skybox->SetMaterial(cache->GetResource<Material>("Materials/BlackSkybox.xml"));
+    zone->SetFogColor(Color(0.5f, 0.5f, 0.7f));
+    zone->SetFogStart(100.0f);
+    zone->SetFogEnd(300.0f);
 
     // Camera looking at the mushroom from above-ish
     cameraNode_ = scene_->CreateChild("Camera");
@@ -127,21 +115,12 @@ void StaticScene::CreateScene()
     cameraNode_->SetRotation(Quaternion(30.0f, 0.0f, 0.0f));
 }
 
-void StaticScene::CreateInstructions()
-{
-    auto* cache = GetSubsystem<ResourceCache>();
-    auto* ui = GetSubsystem<UI>();
-
-    // Construct new Text object, set string to display and font to use
-    auto* instructionText = ui->GetRoot()->CreateChild<Text>();
-    instructionText->SetText("Use WASD keys and mouse/touch to move");
-    instructionText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 15);
-
-    // Position the text relative to the screen center
-    instructionText->SetHorizontalAlignment(HA_CENTER);
-    instructionText->SetVerticalAlignment(VA_CENTER);
-    instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
-}
+// CreateInstructions is provided by the Sample base class.
+// Override here if you need custom instruction text:
+// void StaticScene::CreateInstructions()
+// {
+//     Sample::CreateInstructions("Your custom text here");
+// }
 
 void StaticScene::SetupViewport()
 {
@@ -154,39 +133,12 @@ void StaticScene::SetupViewport()
     renderer->SetViewport(0, viewport);
 }
 
-void StaticScene::MoveCamera(float timeStep)
-{
-    // Do not move if the UI has a focused element (the console)
-    if (GetSubsystem<UI>()->GetFocusElement())
-        return;
-
-    auto* input = GetSubsystem<Input>();
-
-    // Movement speed as world units per second
-    const float MOVE_SPEED = 20.0f;
-    // Mouse sensitivity as degrees per pixel
-    const float MOUSE_SENSITIVITY = 0.1f;
-
-    // Use this frame's mouse motion to adjust camera node yaw and pitch. Clamp the pitch between -90 and 90 degrees
-    IntVector2 mouseMove = input->GetMouseMove();
-    yaw_ += MOUSE_SENSITIVITY * mouseMove.x_;
-    pitch_ += MOUSE_SENSITIVITY * mouseMove.y_;
-    pitch_ = Clamp(pitch_, -90.0f, 90.0f);
-
-    // Construct new orientation for the camera scene node from yaw and pitch. Roll is fixed to zero
-    cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
-
-    // Read WASD keys and move the camera scene node to the corresponding direction if they are pressed
-    // Use the Translate() function (default local space) to move relative to the node's orientation.
-    if (input->GetKeyDown(KEY_W))
-        cameraNode_->Translate(Vector3::FORWARD * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_S))
-        cameraNode_->Translate(Vector3::BACK * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_A))
-        cameraNode_->Translate(Vector3::LEFT * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_D))
-        cameraNode_->Translate(Vector3::RIGHT * MOVE_SPEED * timeStep);
-}
+// MoveCamera is provided by the Sample base class.
+// Override here if you need custom camera controls:
+// void StaticScene::MoveCamera(float timeStep)
+// {
+//     Sample::MoveCamera(timeStep);
+// }
 
 void StaticScene::SubscribeToEvents()
 {

@@ -11,6 +11,7 @@
 #include <Urho3D/Graphics/Model.h>
 #include <Urho3D/Graphics/Octree.h>
 #include <Urho3D/Graphics/Renderer.h>
+#include <Urho3D/Graphics/RenderPath.h>
 #include <Urho3D/Graphics/StaticModel.h>
 #include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Input/Input.h>
@@ -207,11 +208,21 @@ void PhysicsStressTest::CreateInstructions()
 
 void PhysicsStressTest::SetupViewport()
 {
+    auto* cache = GetSubsystem<ResourceCache>();
     auto* renderer = GetSubsystem<Renderer>();
 
-    // Set up a viewport to the Renderer subsystem so that the 3D scene can be seen
     SharedPtr<Viewport> viewport(new Viewport(context_, scene_, cameraNode_->GetComponent<Camera>()));
     renderer->SetViewport(0, viewport);
+
+    // Motion blur post-process
+    SharedPtr<RenderPath> renderPath(new RenderPath());
+    renderPath->Load(cache->GetResource<XMLFile>("RenderPaths/ForwardHWDepth.xml"));
+    viewport->SetRenderPath(renderPath);
+    RenderPath* rp = viewport->GetRenderPath();
+    rp->Append(cache->GetResource<XMLFile>("PostProcess/MotionBlur.xml"));
+    rp->SetShaderParameter("MotionBlurStrength", 0.5f);
+    rp->SetShaderParameter("MotionBlurSamples", 8.0f);
+    rp->SetEnabled("MotionBlur", true);
 }
 
 void PhysicsStressTest::SubscribeToEvents()
@@ -314,6 +325,40 @@ void PhysicsStressTest::HandleUpdate(StringHash eventType, VariantMap& eventData
 
     // Move the camera, scale movement with time step
     MoveCamera(timeStep);
+
+    // Update motion blur reprojection matrix
+    auto* camera = cameraNode_->GetComponent<Camera>();
+    auto* renderer = GetSubsystem<Renderer>();
+    Matrix4 projection = camera->GetProjection();
+    if (Graphics::GetGAPI() == GAPI_VULKAN)
+    {
+        projection.m10_ = -projection.m10_;
+        projection.m11_ = -projection.m11_;
+        projection.m12_ = -projection.m12_;
+        projection.m13_ = -projection.m13_;
+    }
+    Matrix4 currentViewProj = projection * camera->GetView();
+
+    Viewport* vp = renderer->GetViewport(0);
+    if (vp && vp->GetRenderPath())
+    {
+        RenderPath* rp = vp->GetRenderPath();
+        for (unsigned i = 0; i < rp->GetNumCommands(); ++i)
+        {
+            RenderPathCommand* cmd = rp->GetCommand(i);
+            if (cmd && cmd->tag_ == "MotionBlur")
+            {
+                if (prevViewProjValid_)
+                {
+                    Matrix4 reproj = currentViewProj.Inverse() * prevViewProj_;
+                    cmd->shaderParameters_["PrevViewProj"] = reproj;
+                }
+                break;
+            }
+        }
+    }
+    prevViewProj_ = currentViewProj;
+    prevViewProjValid_ = true;
 
     // Update profiler display
     if (profilerUI_)

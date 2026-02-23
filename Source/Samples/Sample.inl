@@ -431,6 +431,7 @@ void Sample::MoveCamera(float timeStep)
 
     if (input->GetKeyPress(KEY_SPACE))
         drawDebug_ = !drawDebug_;
+
 }
 
 void Sample::SpewForthObject()
@@ -477,3 +478,4 @@ void Sample::CreateInstructions(const String& text)
     instructionText->SetVerticalAlignment(VA_CENTER);
     instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
 }
+

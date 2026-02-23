@@ -74,4 +74,7 @@ private:
     /// Flag for drawing debug geometry.
     bool drawDebug_;
     SharedPtr<ProfilerUI> profilerUI_;
+    /// Motion blur state.
+    Matrix4 prevViewProj_;
+    bool prevViewProjValid_{false};
 };

@@ -34,12 +34,14 @@ public:
 private:
     /// Construct the scene content.
     void CreateScene();
-    /// Construct an instruction text to the UI.
-    void CreateInstructions();
+    // CreateInstructions is provided by the Sample base class.
+    // Override here if you need custom instruction text:
+    // void CreateInstructions(const String& text = String::EMPTY) override;
     /// Set up a viewport for displaying the scene.
     void SetupViewport();
-    /// Read input and moves the camera.
-    void MoveCamera(float timeStep);
+    // MoveCamera is provided by the Sample base class.
+    // Override here if you need custom camera controls:
+    // void MoveCamera(float timeStep) override;
     /// Subscribe to application-wide logic update events.
     void SubscribeToEvents();
     /// Handle the logic update event.

@@ -17,8 +17,10 @@ float GetFogFactor(float depth)
 float GetHeightFogFactor(float depth, float height)
 {
     float fogFactor = GetFogFactor(depth);
-    float heightFogFactor = (height - cFogParams.z) * cFogParams.w;
-    heightFogFactor = 1.0 - saturate(exp(-(heightFogFactor * heightFogFactor)));
+    float rawHeight = (height - cFogParams.z) * cFogParams.w;
+    if (rawHeight <= 0.0)
+        return 1.0;
+    float heightFogFactor = saturate(exp(-(rawHeight * rawHeight)));
     return min(heightFogFactor, fogFactor);
 }
 #endif
