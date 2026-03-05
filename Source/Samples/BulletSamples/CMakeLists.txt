@@ -1,3 +1,9 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:0f0e77c541c46a39910ae6f83cef884d6b08f3c9904d70f0d206c8ad95f4cc89
-size 220
+# Bullet Physics Samples — ported from the Bullet SDK
+if (NOT URHO3D_PHYSICS OR NOT URHO3D_BULLET_SAMPLES)
+    return ()
+endif ()
+set (BULLET_SAMPLES_OUTPUT_DIR ${CMAKE_BINARY_DIR}/bin/BulletSamples CACHE INTERNAL "")
+file (MAKE_DIRECTORY ${BULLET_SAMPLES_OUTPUT_DIR})
+execute_process (COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_BINARY_DIR}/bin/Data ${BULLET_SAMPLES_OUTPUT_DIR}/Data)
+execute_process (COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_BINARY_DIR}/bin/CoreData ${BULLET_SAMPLES_OUTPUT_DIR}/CoreData)
+execute_process (COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_BINARY_DIR}/bin/Autoload ${BULLET_SAMPLES_OUTPUT_DIR}/Autoload)

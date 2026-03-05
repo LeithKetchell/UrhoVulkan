@@ -356,6 +356,15 @@ public:
     /// \returns VkQueue for graphics operations
     VkQueue GetGraphicsQueue() const { return graphicsQueue_; }
 
+    /// Get command pool for allocating command buffers.
+    VkCommandPool GetCommandPool() const { return commandPool_; }
+
+    /// Return whether the frame command buffer is active (between BeginFrame and EndFrame).
+    bool IsFrameActive() const { return frameActive_; }
+
+    /// Set frame active state.
+    void SetFrameActive(bool active) { frameActive_ = active; }
+
     /// \brief Get present queue
     /// \returns VkQueue for display presentation
     VkQueue GetPresentQueue() const { return presentQueue_; }
@@ -367,6 +376,9 @@ public:
     /// \brief Get swapchain image format
     /// \returns VkFormat (e.g., VK_FORMAT_B8G8R8A8_SRGB)
     VkFormat GetSwapchainFormat() const { return swapchainFormat_; }
+
+    /// \brief Get swapchain images vector
+    const Vector<VkImage>& GetSwapchainImages() const { return swapchainImages_; }
 
     /// \brief Get swapchain extent (resolution)
     /// \returns VkExtent2D with width and height in pixels
@@ -424,6 +436,12 @@ public:
     /// \brief Get compute pipeline manager
     /// \returns VulkanComputePipeline* for compute shader pipeline management (Phase 36+)
     VulkanComputePipeline* GetComputePipeline() const { return computePipeline_; }
+
+    /// Get compute descriptor set layout (4 SSBOs)
+    VkDescriptorSetLayout GetComputeDescriptorLayout() const { return computeDescriptorLayout_; }
+
+    /// Get compute pipeline layout
+    VkPipelineLayout GetComputePipelineLayout() const { return computePipelineLayout_; }
 
     /// \brief Get constant buffer pool
     /// \returns VulkanConstantBufferPool* for efficient uniform buffer management (Quick Win #6)
@@ -1053,6 +1071,10 @@ private:
     // Compute pipeline cache (Phase 36+: Compute shader support)
     VulkanComputePipeline* computePipeline_;
 
+    // Compute descriptor set layout (4 SSBO bindings) and pipeline layout
+    VkDescriptorSetLayout computeDescriptorLayout_{VK_NULL_HANDLE};
+    VkPipelineLayout computePipelineLayout_{VK_NULL_HANDLE};
+
     // Constant buffer pooling (Quick Win #6)
     SharedPtr<VulkanConstantBufferPool> constantBufferPool_;
 
@@ -1085,6 +1107,7 @@ private:
     uint32_t frameIndex_{0};
     uint32_t currentImageIndex_{0};
     bool renderPassActive_{false};
+    bool frameActive_{false};
 
     // Debug callback
     VkDebugUtilsMessengerEXT debugMessenger_{};

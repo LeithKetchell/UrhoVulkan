@@ -56,15 +56,12 @@ private:
     void SetupViewport();
     /// Subscribe to application-wide logic update and post-render update events.
     void SubscribeToEvents();
-    /// Read input and moves the camera.
-    void MoveCamera(float timeStep);
+    // MoveCamera is provided by the Sample base class.
     /// Handle the logic update event.
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
     /// Handle the post-render update event.
     void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
 
-    /// Flag for drawing debug geometry.
-    bool drawDebug_;
     /// Profiler UI overlay
     SharedPtr<ProfilerUI> profilerUI_;
 };

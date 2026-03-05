@@ -1,3 +1,14 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:ed194c6fd9f4b48006d7c27f725cfcc03eacfb117bb0d507d6ac89c8f81af28f
-size 297
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME 14_SoundEffects)
+
+# Define source files
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+
+# Setup target with resource copying
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()

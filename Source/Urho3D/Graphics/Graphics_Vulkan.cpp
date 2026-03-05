@@ -73,26 +73,70 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
         return false;
     }
 
+    // Ensure parameters are properly filled
+    ScreenModeParams newParams = params;
+    AdjustScreenMode(width, height, newParams, maximize);
+
+    // If already initialized with same settings, nothing to do
+    if (IsInitialized_Vulkan() && width == width_ && height == height_ && screenParams_ == newParams)
+        return true;
+
+    // Clean up existing Vulkan resources and window before re-creating
+    if (IsInitialized_Vulkan())
+    {
+        URHO3D_LOGINFO("Vulkan: Cleaning up existing resources for screen mode change");
+        VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+        if (vkImpl && vkImpl->GetDevice())
+            vkDeviceWaitIdle(vkImpl->GetDevice());
+
+        // Release GPU objects so they can be recreated
+        {
+            MutexLock lock(gpuObjectMutex_);
+            for (Vector<GPUObject*>::Iterator i = gpuObjects_.Begin(); i != gpuObjects_.End(); ++i)
+                (*i)->Release();
+        }
+
+        if (vkImpl)
+            vkImpl->Shutdown();
+
+        if (window_)
+        {
+            SDL_DestroyWindow(window_);
+            window_ = nullptr;
+        }
+    }
+
     // Create SDL window with Vulkan support
     unsigned flags = SDL_WINDOW_SHOWN;
-    if (params.resizable_)
+    if (newParams.resizable_)
         flags |= SDL_WINDOW_RESIZABLE;
-    if (params.borderless_)
+    if (newParams.borderless_)
         flags |= SDL_WINDOW_BORDERLESS;
     if (!externalWindow_)
         flags |= SDL_WINDOW_VULKAN;
-    if (params.fullscreen_)
+    if (newParams.fullscreen_)
         flags |= SDL_WINDOW_FULLSCREEN;
     if (maximize)
         flags |= SDL_WINDOW_MAXIMIZED;
-    if (params.highDPI_)
+    if (newParams.highDPI_)
         flags |= SDL_WINDOW_ALLOW_HIGHDPI;
 
     SDL_SetHint(SDL_HINT_ORIENTATIONS, orientations_.CString());
 
+    // For fullscreen, position on the correct monitor
+    int posX = position_.x_;
+    int posY = position_.y_;
+    if (newParams.fullscreen_)
+    {
+        SDL_Rect displayBounds;
+        SDL_GetDisplayBounds(newParams.monitor_, &displayBounds);
+        posX = displayBounds.x;
+        posY = displayBounds.y;
+    }
+
     if (!externalWindow_)
     {
-        window_ = SDL_CreateWindow(windowTitle_.CString(), position_.x_, position_.y_, width, height, flags);
+        window_ = SDL_CreateWindow(windowTitle_.CString(), posX, posY, width, height, flags);
     }
     else
     {
@@ -129,6 +173,9 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
         }
     }
 
+    // Give the window manager a moment to realize the window (prevents 0x0 / 1x1 surface extent)
+    SDL_PumpEvents();
+
     // Initialize Vulkan implementation
     VulkanGraphicsImpl* vkImpl = static_cast<VulkanGraphicsImpl*>(impl_);
     if (!vkImpl->Initialize(this, window_, actualWidth, actualHeight))
@@ -143,12 +190,19 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
     width_ = actualWidth;
     height_ = actualHeight;
 
-    screenParams_ = params;
+    screenParams_ = newParams;
 
     URHO3D_LOGINFO(String("Vulkan window and swapchain created: ") + String(actualWidth) + "x" + String(actualHeight));
 
     // Notify subsystems that screen mode has changed (triggers Renderer::Initialize())
     OnScreenModeChanged();
+
+    // Restore GPU objects (vertex/index buffers, textures, shaders)
+    {
+        MutexLock lock(gpuObjectMutex_);
+        for (Vector<GPUObject*>::Iterator i = gpuObjects_.Begin(); i != gpuObjects_.End(); ++i)
+            (*i)->OnDeviceReset();
+    }
 
     return true;
 }
@@ -189,6 +243,10 @@ bool Graphics::BeginFrame_Vulkan()
         URHO3D_LOGERROR("[VULKAN] BeginFrame_Vulkan: vkImpl is null");
         return false;
     }
+
+    // Snapshot counters for profiler display before resetting
+    lastNumInstancedDrawCalls_ = numInstancedDrawCalls_;
+    lastTotalInstanceCount_ = totalInstanceCount_;
 
     // Reset per-frame counters
     numBatches_ = 0;
@@ -260,6 +318,8 @@ bool Graphics::BeginFrame_Vulkan()
         return false;
     }
 
+    vkImpl->SetFrameActive(true);
+
     // NOTE: Render pass is NOT started here anymore.
     // It will be started lazily via EnsureRenderPassStarted() before the first draw call.
     // This allows PrepareInstancingBuffer() to fill instance buffers BEFORE the render pass,
@@ -310,6 +370,8 @@ void Graphics::EndFrame_Vulkan()
 
     // End render pass
     vkImpl->EndRenderPass();
+
+    vkImpl->SetFrameActive(false);
 
     // End command buffer recording
     if (vkEndCommandBuffer(cmdBuffer) != VK_SUCCESS)
@@ -2117,86 +2179,225 @@ void Graphics::DispatchCompute_Vulkan(unsigned groupCountX, unsigned groupCountY
     if (!vkImpl)
         return;
 
-    VkCommandBuffer cmdBuffer = vkImpl->GetFrameCommandBuffer();
-    if (!cmdBuffer)
-        return;
-
-    // Compile compute shader to SPIR-V
-    VkShaderModule csModule = VK_NULL_HANDLE;
-    Vector<uint32_t> spirvBytecode;
-    String errorOutput;
-
-    if (!VulkanShaderModule::GetOrCompileSPIRV(computeShader_, spirvBytecode, errorOutput))
-    {
-        URHO3D_LOGERROR("DispatchCompute_Vulkan: Failed to compile compute shader: " + errorOutput);
-        return;
-    }
-
-    csModule = VulkanShaderModule::CreateShaderModule(vkImpl->GetDevice(), spirvBytecode);
-    if (!csModule)
-    {
-        URHO3D_LOGERROR("DispatchCompute_Vulkan: Failed to create compute shader module");
-        return;
-    }
-
-    // Get pipeline layout (compute pipeline uses same descriptor sets as graphics)
-    VkPipelineLayout layout = vkImpl->GetCurrentPipelineLayout();
+    VkDevice device = vkImpl->GetDevice();
+    VkPipelineLayout layout = vkImpl->GetComputePipelineLayout();
     if (!layout)
     {
-        URHO3D_LOGWARNING("DispatchCompute_Vulkan: Invalid pipeline layout");
-        vkDestroyShaderModule(vkImpl->GetDevice(), csModule, nullptr);
+        URHO3D_LOGWARNING("DispatchCompute_Vulkan: Compute pipeline layout not created");
         return;
     }
 
-    // Get or create compute pipeline
     VulkanComputePipeline* computePipeline = vkImpl->GetComputePipeline();
     if (!computePipeline)
     {
         URHO3D_LOGERROR("DispatchCompute_Vulkan: Compute pipeline manager not initialized");
-        vkDestroyShaderModule(vkImpl->GetDevice(), csModule, nullptr);
         return;
     }
 
-    VkPipeline pipeline = computePipeline->GetOrCreatePipeline(layout, csModule);
-    if (!pipeline)
+    // --- Shader module + pipeline (cached by ShaderVariation pointer) ---
+    bool shaderChanged = (computeShader_ != lastComputeShader_);
+    if (shaderChanged)
     {
-        URHO3D_LOGERROR("DispatchCompute_Vulkan: Failed to get or create compute pipeline");
-        vkDestroyShaderModule(vkImpl->GetDevice(), csModule, nullptr);
-        return;
+        // Destroy previous cached module
+        if (cachedComputeModule_)
+        {
+            vkDestroyShaderModule(device, static_cast<VkShaderModule>(cachedComputeModule_), nullptr);
+            cachedComputeModule_ = nullptr;
+        }
+        cachedComputePipeline_ = nullptr;
+
+        Vector<uint32_t> spirvBytecode;
+        String errorOutput;
+        if (!VulkanShaderModule::GetOrCompileSPIRV(computeShader_, spirvBytecode, errorOutput))
+        {
+            URHO3D_LOGERROR("DispatchCompute_Vulkan: Failed to compile compute shader: " + errorOutput);
+            return;
+        }
+
+        VkShaderModule csModule = VulkanShaderModule::CreateShaderModule(device, spirvBytecode);
+        if (!csModule)
+        {
+            URHO3D_LOGERROR("DispatchCompute_Vulkan: Failed to create compute shader module");
+            return;
+        }
+
+        VkPipeline pipeline = computePipeline->GetOrCreatePipeline(layout, csModule);
+        if (!pipeline)
+        {
+            URHO3D_LOGERROR("DispatchCompute_Vulkan: Failed to get or create compute pipeline");
+            vkDestroyShaderModule(device, csModule, nullptr);
+            return;
+        }
+
+        cachedComputeModule_ = static_cast<void*>(csModule);
+        cachedComputePipeline_ = static_cast<void*>(pipeline);
+        lastComputeShader_ = computeShader_;
     }
 
-    // Bind compute pipeline
-    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    VkPipeline pipeline = static_cast<VkPipeline>(cachedComputePipeline_);
 
-    // TODO: Bind descriptor sets for storage buffers and uniform buffers here
-    // This will be implemented when descriptor management is extended for compute
+    // --- Command buffer selection: batch > frame > one-shot ---
+    VkCommandBuffer cmdBuffer = VK_NULL_HANDLE;
+    bool useOwnCmdBuffer = false;
+
+    if (computeBatchActive_ && computeBatchCmdBuffer_)
+    {
+        cmdBuffer = static_cast<VkCommandBuffer>(computeBatchCmdBuffer_);
+    }
+    else if (vkImpl->IsFrameActive())
+    {
+        cmdBuffer = vkImpl->GetFrameCommandBuffer();
+        if (vkImpl->IsRenderPassActive())
+            vkImpl->EndRenderPass();
+    }
+    else
+    {
+        useOwnCmdBuffer = true;
+
+        VkCommandBufferAllocateInfo cmdAllocInfo{};
+        cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdAllocInfo.commandPool = vkImpl->GetCommandPool();
+        cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdAllocInfo.commandBufferCount = 1;
+
+        if (vkAllocateCommandBuffers(device, &cmdAllocInfo, &cmdBuffer) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("DispatchCompute_Vulkan: Failed to allocate command buffer");
+            return;
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        if (vkBeginCommandBuffer(cmdBuffer, &beginInfo) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("DispatchCompute_Vulkan: Failed to begin command buffer");
+            vkFreeCommandBuffers(device, vkImpl->GetCommandPool(), 1, &cmdBuffer);
+            return;
+        }
+    }
+
+    if (!cmdBuffer)
+        return;
+
+    // Bind compute pipeline (only when shader changed or first dispatch)
+    if (shaderChanged || !computeBatchDescsBound_)
+        vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+
+    // --- Descriptors (only bind once if buffers haven't changed) ---
+    bool buffersChanged = false;
+    for (unsigned i = 0; i < 4; ++i)
+    {
+        if (storageBuffers_[i] != lastStorageBuffers_[i])
+        {
+            buffersChanged = true;
+            lastStorageBuffers_[i] = storageBuffers_[i];
+        }
+    }
+
+    if (buffersChanged || !computeBatchDescsBound_)
+    {
+        VkDescriptorSetLayout computeLayout = vkImpl->GetComputeDescriptorLayout();
+        VkDescriptorPool descriptorPool = vkImpl->GetDescriptorPool();
+
+        if (computeLayout && descriptorPool)
+        {
+            VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+            VkDescriptorSetAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocInfo.descriptorPool = descriptorPool;
+            allocInfo.descriptorSetCount = 1;
+            allocInfo.pSetLayouts = &computeLayout;
+
+            if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) == VK_SUCCESS)
+            {
+                VkDescriptorBufferInfo bufferInfos[4]{};
+                VkWriteDescriptorSet writes[4]{};
+                unsigned writeCount = 0;
+
+                for (unsigned i = 0; i < 4; ++i)
+                {
+                    if (!storageBuffers_[i])
+                        continue;
+                    VkBuffer vkBuffer = static_cast<VkBuffer>(storageBuffers_[i]->GetGPUObject());
+                    if (!vkBuffer)
+                        continue;
+
+                    bufferInfos[writeCount].buffer = vkBuffer;
+                    bufferInfos[writeCount].offset = 0;
+                    bufferInfos[writeCount].range = VK_WHOLE_SIZE;
+
+                    writes[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    writes[writeCount].dstSet = descriptorSet;
+                    writes[writeCount].dstBinding = i;
+                    writes[writeCount].descriptorCount = 1;
+                    writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    writes[writeCount].pBufferInfo = &bufferInfos[writeCount];
+                    ++writeCount;
+                }
+
+                if (writeCount > 0)
+                    vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
+
+                vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, layout,
+                                        0, 1, &descriptorSet, 0, nullptr);
+                computeBatchDescsBound_ = true;
+            }
+        }
+    }
 
     // Dispatch compute work groups
     vkCmdDispatch(cmdBuffer, groupCountX, groupCountY, groupCountZ);
 
-    // Insert pipeline barrier to synchronize compute writes with subsequent graphics reads
-    // This prevents race conditions when graphics pipeline reads from buffers written by compute
-    vkImpl->InsertPipelineBarrier(
-        cmdBuffer,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,          // srcStage: wait for compute to finish
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |          // dstStage: block vertex/fragment shaders
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        VK_ACCESS_SHADER_WRITE_BIT,                    // srcAccess: compute shader writes
-        VK_ACCESS_SHADER_READ_BIT |                    // dstAccess: graphics shader reads
-        VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT
-    );
+    // Barrier: compute writes → compute/graphics reads
+    VkMemoryBarrier memBarrier{};
+    memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-    // Clean up shader module
-    vkDestroyShaderModule(vkImpl->GetDevice(), csModule, nullptr);
+    vkCmdPipelineBarrier(cmdBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
-    URHO3D_LOGDEBUG("DispatchCompute_Vulkan: groups=(" + String(groupCountX) + ", " +
-                    String(groupCountY) + ", " + String(groupCountZ) + ")");
+    // If using standalone command buffer, submit and wait
+    if (useOwnCmdBuffer)
+    {
+        vkEndCommandBuffer(cmdBuffer);
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmdBuffer;
+
+        VkFence fence;
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        vkCreateFence(device, &fenceInfo, nullptr, &fence);
+
+        vkQueueSubmit(vkImpl->GetGraphicsQueue(), 1, &submitInfo, fence);
+        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+
+        vkDestroyFence(device, fence, nullptr);
+        vkFreeCommandBuffers(device, vkImpl->GetCommandPool(), 1, &cmdBuffer);
+    }
 }
 
 void Graphics::SetComputeShader_Vulkan(ShaderVariation* shader)
 {
     computeShader_ = shader;
-    URHO3D_LOGDEBUG("SetComputeShader_Vulkan: " + String(shader ? shader->GetFullName() : "null"));
+
+    // If set to null, clean up cached module
+    if (!shader && cachedComputeModule_)
+    {
+        VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+        if (vkImpl)
+            vkDestroyShaderModule(vkImpl->GetDevice(), static_cast<VkShaderModule>(cachedComputeModule_), nullptr);
+        cachedComputeModule_ = nullptr;
+        cachedComputePipeline_ = nullptr;
+        lastComputeShader_ = nullptr;
+    }
 }
 
 void Graphics::SetStorageBuffer_Vulkan(unsigned index, VertexBuffer* buffer)
@@ -2214,6 +2415,88 @@ void Graphics::SetStorageBuffer_Vulkan(unsigned index, VertexBuffer* buffer)
 
     URHO3D_LOGDEBUG("SetStorageBuffer_Vulkan: index=" + String(index) +
                     " buffer=" + String(buffer ? "valid" : "null"));
+}
+
+void Graphics::BeginComputeBatch_Vulkan()
+{
+    if (computeBatchActive_)
+        return;
+
+    VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+    if (!vkImpl)
+        return;
+
+    VkCommandBuffer cmdBuffer;
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = vkImpl->GetCommandPool();
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(vkImpl->GetDevice(), &cmdAllocInfo, &cmdBuffer) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("BeginComputeBatch: Failed to allocate command buffer");
+        return;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    if (vkBeginCommandBuffer(cmdBuffer, &beginInfo) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("BeginComputeBatch: Failed to begin command buffer");
+        vkFreeCommandBuffers(vkImpl->GetDevice(), vkImpl->GetCommandPool(), 1, &cmdBuffer);
+        return;
+    }
+
+    computeBatchCmdBuffer_ = static_cast<void*>(cmdBuffer);
+    computeBatchActive_ = true;
+    computeBatchDescsBound_ = false;
+}
+
+void Graphics::EndComputeBatch_Vulkan()
+{
+    if (!computeBatchActive_ || !computeBatchCmdBuffer_)
+        return;
+
+    VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+    if (!vkImpl)
+        return;
+
+    VkCommandBuffer cmdBuffer = static_cast<VkCommandBuffer>(computeBatchCmdBuffer_);
+    VkDevice device = vkImpl->GetDevice();
+
+    vkEndCommandBuffer(cmdBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuffer;
+
+    VkFence fence;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    vkCreateFence(device, &fenceInfo, nullptr, &fence);
+
+    vkQueueSubmit(vkImpl->GetGraphicsQueue(), 1, &submitInfo, fence);
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+
+    vkDestroyFence(device, fence, nullptr);
+    vkFreeCommandBuffers(device, vkImpl->GetCommandPool(), 1, &cmdBuffer);
+
+    computeBatchCmdBuffer_ = nullptr;
+    computeBatchActive_ = false;
+    computeBatchDescsBound_ = false;
+
+    // Clean up cached shader module
+    if (cachedComputeModule_)
+    {
+        vkDestroyShaderModule(device, static_cast<VkShaderModule>(cachedComputeModule_), nullptr);
+        cachedComputeModule_ = nullptr;
+    }
+    cachedComputePipeline_ = nullptr;
+    lastComputeShader_ = nullptr;
 }
 
 // ============================================
@@ -2264,13 +2547,13 @@ void Graphics::SetClipPlane_Vulkan(bool enable, const Plane& clipPlane, const Ma
 
     if (enable)
     {
-        Matrix4 viewProj = projection * view;
-        clipPlane_ = clipPlane.Transformed(viewProj).ToVector4();
+        // Pass world-space plane directly: normal.xyz + d in w
+        // Shader computes: dot(normal, worldPos) + d
+        clipPlane_ = clipPlane.ToVector4();
     }
     else
     {
-        // Set to (0,0,0,1) so gl_ClipDistance = 1.0 (definitely not clipped)
-        // (0,0,0,0) gives gl_ClipDistance = 0 which is on the clip boundary
+        // Set to (0,0,0,1) so dot(normal, worldPos) + d = 0 + 1 = 1 (not clipped)
         clipPlane_ = Vector4(0.0f, 0.0f, 0.0f, 1.0f);
     }
 
@@ -3801,9 +4084,102 @@ bool Graphics::TakeScreenShot_Vulkan(Image& destImage)
 
 bool Graphics::ResolveToTexture_Vulkan(Texture2D* destination, const IntRect& viewport)
 {
-    // TODO: Implement via vkCmdResolveImage
-    URHO3D_LOGWARNING("ResolveToTexture_Vulkan: Not yet implemented");
-    return false;
+    if (!destination || !destination->GetRenderSurface())
+        return false;
+
+    VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+    if (!vkImpl)
+        return false;
+
+    VkCommandBuffer cmdBuffer = vkImpl->GetFrameCommandBuffer();
+    if (!cmdBuffer)
+        return false;
+
+    // Get destination VkImage
+    VkImage dstImage = (VkImage)(void*)destination->GetGPUObject();
+    if (!dstImage)
+        return false;
+
+    // Get source image — either the current render target or the swapchain
+    VkImage srcImage = VK_NULL_HANDLE;
+    bool sourceIsRT = false;
+    if (renderTargets_[0])
+    {
+        // Rendering to a substitute render target — blit from it
+        Texture* srcTexture = renderTargets_[0]->GetParentTexture();
+        if (srcTexture)
+            srcImage = (VkImage)(void*)srcTexture->GetGPUObject();
+        sourceIsRT = true;
+    }
+    else
+    {
+        // Rendering to backbuffer — blit from swapchain
+        uint32_t imageIndex = vkImpl->GetCurrentImageIndex();
+        const auto& swapchainImages = vkImpl->GetSwapchainImages();
+        if (imageIndex >= swapchainImages.Size())
+            return false;
+        srcImage = swapchainImages[imageIndex];
+    }
+    if (!srcImage)
+        return false;
+
+    // Must end render pass before transfer operations
+    vkImpl->EndRenderPass();
+
+    VkFormat swapchainFormat = vkImpl->GetSwapchainFormat();
+
+    // Clamp viewport
+    IntRect vp = viewport;
+    if (vp.right_ <= vp.left_) vp.right_ = vp.left_ + 1;
+    if (vp.bottom_ <= vp.top_) vp.bottom_ = vp.top_ + 1;
+    vp.left_ = Clamp(vp.left_, 0, width_);
+    vp.top_ = Clamp(vp.top_, 0, height_);
+    vp.right_ = Clamp(vp.right_, 0, width_);
+    vp.bottom_ = Clamp(vp.bottom_, 0, height_);
+
+    // Transition source to TRANSFER_SRC
+    // Swapchain images are in COLOR_ATTACHMENT_OPTIMAL after render pass; RT textures are in SHADER_READ_ONLY_OPTIMAL
+    VkImageLayout srcOldLayout = sourceIsRT ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    vkImpl->TransitionImageLayout(cmdBuffer, srcImage, swapchainFormat,
+        srcOldLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1);
+
+    // Transition destination to TRANSFER_DST
+    // Use UNDEFINED as old layout — we're overwriting the entire image, so prior contents don't matter
+    // (also handles first-frame case where the texture hasn't been used yet)
+    vkImpl->TransitionImageLayout(cmdBuffer, dstImage, swapchainFormat,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1);
+
+    // Blit from swapchain to destination texture
+    VkImageBlit blit{};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.mipLevel = 0;
+    blit.srcSubresource.baseArrayLayer = 0;
+    blit.srcSubresource.layerCount = 1;
+    blit.srcOffsets[0] = {vp.left_, vp.top_, 0};
+    blit.srcOffsets[1] = {vp.right_, vp.bottom_, 1};
+
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.mipLevel = 0;
+    blit.dstSubresource.baseArrayLayer = 0;
+    blit.dstSubresource.layerCount = 1;
+    blit.dstOffsets[0] = {0, 0, 0};
+    blit.dstOffsets[1] = {destination->GetWidth(), destination->GetHeight(), 1};
+
+    vkCmdBlitImage(cmdBuffer,
+        srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &blit, VK_FILTER_LINEAR);
+
+    // Transition source back to its pre-blit layout
+    VkImageLayout srcNewLayout = sourceIsRT ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    vkImpl->TransitionImageLayout(cmdBuffer, srcImage, swapchainFormat,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, srcNewLayout, 1);
+
+    // Transition destination to SHADER_READ_ONLY for sampling
+    vkImpl->TransitionImageLayout(cmdBuffer, dstImage, swapchainFormat,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1);
+
+    return true;
 }
 
 bool Graphics::ResolveToTexture_Vulkan(Texture2D* texture)

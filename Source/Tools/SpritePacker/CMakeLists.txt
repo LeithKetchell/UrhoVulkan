@@ -1,3 +1,11 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:c3fa62f6711f9dc5e8e973eb8accdc130097ed4466000bfbc2e879a0a7071f31
-size 199
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME SpritePacker)
+
+# Define source files
+define_source_files ()
+
+# Setup target
+setup_executable (TOOL)

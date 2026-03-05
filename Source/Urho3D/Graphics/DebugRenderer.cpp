@@ -331,6 +331,62 @@ void DebugRenderer::AddCylinder(const Vector3& position, float radius, float hei
     AddLine(position - offsetZVec, position + heightVec - offsetZVec, color, depthTest);
 }
 
+void DebugRenderer::AddCapsule(const Vector3& position, float radius, float height, const Color& color, bool depthTest)
+{
+    // Capsule = cylinder body + two hemisphere caps
+    // Cylinder portion height = total height - 2*radius (the caps fill the rest)
+    float cylinderHeight = Max(height - 2.0f * radius, 0.0f);
+    Vector3 halfCylVec(0, cylinderHeight * 0.5f, 0);
+    Vector3 center = position + Vector3(0, height * 0.5f, 0); // center of capsule
+
+    // Bottom and top circle of the cylinder body
+    Sphere bottomSphere(center - halfCylVec, radius);
+    Sphere topSphere(center + halfCylVec, radius);
+
+    for (auto i = 0; i < 360; i += 45)
+    {
+        // Cylinder body circles
+        Vector3 p1b = bottomSphere.GetPoint(i, 90);
+        Vector3 p2b = bottomSphere.GetPoint(i + 45, 90);
+        Vector3 p1t = topSphere.GetPoint(i, 90);
+        Vector3 p2t = topSphere.GetPoint(i + 45, 90);
+        AddLine(p1b, p2b, color, depthTest);
+        AddLine(p1t, p2t, color, depthTest);
+    }
+
+    // 4 vertical lines connecting cylinder body
+    Vector3 offsetXVec(radius, 0, 0);
+    Vector3 offsetZVec(0, 0, radius);
+    Vector3 botCenter = center - halfCylVec;
+    Vector3 topCenter = center + halfCylVec;
+    AddLine(botCenter + offsetXVec, topCenter + offsetXVec, color, depthTest);
+    AddLine(botCenter - offsetXVec, topCenter - offsetXVec, color, depthTest);
+    AddLine(botCenter + offsetZVec, topCenter + offsetZVec, color, depthTest);
+    AddLine(botCenter - offsetZVec, topCenter - offsetZVec, color, depthTest);
+
+    // Hemisphere caps — quarter-circle arcs in XY and ZY planes
+    for (auto i = 0; i < 180; i += 45)
+    {
+        // Top hemisphere (XY plane arc)
+        Vector3 p1 = topSphere.GetPoint(0, (float)i);
+        Vector3 p2 = topSphere.GetPoint(0, (float)(i + 45));
+        AddLine(p1, p2, color, depthTest);
+        // Top hemisphere (ZY plane arc)
+        p1 = topSphere.GetPoint(90, (float)i);
+        p2 = topSphere.GetPoint(90, (float)(i + 45));
+        AddLine(p1, p2, color, depthTest);
+
+        // Bottom hemisphere (XY plane arc, mirrored)
+        p1 = bottomSphere.GetPoint(0, 180.0f + (float)i);
+        p2 = bottomSphere.GetPoint(0, 180.0f + (float)(i + 45));
+        AddLine(p1, p2, color, depthTest);
+        // Bottom hemisphere (ZY plane arc, mirrored)
+        p1 = bottomSphere.GetPoint(90, 180.0f + (float)i);
+        p2 = bottomSphere.GetPoint(90, 180.0f + (float)(i + 45));
+        AddLine(p1, p2, color, depthTest);
+    }
+}
+
 void DebugRenderer::AddSkeleton(const Skeleton& skeleton, const Color& color, bool depthTest)
 {
     const Vector<Bone>& bones = skeleton.GetBones();

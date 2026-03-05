@@ -8,6 +8,8 @@
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Engine/EngineDefs.h>
 #include <Urho3D/Graphics/Camera.h>
+#include <Urho3D/Graphics/AnimatedModel.h>
+#include <Urho3D/Graphics/Drawable.h>
 #include <Urho3D/Graphics/Graphics.h>
 #include <Urho3D/Graphics/Material.h>
 #include <Urho3D/Graphics/Model.h>
@@ -33,6 +35,14 @@ Sample::Sample(Context* context) :
     Application(context),
     yaw_(0.0f),
     pitch_(0.0f),
+    roll_(0.0f),
+    cameraMode_(CAM_GOD),
+    cameraDistance_(10.0f),
+    cameraHeight_(3.0f),
+    cameraInterpolating_(false),
+    cameraInterpTime_(0.0f),
+    cameraInterpDuration_(0.5f),
+    cameraSubjectActive_(false),
     touchEnabled_(false),
     useMouseMode_(MM_ABSOLUTE),
     screenJoystickIndex_(M_MAX_UNSIGNED),
@@ -324,6 +334,69 @@ void Sample::HandleKeyDown(StringHash /*eventType*/, VariantMap& eventData)
         else if (key == '8')
             renderer->SetDynamicInstancing(!renderer->GetDynamicInstancing());
 
+        // Cycle camera mode with C
+        else if (key == KEY_C)
+        {
+            // Auto-select closest renderable node if no target set
+            if (!cameraTarget_ && scene_ && cameraNode_)
+            {
+                Vector3 camPos = cameraNode_->GetWorldPosition();
+                float bestDist = M_INFINITY;
+                Node* bestNode = nullptr;
+                Vector<Node*> children;
+                scene_->GetChildren(children, true);
+                for (unsigned i = 0; i < children.Size(); ++i)
+                {
+                    Node* child = children[i];
+                    if (child == cameraNode_)
+                        continue;
+                    if (!child->GetComponent<StaticModel>() && !child->GetComponent<AnimatedModel>())
+                        continue;
+                    float dist = (child->GetWorldPosition() - camPos).Length();
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        bestNode = child;
+                    }
+                }
+                if (bestNode)
+                    cameraTarget_ = SharedPtr<Node>(bestNode);
+            }
+
+            CameraMode next = (CameraMode)((cameraMode_ + 1) % CAM_COUNT);
+            // Skip FirstPerson unless target has an AnimatedModel (has a head to look from)
+            bool hasAnimated = cameraTarget_ && cameraTarget_->GetComponent<AnimatedModel>();
+            if (next == CAM_FIRSTPERSON && !hasAnimated)
+                next = (CameraMode)((next + 1) % CAM_COUNT);
+            cameraMode_ = next;
+            roll_ = 0.0f;
+
+            if (cameraNode_)
+            {
+                Vector3 targetPos = cameraNode_->GetPosition();
+                Quaternion targetRot(pitch_, yaw_, 0.0f);
+
+                if (next == CAM_CHASE && cameraTarget_)
+                {
+                    Vector3 tgtWorld = cameraTarget_->GetWorldPosition();
+                    Quaternion orbit(pitch_, yaw_, 0.0f);
+                    targetPos = tgtWorld + orbit * Vector3(0.0f, cameraHeight_, -cameraDistance_);
+                    Vector3 dir = (tgtWorld - targetPos).Normalized();
+                    targetRot = Quaternion(Vector3::FORWARD, dir);
+                }
+                else if (next == CAM_FIRSTPERSON && cameraTarget_)
+                {
+                    targetPos = cameraTarget_->GetWorldPosition();
+                }
+
+                BeginCameraInterpolation(targetPos, targetRot);
+            }
+
+            const char* modeNames[] = { "God", "Chase", "First Person", "Free Flight" };
+            URHO3D_LOGINFOF("Camera mode: %s", modeNames[cameraMode_]);
+            UpdateCameraModeText();
+        }
+
         // Take screenshot
         else if (key == '9')
         {
@@ -406,6 +479,25 @@ void Sample::MoveCamera(float timeStep)
     if (GetSubsystem<UI>()->GetFocusElement())
         return;
 
+    // Handle camera interpolation (mode transitions, subject focus)
+    if (cameraInterpolating_)
+    {
+        cameraInterpTime_ += timeStep;
+        float t = Clamp(cameraInterpTime_ / cameraInterpDuration_, 0.0f, 1.0f);
+        cameraNode_->SetPosition(cameraInterpStartPos_.Lerp(cameraInterpEndPos_, t));
+        cameraNode_->SetRotation(cameraInterpStartRot_.Slerp(cameraInterpEndRot_, t));
+        if (t >= 1.0f)
+            cameraInterpolating_ = false;
+        return;
+    }
+
+    // While focused on a subject, hold LookAt and skip normal mode controls
+    if (cameraSubjectActive_ && cameraSubject_)
+    {
+        cameraNode_->LookAt(cameraSubject_->GetWorldPosition());
+        return;
+    }
+
     auto* input = GetSubsystem<Input>();
 
     const float MOVE_SPEED = 20.0f;
@@ -415,23 +507,65 @@ void Sample::MoveCamera(float timeStep)
     yaw_ += MOUSE_SENSITIVITY * mouseMove.x_;
     pitch_ += MOUSE_SENSITIVITY * mouseMove.y_;
     pitch_ = Clamp(pitch_, -90.0f, 90.0f);
-    cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
 
-    if (input->GetKeyDown(KEY_W))
-        cameraNode_->Translate(Vector3::FORWARD * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_S))
-        cameraNode_->Translate(Vector3::BACK * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_A))
-        cameraNode_->Translate(Vector3::LEFT * MOVE_SPEED * timeStep);
-    if (input->GetKeyDown(KEY_D))
-        cameraNode_->Translate(Vector3::RIGHT * MOVE_SPEED * timeStep);
+    switch (cameraMode_)
+    {
+    case CAM_GOD:
+    default:
+        cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
+        if (input->GetKeyDown(KEY_W))
+            cameraNode_->Translate(Vector3::FORWARD * MOVE_SPEED * timeStep);
+        if (input->GetKeyDown(KEY_S))
+            cameraNode_->Translate(Vector3::BACK * MOVE_SPEED * timeStep);
+        if (input->GetKeyDown(KEY_A))
+            cameraNode_->Translate(Vector3::LEFT * MOVE_SPEED * timeStep);
+        if (input->GetKeyDown(KEY_D))
+            cameraNode_->Translate(Vector3::RIGHT * MOVE_SPEED * timeStep);
+        break;
+
+    case CAM_CHASE:
+        if (cameraTarget_)
+        {
+            Vector3 targetPos = cameraTarget_->GetWorldPosition();
+            Quaternion orbit(pitch_, yaw_, 0.0f);
+            Vector3 offset = orbit * Vector3(0.0f, cameraHeight_, -cameraDistance_);
+            Vector3 desiredPos = targetPos + offset;
+            Vector3 currentPos = cameraNode_->GetPosition();
+            cameraNode_->SetPosition(currentPos.Lerp(desiredPos, Clamp(8.0f * timeStep, 0.0f, 1.0f)));
+            cameraNode_->LookAt(targetPos);
+        }
+        break;
+
+    case CAM_FIRSTPERSON:
+        if (cameraTarget_)
+        {
+            cameraNode_->SetPosition(cameraTarget_->GetWorldPosition());
+            cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
+        }
+        break;
+
+    case CAM_FREEFLIGHT:
+        if (input->GetKeyDown(KEY_Q))
+            roll_ -= 60.0f * timeStep;
+        if (input->GetKeyDown(KEY_E))
+            roll_ += 60.0f * timeStep;
+        cameraNode_->SetRotation(Quaternion(pitch_, yaw_, roll_));
+        if (input->GetKeyDown(KEY_W))
+            cameraNode_->Translate(Vector3::FORWARD * MOVE_SPEED * timeStep);
+        if (input->GetKeyDown(KEY_S))
+            cameraNode_->Translate(Vector3::BACK * MOVE_SPEED * timeStep);
+        if (input->GetKeyDown(KEY_A))
+            cameraNode_->Translate(Vector3::LEFT * MOVE_SPEED * timeStep);
+        if (input->GetKeyDown(KEY_D))
+            cameraNode_->Translate(Vector3::RIGHT * MOVE_SPEED * timeStep);
+        break;
+    }
 
     if (input->GetMouseButtonPress(MOUSEB_LEFT))
         SpewForthObject();
 
     if (input->GetKeyPress(KEY_SPACE))
         drawDebug_ = !drawDebug_;
-
 }
 
 void Sample::SpewForthObject()
@@ -459,6 +593,52 @@ void Sample::SpewForthObject()
     body->SetLinearVelocity(cameraNode_->GetRotation() * Vector3(0.0f, 0.25f, 1.0f) * OBJECT_VELOCITY);
 }
 
+void Sample::BeginCameraInterpolation(const Vector3& targetPos, const Quaternion& targetRot)
+{
+    if (!cameraNode_)
+        return;
+
+    // Always start from current actual camera state (handles mid-transition gracefully)
+    cameraInterpStartPos_ = cameraNode_->GetPosition();
+    cameraInterpStartRot_ = cameraNode_->GetRotation();
+    cameraInterpEndPos_ = targetPos;
+    cameraInterpEndRot_ = targetRot;
+    cameraInterpTime_ = 0.0f;
+    cameraInterpolating_ = true;
+}
+
+void Sample::SetCameraSubject(Node* subject)
+{
+    if (!cameraNode_ || !subject)
+        return;
+
+    // Save current state for return (use actual current transform, not stale saved values)
+    cameraPreSubjectPos_ = cameraNode_->GetPosition();
+    cameraPreSubjectRot_ = cameraNode_->GetRotation();
+
+    // Compute rotation to look at the subject from current position
+    Vector3 dir = (subject->GetWorldPosition() - cameraNode_->GetPosition()).Normalized();
+    Quaternion lookAtRot(Vector3::FORWARD, dir);
+
+    cameraSubject_ = SharedPtr<Node>(subject);
+    cameraSubjectActive_ = true;
+
+    // Interpolate rotation toward subject (position stays)
+    BeginCameraInterpolation(cameraNode_->GetPosition(), lookAtRot);
+}
+
+void Sample::ReleaseCameraSubject()
+{
+    if (!cameraSubjectActive_)
+        return;
+
+    // Interpolate back to saved state from current actual position
+    BeginCameraInterpolation(cameraPreSubjectPos_, cameraPreSubjectRot_);
+
+    cameraSubjectActive_ = false;
+    cameraSubject_ = nullptr;
+}
+
 void Sample::CreateInstructions(const String& text)
 {
     auto* cache = GetSubsystem<ResourceCache>();
@@ -470,12 +650,51 @@ void Sample::CreateInstructions(const String& text)
                        "LMB to spawn physics objects\n"
                        "Space to toggle debug geometry";
 
-    auto* instructionText = ui->GetRoot()->CreateChild<Text>();
-    instructionText->SetText(instructions);
-    instructionText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 15);
-    instructionText->SetTextAlignment(HA_CENTER);
-    instructionText->SetHorizontalAlignment(HA_CENTER);
-    instructionText->SetVerticalAlignment(VA_CENTER);
-    instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
+    instructions += "\nC to cycle camera: ";
+    const char* modeNames[] = { "God", "Chase", "1stPerson", "FreeFlight" };
+    for (int i = 0; i < CAM_COUNT; ++i)
+    {
+        if (i > 0)
+            instructions += " | ";
+        if (i == cameraMode_)
+            instructions += String("[") + modeNames[i] + "]";
+        else
+            instructions += modeNames[i];
+    }
+
+    instructionText_ = ui->GetRoot()->CreateChild<Text>();
+    instructionText_->SetText(instructions);
+    instructionText_->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 15);
+    instructionText_->SetTextAlignment(HA_CENTER);
+    instructionText_->SetHorizontalAlignment(HA_CENTER);
+    instructionText_->SetVerticalAlignment(VA_CENTER);
+    instructionText_->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
+}
+
+void Sample::UpdateCameraModeText()
+{
+    if (!instructionText_)
+        return;
+
+    String current = instructionText_->GetText();
+    // Find and replace the camera mode line
+    unsigned pos = current.Find("C to cycle camera: ");
+    if (pos == String::NPOS)
+        return;
+
+    // Rebuild from that point
+    String prefix = current.Substring(0, pos);
+    prefix += "C to cycle camera: ";
+    const char* modeNames[] = { "God", "Chase", "1stPerson", "FreeFlight" };
+    for (int i = 0; i < CAM_COUNT; ++i)
+    {
+        if (i > 0)
+            prefix += " | ";
+        if (i == cameraMode_)
+            prefix += String("[") + modeNames[i] + "]";
+        else
+            prefix += modeNames[i];
+    }
+    instructionText_->SetText(prefix);
 }
 

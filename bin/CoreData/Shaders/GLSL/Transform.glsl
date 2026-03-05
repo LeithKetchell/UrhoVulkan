@@ -27,6 +27,12 @@ attribute vec4 iCubeTexCoord1;
 #endif
 attribute float iObjectIndex;
 
+// Clip plane distance for fragment-shader clipping (gl_ClipDistance broken on some Vulkan drivers)
+// Explicit location=30 required: this varying is declared in both COMPILEVS and COMPILEPS sections
+// of Transform.glsl. The Vulkan auto-location function processes both sections sequentially and
+// would assign different locations to each declaration, causing a VS/PS interface mismatch.
+layout(location = 30) varying float vClipDist;
+
 #ifdef SKINNED
 mat4 GetSkinMatrix(vec4 blendWeights, vec4 blendIndices)
 {
@@ -64,8 +70,10 @@ vec4 GetClipPos(vec3 worldPos)
     #if !defined(GL_ES) && !defined(GL3)
         gl_ClipVertex = ret;
     #elif defined(GL3)
-        // DISABLED: gl_ClipDistance causing all geometry to be clipped in Vulkan
-        // gl_ClipDistance[0] = dot(cClipPlane, ret);
+        // Clip plane distance for fragment-shader discard (water reflections)
+        // gl_ClipDistance is broken on some Vulkan/Mesa drivers (RADV GFX8)
+        // Use world-space dot product: cClipPlane.xyz = plane normal, cClipPlane.w = -distance
+        vClipDist = dot(cClipPlane.xyz, worldPos) + cClipPlane.w;
     #endif
     return ret;
 }
@@ -219,5 +227,16 @@ vec4 GetWorldTangent(mat4 modelMatrix)
 out vec4 fragData;
 #define gl_FragColor fragData
 #endif
+
+// Clip plane distance from vertex shader (gl_ClipDistance broken on some Vulkan drivers)
+// Explicit location=30 must match VS declaration above
+layout(location = 30) varying float vClipDist;
+
+// Call at start of PS() to clip geometry behind the clip plane (used for water reflections)
+void ApplyClipPlane()
+{
+    if (vClipDist < 0.0)
+        discard;
+}
 
 #endif

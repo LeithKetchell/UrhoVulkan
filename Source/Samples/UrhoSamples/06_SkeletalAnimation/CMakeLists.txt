@@ -1,3 +1,14 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:6f7bd109ab9867c431ed81bb1f8e8f3bd33337f13938831005523e9e97529d8b
-size 302
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME 06_SkeletalAnimation)
+
+# Define source files
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+
+# Setup target with resource copying
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()

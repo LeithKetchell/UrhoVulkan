@@ -77,15 +77,21 @@ bool Shader::BeginLoad(Deserializer& source)
     // Comment out the unneeded shader function
     vsSourceCode_ = shaderCode;
     psSourceCode_ = shaderCode;
+    csSourceCode_ = shaderCode;
     CommentOutFunction(vsSourceCode_, "void PS(");
+    CommentOutFunction(vsSourceCode_, "void CS(");
     CommentOutFunction(psSourceCode_, "void VS(");
+    CommentOutFunction(psSourceCode_, "void CS(");
+    CommentOutFunction(csSourceCode_, "void VS(");
+    CommentOutFunction(csSourceCode_, "void PS(");
 
-    // OpenGL and Vulkan: rename either VS() or PS() to main()
+    // OpenGL and Vulkan: rename either VS(), PS(), or CS() to main()
     GAPI gapi = Graphics::GetGAPI();
     if (gapi == GAPI_OPENGL || gapi == GAPI_VULKAN)
     {
         vsSourceCode_.Replace("void VS(", "void main(");
         psSourceCode_.Replace("void PS(", "void main(");
+        csSourceCode_.Replace("void CS(", "void main(");
     }
 
     RefreshMemoryUse();
@@ -99,6 +105,8 @@ bool Shader::EndLoad()
         i->second_->Release();
     for (HashMap<StringHash, SharedPtr<ShaderVariation>>::Iterator i = psVariations_.Begin(); i != psVariations_.End(); ++i)
         i->second_->Release();
+    for (HashMap<StringHash, SharedPtr<ShaderVariation>>::Iterator i = csVariations_.Begin(); i != csVariations_.End(); ++i)
+        i->second_->Release();
 
     return true;
 }
@@ -111,7 +119,7 @@ ShaderVariation* Shader::GetVariation(ShaderType type, const String& defines)
 ShaderVariation* Shader::GetVariation(ShaderType type, const char* defines)
 {
     StringHash definesHash(defines);
-    HashMap<StringHash, SharedPtr<ShaderVariation>>& variations(type == VS ? vsVariations_ : psVariations_);
+    HashMap<StringHash, SharedPtr<ShaderVariation>>& variations(type == VS ? vsVariations_ : (type == CS ? csVariations_ : psVariations_));
     HashMap<StringHash, SharedPtr<ShaderVariation>>::Iterator i = variations.Find(definesHash);
     if (i == variations.End())
     {
@@ -198,7 +206,7 @@ String Shader::NormalizeDefines(const String& defines)
 void Shader::RefreshMemoryUse()
 {
     SetMemoryUse(
-        (unsigned)(sizeof(Shader) + vsSourceCode_.Length() + psSourceCode_.Length() + numVariations_ * sizeof(ShaderVariation)));
+        (unsigned)(sizeof(Shader) + vsSourceCode_.Length() + psSourceCode_.Length() + csSourceCode_.Length() + numVariations_ * sizeof(ShaderVariation)));
 }
 
 }

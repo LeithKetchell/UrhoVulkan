@@ -240,6 +240,15 @@ public:
     /// @param groupCountZ Number of work groups in Z dimension
     void DispatchCompute(unsigned groupCountX, unsigned groupCountY = 1, unsigned groupCountZ = 1);
 
+    /// Set compute shader (Vulkan only).
+    void SetComputeShader(ShaderVariation* shader);
+    /// Set storage buffer for compute shader (Vulkan only). Index 0-3.
+    void SetStorageBuffer(unsigned index, VertexBuffer* buffer);
+    /// Begin a batch of compute dispatches. Creates one command buffer for all subsequent DispatchCompute calls.
+    void BeginComputeBatch();
+    /// End batch and submit all queued compute dispatches. Blocks until GPU completes.
+    void EndComputeBatch();
+
     /// Set vertex buffer.
     void SetVertexBuffer(VertexBuffer* buffer);
     /// Set multiple vertex buffers.
@@ -476,13 +485,13 @@ public:
     /// @property
     unsigned GetNumBatches() const { return numBatches_; }
 
-    /// Return number of instanced draw calls this frame.
+    /// Return number of instanced draw calls (previous frame — current frame counters are reset at BeginFrame).
     /// @property
-    unsigned GetNumInstancedDrawCalls() const { return numInstancedDrawCalls_; }
+    unsigned GetNumInstancedDrawCalls() const { return lastNumInstancedDrawCalls_; }
 
-    /// Return total instance count across all instanced draw calls this frame.
+    /// Return total instance count across all instanced draw calls (previous frame).
     /// @property
-    unsigned GetTotalInstanceCount() const { return totalInstanceCount_; }
+    unsigned GetTotalInstanceCount() const { return lastTotalInstanceCount_; }
 
     /// Return number of vertex buffer bind calls this frame.
     unsigned GetNumVertexBufferBinds() const { return numVertexBufferBinds_; }
@@ -1136,6 +1145,8 @@ private:
     void SetTexture_Vulkan(unsigned index, Texture* texture);
     void SetComputeShader_Vulkan(ShaderVariation* shader);
     void SetStorageBuffer_Vulkan(unsigned index, VertexBuffer* buffer);
+    void BeginComputeBatch_Vulkan();
+    void EndComputeBatch_Vulkan();
     void SetShaderParameter_Vulkan(StringHash param, const Variant& value);
     void SetShaderParameter_Vulkan(StringHash param, const void* data, unsigned byteSize);
     /// Phase 36 Step 5: Reflection-based descriptor set creation
@@ -1288,6 +1299,10 @@ private:
     unsigned numInstancedDrawCalls_{};
     /// Total instance count across all instanced draw calls this frame.
     unsigned totalInstanceCount_{};
+    /// Previous frame's instanced draw call count (for profiler display).
+    unsigned lastNumInstancedDrawCalls_{};
+    /// Previous frame's total instance count (for profiler display).
+    unsigned lastTotalInstanceCount_{};
     /// Number of octants traversed this frame.
     unsigned numOctantsTraversed_{};
     /// Largest scratch buffer request this frame.
@@ -1326,6 +1341,20 @@ private:
     ShaderVariation* computeShader_{};
     /// Storage buffers in use (SSBOs, Vulkan compute only).
     VertexBuffer* storageBuffers_[MAX_TEXTURE_UNITS]{};
+    /// Batch compute command buffer (valid between BeginComputeBatch/EndComputeBatch).
+    void* computeBatchCmdBuffer_{};
+    /// Whether a compute batch is active.
+    bool computeBatchActive_{};
+    /// Whether descriptors have been bound in current batch.
+    bool computeBatchDescsBound_{};
+    /// Cached compute shader module (avoid recreating per dispatch).
+    void* cachedComputeModule_{};
+    /// Cached compute pipeline (avoid recreating per dispatch).
+    void* cachedComputePipeline_{};
+    /// Last compute shader used (for cache invalidation).
+    ShaderVariation* lastComputeShader_{};
+    /// Last storage buffers bound (for cache invalidation).
+    VertexBuffer* lastStorageBuffers_[MAX_TEXTURE_UNITS]{};
     /// Textures in use.
     Texture* textures_[MAX_TEXTURE_UNITS]{};
     /// Current material being rendered (for Vulkan descriptor creation).

@@ -1,3 +1,14 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:f63652721878c567167cbc2bfda41f14cff612d3c589d88b7ef996c5985b5c55
-size 302
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME 31_MaterialAnimation)
+
+# Define source files
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+
+# Setup target with resource copying
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()

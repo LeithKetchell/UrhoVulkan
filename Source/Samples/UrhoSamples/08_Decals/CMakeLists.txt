@@ -1,3 +1,14 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:1eefdfb126873f5e9b378c3e70df01fcda10d20372881fdef9c93d8f33b0a630
-size 291
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME 08_Decals)
+
+# Define source files
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+
+# Setup target with resource copying
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()

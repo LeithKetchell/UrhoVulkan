@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../Core/Object.h"
+#include "../Math/Vector3.h"
 #include "../UI/Window.h"
 #include "../UI/Text.h"
 #include "../Graphics/VulkanProfiler.h"
@@ -37,6 +38,9 @@ public:
     /// Set custom stats (mushroom count, batches, etc)
     void SetCustomStats(const String& stats);
 
+    /// Set camera position for display
+    void SetCameraPos(const Vector3& pos);
+
 private:
     /// Root window for profiler display
     SharedPtr<Window> window_;
@@ -55,6 +59,9 @@ private:
 
     /// Text element for instance stats
     SharedPtr<Text> instanceStatsText_;
+
+    /// Text element for camera position
+    SharedPtr<Text> cameraPosText_;
 
     /// Profiler reference
     VulkanProfiler* profiler_;

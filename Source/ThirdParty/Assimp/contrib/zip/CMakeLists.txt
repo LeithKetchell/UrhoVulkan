@@ -1,3 +1,18 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:bb7d92c04a4032a99b1e81be9912fc9ae6c05ac9e71ff9f463fb7cd9a97bf2fd
-size 583
+cmake_minimum_required(VERSION 2.8)
+project(zip)
+
+if (MSVC)
+    # Use secure functions by defaualt and suppress warnings about "deprecated" functions
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D _CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D _CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D _CRT_NONSTDC_NO_WARNINGS=1 /D _CRT_SECURE_NO_WARNINGS=1")
+endif (MSVC)
+
+# zip
+set(SRC src/miniz.h src/zip.h src/zip.c)
+add_library(${CMAKE_PROJECT_NAME} ${SRC})
+
+# test
+enable_testing()
+add_subdirectory(test)
+

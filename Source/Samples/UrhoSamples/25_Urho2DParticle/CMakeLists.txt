@@ -1,3 +1,18 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:7bec847236c80f70241f2cd997b0aa7b89597b03569bafe0de5182045cd7d2be
-size 346
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+if (NOT URHO3D_URHO2D)
+    return ()
+endif ()
+
+# Define target name
+set (TARGET_NAME 25_Urho2DParticle)
+
+# Define source files
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+
+# Setup target with resource copying
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()

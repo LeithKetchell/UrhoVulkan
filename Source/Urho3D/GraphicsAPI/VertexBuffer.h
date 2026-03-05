@@ -108,6 +108,9 @@ public:
     /// @property
     VertexElements GetElementMask() const { return elementMask_; }
 
+    /// Read GPU buffer data back to CPU memory.
+    bool GetData(void* destData);
+
     /// Return CPU memory shadow data.
     byte* GetShadowData() const { return shadowData_.Get(); }
 
@@ -189,6 +192,7 @@ private:
     bool Create_Vulkan();
     bool UpdateToGPU_Vulkan();
     bool UploadDataToGPU_Vulkan(const void* data, size_t dataSize);
+    bool GetData_Vulkan(void* destData);
     void* MapBuffer_Vulkan(i32 start, i32 count, bool discard);
     void UnmapBuffer_Vulkan();
 #endif // def URHO3D_VULKAN

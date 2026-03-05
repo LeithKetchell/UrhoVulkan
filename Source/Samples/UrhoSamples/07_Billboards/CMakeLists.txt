@@ -1,3 +1,14 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:13e83f92fd60992b29fe3f9b4da43d5939a986b1dc28e4dcc8631e045db1f37f
-size 295
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME 07_Billboards)
+
+# Define source files
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+
+# Setup target with resource copying
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()

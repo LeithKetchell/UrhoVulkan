@@ -52,6 +52,8 @@ VkShaderStageFlagBits VulkanShaderCompiler::GetShaderStage(ShaderType type)
         return VK_SHADER_STAGE_VERTEX_BIT;
     case PS:
         return VK_SHADER_STAGE_FRAGMENT_BIT;
+    case CS:
+        return VK_SHADER_STAGE_COMPUTE_BIT;
     default:
         return VK_SHADER_STAGE_VERTEX_BIT;
     }
@@ -154,9 +156,10 @@ bool VulkanShaderCompiler::CompileGLSLToSPIRV(
                         state = 0;
                     }
                 }
-                else if (trimmed.StartsWith("#else") && ifDepth == 1)
+                else if ((trimmed.StartsWith("#else") || trimmed.StartsWith("#elif")) && ifDepth == 1)
                 {
                     // Switch to live branch — keep content but track for final #endif
+                    // #elif is treated same as #else: the dead branch ends here, live code follows
                     state = 2;
                 }
                 lines[i] = "";  // Strip everything in dead branch (including #else line)
@@ -798,11 +801,13 @@ bool VulkanShaderCompiler::CompileWithShaderc(
         options.AddMacroDefinition("GL3", "1");
         options.AddMacroDefinition("USE_CBUFFERS", "1");
 
-        // Add shader type define (COMPILEVS or COMPILEPS)
+        // Add shader type define (COMPILEVS, COMPILEPS, or COMPILECS)
         if (type == VS)
             options.AddMacroDefinition("COMPILEVS", "1");
         else if (type == PS)
             options.AddMacroDefinition("COMPILEPS", "1");
+        else if (type == CS)
+            options.AddMacroDefinition("COMPILECS", "1");
 
         // Add shader defines
         if (!defines.Empty())
@@ -830,6 +835,8 @@ bool VulkanShaderCompiler::CompileWithShaderc(
         shaderc_shader_kind kind = shaderc_vertex_shader;
         if (type == PS)
             kind = shaderc_fragment_shader;
+        else if (type == CS)
+            kind = shaderc_compute_shader;
 
         // Compile GLSL to SPIR-V
         shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
@@ -925,6 +932,8 @@ bool VulkanShaderCompiler::CompileWithGlslang(
         EShLanguage stage = EShLangVertex;
         if (type == PS)
             stage = EShLangFragment;
+        else if (type == CS)
+            stage = EShLangCompute;
 
         // Create shader object
         glslang::TShader shader(stage);
@@ -964,11 +973,13 @@ bool VulkanShaderCompiler::CompileWithGlslang(
         // Add USE_CBUFFERS to force uniform blocks (required for Vulkan SPIR-V)
         definesBlock += "#define USE_CBUFFERS\n";
 
-        // Add shader type define (COMPILEVS or COMPILEPS)
+        // Add shader type define (COMPILEVS, COMPILEPS, or COMPILECS)
         if (type == VS)
             definesBlock += "#define COMPILEVS\n";
         else if (type == PS)
             definesBlock += "#define COMPILEPS\n";
+        else if (type == CS)
+            definesBlock += "#define COMPILECS\n";
 
         // Add MAXBONES for skeletal animation shaders
         definesBlock += "#define MAXBONES " + String(Graphics::GetMaxBones()) + "\n";

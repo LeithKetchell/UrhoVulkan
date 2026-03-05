@@ -1,3 +1,12 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:a04dffa9348fc911582182a8e743a8894e814e09cf7eff82b97fe270661f44c6
-size 258
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Set project name
+project (Urho3D-Extras)
+
+# Find Urho3D library
+find_package (Urho3D REQUIRED)
+include_directories (${URHO3D_INCLUDE_DIRS})
+
+# Urho3D extras
+add_subdirectory (OgreBatchConverter)

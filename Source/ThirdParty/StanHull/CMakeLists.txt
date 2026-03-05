@@ -1,3 +1,14 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:b16b51377176cc41ad8c37ccacef76d6b837d2f68154ae4cb684f4c3bad7fe49
-size 413
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME StanHull)
+
+# Define source files
+define_source_files ()
+
+# Setup target
+setup_library ()
+
+# Install headers for building the Urho3D library
+install_header_files (DIRECTORY ./ DESTINATION ${DEST_INCLUDE_DIR}/ThirdParty/StanHull FILES_MATCHING PATTERN *.h BUILD_TREE_ONLY)  # Note: the trailing slash is significant

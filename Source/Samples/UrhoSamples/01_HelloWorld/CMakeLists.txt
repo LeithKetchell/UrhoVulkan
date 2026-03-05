@@ -1,3 +1,14 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:07532cf102af8efcc78b82bda913282ce028071554942551bcf11a697cc51bb2
-size 295
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME 01_HelloWorld)
+
+# Define source files
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+
+# Setup target with resource copying
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()

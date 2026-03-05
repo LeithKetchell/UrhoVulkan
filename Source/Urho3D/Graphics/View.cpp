@@ -765,6 +765,19 @@ void View::SetCameraShaderParameters(Camera* camera)
 
     graphics_->SetShaderParameter(VSP_VIEWPROJ, projection * camera->GetView());
 
+    // Vulkan: always include clip plane in CameraVS constant buffer upload.
+    // Without this, the clip plane offset gets zeroed when CameraVS is re-assembled per batch.
+    if (camera->GetUseClipping())
+    {
+        // Re-apply the active clip plane for reflection rendering
+        graphics_->SetClipPlane(true, camera->GetClipPlane(), camera->GetView(), camera->GetGPUProjection());
+    }
+    else
+    {
+        // Set disabled clip plane directly as shader parameter (avoids SetClipPlane state changes)
+        graphics_->SetShaderParameter(VSP_CLIPPLANE, Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+    }
+
     // If in a scene pass and the command defines shader parameters, set them now
     if (passCommand_)
         SetCommandShaderParameters(*passCommand_);
@@ -1557,6 +1570,18 @@ void View::ExecuteRenderPathCommands()
                 // If not using pingponging, simply resolve/copy to the first viewport texture
                 if (!isPingponging)
                 {
+#ifdef URHO3D_VULKAN
+                    if (Graphics::GetGAPI() == GAPI_VULKAN)
+                    {
+                        // Vulkan: use vkCmdBlitImage for both backbuffer and substitute RT cases
+                        // ResolveToTexture_Vulkan auto-detects the source (swapchain vs render target)
+                        graphics_->ResolveToTexture(dynamic_cast<Texture2D*>(viewportTextures_[0]), viewRect_);
+                        currentViewportTexture_ = viewportTextures_[0];
+                        viewportModified = false;
+                        usedResolve_ = true;
+                    }
+                    else
+#endif
                     if (!currentRenderTarget_)
                     {
                         graphics_->ResolveToTexture(dynamic_cast<Texture2D*>(viewportTextures_[0]), viewRect_);
@@ -1987,6 +2012,12 @@ bool View::CheckViewportWrite(const RenderPathCommand& command)
             return true;
     }
 
+    // Commands with no explicit outputs implicitly write to the viewport (backbuffer).
+    // This is needed for ResolveToTexture to know the viewport was modified before a viewport read.
+    if (command.outputs_.Empty() &&
+        (command.type_ == CMD_CLEAR || command.type_ == CMD_SCENEPASS || command.type_ == CMD_FORWARDLIGHTS))
+        return true;
+
     return false;
 }
 
@@ -2076,9 +2107,8 @@ void View::AllocateScreenBuffers()
             needSubstitute = true;
         if (!renderTarget_ && hasCustomDepth)
             needSubstitute = true;
-        // Vulkan: Use substitute RT for viewport reads (avoids needing ResolveToTexture)
-        if (!renderTarget_ && hasViewportRead)
-            needSubstitute = true;
+        // Vulkan viewport reads now use ResolveToTexture_Vulkan (vkCmdBlitImage)
+        // so a substitute RT is no longer needed for this case
     }
 #endif
 

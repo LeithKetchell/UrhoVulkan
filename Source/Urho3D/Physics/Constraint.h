@@ -121,6 +121,11 @@ public:
     void SetSpringStiffness(int index, float stiffness);
     /// Set spring damping on axis. 6DOF Spring types only.
     void SetSpringDamping(int index, float damping);
+    /// Reset spring equilibrium point on next ApplyLimits() call. Use after repositioning
+    /// constrained bodies so the springs recalculate their rest position. Without this,
+    /// the equilibrium is only set once (on constraint creation) to prevent per-frame motor
+    /// updates from continuously resetting it.
+    void ResetEquilibriumPoint() { equilibriumSet_ = false; ApplyLimits(); }
 
     /// Set gear ratio. Gear constraint only.
     void SetGearRatio(float ratio);
@@ -287,6 +292,8 @@ private:
     bool framesDirty_;
     /// Constraint creation retry flag if attributes initially set without scene.
     bool retryCreation_;
+    /// Spring equilibrium point has been set.
+    bool equilibriumSet_{false};
 };
 
 }

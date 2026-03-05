@@ -102,6 +102,8 @@ void VS()
 
 void PS()
 {
+    ApplyClipPlane();
+
     // Get material diffuse albedo
     vec3 weights = texture2D(sWeightMap0, vTexCoord).rgb;
     float sumWeights = weights.r + weights.g + weights.b;

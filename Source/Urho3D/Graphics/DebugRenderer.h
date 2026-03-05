@@ -116,6 +116,8 @@ public:
         bool drawLines, const Color& color, bool depthTest = true);
     /// Add a cylinder.
     void AddCylinder(const Vector3& position, float radius, float height, const Color& color, bool depthTest = true);
+    /// Add a capsule (cylinder body with hemisphere caps).
+    void AddCapsule(const Vector3& position, float radius, float height, const Color& color, bool depthTest = true);
     /// Add a skeleton.
     void AddSkeleton(const Skeleton& skeleton, const Color& color, bool depthTest = true);
     /// Add a triangle mesh.

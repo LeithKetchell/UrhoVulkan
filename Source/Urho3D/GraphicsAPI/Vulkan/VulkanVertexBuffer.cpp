@@ -72,7 +72,7 @@ bool VertexBuffer::Create_Vulkan()
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = bufferSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo allocInfo{};
@@ -182,6 +182,36 @@ bool VertexBuffer::UploadDataToGPU_Vulkan(const void* data, size_t dataSize)
     }
 
     URHO3D_LOGERROR("Failed to map vertex buffer memory for upload");
+    return false;
+}
+
+bool VertexBuffer::GetData_Vulkan(void* destData)
+{
+    if (!destData || !object_.ptr_)
+        return false;
+
+    Graphics* graphics = GetSubsystem<Graphics>();
+    if (!graphics)
+        return false;
+
+    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
+    if (!impl)
+        return false;
+
+    VmaAllocation allocation = (VmaAllocation)object_.ptr2_;
+    size_t dataSize = (size_t)vertexCount_ * vertexSize_;
+
+    void* mappedData;
+    if (vmaMapMemory(impl->GetAllocator(), allocation, &mappedData) == VK_SUCCESS)
+    {
+        // Invalidate to ensure CPU sees GPU writes (non-coherent memory)
+        vmaInvalidateAllocation(impl->GetAllocator(), allocation, 0, dataSize);
+        memcpy(destData, mappedData, dataSize);
+        vmaUnmapMemory(impl->GetAllocator(), allocation);
+        return true;
+    }
+
+    URHO3D_LOGERROR("Failed to map vertex buffer memory for readback");
     return false;
 }
 

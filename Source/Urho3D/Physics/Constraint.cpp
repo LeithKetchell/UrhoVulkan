@@ -368,6 +368,7 @@ void Constraint::ReleaseConstraint()
             physicsWorld_->GetWorld()->removeConstraint(constraint_.get());
 
         constraint_.reset();
+        equilibriumSet_ = false;
     }
 }
 
@@ -703,7 +704,11 @@ void Constraint::ApplyLimits()
                 springConstraint->setStiffness(i, springStiffness_[i]);
                 springConstraint->setDamping(i, springDamping_[i]);
             }
-            springConstraint->setEquilibriumPoint();
+            if (!equilibriumSet_)
+            {
+                springConstraint->setEquilibriumPoint();
+                equilibriumSet_ = true;
+            }
         }
         break;
 
@@ -725,7 +730,11 @@ void Constraint::ApplyLimits()
                 spring2Constraint->setStiffness(i, springStiffness_[i]);
                 spring2Constraint->setDamping(i, springDamping_[i]);
             }
-            spring2Constraint->setEquilibriumPoint();
+            if (!equilibriumSet_)
+            {
+                spring2Constraint->setEquilibriumPoint();
+                equilibriumSet_ = true;
+            }
         }
         break;
 

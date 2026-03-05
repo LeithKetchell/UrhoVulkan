@@ -300,6 +300,28 @@ bool VertexBuffer::SetDataRange(const void* data, i32 start, i32 count, bool dis
     return {}; // Prevent warning
 }
 
+bool VertexBuffer::GetData(void* destData)
+{
+    if (!destData || !vertexCount_ || !vertexSize_)
+        return false;
+
+    GAPI gapi = Graphics::GetGAPI();
+
+#ifdef URHO3D_VULKAN
+    if (gapi == GAPI_VULKAN)
+        return GetData_Vulkan(destData);
+#endif
+
+    // Fallback: copy from shadow data if available
+    if (shadowData_)
+    {
+        memcpy(destData, shadowData_.Get(), (size_t)vertexCount_ * vertexSize_);
+        return true;
+    }
+
+    return false;
+}
+
 void* VertexBuffer::Lock(i32 start, i32 count, bool discard)
 {
     assert(start >= 0 && count >= 0);

@@ -278,10 +278,59 @@ void Menu::ShowPopup(bool enable)
     {
         OnShowPopup();
 
+        // Auto-size popup to fit its children
+        popup_->UpdateLayout();
+        {
+            const IntRect& border = popup_->GetLayoutBorder();
+            int maxChildW = 0;
+            int totalH = border.top_ + border.bottom_;
+            int spacing = popup_->GetLayoutSpacing();
+            const Vector<SharedPtr<UIElement>>& children = popup_->GetChildren();
+            for (i32 i = 0; i < children.Size(); ++i)
+            {
+                int childW = children[i]->GetEffectiveMinSize().x_;
+                if (childW > maxChildW)
+                    maxChildW = childW;
+                totalH += children[i]->GetEffectiveMinSize().y_;
+                if (i > 0)
+                    totalH += spacing;
+            }
+            maxChildW += border.left_ + border.right_;
+            IntVector2 curSize = popup_->GetSize();
+            if (maxChildW > curSize.x_ || totalH > curSize.y_)
+                popup_->SetSize(Max(curSize.x_, maxChildW), Max(curSize.y_, totalH));
+        }
+
         popup_->SetVar(VAR_ORIGIN, this);
         static_cast<Window*>(popup_.Get())->SetModal(true);
 
         popup_->SetPosition(GetScreenPosition() + popupOffset_);
+
+        // Clamp popup to stay within screen bounds
+        UIElement* root = GetRoot();
+        if (root)
+        {
+            IntVector2 pos = popup_->GetPosition();
+            IntVector2 popupSize = popup_->GetSize();
+            int rootW = root->GetWidth();
+            int rootH = root->GetHeight();
+
+            // Clamp right edge
+            if (pos.x_ + popupSize.x_ > rootW)
+                pos.x_ = rootW - popupSize.x_;
+            // Clamp bottom edge
+            if (pos.y_ + popupSize.y_ > rootH)
+                pos.y_ = rootH - popupSize.y_;
+            // Clamp left edge
+            if (pos.x_ < 0)
+                pos.x_ = 0;
+            // Clamp top edge
+            if (pos.y_ < 0)
+                pos.y_ = 0;
+
+            popup_->SetPosition(pos);
+        }
+
         popup_->SetVisible(true);
         // BringToFront() is unreliable in this case as it takes into account only input-enabled elements.
         // Rather just force priority to max

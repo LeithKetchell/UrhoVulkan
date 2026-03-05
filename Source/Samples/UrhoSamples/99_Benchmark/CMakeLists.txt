@@ -1,3 +1,15 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:3d4b0c9ca788e16c26c18114661495c5a354c79ef36a4df227fcbfb25d695ac4
-size 262
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME 99_Benchmark)
+
+# Define source files
+define_source_files (GROUP)
+
+# Setup target with resource copying
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()
+

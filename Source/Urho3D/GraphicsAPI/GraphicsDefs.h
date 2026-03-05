@@ -294,6 +294,7 @@ enum ShaderType
 {
     VS = 0,
     PS,
+    CS,
 };
 
 /// Shader parameter groups for determining need to update. On APIs that support constant buffers, these correspond to different constant buffers.

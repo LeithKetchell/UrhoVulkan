@@ -18,7 +18,7 @@ ProfilerUI::ProfilerUI(Context* context) : Object(context), profiler_(nullptr), 
 void ProfilerUI::Initialize(UI* ui, VulkanProfiler* profiler, Graphics* graphics)
 {
     profiler_ = profiler;
-    graphics_ = graphics;
+    graphics_ = graphics ? graphics : GetSubsystem<Graphics>();
 
     if (!ui)
         return;
@@ -62,6 +62,12 @@ void ProfilerUI::Initialize(UI* ui, VulkanProfiler* profiler, Graphics* graphics
     instanceStatsText_->SetStyleAuto();
     instanceStatsText_->SetFontSize(12);
     instanceStatsText_->SetText("Instances: 0");
+
+    // Camera position text
+    cameraPosText_ = window_->CreateChild<Text>();
+    cameraPosText_->SetStyleAuto();
+    cameraPosText_->SetFontSize(12);
+    cameraPosText_->SetText("Cam: 0, 0, 0");
 
     // Custom stats text
     customStatsText_ = window_->CreateChild<Text>();
@@ -117,6 +123,16 @@ void ProfilerUI::SetCustomStats(const String& stats)
 {
     if (customStatsText_)
         customStatsText_->SetText(stats);
+}
+
+void ProfilerUI::SetCameraPos(const Vector3& pos)
+{
+    if (cameraPosText_)
+    {
+        char buf[64];
+        sprintf(buf, "Cam: %.1f, %.1f, %.1f", pos.x_, pos.y_, pos.z_);
+        cameraPosText_->SetText(String(buf));
+    }
 }
 
 } // namespace Urho3D

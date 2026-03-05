@@ -1,3 +1,20 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:af5cd91764f360dd9b26c6e4ca09114f45fd293394790d1a06ebfe748a1fbc60
-size 465
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME 20_HugeObjectCount)
+
+# Define source files
+define_source_files (EXTRA_H_FILES ${COMMON_SAMPLE_H_FILES})
+
+# Setup target with resource copying
+if (EMSCRIPTEN)
+    # Override the Urho3D default
+    if (URHO3D_TESTING AND URHO3D_TEST_TIMEOUT LESS 15)
+        set (URHO3D_TEST_TIMEOUT 15)
+    endif ()
+endif ()
+setup_main_executable ()
+
+# Setup test cases
+setup_test ()

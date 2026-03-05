@@ -230,6 +230,48 @@ bool VulkanGraphicsImpl::Initialize(Graphics* graphics, SDL_Window* window, int 
         URHO3D_LOGWARNING("Failed to initialize compute pipeline - compute shaders disabled");
     }
 
+    // Create compute descriptor set layout (4 SSBO bindings)
+    {
+        VkDescriptorSetLayoutBinding bindings[4]{};
+        for (int i = 0; i < 4; ++i)
+        {
+            bindings[i].binding = i;
+            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 4;
+        layoutInfo.pBindings = bindings;
+
+        if (vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &computeDescriptorLayout_) != VK_SUCCESS)
+        {
+            URHO3D_LOGERROR("Failed to create compute descriptor set layout");
+            computeDescriptorLayout_ = VK_NULL_HANDLE;
+        }
+
+        // Create compute pipeline layout from the descriptor set layout
+        if (computeDescriptorLayout_)
+        {
+            VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+            pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            pipelineLayoutInfo.setLayoutCount = 1;
+            pipelineLayoutInfo.pSetLayouts = &computeDescriptorLayout_;
+
+            if (vkCreatePipelineLayout(device_, &pipelineLayoutInfo, nullptr, &computePipelineLayout_) != VK_SUCCESS)
+            {
+                URHO3D_LOGERROR("Failed to create compute pipeline layout");
+                computePipelineLayout_ = VK_NULL_HANDLE;
+            }
+            else
+            {
+                URHO3D_LOGINFO("Compute pipeline layout created (4 SSBO bindings)");
+            }
+        }
+    }
+
     // Phase 22A: Create default placeholder textures
     // These are used when materials don't have textures assigned
     // Diffuse: 1x1 white texture (255, 255, 255, 255)
@@ -538,6 +580,18 @@ void VulkanGraphicsImpl::Shutdown()
         pipelineCache_ = nullptr;
     }
 
+    // Destroy compute pipeline layout and descriptor layout
+    if (computePipelineLayout_)
+    {
+        vkDestroyPipelineLayout(device_, computePipelineLayout_, nullptr);
+        computePipelineLayout_ = VK_NULL_HANDLE;
+    }
+    if (computeDescriptorLayout_)
+    {
+        vkDestroyDescriptorSetLayout(device_, computeDescriptorLayout_, nullptr);
+        computeDescriptorLayout_ = VK_NULL_HANDLE;
+    }
+
     // Destroy compute pipeline (Phase 36+: Compute Shader Support)
     if (computePipeline_)
     {
@@ -700,6 +754,12 @@ bool VulkanGraphicsImpl::AcquireNextImage()
         return false;
     }
 
+    if (result == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        URHO3D_LOGINFO("Swapchain out of date during acquire, needs recreation");
+        return false;  // Caller will handle recreation
+    }
+
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
         URHO3D_LOGERROR("Failed to acquire swapchain image: " + String((int)result));
@@ -764,7 +824,12 @@ void VulkanGraphicsImpl::Present()
     presentInfo.pImageIndices = imageIndices;
 
     VkResult presentResult = vkQueuePresentKHR(presentQueue_, &presentInfo);
-    if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR)
+    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
+    {
+        URHO3D_LOGINFO("Swapchain out of date/suboptimal during present");
+        // Frame was still submitted — just log and continue, next BeginFrame will handle it
+    }
+    else if (presentResult != VK_SUCCESS)
     {
         URHO3D_LOGWARNING("Present failed: " + String((int)presentResult));
     }
@@ -1927,6 +1992,15 @@ bool VulkanGraphicsImpl::CreateSwapchain(int width, int height)
         swapchainExtent_ = capabilities.currentExtent;
         URHO3D_LOGDEBUG("Using surface currentExtent: " +
                        String((int)swapchainExtent_.width) + "x" + String((int)swapchainExtent_.height));
+    }
+
+    // Final validation: reject degenerate swapchain extents (1x1 or 0x0)
+    // This can happen when the window is minimized, not yet realized, or during mode transitions
+    if (swapchainExtent_.width < 2 || swapchainExtent_.height < 2)
+    {
+        URHO3D_LOGWARNING("Swapchain extent too small (" + String((int)swapchainExtent_.width) + "x" +
+                         String((int)swapchainExtent_.height) + "), aborting swapchain creation");
+        return false;
     }
 
     swapchainFormat_ = surfaceFormat.format;
@@ -3573,6 +3647,11 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkImage image, VkFormat format,
         srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     }
+    else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    }
 
     if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
     {
@@ -3603,6 +3682,11 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkImage image, VkFormat format,
     {
         dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
         barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
+    else if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     }
 
     // Record pipeline barrier to handle the layout transition
@@ -3684,6 +3768,11 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, Vk
         srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     }
+    else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    }
 
     if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
     {
@@ -3714,6 +3803,11 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, Vk
     {
         dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
         barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
+    else if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+    {
+        dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     }
 
     // Record pipeline barrier to handle the layout transition
@@ -4268,6 +4362,14 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
             if (graphics_->GetRenderTarget(i))
                 attachmentCount = i + 1;
         }
+        // Swapchain hybrid (swapchain color + custom depth) has 1 color attachment
+        // but GetRenderTarget() returns null since swapchain isn't tracked as an RTT
+        if (attachmentCount == 0 && renderTargetRPDescriptor_.isSwapchainHybrid)
+            attachmentCount = 1;
+        // Also handle case where render targets were cleared (e.g. debug draw after render path)
+        // but the render pass is still the RTT one with a color attachment
+        if (attachmentCount == 0 && renderTargetRPDescriptor_.colorAttachmentCount > 0)
+            attachmentCount = renderTargetRPDescriptor_.colorAttachmentCount;
     }
 
     // DIAG: Log blend attachment count for pipeline creation

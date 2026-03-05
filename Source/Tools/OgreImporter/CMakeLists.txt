@@ -1,3 +1,11 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:0d07265e4118bea0aaaab1677ae415148929149a860ecdcbd08f9888378fd4ed
-size 199
+# Copyright (c) 2008-2022 the Urho3D project
+# License: MIT
+
+# Define target name
+set (TARGET_NAME OgreImporter)
+
+# Define source files
+define_source_files ()
+
+# Setup target
+setup_executable (TOOL)

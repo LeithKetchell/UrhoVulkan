@@ -25,6 +25,9 @@ uniform float cNoiseTiling;
 uniform float cNoiseStrength;
 uniform float cFresnelPower;
 uniform vec3 cWaterTint;
+uniform vec3 cShallowColor;
+uniform vec3 cDeepColor;
+uniform float cDepthScale;
 #endif
 
 void VS()
@@ -57,10 +60,39 @@ void PS()
         noise.y = 0.0;
     reflectUV += noise;
 
-    float fresnel = pow(1.0 - clamp(dot(normalize(vEyeVec.xyz), vNormal), 0.0, 1.0), cFresnelPower);
     vec3 refractColor = texture2D(sEnvMap, refractUV).rgb * cWaterTint;
     vec3 reflectColor = texture2D(sDiffMap, reflectUV).rgb;
-    vec3 finalColor = mix(refractColor, reflectColor, fresnel);
+
+    float eyeDotN = dot(normalize(vEyeVec.xyz), vNormal);
+
+    vec3 finalColor;
+    if (eyeDotN < 0.0)
+    {
+        // Viewed from below — use the viewport/refraction texture which shows what's behind
+        // the water surface from the camera's viewpoint (sky, above-water terrain).
+        // The reflection texture UV mapping is designed for above-water viewing and maps
+        // incorrectly from below, so we avoid it entirely.
+        // Snell's window: looking straight up = see through, grazing = subtle water tint
+        float transparency = clamp(-eyeDotN, 0.0, 1.0);
+        vec3 waterColor = mix(cShallowColor, cDeepColor, 0.5);
+        float tint = 0.15 * (1.0 - transparency);
+        finalColor = mix(refractColor, waterColor, tint);
+    }
+    else
+    {
+        float fresnel = pow(1.0 - clamp(eyeDotN, 0.0, 1.0), cFresnelPower);
+        fresnel = min(fresnel, 0.7);
+
+        // Depth-based water color: steep view = deep, grazing = shallow
+        float depthFactor = clamp(eyeDotN * cDepthScale, 0.0, 1.0);
+        vec3 waterColor = mix(cShallowColor, cDeepColor, depthFactor);
+
+        // Blend refraction with water color — more tint at grazing angles, less when looking straight down
+        // so submerged objects in shallow water remain visible from above
+        float tintAmount = 0.15 * (1.0 - eyeDotN);
+        vec3 tintedRefract = mix(refractColor, waterColor, tintAmount);
+        finalColor = mix(tintedRefract, reflectColor, fresnel);
+    }
 
     gl_FragColor = vec4(GetFog(finalColor, GetFogFactor(vEyeVec.w)), 1.0);
 }

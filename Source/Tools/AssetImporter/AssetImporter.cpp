@@ -156,6 +156,7 @@ float defaultTicksPerSecond_ = 4800.0f;
 float importStartTime_ = 0.0f;
 float importEndTime_ = 0.0f;
 bool suppressFbxPivotNodes_ = true;
+float importScale_ = 1.0f;
 
 int main(int argc, char** argv);
 void Run(const Vector<String>& arguments);
@@ -287,6 +288,7 @@ void Run(const Vector<String>& arguments)
             "-split <start> <end> (animation model only)\n"
             "            Split animation, will only import from start frame to end frame\n"
             "-np         Do not suppress $fbx pivot nodes (FBX files only)\n"
+            "-scale <x>  Scale model geometry and animation translations by the given factor\n"
         );
     }
 
@@ -437,6 +439,11 @@ void Run(const Vector<String>& arguments)
                 checkUniqueModel_ = false;
             else if (argument == "bp")
                 moveToBindPose_ = true;
+            else if (argument == "scale" && !value.Empty())
+            {
+                importScale_ = ToFloat(value);
+                ++i;
+            }
             else if (argument == "split")
             {
                 String value2 = i + 2 < arguments.Size() ? arguments[i + 2] : String::EMPTY;
@@ -1447,7 +1454,10 @@ void BuildAndSaveAnimations(OutModel* model)
                 }
 
                 if (!!(track->channelMask_ & AnimationChannels::Position))
+                {
                     kf.position_ = ToVector3(pos);
+                    kf.position_ *= importScale_;
+                }
                 if (!!(track->channelMask_ & AnimationChannels::Rotation))
                     kf.rotation_ = ToQuaternion(rot);
                 if (!!(track->channelMask_ & AnimationChannels::Scale))
@@ -2408,6 +2418,7 @@ void WriteVertex(float*& dest, aiMesh* mesh, unsigned index, bool isSkinned, Bou
     Vector<Vector<float>>& blendWeights)
 {
     Vector3 vertex = vertexTransform * ToVector3(mesh->mVertices[index]);
+    vertex *= importScale_;
     box.Merge(vertex);
     *dest++ = vertex.x_;
     *dest++ = vertex.y_;

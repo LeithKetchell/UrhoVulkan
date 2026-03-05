@@ -24,16 +24,21 @@
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/IO/File.h>
 #include <Urho3D/IO/FileSystem.h>
+#include <Urho3D/IO/Log.h>
 #include <Urho3D/Physics/PhysicsWorld.h>
 #include <Urho3D/Physics/RigidBody.h>
 #include <Urho3D/Physics/CollisionShape.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
 #include <Urho3D/UI/Font.h>
+#include <Urho3D/UI/Slider.h>
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
 #include <Urho3D/UI/UIEvents.h>
 #include <Urho3D/Network/Network.h>
+#include <Urho3D/GraphicsAPI/Shader.h>
+#include <Urho3D/GraphicsAPI/ShaderVariation.h>
+#include <Urho3D/GraphicsAPI/VertexBuffer.h>
 
 #include "Water.h"
 
@@ -72,6 +77,7 @@ void Water::Stop()
     sunMat_.Reset();
     moonMat_.Reset();
     profilerUI_.Reset();
+    terrainPanel_.Reset();
     editableHeightMap_.Reset();
 }
 
@@ -91,6 +97,7 @@ void Water::Start()
     Sample::InitMouseMode(MM_RELATIVE);
 
     CreateMenuBar();
+    CreateMinimap();
 
     auto* graphics = GetSubsystem<Graphics>();
     auto* ui = GetSubsystem<UI>();
@@ -264,10 +271,12 @@ void Water::CreateInstructions()
     auto* instructionText = ui->GetRoot()->CreateChild<Text>();
     instructionText->SetText(
         "WASD = move, Mouse = look\n"
-        "Tab = toggle cursor/camera\n"
+        "Tab = toggle cursor/camera mode\n"
         "LMB = raise terrain, RMB = lower\n"
-        "Space = debug, Z = wireframe, H = fog\n"
+        "[ ] = cycle brush shape\n"
         "Scroll = brush radius\n"
+        "Space = debug geometry, Z = wireframe\n"
+        "H = height fog, F11 = fullscreen\n"
         "1 = track sun, 2 = track moon");
     instructionText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 15);
     instructionText->SetTextAlignment(HA_CENTER);
@@ -420,17 +429,37 @@ void Water::CreateMenuBar()
         SubscribeToEvent(editMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleEditMenu));
     }
 
-    // Environment
+    // Environment (Menu-based with Terrain submenu)
     {
-        Vector<String> items;
-        items.Push("Toggle Wireframe  (Z)");
-        items.Push("Toggle Debug Geometry  (Space)");
-        items.Push("Toggle Height Fog  (H)");
-        items.Push("Toggle Profiler");
+        auto* cache = GetSubsystem<ResourceCache>();
+        auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+        environmentMenu_ = menuBar_->CreateChild<Menu>();
+        environmentMenu_->SetStyle("DropDownList");
+        environmentMenu_->SetFixedHeight(24);
+        environmentMenu_->SetMinWidth(90);
+
+        auto* envLabel = environmentMenu_->CreateChild<Text>();
+        envLabel->SetFont(font, 12);
+        envLabel->SetText("Environment");
+        envLabel->SetColor(Color::WHITE);
+
+        auto* envPopup = new Window(context_);
+        envPopup->SetStyleAuto();
+        envPopup->SetLayout(LM_VERTICAL, 2, IntRect(2, 2, 2, 2));
+        envPopup->SetDefaultStyle(GetSubsystem<UI>()->GetRoot()->GetDefaultStyle());
+        envPopup->SetOpacity(0.85f);
+        environmentMenu_->SetPopup(envPopup);
+        environmentMenu_->SetPopupOffset(0, environmentMenu_->GetHeight());
+
+        // Action IDs: 100=wireframe, 101=debug, 102=fog, 103=profiler
+        CreateMenuItem(envPopup, "Toggle Wireframe  (Z)", 100);
+        CreateMenuItem(envPopup, "Toggle Debug Geometry  (Space)", 101);
+        CreateMenuItem(envPopup, "Toggle Height Fog  (H)", 102);
+        CreateMenuItem(envPopup, "Toggle Profiler", 103);
+
         if (terrain_)
-            items.Push("Cycle Terrain Brush");
-        environmentMenu_ = CreateMenuDropdown("Environment", items);
-        SubscribeToEvent(environmentMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleEnvironmentMenu));
+            CreateMenuItem(envPopup, "Terrain Tools", 104);
     }
 }
 
@@ -458,46 +487,961 @@ void Water::HandleEditMenu(StringHash eventType, VariantMap& eventData)
     editMenu_->SetSelection(M_MAX_UNSIGNED);
 }
 
-void Water::HandleEnvironmentMenu(StringHash eventType, VariantMap& eventData)
+Menu* Water::CreateMenuItem(UIElement* parent, const String& text, int actionId)
 {
-    using namespace ItemSelected;
-    int sel = eventData[P_SELECTION].GetI32();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
 
-    switch (sel)
+    auto* item = parent->CreateChild<Menu>();
+    item->SetStyleAuto();
+    item->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+
+    auto* label = item->CreateChild<Text>();
+    label->SetFont(font, 12);
+    label->SetText(text);
+    label->SetColor(Color(0.9f, 0.9f, 0.9f));
+
+    item->SetMinHeight(22);
+
+    item->SetVar("MenuAction", actionId);
+    SubscribeToEvent(item, E_MENUSELECTED, URHO3D_HANDLER(Water, HandleEnvironmentAction));
+    return item;
+}
+
+void Water::HandleEnvironmentAction(StringHash eventType, VariantMap& eventData)
+{
+    using namespace MenuSelected;
+    auto* element = static_cast<UIElement*>(eventData[P_ELEMENT].GetPtr());
+    if (!element) return;
+
+    int action = element->GetVar("MenuAction").GetI32();
+
+    switch (action)
     {
-    case 0:
+    case 100: // Wireframe
     {
         auto* camera = cameraNode_ ? cameraNode_->GetComponent<Camera>() : nullptr;
         if (camera)
             camera->SetFillMode(camera->GetFillMode() == FILL_SOLID ? FILL_WIREFRAME : FILL_SOLID);
         break;
     }
-    case 1: drawDebug_ = !drawDebug_; break;
-    case 2:
+    case 101: drawDebug_ = !drawDebug_; break;
+    case 102:
         if (zone_)
             zone_->SetHeightFog(!zone_->GetHeightFog());
         break;
-    case 3:
+    case 103:
         if (profilerUI_)
             profilerUI_->SetVisible(!profilerUI_->IsVisible());
         break;
-    case 4:
-        if (terrain_)
-        {
-            switch (brushMode_)
-            {
-            case 0: brushMode_ = 1; break;
-            case 1: brushMode_ = 3; break;
-            case 3: brushMode_ = 4; break;
-            default: brushMode_ = 0; break;
-            }
-            static const char* modeNames[] = {"Off", "Raise/Lower", "Lower", "Smooth", "Flatten"};
-            URHO3D_LOGINFO("Terrain brush: " + String(modeNames[brushMode_]));
-        }
+    case 104:
+        ToggleTerrainPanel();
         break;
     }
 
-    environmentMenu_->SetSelection(M_MAX_UNSIGNED);
+    // Close the top-level popup
+    if (environmentMenu_ && environmentMenu_->GetShowPopup())
+        environmentMenu_->ShowPopup(false);
+}
+
+void Water::HandleMenuButton(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Released;
+    auto* element = static_cast<UIElement*>(eventData[P_ELEMENT].GetPtr());
+    if (!element) return;
+
+    int action = element->GetVar("MenuAction").GetI32();
+
+    switch (action)
+    {
+    // Brush modes — stay in menu mode so user can also pick shape, then Tab to paint
+    case 200:
+        brushMode_ = 0;
+        if (terrainPanel_) terrainPanel_->SetVisible(false);
+        break;
+    case 201: brushMode_ = 1; break;
+    case 202: brushMode_ = 3; break;
+    case 203: brushMode_ = 4; break;
+    case 204: brushMode_ = 5; break;
+
+    // Brush shapes
+    case 210: brushShape_ = 0; break;
+    case 211: brushShape_ = 1; break;
+    case 212: brushShape_ = 2; break;
+    case 213: brushShape_ = 3; break;
+    case 214: brushShape_ = 4; break;
+    case 215: brushShape_ = 5; break;
+    case 216: brushShape_ = 6; break;
+
+    // Rotation
+    case 220: brushRotation_ -= 15.0f; if (brushRotation_ < 0.0f) brushRotation_ += 360.0f; break;
+    case 221: brushRotation_ += 15.0f; if (brushRotation_ >= 360.0f) brushRotation_ -= 360.0f; break;
+    case 222: brushRotation_ = 0.0f; break;
+
+    // Save/Load heightmap via file dialog
+    case 230: ShowSaveHeightmapDialog(); break;
+    case 231: ShowLoadHeightmapDialog(); break;
+
+    // Compute shaders
+    case 240: RunErosion(erosionIterations_); break;
+    case 241: TestComputeShader(); break;
+    }
+
+    // Refresh shape icons when rotation changes
+    if (action >= 220 && action <= 222)
+    {
+        for (int i = 0; i < 7; ++i)
+        {
+            if (shapeIcons_[i])
+                shapeIcons_[i]->SetTexture(GenerateShapeIcon(i));
+        }
+    }
+
+    // Auto-enter camera mode only when a brush mode button was just clicked
+    if (action >= 201 && action <= 204)
+    {
+        menuOpen_ = false;
+        auto* input = GetSubsystem<Input>();
+        GetSubsystem<UI>()->SetFocusElement(nullptr);
+        input->SetMouseMode(MM_RELATIVE);
+        input->SetMouseVisible(false);
+        useMouseMode_ = MM_RELATIVE;
+    }
+}
+
+void Water::CreateTerrainPanel()
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    auto* ui = GetSubsystem<UI>();
+    auto* uiRoot = ui->GetRoot();
+
+    terrainPanel_ = new Window(context_);
+    terrainPanel_->SetStyle("Window");
+    terrainPanel_->SetLayout(LM_VERTICAL, 4, IntRect(6, 6, 6, 6));
+    terrainPanel_->SetOpacity(0.85f);
+    terrainPanel_->SetVisible(false);
+    terrainPanel_->SetPosition(10, 34);  // Below menu bar
+    terrainPanel_->SetMovable(true);
+    uiRoot->AddChild(terrainPanel_);
+
+    // Title
+    auto* title = terrainPanel_->CreateChild<Text>();
+    title->SetFont(font, 12);
+    title->SetText("Terrain Tools");
+    title->SetColor(Color::WHITE);
+
+    // Brush mode label
+    auto* modeLabel = terrainPanel_->CreateChild<Text>();
+    modeLabel->SetFont(font, 11);
+    modeLabel->SetText("Brush Mode:");
+    modeLabel->SetColor(Color(0.7f, 0.7f, 0.7f));
+
+    // Brush mode buttons
+    auto* modeRow = terrainPanel_->CreateChild<UIElement>();
+    modeRow->SetLayout(LM_HORIZONTAL, 2);
+    modeRow->SetFixedHeight(24);
+    const char* modeNames[] = {"Off", "Height", "Smooth", "Flatten", "Erode"};
+    const int modeActions[] = {200, 201, 202, 203, 204};
+    for (int i = 0; i < 5; ++i)
+    {
+        auto* btn = modeRow->CreateChild<Button>();
+        btn->SetStyleAuto();
+        btn->SetMinWidth(50);
+        btn->SetFixedHeight(22);
+        btn->SetVar("MenuAction", modeActions[i]);
+        auto* txt = btn->CreateChild<Text>();
+        txt->SetFont(font, 11);
+        txt->SetText(modeNames[i]);
+        txt->SetColor(Color::WHITE);
+        txt->SetAlignment(HA_CENTER, VA_CENTER);
+        SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(Water, HandleMenuButton));
+    }
+
+    // Shape label
+    auto* shapeLabel = terrainPanel_->CreateChild<Text>();
+    shapeLabel->SetFont(font, 11);
+    shapeLabel->SetText("Brush Shape:");
+    shapeLabel->SetColor(Color(0.7f, 0.7f, 0.7f));
+
+    // Shape buttons with programmatic icons
+    auto* shapeRow = terrainPanel_->CreateChild<UIElement>();
+    shapeRow->SetLayout(LM_HORIZONTAL, 2);
+    shapeRow->SetFixedHeight(28);
+    for (int i = 0; i < 7; ++i)
+    {
+        auto* btn = shapeRow->CreateChild<Button>();
+        btn->SetStyleAuto();
+        btn->SetFixedSize(28, 26);
+        btn->SetVar("MenuAction", 210 + i);
+        auto* icon = btn->CreateChild<BorderImage>();
+        icon->SetTexture(GenerateShapeIcon(i));
+        icon->SetImageRect(IntRect(0, 0, 24, 24));
+        icon->SetBlendMode(BLEND_ALPHA);
+        icon->SetFixedSize(24, 24);
+        icon->SetAlignment(HA_CENTER, VA_CENTER);
+        shapeIcons_[i] = icon;
+        SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(Water, HandleMenuButton));
+    }
+
+    // Brush size slider (1-50)
+    auto* sizeRow = terrainPanel_->CreateChild<UIElement>();
+    sizeRow->SetLayout(LM_HORIZONTAL, 4);
+    sizeRow->SetFixedHeight(20);
+    brushSizeLabel_ = sizeRow->CreateChild<Text>();
+    brushSizeLabel_->SetFont(font, 10);
+    brushSizeLabel_->SetText("Size: " + String((int)brushRadius_));
+    brushSizeLabel_->SetMinWidth(100);
+    auto* sizeSlider = sizeRow->CreateChild<Slider>();
+    sizeSlider->SetStyleAuto();
+    sizeSlider->SetFixedHeight(16);
+    sizeSlider->SetMinWidth(100);
+    sizeSlider->SetRange(49.0f);  // 1..50
+    sizeSlider->SetValue(brushRadius_ - 1.0f);
+    sizeSlider->SetVar("SliderID", 10);
+    SubscribeToEvent(sizeSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Brush strength slider (0.01-0.2)
+    auto* bstrRow = terrainPanel_->CreateChild<UIElement>();
+    bstrRow->SetLayout(LM_HORIZONTAL, 4);
+    bstrRow->SetFixedHeight(20);
+    brushStrLabel_ = bstrRow->CreateChild<Text>();
+    brushStrLabel_->SetFont(font, 10);
+    brushStrLabel_->SetText("Strength: " + String(brushStrength_, 2));
+    brushStrLabel_->SetMinWidth(100);
+    auto* bstrSlider = bstrRow->CreateChild<Slider>();
+    bstrSlider->SetStyleAuto();
+    bstrSlider->SetFixedHeight(16);
+    bstrSlider->SetMinWidth(100);
+    bstrSlider->SetRange(1.0f);  // normalized 0..1 -> 0.01..5.0
+    bstrSlider->SetValue((brushStrength_ - 0.01f) / 4.99f);
+    bstrSlider->SetVar("SliderID", 11);
+    SubscribeToEvent(bstrSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Rotation controls
+    auto* rotLabel = terrainPanel_->CreateChild<Text>();
+    rotLabel->SetFont(font, 11);
+    rotLabel->SetText("Rotation:");
+    rotLabel->SetColor(Color(0.7f, 0.7f, 0.7f));
+
+    auto* rotRow = terrainPanel_->CreateChild<UIElement>();
+    rotRow->SetLayout(LM_HORIZONTAL, 4);
+    rotRow->SetFixedHeight(24);
+
+    auto* rotLeft = rotRow->CreateChild<Button>();
+    rotLeft->SetStyleAuto();
+    rotLeft->SetMinWidth(40);
+    rotLeft->SetFixedHeight(22);
+    rotLeft->SetVar("MenuAction", 220);
+    auto* rlTxt = rotLeft->CreateChild<Text>();
+    rlTxt->SetFont(font, 11);
+    rlTxt->SetText("<< 15");
+    rlTxt->SetColor(Color::WHITE);
+    rlTxt->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(rotLeft, E_RELEASED, URHO3D_HANDLER(Water, HandleMenuButton));
+
+    auto* rotRight = rotRow->CreateChild<Button>();
+    rotRight->SetStyleAuto();
+    rotRight->SetMinWidth(40);
+    rotRight->SetFixedHeight(22);
+    rotRight->SetVar("MenuAction", 221);
+    auto* rrTxt = rotRight->CreateChild<Text>();
+    rrTxt->SetFont(font, 11);
+    rrTxt->SetText("15 >>");
+    rrTxt->SetColor(Color::WHITE);
+    rrTxt->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(rotRight, E_RELEASED, URHO3D_HANDLER(Water, HandleMenuButton));
+
+    auto* rotReset = rotRow->CreateChild<Button>();
+    rotReset->SetStyleAuto();
+    rotReset->SetMinWidth(30);
+    rotReset->SetFixedHeight(22);
+    rotReset->SetVar("MenuAction", 222);
+    auto* resTxt = rotReset->CreateChild<Text>();
+    resTxt->SetFont(font, 11);
+    resTxt->SetText("0");
+    resTxt->SetColor(Color::WHITE);
+    resTxt->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(rotReset, E_RELEASED, URHO3D_HANDLER(Water, HandleMenuButton));
+
+    // Save/Load heightmap
+    auto* ioRow = terrainPanel_->CreateChild<UIElement>();
+    ioRow->SetLayout(LM_HORIZONTAL, 4);
+    ioRow->SetFixedHeight(26);
+
+    auto* saveBtn = ioRow->CreateChild<Button>();
+    saveBtn->SetStyleAuto();
+    saveBtn->SetMinWidth(80);
+    saveBtn->SetFixedHeight(22);
+    saveBtn->SetVar("MenuAction", 230);
+    auto* saveTxt = saveBtn->CreateChild<Text>();
+    saveTxt->SetFont(font, 11);
+    saveTxt->SetText("Save Heightmap");
+    saveTxt->SetColor(Color::WHITE);
+    saveTxt->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(saveBtn, E_RELEASED, URHO3D_HANDLER(Water, HandleMenuButton));
+
+    auto* loadBtn = ioRow->CreateChild<Button>();
+    loadBtn->SetStyleAuto();
+    loadBtn->SetMinWidth(80);
+    loadBtn->SetFixedHeight(22);
+    loadBtn->SetVar("MenuAction", 231);
+    auto* loadTxt = loadBtn->CreateChild<Text>();
+    loadTxt->SetFont(font, 11);
+    loadTxt->SetText("Load Heightmap");
+    loadTxt->SetColor(Color::WHITE);
+    loadTxt->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(loadBtn, E_RELEASED, URHO3D_HANDLER(Water, HandleMenuButton));
+
+    // --- Erosion section ---
+    auto* divider = terrainPanel_->CreateChild<BorderImage>();
+    divider->SetStyle("EditorDivider");
+
+    auto* erosionTitle = terrainPanel_->CreateChild<Text>();
+    erosionTitle->SetFont(font, 11);
+    erosionTitle->SetText("Hydraulic Erosion");
+    erosionTitle->SetColor(Color(0.5f, 1.0f, 0.5f));
+
+    // Iterations slider (10-500)
+    auto* iterRow = terrainPanel_->CreateChild<UIElement>();
+    iterRow->SetLayout(LM_HORIZONTAL, 4);
+    iterRow->SetFixedHeight(20);
+    erosionIterLabel_ = iterRow->CreateChild<Text>();
+    erosionIterLabel_->SetFont(font, 10);
+    erosionIterLabel_->SetText("Iterations: " + String(erosionIterations_));
+    erosionIterLabel_->SetMinWidth(100);
+    auto* iterSlider = iterRow->CreateChild<Slider>();
+    iterSlider->SetStyleAuto();
+    iterSlider->SetFixedHeight(16);
+    iterSlider->SetMinWidth(100);
+    iterSlider->SetRange(99.0f);  // 1..100
+    iterSlider->SetValue((float)(erosionIterations_ - 1));
+    iterSlider->SetVar("SliderID", 1);
+    SubscribeToEvent(iterSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Rainfall slider (0.001-0.05)
+    auto* rainRow = terrainPanel_->CreateChild<UIElement>();
+    rainRow->SetLayout(LM_HORIZONTAL, 4);
+    rainRow->SetFixedHeight(20);
+    erosionRainLabel_ = rainRow->CreateChild<Text>();
+    erosionRainLabel_->SetFont(font, 10);
+    erosionRainLabel_->SetText("Rainfall: " + String(erosionRainfall_, 3));
+    erosionRainLabel_->SetMinWidth(100);
+    auto* rainSlider = rainRow->CreateChild<Slider>();
+    rainSlider->SetStyleAuto();
+    rainSlider->SetFixedHeight(16);
+    rainSlider->SetMinWidth(100);
+    rainSlider->SetRange(1.0f);  // normalized 0..1 -> 0.001..0.05
+    rainSlider->SetValue((erosionRainfall_ - 0.001f) / 0.049f);
+    rainSlider->SetVar("SliderID", 2);
+    SubscribeToEvent(rainSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Erosion strength slider (0.01-1.0)
+    auto* strRow = terrainPanel_->CreateChild<UIElement>();
+    strRow->SetLayout(LM_HORIZONTAL, 4);
+    strRow->SetFixedHeight(20);
+    erosionStrLabel_ = strRow->CreateChild<Text>();
+    erosionStrLabel_->SetFont(font, 10);
+    erosionStrLabel_->SetText("Strength: " + String(erosionStrength_, 2));
+    erosionStrLabel_->SetMinWidth(100);
+    auto* strSlider = strRow->CreateChild<Slider>();
+    strSlider->SetStyleAuto();
+    strSlider->SetFixedHeight(16);
+    strSlider->SetMinWidth(100);
+    strSlider->SetRange(1.0f);  // normalized 0..1 -> 0.01..1.0
+    strSlider->SetValue((erosionStrength_ - 0.01f) / 0.99f);
+    strSlider->SetVar("SliderID", 3);
+    SubscribeToEvent(strSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Max Depth slider (0.0-1.0, fraction of original height)
+    auto* depthRow = terrainPanel_->CreateChild<UIElement>();
+    depthRow->SetLayout(LM_HORIZONTAL, 4);
+    depthRow->SetFixedHeight(20);
+    erosionDepthLabel_ = depthRow->CreateChild<Text>();
+    erosionDepthLabel_->SetFont(font, 10);
+    erosionDepthLabel_->SetText("Max Depth: " + String(erosionMaxDepth_, 2));
+    erosionDepthLabel_->SetMinWidth(100);
+    auto* depthSlider = depthRow->CreateChild<Slider>();
+    depthSlider->SetStyleAuto();
+    depthSlider->SetFixedHeight(16);
+    depthSlider->SetMinWidth(100);
+    depthSlider->SetRange(1.0f);  // 0..1
+    depthSlider->SetValue(erosionMaxDepth_);
+    depthSlider->SetVar("SliderID", 4);
+    SubscribeToEvent(depthSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Min Height Floor slider (0.0-0.5, fraction of height range)
+    auto* floorRow = terrainPanel_->CreateChild<UIElement>();
+    floorRow->SetLayout(LM_HORIZONTAL, 4);
+    floorRow->SetFixedHeight(20);
+    erosionFloorLabel_ = floorRow->CreateChild<Text>();
+    erosionFloorLabel_->SetFont(font, 10);
+    erosionFloorLabel_->SetText("Min Floor: " + String(erosionMinHeight_, 2));
+    erosionFloorLabel_->SetMinWidth(100);
+    auto* floorSlider = floorRow->CreateChild<Slider>();
+    floorSlider->SetStyleAuto();
+    floorSlider->SetFixedHeight(16);
+    floorSlider->SetMinWidth(100);
+    floorSlider->SetRange(1.0f);  // normalized 0..1 -> 0.0..0.5
+    floorSlider->SetValue(erosionMinHeight_ / 0.5f);
+    floorSlider->SetVar("SliderID", 5);
+    SubscribeToEvent(floorSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Ridge Protection slider (0.0-1.0)
+    auto* ridgeRow = terrainPanel_->CreateChild<UIElement>();
+    ridgeRow->SetLayout(LM_HORIZONTAL, 4);
+    ridgeRow->SetFixedHeight(20);
+    erosionRidgeLabel_ = ridgeRow->CreateChild<Text>();
+    erosionRidgeLabel_->SetFont(font, 10);
+    erosionRidgeLabel_->SetText("Ridge Prot: " + String(erosionRidgeProtect_, 2));
+    erosionRidgeLabel_->SetMinWidth(100);
+    auto* ridgeSlider = ridgeRow->CreateChild<Slider>();
+    ridgeSlider->SetStyleAuto();
+    ridgeSlider->SetFixedHeight(16);
+    ridgeSlider->SetMinWidth(100);
+    ridgeSlider->SetRange(1.0f);  // 0..1
+    ridgeSlider->SetValue(erosionRidgeProtect_);
+    ridgeSlider->SetVar("SliderID", 6);
+    SubscribeToEvent(ridgeSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Border Padding slider (0-16 cells)
+    auto* borderRow = terrainPanel_->CreateChild<UIElement>();
+    borderRow->SetLayout(LM_HORIZONTAL, 4);
+    borderRow->SetFixedHeight(20);
+    erosionBorderLabel_ = borderRow->CreateChild<Text>();
+    erosionBorderLabel_->SetFont(font, 10);
+    erosionBorderLabel_->SetText("Border Pad: " + String(erosionBorderPad_));
+    erosionBorderLabel_->SetMinWidth(100);
+    auto* borderSlider = borderRow->CreateChild<Slider>();
+    borderSlider->SetStyleAuto();
+    borderSlider->SetFixedHeight(16);
+    borderSlider->SetMinWidth(100);
+    borderSlider->SetRange(16.0f);  // 0..16
+    borderSlider->SetValue((float)erosionBorderPad_);
+    borderSlider->SetVar("SliderID", 7);
+    SubscribeToEvent(borderSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleErosionSlider));
+
+    // Erode button
+    auto* erodeBtn = terrainPanel_->CreateChild<Button>();
+    erodeBtn->SetStyleAuto();
+    erodeBtn->SetMinWidth(120);
+    erodeBtn->SetFixedHeight(22);
+    erodeBtn->SetVar("MenuAction", 240);
+    auto* erodeTxt = erodeBtn->CreateChild<Text>();
+    erodeTxt->SetFont(font, 11);
+    erodeTxt->SetText("Erode World");
+    erodeTxt->SetColor(Color(0.5f, 1.0f, 0.5f));
+    erodeTxt->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(erodeBtn, E_RELEASED, URHO3D_HANDLER(Water, HandleMenuButton));
+}
+
+void Water::HandleErosionSlider(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    auto* slider = static_cast<Slider*>(eventData[P_ELEMENT].GetPtr());
+    float value = eventData[P_VALUE].GetFloat();
+    int id = slider->GetVar("SliderID").GetI32();
+
+    switch (id)
+    {
+    case 1:  // Iterations: 1..100
+        erosionIterations_ = 1 + (int)value;
+        if (erosionIterLabel_)
+            erosionIterLabel_->SetText("Iterations: " + String(erosionIterations_));
+        break;
+    case 2:  // Rainfall: 0.001..0.05
+        erosionRainfall_ = 0.001f + value * 0.049f;
+        if (erosionRainLabel_)
+            erosionRainLabel_->SetText("Rainfall: " + String(erosionRainfall_, 3));
+        break;
+    case 3:  // Strength: 0.01..1.0
+        erosionStrength_ = 0.01f + value * 0.99f;
+        if (erosionStrLabel_)
+            erosionStrLabel_->SetText("Strength: " + String(erosionStrength_, 2));
+        break;
+    case 4:  // Max Depth: 0.0..1.0
+        erosionMaxDepth_ = value;
+        if (erosionDepthLabel_)
+            erosionDepthLabel_->SetText("Max Depth: " + String(erosionMaxDepth_, 2));
+        break;
+    case 5:  // Min Floor: 0.0..0.5
+        erosionMinHeight_ = value * 0.5f;
+        if (erosionFloorLabel_)
+            erosionFloorLabel_->SetText("Min Floor: " + String(erosionMinHeight_, 2));
+        break;
+    case 6:  // Ridge Protection: 0.0..1.0
+        erosionRidgeProtect_ = value;
+        if (erosionRidgeLabel_)
+            erosionRidgeLabel_->SetText("Ridge Prot: " + String(erosionRidgeProtect_, 2));
+        break;
+    case 7:  // Border Padding: 0..16
+        erosionBorderPad_ = (int)value;
+        if (erosionBorderLabel_)
+            erosionBorderLabel_->SetText("Border Pad: " + String(erosionBorderPad_));
+        break;
+    case 10:  // Brush Size: 1..50
+        brushRadius_ = 1.0f + value;
+        if (brushSizeLabel_)
+            brushSizeLabel_->SetText("Size: " + String((int)brushRadius_));
+        break;
+    case 11:  // Brush Strength: 0.01..5.0
+        brushStrength_ = 0.01f + value * 4.99f;
+        if (brushStrLabel_)
+            brushStrLabel_->SetText("Strength: " + String(brushStrength_, 2));
+        break;
+    }
+}
+
+void Water::ToggleTerrainPanel()
+{
+    if (!terrainPanel_)
+        CreateTerrainPanel();
+
+    bool show = !terrainPanel_->IsVisible();
+    terrainPanel_->SetVisible(show);
+
+    // Close the environment menu popup but stay in menu mode
+    // so user can click the panel buttons
+    if (environmentMenu_ && environmentMenu_->GetShowPopup())
+        environmentMenu_->ShowPopup(false);
+}
+
+// ============================================================================
+// Heightmap Save/Load
+// ============================================================================
+
+void Water::ShowSaveHeightmapDialog()
+{
+    if (!editableHeightMap_) return;
+
+    auto* ui = GetSubsystem<UI>();
+    auto* style = ui->GetRoot()->GetDefaultStyle();
+
+    fileSelector_ = new FileSelector(context_);
+    fileSelector_->SetDefaultStyle(style);
+    fileSelector_->SetTitle("Save Heightmap");
+    fileSelector_->SetButtonTexts("Save", "Cancel");
+
+    Vector<String> filters;
+    filters.Push("*.png");
+    fileSelector_->SetFilters(filters, 0);
+
+    auto* fs = GetSubsystem<FileSystem>();
+    fileSelector_->SetPath(fs->GetProgramDir() + "Data/Textures/");
+    fileSelector_->SetFileName("HeightMap_edited.png");
+
+    SubscribeToEvent(fileSelector_, E_FILESELECTED, URHO3D_HANDLER(Water, HandleHeightmapSaveChosen));
+}
+
+void Water::ShowLoadHeightmapDialog()
+{
+    if (!terrain_ || !editableHeightMap_) return;
+
+    auto* ui = GetSubsystem<UI>();
+    auto* style = ui->GetRoot()->GetDefaultStyle();
+
+    fileSelector_ = new FileSelector(context_);
+    fileSelector_->SetDefaultStyle(style);
+    fileSelector_->SetTitle("Load Heightmap");
+    fileSelector_->SetButtonTexts("Load", "Cancel");
+
+    Vector<String> filters;
+    filters.Push("*.png");
+    filters.Push("*.*");
+    fileSelector_->SetFilters(filters, 0);
+
+    auto* fs = GetSubsystem<FileSystem>();
+    fileSelector_->SetPath(fs->GetProgramDir() + "Data/Textures/");
+
+    SubscribeToEvent(fileSelector_, E_FILESELECTED, URHO3D_HANDLER(Water, HandleHeightmapLoadChosen));
+}
+
+void Water::HandleHeightmapSaveChosen(StringHash eventType, VariantMap& eventData)
+{
+    using namespace FileSelected;
+    String path = eventData[P_FILENAME].GetString();
+    bool ok = eventData[P_OK].GetBool();
+    fileSelector_.Reset();
+
+    if (!ok || path.Empty()) return;
+    SaveHeightmapToFile(path);
+}
+
+void Water::HandleHeightmapLoadChosen(StringHash eventType, VariantMap& eventData)
+{
+    using namespace FileSelected;
+    String path = eventData[P_FILENAME].GetString();
+    bool ok = eventData[P_OK].GetBool();
+    fileSelector_.Reset();
+
+    if (!ok || path.Empty()) return;
+    LoadHeightmapFromFile(path);
+}
+
+void Water::SaveHeightmapToFile(const String& path)
+{
+    if (!editableHeightMap_) return;
+
+    if (editableHeightMap_->SavePNG(path))
+        URHO3D_LOGINFOF("Heightmap saved to %s", path.CString());
+    else
+        URHO3D_LOGERRORF("Failed to save heightmap to %s", path.CString());
+}
+
+void Water::LoadHeightmapFromFile(const String& path)
+{
+    if (!terrain_ || !editableHeightMap_) return;
+
+    SharedPtr<Image> loaded(new Image(context_));
+    File file(context_, path);
+    if (!loaded->Load(file))
+    {
+        URHO3D_LOGERRORF("Failed to load heightmap from %s", path.CString());
+        return;
+    }
+
+    int hmW = editableHeightMap_->GetWidth();
+    int hmH = editableHeightMap_->GetHeight();
+    int loadW = loaded->GetWidth();
+    int loadH = loaded->GetHeight();
+    int loadComps = loaded->GetComponents();
+
+    if (loadW != hmW || loadH != hmH)
+    {
+        URHO3D_LOGERRORF("Heightmap size mismatch: expected %dx%d, got %dx%d", hmW, hmH, loadW, loadH);
+        return;
+    }
+
+    unsigned char* dst = editableHeightMap_->GetData();
+    unsigned char* src = loaded->GetData();
+    int dstComps = editableHeightMap_->GetComponents();
+    for (int i = 0; i < hmW * hmH; ++i)
+    {
+        dst[i * dstComps] = src[i * loadComps];
+        dst[i * dstComps + 1] = (loadComps >= 2) ? src[i * loadComps + 1] : 0;
+    }
+    terrain_->ApplyHeightMap();
+    WakeSleepingBodiesOnTerrain();
+    URHO3D_LOGINFOF("Heightmap loaded from %s", path.CString());
+}
+
+void Water::WakeSleepingBodiesOnTerrain()
+{
+    auto* physicsWorld = scene_->GetComponent<PhysicsWorld>();
+    if (!physicsWorld || !terrain_)
+        return;
+
+    // Build bounding box from terrain dimensions
+    Vector3 spacing = terrain_->GetSpacing();
+    int hmW = terrain_->GetHeightMap() ? terrain_->GetHeightMap()->GetWidth() : 1025;
+    int hmH = terrain_->GetHeightMap() ? terrain_->GetHeightMap()->GetHeight() : 1025;
+    float halfW = hmW * spacing.x_ * 0.5f;
+    float halfH = hmH * spacing.z_ * 0.5f;
+    float maxY = 255.0f * spacing.y_;
+    Vector3 terrainPos = terrain_->GetNode()->GetWorldPosition();
+    BoundingBox terrainBB(
+        terrainPos + Vector3(-halfW, 0.0f, -halfH),
+        terrainPos + Vector3(halfW, maxY, halfH));
+
+    Vector<RigidBody*> bodies;
+    physicsWorld->GetRigidBodies(bodies, terrainBB);
+    for (unsigned i = 0; i < bodies.Size(); ++i)
+    {
+        if (!bodies[i]->IsActive())
+            bodies[i]->Activate();
+    }
+}
+
+// ============================================================================
+// Minimap
+// ============================================================================
+
+void Water::CreateMinimap()
+{
+    if (!editableHeightMap_ || !terrain_)
+        return;
+
+    auto* ui = GetSubsystem<UI>();
+    auto* uiRoot = ui->GetRoot();
+    const int displaySize = 192;
+    const int viewRadius = 80; // heightmap pixels visible around camera
+
+    // Load weight map for terrain coloring
+    auto* cache = GetSubsystem<ResourceCache>();
+    weightMapImg_ = cache->GetResource<Image>("Textures/TerrainWeights.png");
+
+    // Create display image (RGBA) — fixed size, shows zoomed region
+    minimapImg_ = new Image(context_);
+    minimapImg_->SetSize(displaySize, displaySize, 4);
+
+    minimapTex_ = new Texture2D(context_);
+    minimapTex_->SetSize(displaySize, displaySize, Graphics::GetRGBAFormat());
+    minimapTex_->SetFilterMode(FILTER_BILINEAR);
+
+    // BorderImage in bottom-right corner
+    minimap_ = uiRoot->CreateChild<BorderImage>("Minimap");
+    minimap_->SetTexture(minimapTex_);
+    minimap_->SetImageRect(IntRect(0, 0, displaySize, displaySize));
+    minimap_->SetFixedSize(displaySize, displaySize);
+    minimap_->SetAlignment(HA_RIGHT, VA_BOTTOM);
+    minimap_->SetPosition(-8, -8);
+    minimap_->SetOpacity(0.85f);
+
+    // Camera dot (always centered)
+    minimapCameraDot_ = minimap_->CreateChild<BorderImage>("CameraDot");
+    minimapCameraDot_->SetFixedSize(6, 6);
+    minimapCameraDot_->SetColor(Color::RED);
+    minimapCameraDot_->SetEnabled(false);
+    minimapCameraDot_->SetPosition(displaySize / 2 - 3, displaySize / 2 - 3);
+}
+
+void Water::UpdateMinimapTexture()
+{
+    // Called on terrain edits — just flag that the next camera update should refresh
+    // The actual rendering happens in UpdateMinimapCamera every frame
+}
+
+void Water::UpdateMinimapCamera()
+{
+    if (!minimap_ || !minimapImg_ || !minimapTex_ || !terrain_ || !cameraNode_ || !editableHeightMap_)
+        return;
+
+    int hmW = editableHeightMap_->GetWidth();
+    int hmH = editableHeightMap_->GetHeight();
+    int displaySize = minimapImg_->GetWidth();
+    const int viewRadius = 80; // heightmap pixels visible in each direction from camera
+
+    unsigned char* src = editableHeightMap_->GetData();
+    int srcComps = editableHeightMap_->GetComponents();
+
+    IntVector2 hmPos = terrain_->WorldToHeightMap(cameraNode_->GetWorldPosition());
+    int camHX = hmPos.x_;
+    int camHY = hmPos.y_;
+
+    float waterH = 0.0f;
+    if (waterNode_ && terrain_)
+        waterH = waterNode_->GetWorldPosition().y_ / terrain_->GetSpacing().y_;
+
+    // Camera facing direction from yaw — stable regardless of pitch
+    // Heightmap Y is inverted from world Z, so negate Z component
+    float yawRad = yaw_ * DEG_TO_RAD;
+    float dirX = sinf(yawRad);
+    float dirZ = -cosf(yawRad);
+
+    float coneHalf = cosf(30.0f * DEG_TO_RAD);
+
+    // Render zoomed view: each display pixel maps to a heightmap pixel
+    float scale = (float)(viewRadius * 2) / (float)displaySize;
+
+    for (int py = 0; py < displaySize; ++py)
+    {
+        for (int px = 0; px < displaySize; ++px)
+        {
+            // Heightmap coordinate for this display pixel
+            int hx = camHX + (int)((px - displaySize / 2) * scale);
+            int hy = camHY + (int)((py - displaySize / 2) * scale);
+
+            if (hx < 0 || hx >= hmW || hy < 0 || hy >= hmH)
+            {
+                minimapImg_->SetPixel(px, py, Color(0.02f, 0.02f, 0.05f, 1.0f));
+                continue;
+            }
+
+            int si = (hy * hmW + hx) * srcComps;
+            float h = (float)src[si] + (float)src[si + 1] / 256.0f;
+            float brightness = Clamp(h / 255.0f, 0.0f, 1.0f) * 0.5f + 0.5f;
+
+            // Sample weight map for terrain layer blending
+            float r, gb, b;
+            if (h < waterH)
+            {
+                // Below water: blue tint
+                r = brightness * 0.2f;
+                gb = brightness * 0.3f;
+                b = Clamp(brightness * 0.5f + 0.3f, 0.0f, 1.0f);
+            }
+            else if (weightMapImg_)
+            {
+                // Layer colors: 1=grass, 2=rock, 3=snow, 4=sand
+                static const float layerR[] = {0.3f, 0.45f, 0.95f, 0.76f};
+                static const float layerG[] = {0.55f, 0.38f, 0.95f, 0.65f};
+                static const float layerB[] = {0.15f, 0.30f, 1.0f, 0.40f};
+
+                int wmW = weightMapImg_->GetWidth();
+                int wmH = weightMapImg_->GetHeight();
+                int wx = hx * wmW / hmW;
+                int wy = hy * wmH / hmH;
+                wx = Clamp(wx, 0, wmW - 1);
+                wy = Clamp(wy, 0, wmH - 1);
+                Color wc = weightMapImg_->GetPixel(wx, wy);
+                float weights[4] = {wc.r_, wc.g_, wc.b_, wc.a_};
+
+                r = gb = b = 0.0f;
+                for (int l = 0; l < 4; ++l)
+                {
+                    r += weights[l] * layerR[l];
+                    gb += weights[l] * layerG[l];
+                    b += weights[l] * layerB[l];
+                }
+                r *= brightness;
+                gb *= brightness;
+                b *= brightness;
+            }
+            else
+            {
+                float t = Clamp((h - waterH) / 40.0f, 0.0f, 1.0f);
+                r = brightness * (0.3f + t * 0.5f);
+                gb = brightness * (0.55f - t * 0.2f);
+                b = brightness * 0.15f;
+            }
+
+            // Spotlight cone overlay
+            float offX = (float)(px - displaySize / 2);
+            float offY = (float)(py - displaySize / 2);
+            float dist = sqrtf(offX * offX + offY * offY);
+            if (dist > 5.0f && dist < displaySize * 0.45f)
+            {
+                float pdx = offX / dist;
+                float pdy = offY / dist;
+                float dot = pdx * dirX + pdy * dirZ;
+                if (dot > coneHalf)
+                {
+                    float angleFade = (dot - coneHalf) / (1.0f - coneHalf);
+                    float distFade = 1.0f - dist / (displaySize * 0.45f);
+                    float bright = angleFade * distFade * 0.4f;
+                    r = Clamp(r + bright, 0.0f, 1.0f);
+                    gb = Clamp(gb + bright, 0.0f, 1.0f);
+                    b = Clamp(b + bright * 0.7f, 0.0f, 1.0f);
+                }
+            }
+
+            minimapImg_->SetPixel(px, py, Color(r, gb, b, 1.0f));
+        }
+    }
+
+    minimapTex_->SetData(minimapImg_);
+}
+
+static void DrawLineOnImage(Image* img, int x0, int y0, int x1, int y1, const Color& color)
+{
+    int dx = abs(x1 - x0), dy = abs(y1 - y0);
+    int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    int err = dx - dy;
+    int w = img->GetWidth(), h = img->GetHeight();
+    for (;;)
+    {
+        if (x0 >= 0 && x0 < w && y0 >= 0 && y0 < h)
+            img->SetPixel(x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx) { err += dx; y0 += sy; }
+    }
+}
+
+SharedPtr<Texture2D> Water::GenerateShapeIcon(int shape)
+{
+    const int sz = 24;
+    const int cx = sz / 2, cy = sz / 2;
+    const float r = 10.0f;
+    Color white(1.0f, 1.0f, 1.0f, 1.0f);
+
+    SharedPtr<Image> img(new Image(context_));
+    img->SetSize(sz, sz, 4);
+    // Clear to transparent
+    for (int y = 0; y < sz; ++y)
+        for (int x = 0; x < sz; ++x)
+            img->SetPixel(x, y, Color(0, 0, 0, 0));
+
+    // Compute vertices
+    Vector<IntVector2> verts;
+
+    switch (shape)
+    {
+    case 0: // Circle — draw using distance field for clean result
+    {
+        for (int y = 0; y < sz; ++y)
+        {
+            for (int x = 0; x < sz; ++x)
+            {
+                float dx = (float)(x - cx), dy = (float)(y - cy);
+                float dist = sqrtf(dx * dx + dy * dy);
+                // Anti-aliased ring: 1px wide at radius r
+                float alpha = 1.0f - fabsf(dist - r);
+                if (alpha > 0.0f)
+                    img->SetPixel(x, y, Color(1.0f, 1.0f, 1.0f, Clamp(alpha, 0.0f, 1.0f)));
+            }
+        }
+        // No polygon verts needed, skip line drawing
+        SharedPtr<Texture2D> tex(new Texture2D(context_));
+        tex->SetSize(sz, sz, Graphics::GetRGBAFormat());
+        tex->SetData(img);
+        tex->SetFilterMode(FILTER_BILINEAR);
+        return tex;
+    }
+    case 1: // Square
+        verts.Push(IntVector2(cx - (int)r, cy - (int)r));
+        verts.Push(IntVector2(cx + (int)r, cy - (int)r));
+        verts.Push(IntVector2(cx + (int)r, cy + (int)r));
+        verts.Push(IntVector2(cx - (int)r, cy + (int)r));
+        break;
+    case 2: // Triangle (point-up)
+    {
+        float triAngles[3] = {-M_PI / 2.0f, M_PI * 5.0f / 6.0f, M_PI / 6.0f};
+        for (int i = 0; i < 3; ++i)
+            verts.Push(IntVector2(cx + (int)(cosf(triAngles[i]) * r), cy + (int)(sinf(triAngles[i]) * r)));
+        break;
+    }
+    case 3: // Star (5-pointed)
+    {
+        float innerR = r * 0.38f;
+        for (int i = 0; i < 10; ++i)
+        {
+            float a = -M_PI / 2.0f + (float)i / 10.0f * 2.0f * M_PI;
+            float rad = (i % 2 == 0) ? r : innerR;
+            verts.Push(IntVector2(cx + (int)(cosf(a) * rad), cy + (int)(sinf(a) * rad)));
+        }
+        break;
+    }
+    default: // 4=pentagon(5), 5=hexagon(6), 6=octagon(8)
+    {
+        int sides;
+        switch (shape) { case 4: sides = 5; break; case 5: sides = 6; break; default: sides = 8; break; }
+        for (int i = 0; i < sides; ++i)
+        {
+            float a = -M_PI / 2.0f + (float)i / (float)sides * 2.0f * M_PI;
+            verts.Push(IntVector2(cx + (int)(cosf(a) * r), cy + (int)(sinf(a) * r)));
+        }
+        break;
+    }
+    }
+
+    // Apply brush rotation to vertices
+    if (brushRotation_ != 0.0f)
+    {
+        float ra = brushRotation_ * M_DEGTORAD;
+        float cs = cosf(ra), sn = sinf(ra);
+        for (unsigned i = 0; i < verts.Size(); ++i)
+        {
+            float lx = (float)(verts[i].x_ - cx);
+            float ly = (float)(verts[i].y_ - cy);
+            verts[i].x_ = cx + (int)(lx * cs - ly * sn);
+            verts[i].y_ = cy + (int)(lx * sn + ly * cs);
+        }
+    }
+
+    // Draw lines between vertices
+    for (unsigned i = 0; i < verts.Size(); ++i)
+    {
+        unsigned j = (i + 1) % verts.Size();
+        DrawLineOnImage(img, verts[i].x_, verts[i].y_, verts[j].x_, verts[j].y_, white);
+    }
+
+    SharedPtr<Texture2D> tex(new Texture2D(context_));
+    tex->SetSize(sz, sz, Graphics::GetRGBAFormat());
+    tex->SetData(img);
+    tex->SetFilterMode(FILTER_NEAREST);
+    return tex;
 }
 
 // ============================================================================
@@ -506,12 +1450,9 @@ void Water::HandleEnvironmentMenu(StringHash eventType, VariantMap& eventData)
 
 void Water::MoveCamera(float timeStep)
 {
-    if (GetSubsystem<UI>()->GetFocusElement())
-        return;
-
     auto* input = GetSubsystem<Input>();
 
-    // Tab = toggle cursor/camera mode
+    // Tab = toggle cursor/camera mode (checked before UI focus guard)
     if (input->GetKeyPress(KEY_TAB))
     {
         menuOpen_ = !menuOpen_;
@@ -529,6 +1470,24 @@ void Water::MoveCamera(float timeStep)
             useMouseMode_ = MM_RELATIVE;
         }
     }
+
+    // [ and ] = cycle brush shape (before focus guard so it works with terrain panel open)
+    {
+        static const char* shapeNames[] = {"Circle", "Square", "Triangle", "Star", "Pentagon", "Hexagon", "Octagon"};
+        if (input->GetKeyPress(KEY_LEFTBRACKET))
+        {
+            brushShape_ = (brushShape_ + 6) % 7;
+            URHO3D_LOGINFOF("Brush shape: %s (%d)", shapeNames[brushShape_], brushShape_);
+        }
+        if (input->GetKeyPress(KEY_RIGHTBRACKET))
+        {
+            brushShape_ = (brushShape_ + 1) % 7;
+            URHO3D_LOGINFOF("Brush shape: %s (%d)", shapeNames[brushShape_], brushShape_);
+        }
+    }
+
+    if (GetSubsystem<UI>()->GetFocusElement())
+        return;
 
     // Hotkeys
     if (input->GetKeyPress(KEY_SPACE))
@@ -649,7 +1608,8 @@ void Water::MoveCamera(float timeStep)
 
     // Terrain brush raycast
     hasBrushHit_ = false;
-    if (terrain_ && brushMode_ != 0)
+    bool showBrush = (brushMode_ != 0) || (terrainPanel_ && terrainPanel_->IsVisible());
+    if (terrain_ && showBrush)
     {
         auto* camera = cameraNode_->GetComponent<Camera>();
         auto* graphics = GetSubsystem<Graphics>();
@@ -682,9 +1642,13 @@ void Water::MoveCamera(float timeStep)
                     cachedBrushHit_ = results[i].position_;
                     hasBrushHit_ = true;
 
-                    auto* uiElem = GetSubsystem<UI>()->GetElementAt(input->GetMousePosition());
-                    if (uiElem)
-                        break;
+                    // In menu mode, don't paint if mouse is over a UI element
+                    if (menuOpen_)
+                    {
+                        auto* uiElem = GetSubsystem<UI>()->GetElementAt(input->GetMousePosition());
+                        if (uiElem)
+                            break;
+                    }
 
                     if (brushMode_ == 1)
                     {
@@ -704,6 +1668,10 @@ void Water::MoveCamera(float timeStep)
         }
     }
 
+    // Reset flatten lock when mouse released
+    if (brushMode_ == 4 && !input->GetMouseButtonDown(MOUSEB_LEFT) && !input->GetMouseButtonDown(MOUSEB_RIGHT))
+        lockedFlattenHeight_ = -1.0f;
+
     // Reflection camera aspect ratio
     if (reflectionCameraNode_)
     {
@@ -718,16 +1686,135 @@ void Water::MoveCamera(float timeStep)
 // Terrain Brush
 // ============================================================================
 
+// Unified shape falloff: build the same vertices as DrawBrushOutline,
+// then test point-in-polygon + distance-to-nearest-edge for falloff.
+float Water::BrushShapeFalloff(float dx, float dz, float radius) const
+{
+    if (radius < 0.001f)
+        return -1.0f;
+
+    // Apply inverse rotation to test point (rotates shape visually)
+    if (brushRotation_ != 0.0f)
+    {
+        float ra = -brushRotation_ * DEG_TO_RAD;
+        float cs = cosf(ra), sn = sinf(ra);
+        float rdx = dx * cs - dz * sn;
+        float rdz = dx * sn + dz * cs;
+        dx = rdx;
+        dz = rdz;
+    }
+
+    // Circle uses simple radial distance
+    if (brushShape_ == 0)
+    {
+        float dist = sqrtf(dx * dx + dz * dz);
+        if (dist > radius) return -1.0f;
+        return 1.0f - dist / radius;
+    }
+
+    // Square uses max-axis distance
+    if (brushShape_ == 1)
+    {
+        float adx = fabsf(dx), adz = fabsf(dz);
+        if (adx > radius || adz > radius) return -1.0f;
+        float edgeDist = Max(adx, adz);
+        return 1.0f - edgeDist / radius;
+    }
+
+    // All other shapes: build vertex list, test point-in-polygon
+    float vx[20], vz[20];
+    int nv = 0;
+
+    switch (brushShape_)
+    {
+    case 2: // Triangle (point-up) — must match DrawBrushOutline angles
+    {
+        float angles[3] = {90.0f * DEG_TO_RAD, 210.0f * DEG_TO_RAD, 330.0f * DEG_TO_RAD};
+        for (int i = 0; i < 3; ++i)
+        {
+            vx[i] = radius * cosf(angles[i]);
+            vz[i] = radius * sinf(angles[i]);
+        }
+        nv = 3;
+        break;
+    }
+    case 3: // Star (5-pointed, 10 vertices) — start at top (+π/2)
+    {
+        float innerR = radius * 0.38f;
+        for (int i = 0; i < 10; ++i)
+        {
+            float a = (float)(M_PI / 2.0) + (float)i / 10.0f * 2.0f * (float)M_PI;
+            float r = (i % 2 == 0) ? radius : innerR;
+            vx[i] = r * cosf(a);
+            vz[i] = r * sinf(a);
+        }
+        nv = 10;
+        break;
+    }
+    default: // 4=pentagon(5), 5=hexagon(6), 6=octagon(8) — start at top (+π/2)
+    {
+        int sides;
+        switch (brushShape_) { case 4: sides = 5; break; case 5: sides = 6; break; default: sides = 8; break; }
+        for (int i = 0; i < sides; ++i)
+        {
+            float a = (float)(M_PI / 2.0) + (float)i / (float)sides * 2.0f * (float)M_PI;
+            vx[i] = radius * cosf(a);
+            vz[i] = radius * sinf(a);
+        }
+        nv = sides;
+        break;
+    }
+    }
+
+    // Point-in-polygon (ray casting / crossing number)
+    int crossings = 0;
+    for (int i = 0; i < nv; ++i)
+    {
+        int j = (i + 1) % nv;
+        if ((vz[i] <= dz && vz[j] > dz) || (vz[j] <= dz && vz[i] > dz))
+        {
+            float t = (dz - vz[i]) / (vz[j] - vz[i]);
+            if (dx < vx[i] + t * (vx[j] - vx[i]))
+                crossings++;
+        }
+    }
+    if ((crossings & 1) == 0)
+        return -1.0f; // outside
+
+    // Falloff: distance to nearest edge, normalized
+    float minDist = 1e9f;
+    for (int i = 0; i < nv; ++i)
+    {
+        int j = (i + 1) % nv;
+        float ex = vx[j] - vx[i], ez = vz[j] - vz[i];
+        float len = sqrtf(ex * ex + ez * ez);
+        if (len < 0.001f) continue;
+        // Perpendicular distance from point to edge line
+        float d = fabsf((dx - vx[i]) * (-ez / len) + (dz - vz[i]) * (ex / len));
+        if (d < minDist) minDist = d;
+    }
+    // Normalize by inradius approximation (half of radius)
+    float inradius = radius * 0.4f;
+    return Clamp(minDist / inradius, 0.0f, 1.0f);
+}
+
 void Water::ApplyBrush(const Vector3& worldPos, float timeStep)
 {
     if (!terrain_ || !editableHeightMap_ || brushMode_ == 0)
         return;
 
+    // Diagnostic: log shape on first frame of each stroke
+    static bool wasActive = false;
+    bool active = true;
+    if (!wasActive)
+        URHO3D_LOGINFOF("ApplyBrush: shape=%d mode=%d radius=%.1f", brushShape_, brushMode_, brushRadius_);
+    wasActive = active;
+
     IntVector2 center = terrain_->WorldToHeightMap(worldPos);
     int hmW = editableHeightMap_->GetWidth();
     int hmH = editableHeightMap_->GetHeight();
     int radius = (int)brushRadius_;
-    float baseStrength = (brushMode_ == 3 || brushMode_ == 4) ? smoothStrength_ : brushStrength_;
+    float baseStrength = (brushMode_ == 3) ? smoothStrength_ : brushStrength_;
     float strength = baseStrength * timeStep * 2.5f;
 
     unsigned char* data = editableHeightMap_->GetData();
@@ -749,17 +1836,22 @@ void Water::ApplyBrush(const Vector3& worldPos, float timeStep)
     float flattenHeight = 0.0f;
     if (brushMode_ == 4)
     {
-        int cx = Clamp(center.x_, 0, hmW - 1);
-        int cy = Clamp(center.y_, 0, hmH - 1);
-        flattenHeight = readH(cx, cy);
+        // Lock height on first click, keep it until mouse released
+        if (lockedFlattenHeight_ < 0.0f)
+        {
+            int cx = Clamp(center.x_, 0, hmW - 1);
+            int cy = Clamp(center.y_, 0, hmH - 1);
+            lockedFlattenHeight_ = readH(cx, cy);
+        }
+        flattenHeight = lockedFlattenHeight_;
     }
 
     for (int dz = -radius; dz <= radius; ++dz)
     {
         for (int dx = -radius; dx <= radius; ++dx)
         {
-            float dist = sqrtf((float)(dx * dx + dz * dz));
-            if (dist > brushRadius_)
+            float falloff = BrushShapeFalloff((float)dx, (float)dz, brushRadius_);
+            if (falloff < 0.0f)
                 continue;
 
             int px = center.x_ + dx;
@@ -767,37 +1859,48 @@ void Water::ApplyBrush(const Vector3& worldPos, float timeStep)
             if (px < 0 || px >= hmW || py < 0 || py >= hmH)
                 continue;
 
-            float falloff = 1.0f - dist / brushRadius_;
             float h = readH(px, py);
 
             switch (brushMode_)
             {
             case 1: h += strength * falloff; break;
             case 2: h -= strength * falloff; break;
-            case 3:
+            case 3: // Smooth toward water height
             {
-                float sum = 0.0f;
-                int count = 0;
-                for (int nz = -1; nz <= 1; ++nz)
-                {
-                    for (int nx = -1; nx <= 1; ++nx)
-                    {
-                        int npx = px + nx;
-                        int npy = py + nz;
-                        if (npx >= 0 && npx < hmW && npy >= 0 && npy < hmH)
-                        {
-                            sum += readH(npx, npy);
-                            count++;
-                        }
-                    }
-                }
-                float avg = sum / (float)count;
-                h = h + (avg - h) * falloff * baseStrength;
+                float waterTarget = waterNode_->GetWorldPosition().y_ / (255.0f * terrain_->GetSpacing().y_);
+                h = h + (waterTarget - h) * falloff * baseStrength;
                 break;
             }
             case 4:
-                h = h + (flattenHeight - h) * falloff * baseStrength;
+                // Center (falloff=1): snap to target height
+                // Edge (falloff→0): keep original height
+                h = h + (flattenHeight - h) * falloff;
                 break;
+            case 5:
+            {
+                // Erosion brush: move material downhill to lowest neighbor
+                float lowest = h;
+                int lx = px, ly = py;
+                for (int ny = -1; ny <= 1; ++ny)
+                {
+                    for (int nx = -1; nx <= 1; ++nx)
+                    {
+                        if (nx == 0 && ny == 0) continue;
+                        int npx = px + nx, npy = py + ny;
+                        if (npx < 0 || npx >= hmW || npy < 0 || npy >= hmH) continue;
+                        float nh = readH(npx, npy);
+                        if (nh < lowest) { lowest = nh; lx = npx; ly = npy; }
+                    }
+                }
+                float diff = h - lowest;
+                if (diff > 0.0001f)
+                {
+                    float transfer = diff * falloff * baseStrength;
+                    h -= transfer;
+                    writeH(lx, ly, lowest + transfer);
+                }
+                break;
+            }
             }
 
             writeH(px, py, h);
@@ -805,6 +1908,7 @@ void Water::ApplyBrush(const Vector3& worldPos, float timeStep)
     }
 
     terrain_->ApplyHeightMap();
+    UpdateMinimapTexture();
 
     Vector3 spacing = terrain_->GetSpacing();
     float worldRadius = brushRadius_ * spacing.x_ + 2.0f;
@@ -826,7 +1930,7 @@ void Water::ApplyLowerBrush(const Vector3& worldPos, float timeStep)
     brushMode_ = saved;
 }
 
-void Water::DrawBrushCircle(const Vector3& worldPos)
+void Water::DrawBrushOutline(const Vector3& worldPos)
 {
     auto* debug = scene_->GetComponent<DebugRenderer>();
     if (!debug || !terrain_)
@@ -835,23 +1939,105 @@ void Water::DrawBrushCircle(const Vector3& worldPos)
     Vector3 spacing = terrain_->GetSpacing();
     float worldRadius = brushRadius_ * spacing.x_;
 
-    const int segments = 32;
     Color brushColor = Color::GREEN;
     if (brushMode_ == 2) brushColor = Color::RED;
     else if (brushMode_ == 3) brushColor = Color::CYAN;
     else if (brushMode_ == 4) brushColor = Color(1.0f, 0.5f, 0.0f);
+    else if (brushMode_ == 5) brushColor = Color(0.5f, 0.3f, 0.1f);  // brown for erosion
 
-    Vector3 prevPoint;
-    for (int i = 0; i <= segments; ++i)
+    // Build outline vertices based on shape
+    Vector<Vector3> verts;
+
+    switch (brushShape_)
     {
-        float angle = (float)i / (float)segments * 360.0f * DEG_TO_RAD;
-        Vector3 point = worldPos + Vector3(cosf(angle) * worldRadius, 0.0f, sinf(angle) * worldRadius);
-        point.y_ = terrain_->GetHeight(point) + 0.2f;
-        if (i > 0)
-            debug->AddLine(prevPoint, point, brushColor);
-        prevPoint = point;
+    case 0: // Circle — 32 segments
+    {
+        const int segs = 32;
+        for (int i = 0; i <= segs; ++i)
+        {
+            float a = (float)i / (float)segs * 2.0f * M_PI;
+            verts.Push(worldPos + Vector3(cosf(a) * worldRadius, 0.0f, sinf(a) * worldRadius));
+        }
+        break;
+    }
+    case 1: // Square
+    {
+        float r = worldRadius;
+        verts.Push(worldPos + Vector3(-r, 0, -r));
+        verts.Push(worldPos + Vector3( r, 0, -r));
+        verts.Push(worldPos + Vector3( r, 0,  r));
+        verts.Push(worldPos + Vector3(-r, 0,  r));
+        verts.Push(worldPos + Vector3(-r, 0, -r)); // close
+        break;
+    }
+    case 2: // Triangle (equilateral, point-up)
+    {
+        for (int i = 0; i <= 3; ++i)
+        {
+            float a;
+            switch (i % 3)
+            {
+            case 0: a = 90.0f * DEG_TO_RAD; break;
+            case 1: a = 210.0f * DEG_TO_RAD; break;
+            case 2: a = 330.0f * DEG_TO_RAD; break;
+            default: a = 90.0f * DEG_TO_RAD; break;
+            }
+            verts.Push(worldPos + Vector3(cosf(a) * worldRadius, 0.0f, sinf(a) * worldRadius));
+        }
+        break;
+    }
+    case 3: // Star (5-pointed, 10 vertices alternating outer/inner)
+    {
+        float innerR = worldRadius * 0.38f;
+        for (int i = 0; i <= 10; ++i)
+        {
+            float a = (float)(i % 10) / 10.0f * 2.0f * M_PI + M_PI / 2.0f; // start at top
+            float r = (i % 2 == 0) ? worldRadius : innerR;
+            verts.Push(worldPos + Vector3(cosf(a) * r, 0.0f, sinf(a) * r));
+        }
+        break;
+    }
+    default: // Regular polygon: 4=pentagon(5), 5=hexagon(6), 6=octagon(8)
+    {
+        int sides;
+        switch (brushShape_)
+        {
+        case 4: sides = 5; break;
+        case 5: sides = 6; break;
+        case 6: sides = 8; break;
+        default: sides = 6; break;
+        }
+        for (int i = 0; i <= sides; ++i)
+        {
+            float a = (float)(i % sides) / (float)sides * 2.0f * M_PI + M_PI / 2.0f; // start at top
+            verts.Push(worldPos + Vector3(cosf(a) * worldRadius, 0.0f, sinf(a) * worldRadius));
+        }
+        break;
+    }
     }
 
+    // Apply rotation to outline vertices
+    if (brushRotation_ != 0.0f)
+    {
+        float ra = brushRotation_ * DEG_TO_RAD;
+        float cs = cosf(ra), sn = sinf(ra);
+        for (unsigned i = 0; i < verts.Size(); ++i)
+        {
+            float lx = verts[i].x_ - worldPos.x_;
+            float lz = verts[i].z_ - worldPos.z_;
+            verts[i].x_ = worldPos.x_ + lx * cs - lz * sn;
+            verts[i].z_ = worldPos.z_ + lx * sn + lz * cs;
+        }
+    }
+
+    // Snap each vertex to terrain height
+    for (unsigned i = 0; i < verts.Size(); ++i)
+        verts[i].y_ = terrain_->GetHeight(verts[i]) + 0.2f;
+
+    for (unsigned i = 1; i < verts.Size(); ++i)
+        debug->AddLine(verts[i - 1], verts[i], brushColor);
+
+    // Center crosshair
     float cross = worldRadius * 0.15f;
     float centerY = terrain_->GetHeight(worldPos) + 0.3f;
     Vector3 center(worldPos.x_, centerY, worldPos.z_);
@@ -1241,6 +2427,9 @@ void Water::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // Update celestial bodies
     UpdateCelestialBodies(timeStep);
 
+    // Update minimap camera position
+    UpdateMinimapCamera();
+
     if (renderPath_)
         renderPath_->SetShaderParameter("MainCameraY", cameraNode_->GetWorldPosition().y_);
 
@@ -1254,8 +2443,8 @@ void Water::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
 void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
 {
-    if (hasBrushHit_ && brushMode_ != 0)
-        DrawBrushCircle(cachedBrushHit_);
+    if (hasBrushHit_ && (brushMode_ != 0 || (terrainPanel_ && terrainPanel_->IsVisible())))
+        DrawBrushOutline(cachedBrushHit_);
 
     if (!drawDebug_)
         return;
@@ -1263,4 +2452,286 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
     auto* physics = scene_->GetComponent<PhysicsWorld>();
     if (physics)
         physics->DrawDebugGeometry(true);
+}
+
+void Water::TestComputeShader()
+{
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    // Load the test compute shader
+    auto* shader = cache->GetResource<Shader>("Shaders/GLSL/TestCompute.glsl");
+    if (!shader)
+    {
+        URHO3D_LOGERROR("TestCompute: Failed to load TestCompute.glsl");
+        return;
+    }
+
+    ShaderVariation* cs = shader->GetVariation(CS, "");
+    if (!cs)
+    {
+        URHO3D_LOGERROR("TestCompute: Failed to get compute shader variation");
+        return;
+    }
+
+    // Create input buffer: 64 floats [1.0, 2.0, ... 64.0]
+    const unsigned NUM_FLOATS = 64;
+    float inputData[NUM_FLOATS];
+    for (unsigned i = 0; i < NUM_FLOATS; ++i)
+        inputData[i] = (float)(i + 1);
+
+    // Create output buffer: 64 floats initialized to zero
+    float outputData[NUM_FLOATS];
+    memset(outputData, 0, sizeof(outputData));
+
+    // Use VertexBuffers as SSBOs (they have STORAGE_BUFFER_BIT usage flag)
+    // Each "vertex" is one float (4 bytes) — use a single FLOAT element
+    Vector<VertexElement> elements;
+    elements.Push(VertexElement(TYPE_FLOAT, SEM_POSITION));
+
+    SharedPtr<VertexBuffer> inputBuffer(new VertexBuffer(context_));
+    inputBuffer->SetShadowed(true);
+    inputBuffer->SetSize(NUM_FLOATS, elements, false);
+    inputBuffer->SetData(inputData);
+
+    SharedPtr<VertexBuffer> outputBuffer(new VertexBuffer(context_));
+    outputBuffer->SetShadowed(true);
+    outputBuffer->SetSize(NUM_FLOATS, elements, false);
+    outputBuffer->SetData(outputData);
+
+    URHO3D_LOGINFO("TestCompute: Buffers created, dispatching compute shader...");
+
+    // Bind compute shader and storage buffers
+    graphics->SetComputeShader(cs);
+    graphics->SetStorageBuffer(0, inputBuffer);
+    graphics->SetStorageBuffer(1, outputBuffer);
+
+    // Dispatch: 1 group of 64 threads
+    graphics->DispatchCompute(1);
+
+    URHO3D_LOGINFO("TestCompute: Dispatch complete — check log for errors");
+
+    // Clean up
+    graphics->SetComputeShader(nullptr);
+    graphics->SetStorageBuffer(0, nullptr);
+    graphics->SetStorageBuffer(1, nullptr);
+}
+
+void Water::RunErosion(int iterations)
+{
+    if (!terrain_ || !editableHeightMap_)
+    {
+        URHO3D_LOGERROR("RunErosion: No terrain or heightmap");
+        return;
+    }
+
+    auto* graphics = GetSubsystem<Graphics>();
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    // Load erosion shader with two pass variations
+    auto* shader = cache->GetResource<Shader>("Shaders/GLSL/Erosion.glsl");
+    if (!shader)
+    {
+        URHO3D_LOGERROR("RunErosion: Failed to load Erosion.glsl");
+        return;
+    }
+
+    ShaderVariation* passFlux = shader->GetVariation(CS, "PASS_FLUX");
+    ShaderVariation* passTransport = shader->GetVariation(CS, "PASS_TRANSPORT");
+    if (!passFlux || !passTransport)
+    {
+        URHO3D_LOGERROR("RunErosion: Failed to get shader variations");
+        return;
+    }
+
+    int hmW = editableHeightMap_->GetWidth();
+    int hmH = editableHeightMap_->GetHeight();
+    int numCells = hmW * hmH;
+    int comps = editableHeightMap_->GetComponents();
+    unsigned char* hmData = editableHeightMap_->GetData();
+
+    URHO3D_LOGINFO("RunErosion: " + String(iterations) + " iterations on " +
+                   String(hmW) + "x" + String(hmH) + " heightmap");
+
+    // Scale heights to world-space so the erosion algorithm has real gradients
+    // Normalized [0,1] over 1025 cells gives ~0.001 gradient — too flat for meaningful flow
+    Vector3 spacing = terrain_->GetSpacing();
+    float heightScale = 255.0f * spacing.y_;  // world height range
+
+    // Extract heights into float array (world-space)
+    // Buffer layout: [0..N-1] = current heights, [N..2N-1] = original heights (for depth constraint)
+    float* heightData = new float[numCells * 2];
+    float hMin = 1e9f, hMax = -1e9f;
+    for (int i = 0; i < numCells; ++i)
+    {
+        float h;
+        if (comps >= 2)
+        {
+            int idx = i * comps;
+            h = ((float)hmData[idx] + (float)hmData[idx + 1] / 256.0f) / 255.0f;
+        }
+        else
+        {
+            h = (float)hmData[i * comps] / 255.0f;
+        }
+        float worldH = h * heightScale;
+        heightData[i] = worldH;              // current heights
+        heightData[numCells + i] = worldH;   // original heights (copy)
+        if (worldH < hMin) hMin = worldH;
+        if (worldH > hMax) hMax = worldH;
+    }
+    URHO3D_LOGINFO("RunErosion: height range [" + String(hMin) + ", " + String(hMax) +
+                   "], scale=" + String(heightScale));
+
+    // Initialize water+sediment buffer (interleaved, all zeros)
+    float* waterSedData = new float[numCells * 2];
+    memset(waterSedData, 0, numCells * 2 * sizeof(float));
+
+    // Initialize flux buffer (LRTB per cell, all zeros)
+    float* fluxData = new float[numCells * 4];
+    memset(fluxData, 0, numCells * 4 * sizeof(float));
+
+    // Parameters tuned for world-space heights (~0-128 range)
+    float paramData[16];
+    memset(paramData, 0, sizeof(paramData));
+    paramData[0] = 0.1f;               // dt (larger step = faster simulation)
+    paramData[1] = erosionRainfall_ * heightScale;  // rainfall scaled to world-space
+    paramData[2] = 9.81f;              // gravity
+    paramData[3] = 1.0f;               // pipe area
+    paramData[4] = 5.0f;               // Kc (sediment capacity — higher = more erosion before deposition)
+    paramData[5] = erosionStrength_;   // Ks (erosion rate)
+    paramData[6] = erosionStrength_ * 0.5f;  // Kd (deposition rate — lower than Ks so material moves further)
+    paramData[7] = 0.01f;              // Ke (evaporation rate — slower so water persists longer)
+    paramData[8] = (float)hmW;         // width
+    paramData[9] = (float)hmH;         // height
+    paramData[10] = erosionMaxDepth_ * heightScale;  // max carve depth in world units
+    paramData[11] = erosionMinHeight_ * heightScale;  // min height floor in world units
+    paramData[12] = erosionRidgeProtect_;              // ridge protection [0..1]
+    paramData[13] = (float)erosionBorderPad_;          // border padding in cells
+
+    // Create VertexBuffers as SSBOs
+    Vector<VertexElement> floatElem;
+    floatElem.Push(VertexElement(TYPE_FLOAT, SEM_POSITION));
+
+    SharedPtr<VertexBuffer> heightBuf(new VertexBuffer(context_));
+    heightBuf->SetShadowed(false);
+    heightBuf->SetSize(numCells * 2, floatElem, false);  // 2x: current + original heights
+    heightBuf->SetData(heightData);
+
+    Vector<VertexElement> float2Elem;
+    float2Elem.Push(VertexElement(TYPE_VECTOR2, SEM_POSITION));
+
+    SharedPtr<VertexBuffer> waterSedBuf(new VertexBuffer(context_));
+    waterSedBuf->SetShadowed(false);
+    waterSedBuf->SetSize(numCells, float2Elem, false);
+    waterSedBuf->SetData(waterSedData);
+
+    Vector<VertexElement> float4Elem;
+    float4Elem.Push(VertexElement(TYPE_VECTOR4, SEM_POSITION));
+
+    SharedPtr<VertexBuffer> fluxBuf(new VertexBuffer(context_));
+    fluxBuf->SetShadowed(false);
+    fluxBuf->SetSize(numCells, float4Elem, false);
+    fluxBuf->SetData(fluxData);
+
+    SharedPtr<VertexBuffer> paramBuf(new VertexBuffer(context_));
+    paramBuf->SetShadowed(false);
+    paramBuf->SetSize(16, floatElem, false);
+    paramBuf->SetData(paramData);
+
+    // Bind all 4 SSBOs
+    graphics->SetStorageBuffer(0, heightBuf);
+    graphics->SetStorageBuffer(1, waterSedBuf);
+    graphics->SetStorageBuffer(2, fluxBuf);
+    graphics->SetStorageBuffer(3, paramBuf);
+
+    // Dispatch groups: ceil(width/16) x ceil(height/16)
+    unsigned groupsX = (hmW + 15) / 16;
+    unsigned groupsY = (hmH + 15) / 16;
+
+    // Batch all dispatches into a single command buffer for performance
+    graphics->BeginComputeBatch();
+
+    // Run erosion iterations
+    for (int iter = 0; iter < iterations; ++iter)
+    {
+        // Pass A: Rain + Flux
+        graphics->SetComputeShader(passFlux);
+        graphics->DispatchCompute(groupsX, groupsY);
+
+        // Pass B: Water transport + Erosion + Evaporation
+        graphics->SetComputeShader(passTransport);
+        graphics->DispatchCompute(groupsX, groupsY);
+    }
+
+    // Submit all dispatches and wait for GPU completion
+    graphics->EndComputeBatch();
+
+    URHO3D_LOGINFO("RunErosion: " + String(iterations) + " iterations complete, reading back...");
+
+    // Read back the height buffer
+    if (heightBuf->GetData(heightData))
+    {
+        // Convert from world-space back to normalized [0,1]
+        float hMinOut = 1e9f, hMaxOut = -1e9f;
+        for (int i = 0; i < numCells; ++i)
+        {
+            if (heightData[i] < hMinOut) hMinOut = heightData[i];
+            if (heightData[i] > hMaxOut) hMaxOut = heightData[i];
+        }
+        // Compute change stats
+        float totalDelta = 0.0f;
+        float maxDelta = 0.0f;
+        int changedCells = 0;
+        for (int i = 0; i < numCells; ++i)
+        {
+            float origH = heightData[numCells + i];
+            float delta = Abs(heightData[i] - origH);
+            totalDelta += delta;
+            if (delta > maxDelta) maxDelta = delta;
+            if (delta > 0.001f) ++changedCells;
+        }
+        URHO3D_LOGINFOF("RunErosion: post range [%.2f, %.2f] changed=%d/%d maxDelta=%.4f totalDelta=%.2f",
+                        hMinOut, hMaxOut, changedCells, numCells, maxDelta, totalDelta);
+
+        for (int i = 0; i < numCells; ++i)
+        {
+            float h = heightData[i] / heightScale;  // back to [0,1]
+            if (h < 0.0f) h = 0.0f;
+            if (h > 1.0f) h = 1.0f;
+
+            if (comps >= 2)
+            {
+                float scaled = h * 255.0f;
+                int idx = i * comps;
+                hmData[idx] = (unsigned char)scaled;
+                hmData[idx + 1] = (unsigned char)((scaled - (float)hmData[idx]) * 256.0f);
+            }
+            else
+            {
+                hmData[i * comps] = (unsigned char)(h * 255.0f);
+            }
+        }
+
+        // Apply to terrain
+        terrain_->ApplyHeightMap();
+        WakeSleepingBodiesOnTerrain();
+        UpdateMinimapTexture();
+        URHO3D_LOGINFO("RunErosion: Complete — terrain updated");
+    }
+    else
+    {
+        URHO3D_LOGERROR("RunErosion: Failed to read back height data from GPU");
+    }
+
+    // Clean up
+    graphics->SetComputeShader(nullptr);
+    graphics->SetStorageBuffer(0, nullptr);
+    graphics->SetStorageBuffer(1, nullptr);
+    graphics->SetStorageBuffer(2, nullptr);
+    graphics->SetStorageBuffer(3, nullptr);
+
+    delete[] heightData;
+    delete[] waterSedData;
+    delete[] fluxData;
 }

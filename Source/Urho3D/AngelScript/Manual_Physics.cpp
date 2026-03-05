@@ -6,6 +6,7 @@
 #include "../AngelScript/Manual_Physics.h"
 
 #include "../Graphics/Model.h"
+#include "../Physics/CollisionShape.h"
 #include "../Physics/MultiBody.h"
 #include "../Physics/SoftBody.h"
 #include "../Scene/Scene.h"
@@ -241,6 +242,20 @@ void ASRegisterManualLast_Physics(asIScriptEngine* engine)
     // Soft contact stiffness and damping
     engine->RegisterObjectMethod("RigidBody", "void SetContactStiffnessAndDamping(float, float)",
         AS_METHODPR(RigidBody, SetContactStiffnessAndDamping, (float, float), void), AS_CALL_THISCALL);
+
+    // === CollisionShape API (default args can't auto-bind) ===
+    engine->RegisterObjectMethod("CollisionShape", "void SetBox(const Vector3&in, const Vector3&in = Vector3(0,0,0), const Quaternion&in = Quaternion())",
+        AS_METHODPR(CollisionShape, SetBox, (const Vector3&, const Vector3&, const Quaternion&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("CollisionShape", "void SetSphere(float, const Vector3&in = Vector3(0,0,0), const Quaternion&in = Quaternion())",
+        AS_METHODPR(CollisionShape, SetSphere, (float, const Vector3&, const Quaternion&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("CollisionShape", "void SetCapsule(float, float, const Vector3&in = Vector3(0,0,0), const Quaternion&in = Quaternion())",
+        AS_METHODPR(CollisionShape, SetCapsule, (float, float, const Vector3&, const Quaternion&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("CollisionShape", "void SetCylinder(float, float, const Vector3&in = Vector3(0,0,0), const Quaternion&in = Quaternion())",
+        AS_METHODPR(CollisionShape, SetCylinder, (float, float, const Vector3&, const Quaternion&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("CollisionShape", "void SetCone(float, float, const Vector3&in = Vector3(0,0,0), const Quaternion&in = Quaternion())",
+        AS_METHODPR(CollisionShape, SetCone, (float, float, const Vector3&, const Quaternion&), void), AS_CALL_THISCALL);
+    engine->RegisterObjectMethod("CollisionShape", "void SetStaticPlane(const Vector3&in = Vector3(0,0,0), const Quaternion&in = Quaternion())",
+        AS_METHODPR(CollisionShape, SetStaticPlane, (const Vector3&, const Quaternion&), void), AS_CALL_THISCALL);
 }
 
 }

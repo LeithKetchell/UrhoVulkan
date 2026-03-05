@@ -106,6 +106,8 @@ void VS()
 
 void PS()
 {
+    ApplyClipPlane();
+
     // Get material diffuse albedo
     #ifdef DIFFMAP
         vec4 diffInput = texture2D(sDiffMap, vTexCoord.xy);
