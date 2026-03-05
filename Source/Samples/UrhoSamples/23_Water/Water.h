@@ -5,6 +5,9 @@
 
 #include <Urho3D/Math/Plane.h>
 #include <Urho3D/Graphics/Zone.h>
+#include <Urho3D/UI/DropDownList.h>
+#include <Urho3D/UI/BorderImage.h>
+#include <Urho3D/Network/HttpRequest.h>
 
 #include "Sample.h"
 #include <Urho3D/Graphics/ProfilerUI.h>
@@ -17,55 +20,100 @@ class Scene;
 
 }
 
-/// Water example.
-/// This sample demonstrates:
-///     - Creating a large plane to represent a water body for rendering
-///     - Setting up a second camera to render reflections on the water surface
+/// Water example with dropdown menus, terrain editing, and celestial day/night cycle.
 class Water : public Sample
 {
     URHO3D_OBJECT(Water, Sample);
 
 public:
-    /// Construct.
     explicit Water(Context* context);
 
-    /// Setup after engine initialization and before running the main loop.
     void Start() override;
+    void Stop() override;
 
 private:
-    /// Construct the scene content.
     void CreateScene();
-    /// Construct an instruction text to the UI.
     void CreateInstructions();
-    /// Set up a viewport for displaying the scene.
     void SetupViewport();
-    /// Subscribe to the logic update event.
     void SubscribeToEvents();
-    /// Read input and moves the camera.
     void MoveCamera(float timeStep);
-    /// Handle the logic update event.
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
+    void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
 
-    /// Reflection camera scene node.
+    // --- Menu bar ---
+    void CreateMenuBar();
+    DropDownList* CreateMenuDropdown(const String& label, const Vector<String>& items);
+    void HandleFileMenu(StringHash eventType, VariantMap& eventData);
+    void HandleCreateMenu(StringHash eventType, VariantMap& eventData);
+    void HandleEditMenu(StringHash eventType, VariantMap& eventData);
+    void HandleEnvironmentMenu(StringHash eventType, VariantMap& eventData);
+
+    UIElement* menuBar_{};
+    SharedPtr<DropDownList> fileMenu_;
+    SharedPtr<DropDownList> createMenu_;
+    SharedPtr<DropDownList> editMenu_;
+    SharedPtr<DropDownList> environmentMenu_;
+
+    // --- Terrain editing ---
+    void ApplyBrush(const Vector3& worldPos, float timeStep);
+    void ApplyLowerBrush(const Vector3& worldPos, float timeStep);
+    void DrawBrushCircle(const Vector3& worldPos);
+
+    SharedPtr<Image> editableHeightMap_;
+    int brushMode_{0};         // 0=off, 1=raise/lower, 3=smooth, 4=flatten
+    float brushRadius_{5.0f};
+    float brushStrength_{0.05f};
+    float smoothStrength_{0.3f};
+    Vector3 cachedBrushHit_;
+    bool hasBrushHit_{false};
+
+    // --- Celestial bodies ---
+    void CreateCelestialBodies();
+    void UpdateCelestialBodies(float timeStep);
+    void UpdateAtmosphere(float sunAltitude);
+    float CalculateSunAltitude();
+    float CalculateSunAzimuth(float altitude);
+    float CalculateMoonAltitude();
+    float CalculateMoonAzimuth(float moonAlt);
+    Vector3 AltAzToFlatEarth(float altitude, float azimuth, float distance = 500.0f);
+
+    Node* sunNode_{};
+    Node* moonNode_{};
+    SharedPtr<Material> sunMat_;
+    SharedPtr<Material> moonMat_;
+    float cloudAngle_{};
+    Light* sunLight_{};
+    Light* moonLight_{};
+    SharedPtr<Material> skyboxMat_;
+
+    // --- Network time ---
+    void FetchNetworkTime();
+    void ProcessTimeResponse();
+    float timeOfDay_{};
+    int dayOfYear_{};
+    float moonAge_{};
+    SharedPtr<HttpRequest> timeRequest_;
+    float timeSyncTimer_{};
+
+    // --- Cached celestial calculations ---
+    float cachedSunAlt_{};
+    float cachedSunAz_{};
+    float cachedMoonAlt_{};
+    float cachedMoonAz_{};
+
+    // --- State ---
+    bool menuOpen_{false};
+
+    // --- Water / rendering ---
     SharedPtr<Node> reflectionCameraNode_;
-    /// Water body scene node.
     SharedPtr<Node> waterNode_;
-    /// Reflection plane representing the water surface.
     Plane waterPlane_;
-    /// Clipping plane for reflection rendering. Slightly biased downward from the reflection plane to avoid artifacts.
     Plane waterClipPlane_;
     SharedPtr<ProfilerUI> profilerUI_;
-    /// Zone component for dynamic fog switching.
+    RenderPath* renderPath_{};
     WeakPtr<Zone> zone_;
-    /// Original above-water fog settings.
+    WeakPtr<Terrain> terrain_;
     Color origFogColor_;
     float origFogStart_{};
     float origFogEnd_{};
-    /// Configurable underwater fog settings.
-    Color underwaterFogColor_{0.0f, 0.3f, 0.4f};
-    float underwaterFogStart_{1.0f};
-    float underwaterFogEnd_{80.0f};
-    float underwaterFogScale_{0.5f};
-    /// Whether camera is currently underwater.
-    bool isUnderwater_{false};
 };
