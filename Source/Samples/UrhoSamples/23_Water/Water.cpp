@@ -25,6 +25,7 @@
 #include <Urho3D/IO/File.h>
 #include <Urho3D/IO/FileSystem.h>
 #include <Urho3D/IO/Log.h>
+#include <Urho3D/IO/MemoryBuffer.h>
 #include <Urho3D/Physics/PhysicsWorld.h>
 #include <Urho3D/Physics/RigidBody.h>
 #include <Urho3D/Physics/CollisionShape.h>
@@ -79,6 +80,45 @@ void Water::Stop()
     profilerUI_.Reset();
     terrainPanel_.Reset();
     editableHeightMap_.Reset();
+}
+
+bool Water::OnEscapePressed()
+{
+    // Peel layers from outside in — last opened, first closed
+    if (fileSelector_)
+    {
+        fileSelector_.Reset();
+        return true;
+    }
+    if (generateMeshPanel_ && generateMeshPanel_->IsVisible())
+    {
+        generateMeshPanel_->SetVisible(false);
+        return true;
+    }
+    if (terrainPanel_ && terrainPanel_->IsVisible())
+    {
+        terrainPanel_->SetVisible(false);
+        return true;
+    }
+    if (brushMode_ != 0)
+    {
+        brushMode_ = 0;
+        return true;
+    }
+    if (selectedNode_)
+    {
+        DeselectNode();
+        return true;
+    }
+    if (!menuOpen_)
+    {
+        // Switch from camera mode to cursor mode
+        menuOpen_ = true;
+        GetSubsystem<Input>()->SetMouseVisible(true);
+        GetSubsystem<Input>()->SetMouseGrabbed(false);
+        return true;
+    }
+    return false;  // nothing to close — let base class exit
 }
 
 void Water::SelectNode(Node* node)
@@ -467,10 +507,11 @@ void Water::CreateMenuBar()
         SubscribeToEvent(fileMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleFileMenu));
     }
 
-    // Create (placeholder)
+    // Create
     {
         Vector<String> items;
-        items.Push("(coming soon)");
+        items.Push("Import Model...");
+        items.Push("Generate Mesh...");
         createMenu_ = CreateMenuDropdown("Create", items);
         SubscribeToEvent(createMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleCreateMenu));
     }
@@ -478,7 +519,12 @@ void Water::CreateMenuBar()
     // Edit
     {
         Vector<String> items;
-        items.Push("(coming soon)");
+        items.Push("Undo (Ctrl+Z)");
+        items.Push("Redo (Ctrl+Y)");
+        items.Push("Translate (T)");
+        items.Push("Rotate (R)");
+        items.Push("Scale (S)");
+        items.Push("World (G)");
         editMenu_ = CreateMenuDropdown("Edit", items);
         SubscribeToEvent(editMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleEditMenu));
     }
@@ -561,12 +607,40 @@ void Water::HandleFileMenu(StringHash eventType, VariantMap& eventData)
 
 void Water::HandleCreateMenu(StringHash eventType, VariantMap& eventData)
 {
+    unsigned sel = eventData[ItemSelected::P_SELECTION].GetU32();
     createMenu_->SetSelection(M_MAX_UNSIGNED);
+
+    switch (sel)
+    {
+    case 0: ShowImportModelDialog(); break;
+    case 1: ShowGenerateMeshPanel(); break;
+    }
 }
 
 void Water::HandleEditMenu(StringHash eventType, VariantMap& eventData)
 {
+    unsigned sel = eventData[ItemSelected::P_SELECTION].GetU32();
     editMenu_->SetSelection(M_MAX_UNSIGNED);
+
+    switch (sel)
+    {
+    case 0: Undo(); break;
+    case 1: Redo(); break;
+    case 2: gizmoMode_ = 1; break;  // Translate
+    case 3: gizmoMode_ = 2; break;  // Rotate
+    case 4: gizmoMode_ = 3; break;  // Scale
+    case 5:
+        gizmoLocal_ = !gizmoLocal_;
+        // Update menu item text to reflect current state
+        if (editMenu_->GetNumItems() > 5)
+        {
+            auto* item = editMenu_->GetItem(5);
+            auto* label = item ? item->GetChildStaticCast<Text>(0) : nullptr;
+            if (label)
+                label->SetText(gizmoLocal_ ? "Local (G)" : "World (G)");
+        }
+        break;
+    }
 }
 
 Menu* Water::CreateMenuItem(UIElement* parent, const String& text, int actionId)
@@ -1408,6 +1482,790 @@ void Water::WakeSleepingBodiesOnTerrain()
 }
 
 // ============================================================================
+// Transform Gizmo
+// ============================================================================
+
+void Water::DrawGizmo()
+{
+    if (gizmoMode_ == 0 || !selectedNode_ || selectedNode_.Expired())
+        return;
+
+    auto* debug = scene_->GetComponent<DebugRenderer>();
+    if (!debug)
+        return;
+
+    Node* node = selectedNode_;
+    Vector3 pos = node->GetWorldPosition();
+
+    // Axis length proportional to distance from camera
+    float dist = (pos - cameraNode_->GetWorldPosition()).Length();
+    float len = dist * 0.15f;
+    float thickness = gizmoMode_ == 3 ? 2.0f : 1.0f;
+
+    // Determine axis directions
+    Vector3 axisX, axisY, axisZ;
+    if (gizmoLocal_)
+    {
+        Quaternion rot = node->GetWorldRotation();
+        axisX = rot * Vector3::RIGHT;
+        axisY = rot * Vector3::UP;
+        axisZ = rot * Vector3::FORWARD;
+    }
+    else
+    {
+        axisX = Vector3::RIGHT;
+        axisY = Vector3::UP;
+        axisZ = Vector3::FORWARD;
+    }
+
+    Color colX = (gizmoAxis_ == 0 && gizmoDragging_) ? Color::YELLOW : Color::RED;
+    Color colY = (gizmoAxis_ == 1 && gizmoDragging_) ? Color::YELLOW : Color::GREEN;
+    Color colZ = (gizmoAxis_ == 2 && gizmoDragging_) ? Color::YELLOW : Color::BLUE;
+
+    if (gizmoMode_ == 1) // Translate — lines with arrow tips
+    {
+        debug->AddLine(pos, pos + axisX * len, colX, false);
+        debug->AddLine(pos, pos + axisY * len, colY, false);
+        debug->AddLine(pos, pos + axisZ * len, colZ, false);
+        // Arrow tips
+        float tipLen = len * 0.15f;
+        debug->AddLine(pos + axisX * len, pos + axisX * (len - tipLen) + axisY * tipLen * 0.3f, colX, false);
+        debug->AddLine(pos + axisX * len, pos + axisX * (len - tipLen) - axisY * tipLen * 0.3f, colX, false);
+        debug->AddLine(pos + axisY * len, pos + axisY * (len - tipLen) + axisX * tipLen * 0.3f, colY, false);
+        debug->AddLine(pos + axisY * len, pos + axisY * (len - tipLen) - axisX * tipLen * 0.3f, colY, false);
+        debug->AddLine(pos + axisZ * len, pos + axisZ * (len - tipLen) + axisY * tipLen * 0.3f, colZ, false);
+        debug->AddLine(pos + axisZ * len, pos + axisZ * (len - tipLen) - axisY * tipLen * 0.3f, colZ, false);
+    }
+    else if (gizmoMode_ == 2) // Rotate — circles
+    {
+        const int segs = 32;
+        for (int i = 0; i < segs; ++i)
+        {
+            float a0 = (float)i / segs * 360.0f * M_DEGTORAD;
+            float a1 = (float)(i + 1) / segs * 360.0f * M_DEGTORAD;
+            // X axis ring (in YZ plane)
+            debug->AddLine(pos + (axisY * cosf(a0) + axisZ * sinf(a0)) * len,
+                          pos + (axisY * cosf(a1) + axisZ * sinf(a1)) * len, colX, false);
+            // Y axis ring (in XZ plane)
+            debug->AddLine(pos + (axisX * cosf(a0) + axisZ * sinf(a0)) * len,
+                          pos + (axisX * cosf(a1) + axisZ * sinf(a1)) * len, colY, false);
+            // Z axis ring (in XY plane)
+            debug->AddLine(pos + (axisX * cosf(a0) + axisY * sinf(a0)) * len,
+                          pos + (axisX * cosf(a1) + axisY * sinf(a1)) * len, colZ, false);
+        }
+    }
+    else if (gizmoMode_ == 3) // Scale — lines with box tips
+    {
+        debug->AddLine(pos, pos + axisX * len, colX, false);
+        debug->AddLine(pos, pos + axisY * len, colY, false);
+        debug->AddLine(pos, pos + axisZ * len, colZ, false);
+        float boxSz = len * 0.06f;
+        debug->AddBoundingBox(BoundingBox(pos + axisX * len - Vector3::ONE * boxSz, pos + axisX * len + Vector3::ONE * boxSz), colX, false);
+        debug->AddBoundingBox(BoundingBox(pos + axisY * len - Vector3::ONE * boxSz, pos + axisY * len + Vector3::ONE * boxSz), colY, false);
+        debug->AddBoundingBox(BoundingBox(pos + axisZ * len - Vector3::ONE * boxSz, pos + axisZ * len + Vector3::ONE * boxSz), colZ, false);
+    }
+
+    // Show mode label
+    const char* modeNames[] = {"", "Translate", "Rotate", "Scale"};
+    const char* spaceNames[] = {"World", "Local"};
+    (void)modeNames; (void)spaceNames;
+}
+
+void Water::BeginGizmoDrag(int axis)
+{
+    if (!selectedNode_ || selectedNode_.Expired() || gizmoMode_ == 0)
+        return;
+
+    gizmoAxis_ = axis;
+    gizmoDragging_ = true;
+    gizmoNodeStart_ = selectedNode_->GetWorldPosition();
+    gizmoRotStart_ = selectedNode_->GetRotation();
+    gizmoScaleStart_ = selectedNode_->GetScale();
+
+    auto* input = GetSubsystem<Input>();
+    IntVector2 mousePos = input->GetMousePosition();
+
+    if (gizmoMode_ == 2) // Rotate — arcball, map mouse to virtual sphere
+    {
+        auto* camera = cameraNode_->GetComponent<Camera>();
+        auto* graphics = GetSubsystem<Graphics>();
+        float w = (float)graphics->GetWidth();
+        float h = (float)graphics->GetHeight();
+
+        // Project object center to screen
+        Vector2 screenCenter = camera->WorldToScreenPoint(gizmoNodeStart_);
+        float cx = screenCenter.x_ * w;
+        float cy = screenCenter.y_ * h;
+
+        // Virtual sphere radius on screen (based on gizmo visual size)
+        float dist = (gizmoNodeStart_ - cameraNode_->GetWorldPosition()).Length();
+        float len = dist * 0.15f;
+        Vector2 screenEdge = camera->WorldToScreenPoint(gizmoNodeStart_ + Vector3::RIGHT * len);
+        float sphereRadius = sqrtf((screenEdge.x_ * w - cx) * (screenEdge.x_ * w - cx) +
+                                   (screenEdge.y_ * h - cy) * (screenEdge.y_ * h - cy));
+        if (sphereRadius < 10.0f) sphereRadius = 10.0f;
+
+        // Map mouse to sphere point
+        float sx = ((float)mousePos.x_ - cx) / sphereRadius;
+        float sy = ((float)mousePos.y_ - cy) / sphereRadius;
+        float sz2 = 1.0f - sx * sx - sy * sy;
+        if (sz2 > 0.0f)
+            gizmoDragStart_ = Vector3(sx, -sy, sqrtf(sz2));  // on sphere
+        else
+            gizmoDragStart_ = Vector3(sx, -sy, 0.0f).Normalized();  // outside sphere, clamp to edge
+
+    }
+    else // Translate/Scale — store screen pixel position
+    {
+        gizmoDragStart_ = Vector3((float)mousePos.x_, (float)mousePos.y_, 0.0f);
+    }
+}
+
+void Water::UpdateGizmoDrag()
+{
+    if (!gizmoDragging_ || !selectedNode_ || selectedNode_.Expired())
+        return;
+
+    auto* input = GetSubsystem<Input>();
+    auto* camera = cameraNode_->GetComponent<Camera>();
+    auto* graphics = GetSubsystem<Graphics>();
+
+    // Current mouse position in screen pixels
+    IntVector2 mousePos = input->GetMousePosition();
+    float mx = (float)mousePos.x_;
+    float my = (float)mousePos.y_;
+
+    // Mouse delta from drag start in pixels
+    float dx = mx - gizmoDragStart_.x_;
+    float dy = my - gizmoDragStart_.y_;
+
+    // Get world-space axis direction
+    Vector3 axisDir;
+    if (gizmoLocal_)
+    {
+        Quaternion rot = selectedNode_->GetWorldRotation();
+        Vector3 axes[] = {rot * Vector3::RIGHT, rot * Vector3::UP, rot * Vector3::FORWARD};
+        axisDir = axes[gizmoAxis_];
+    }
+    else
+    {
+        Vector3 axes[] = {Vector3::RIGHT, Vector3::UP, Vector3::FORWARD};
+        axisDir = axes[gizmoAxis_];
+    }
+
+    // Project axis direction to screen space to get a 2D direction
+    float w = (float)graphics->GetWidth();
+    float h = (float)graphics->GetHeight();
+    Vector2 screenOrigin = camera->WorldToScreenPoint(gizmoNodeStart_);
+    Vector2 screenAxisEnd = camera->WorldToScreenPoint(gizmoNodeStart_ + axisDir);
+    Vector2 screenDir(screenAxisEnd.x_ - screenOrigin.x_, screenAxisEnd.y_ - screenOrigin.y_);
+
+    // Convert from normalized [0..1] to pixels
+    screenDir.x_ *= w;
+    screenDir.y_ *= h;
+
+    float screenDirLen = screenDir.Length();
+    if (screenDirLen < 1.0f)
+        return;  // axis is edge-on to camera
+
+    screenDir /= screenDirLen;  // normalize
+
+    // Project mouse pixel delta onto screen-space axis direction
+    float screenDelta = dx * screenDir.x_ + dy * screenDir.y_;
+
+    // Convert screen delta to world units: scale by distance from camera
+    float camDist = (gizmoNodeStart_ - cameraNode_->GetWorldPosition()).Length();
+    float worldDelta = screenDelta * camDist * 0.002f;  // sensitivity factor
+
+    if (gizmoMode_ == 1) // Translate
+    {
+        Vector3 newWorldPos = gizmoNodeStart_ + axisDir * worldDelta;
+        if (selectedNode_->GetParent())
+            selectedNode_->SetPosition(selectedNode_->GetParent()->WorldToLocal(newWorldPos));
+        else
+            selectedNode_->SetPosition(newWorldPos);
+    }
+    else if (gizmoMode_ == 2) // Rotate — arcball
+    {
+        // Recalculate screen center and sphere radius
+        float w2 = (float)graphics->GetWidth();
+        float h2 = (float)graphics->GetHeight();
+        Vector2 screenCenter = camera->WorldToScreenPoint(gizmoNodeStart_);
+        float cx = screenCenter.x_ * w2;
+        float cy = screenCenter.y_ * h2;
+
+        float camDist2 = (gizmoNodeStart_ - cameraNode_->GetWorldPosition()).Length();
+        float gizmoLen = camDist2 * 0.15f;
+        Vector2 screenEdge = camera->WorldToScreenPoint(gizmoNodeStart_ + Vector3::RIGHT * gizmoLen);
+        float sphereRadius = sqrtf((screenEdge.x_ * w2 - cx) * (screenEdge.x_ * w2 - cx) +
+                                   (screenEdge.y_ * h2 - cy) * (screenEdge.y_ * h2 - cy));
+        if (sphereRadius < 10.0f) sphereRadius = 10.0f;
+
+        // Map current mouse to sphere point
+        float sx = (mx - cx) / sphereRadius;
+        float sy = (my - cy) / sphereRadius;
+        float sz2 = 1.0f - sx * sx - sy * sy;
+        Vector3 currentSphere;
+        if (sz2 > 0.0f)
+            currentSphere = Vector3(sx, -sy, sqrtf(sz2));
+        else
+            currentSphere = Vector3(sx, -sy, 0.0f).Normalized();
+
+        // Quaternion from start sphere point to current sphere point
+        Vector3 cross = gizmoDragStart_.CrossProduct(currentSphere);
+        float dot = gizmoDragStart_.DotProduct(currentSphere);
+
+        // Build rotation quaternion: (cross.x, cross.y, cross.z, dot) then normalize
+        Quaternion arcballRot(dot, cross.x_, cross.y_, cross.z_);
+        arcballRot.Normalize();
+
+        // arcballRot is in view space — convert to world space
+        // View-space axes: X=right, Y=up, Z=into screen (camera facing -Z)
+        Quaternion camRot = cameraNode_->GetWorldRotation();
+        Quaternion worldRot = camRot * arcballRot * camRot.Inverse();
+
+        // Apply to original rotation
+        if (selectedNode_->GetParent())
+        {
+            Quaternion parentRot = selectedNode_->GetParent()->GetWorldRotation();
+            selectedNode_->SetRotation(parentRot.Inverse() * worldRot * parentRot * gizmoRotStart_);
+        }
+        else
+        {
+            selectedNode_->SetRotation(worldRot * gizmoRotStart_);
+        }
+    }
+    else if (gizmoMode_ == 3) // Scale
+    {
+        float scaleFactor = 1.0f + screenDelta * 0.005f;
+        if (scaleFactor < 0.01f) scaleFactor = 0.01f;
+        Vector3 newScale = gizmoScaleStart_;
+        if (gizmoAxis_ == 0) newScale.x_ *= scaleFactor;
+        else if (gizmoAxis_ == 1) newScale.y_ *= scaleFactor;
+        else newScale.z_ *= scaleFactor;
+        selectedNode_->SetScale(newScale);
+    }
+}
+
+void Water::EndGizmoDrag()
+{
+    if (!gizmoDragging_)
+        return;
+
+    if (selectedNode_ && !selectedNode_.Expired())
+    {
+        // Record undo — store the before/after as a NODE_DELETE + NODE_CREATE pair is overkill
+        // Instead, just push a terrain-style undo isn't right either.
+        // For now, the transform is committed. Undo for transforms is a future enhancement.
+    }
+
+    gizmoDragging_ = false;
+    gizmoAxis_ = -1;
+}
+
+// ============================================================================
+// Import Model
+// ============================================================================
+
+void Water::ShowImportModelDialog()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* style = ui->GetRoot()->GetDefaultStyle();
+
+    fileSelector_ = new FileSelector(context_);
+    fileSelector_->SetDefaultStyle(style);
+    fileSelector_->SetTitle("Import Model");
+    fileSelector_->SetButtonTexts("Import", "Cancel");
+
+    Vector<String> filters;
+    filters.Push("*.fbx");
+    filters.Push("*.obj");
+    filters.Push("*.dae");
+    filters.Push("*.blend");
+    filters.Push("*.gltf");
+    filters.Push("*.glb");
+    filters.Push("*.*");
+    fileSelector_->SetFilters(filters, 0);
+
+    auto* fs = GetSubsystem<FileSystem>();
+    fileSelector_->SetPath(fs->GetUserDocumentsDir());
+
+    SubscribeToEvent(fileSelector_, E_FILESELECTED, URHO3D_HANDLER(Water, HandleImportModelChosen));
+}
+
+void Water::HandleImportModelChosen(StringHash eventType, VariantMap& eventData)
+{
+    using namespace FileSelected;
+    String path = eventData[P_FILENAME].GetString();
+    bool ok = eventData[P_OK].GetBool();
+    fileSelector_.Reset();
+
+    if (!ok || path.Empty())
+        return;
+
+    auto* fs = GetSubsystem<FileSystem>();
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    // Determine output path
+    String baseName = GetFileName(path);
+    String outputDir = fs->GetProgramDir() + "Data/Models/";
+    String outputMdl = outputDir + baseName + ".mdl";
+
+    // Run AssetImporter
+    String toolPath = fs->GetProgramDir() + "tool/AssetImporter";
+    String cmd = "\"" + toolPath + "\" model \"" + path + "\" \"" + outputMdl + "\" -t";
+    URHO3D_LOGINFOF("Running: %s", cmd.CString());
+
+    int result = fs->SystemCommand(cmd);
+    if (result != 0)
+    {
+        URHO3D_LOGERRORF("AssetImporter failed (exit code %d)", result);
+        return;
+    }
+
+    // Load the imported model and place it in the scene
+    auto* model = cache->GetResource<Model>("Models/" + baseName + ".mdl");
+    if (!model)
+    {
+        URHO3D_LOGERROR("Failed to load imported model");
+        return;
+    }
+
+    // Place at camera position + forward offset
+    auto* camera = cameraNode_->GetComponent<Camera>();
+    Vector3 spawnPos = cameraNode_->GetPosition() + cameraNode_->GetDirection() * 10.0f;
+
+    Node* node = scene_->CreateChild(baseName);
+    auto* sm = node->CreateComponent<StaticModel>();
+    sm->SetModel(model);
+
+    // Try to find a matching material
+    String matPath = "Materials/" + baseName + ".xml";
+    auto* mat = cache->GetResource<Material>(matPath, false);
+    if (!mat)
+        mat = cache->GetResource<Material>("Materials/Stone.xml", false);
+    if (mat)
+        sm->SetMaterial(mat);
+
+    sm->SetCastShadows(true);
+    node->SetPosition(spawnPos);
+
+    // Add physics
+    auto* body = node->CreateComponent<RigidBody>();
+    body->SetMass(0.0f);
+    auto* shape = node->CreateComponent<CollisionShape>();
+    BoundingBox bb = model->GetBoundingBox();
+    shape->SetBox(bb.Size(), bb.Center());
+
+    // Record undo
+    UndoAction action;
+    action.type = UndoAction::NODE_CREATE;
+    action.nodeID = node->GetID();
+    action.xmlData = SerializeNode(node);
+    action.position = node->GetPosition();
+    action.rotation = node->GetRotation();
+    PushUndo(action);
+
+    URHO3D_LOGINFOF("Imported and placed: %s", baseName.CString());
+}
+
+// ============================================================================
+// Generate Mesh
+// ============================================================================
+
+void Water::ShowGenerateMeshPanel()
+{
+    if (generateMeshPanel_)
+    {
+        generateMeshPanel_->SetVisible(!generateMeshPanel_->IsVisible());
+        return;
+    }
+
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = ui->GetRoot()->GetDefaultStyle();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    generateMeshPanel_ = new Window(context_);
+    generateMeshPanel_->SetStyleAuto();
+    generateMeshPanel_->SetLayout(LM_VERTICAL, 6, IntRect(8, 8, 8, 8));
+    generateMeshPanel_->SetAlignment(HA_CENTER, VA_CENTER);
+    generateMeshPanel_->SetSize(320, 340);
+    generateMeshPanel_->SetMovable(true);
+    ui->GetRoot()->AddChild(generateMeshPanel_);
+
+    // Title
+    auto* title = generateMeshPanel_->CreateChild<Text>();
+    title->SetFont(font, 14);
+    title->SetText("Generate Mesh");
+    title->SetColor(Color::WHITE);
+
+    // Shape dropdown
+    auto* shapeRow = generateMeshPanel_->CreateChild<UIElement>();
+    shapeRow->SetLayout(LM_HORIZONTAL, 4);
+    shapeRow->SetMinHeight(24);
+    auto* shapeLbl = shapeRow->CreateChild<Text>();
+    shapeLbl->SetFont(font, 12);
+    shapeLbl->SetText("Shape:");
+    shapeLbl->SetColor(Color(0.8f, 0.8f, 0.8f));
+
+    meshShapeList_ = shapeRow->CreateChild<DropDownList>();
+    meshShapeList_->SetStyleAuto();
+    meshShapeList_->SetMinSize(150, 22);
+    const char* shapes[] = {"Box", "Sphere", "Cylinder", "Cone", "Capsule"};
+    for (int i = 0; i < 5; ++i)
+    {
+        auto* item = new Text(context_);
+        item->SetFont(font, 12);
+        item->SetText(shapes[i]);
+        item->SetColor(Color(0.9f, 0.9f, 0.9f));
+        item->SetMinSize(0, 20);
+        meshShapeList_->AddItem(item);
+    }
+    meshShapeList_->SetSelection(0);
+
+    // Helper lambda-style: create param row
+    auto CreateParamRow = [&](const String& label, float defVal, float maxVal, Text*& outLabel, Slider*& outSlider)
+    {
+        auto* row = generateMeshPanel_->CreateChild<UIElement>();
+        row->SetLayout(LM_HORIZONTAL, 4);
+        row->SetMinHeight(24);
+        outLabel = row->CreateChild<Text>();
+        outLabel->SetFont(font, 12);
+        outLabel->SetText(label + ": " + String(defVal, 1));
+        outLabel->SetColor(Color(0.8f, 0.8f, 0.8f));
+        outLabel->SetMinWidth(140);
+        outSlider = row->CreateChild<Slider>();
+        outSlider->SetStyleAuto();
+        outSlider->SetRange(maxVal);
+        outSlider->SetValue(defVal);
+        outSlider->SetMinSize(120, 18);
+    };
+
+    CreateParamRow("Size X / Radius", 1.0f, 5.0f, meshParam1Label_, meshParam1Slider_);
+    CreateParamRow("Size Y / Height", 1.0f, 5.0f, meshParam2Label_, meshParam2Slider_);
+    CreateParamRow("Segments", 16.0f, 64.0f, meshParam3Label_, meshParam3Slider_);
+
+    // Name edit
+    auto* nameRow = generateMeshPanel_->CreateChild<UIElement>();
+    nameRow->SetLayout(LM_HORIZONTAL, 4);
+    nameRow->SetMinHeight(24);
+    auto* nameLbl = nameRow->CreateChild<Text>();
+    nameLbl->SetFont(font, 12);
+    nameLbl->SetText("Name:");
+    nameLbl->SetColor(Color(0.8f, 0.8f, 0.8f));
+    meshNameEdit_ = nameRow->CreateChild<LineEdit>();
+    meshNameEdit_->SetStyleAuto();
+    meshNameEdit_->SetMinSize(180, 22);
+    meshNameEdit_->SetText("NewMesh");
+
+    // Material dropdown
+    auto* matRow = generateMeshPanel_->CreateChild<UIElement>();
+    matRow->SetLayout(LM_HORIZONTAL, 4);
+    matRow->SetMinHeight(24);
+    auto* matLbl = matRow->CreateChild<Text>();
+    matLbl->SetFont(font, 12);
+    matLbl->SetText("Material:");
+    matLbl->SetColor(Color(0.8f, 0.8f, 0.8f));
+    meshMaterialList_ = matRow->CreateChild<DropDownList>();
+    meshMaterialList_->SetStyleAuto();
+    meshMaterialList_->SetMinSize(150, 22);
+    const char* mats[] = {"Stone", "Mushroom", "Jack", "Terrain"};
+    for (int i = 0; i < 4; ++i)
+    {
+        auto* item = new Text(context_);
+        item->SetFont(font, 12);
+        item->SetText(mats[i]);
+        item->SetColor(Color(0.9f, 0.9f, 0.9f));
+        item->SetMinSize(0, 20);
+        meshMaterialList_->AddItem(item);
+    }
+    meshMaterialList_->SetSelection(0);
+
+    // Generate button
+    auto* btn = generateMeshPanel_->CreateChild<Button>();
+    btn->SetStyleAuto();
+    btn->SetMinHeight(28);
+    btn->SetLayout(LM_HORIZONTAL, 0, IntRect(8, 4, 8, 4));
+    auto* btnText = btn->CreateChild<Text>();
+    btnText->SetFont(font, 13);
+    btnText->SetText("Generate");
+    btnText->SetColor(Color::WHITE);
+    btnText->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(Water, HandleGenerateMesh));
+}
+
+void Water::HandleGenerateMesh(StringHash eventType, VariantMap& eventData)
+{
+    if (!meshShapeList_ || !meshNameEdit_)
+        return;
+
+    auto* fs = GetSubsystem<FileSystem>();
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    String name = meshNameEdit_->GetText().Trimmed();
+    if (name.Empty()) name = "NewMesh";
+
+    unsigned shapeIdx = meshShapeList_->GetSelection();
+    const char* shapeNames[] = {"box", "sphere", "cylinder", "cone", "capsule"};
+    String shapeType = shapeNames[shapeIdx];
+
+    float p1 = meshParam1Slider_ ? meshParam1Slider_->GetValue() : 1.0f;
+    float p2 = meshParam2Slider_ ? meshParam2Slider_->GetValue() : 1.0f;
+    int p3 = meshParam3Slider_ ? (int)meshParam3Slider_->GetValue() : 16;
+    if (p1 < 0.1f) p1 = 0.1f;
+    if (p2 < 0.1f) p2 = 0.1f;
+    if (p3 < 3) p3 = 3;
+
+    // Write temp XML for MeshGenerator
+    String tempXml = fs->GetTemporaryDir() + name + ".xml";
+    String outputMdl = fs->GetProgramDir() + "Data/Models/" + name + ".mdl";
+
+    {
+        File f(context_, tempXml, FILE_WRITE);
+        if (shapeType == "box")
+            f.WriteString("<mesh type=\"box\" sizeX=\"" + String(p1) + "\" sizeY=\"" + String(p2) + "\" sizeZ=\"" + String(p1) + "\" />\n");
+        else if (shapeType == "sphere")
+            f.WriteString("<mesh type=\"sphere\" radius=\"" + String(p1 * 0.5f) + "\" segments=\"" + String(p3) + "\" rings=\"" + String(p3 / 2) + "\" />\n");
+        else if (shapeType == "cylinder")
+            f.WriteString("<mesh type=\"cylinder\" radius=\"" + String(p1 * 0.5f) + "\" height=\"" + String(p2) + "\" segments=\"" + String(p3) + "\" />\n");
+        else if (shapeType == "cone")
+            f.WriteString("<mesh type=\"cone\" radius=\"" + String(p1 * 0.5f) + "\" height=\"" + String(p2) + "\" segments=\"" + String(p3) + "\" />\n");
+        else if (shapeType == "capsule")
+            f.WriteString("<mesh type=\"capsule\" radius=\"" + String(p1 * 0.5f) + "\" height=\"" + String(p2) + "\" segments=\"" + String(p3) + "\" rings=\"" + String(p3 / 2) + "\" />\n");
+    }
+
+    // Run MeshGenerator
+    String toolPath = fs->GetProgramDir() + "tool/MeshGenerator";
+    String cmd = "\"" + toolPath + "\" \"" + tempXml + "\" \"" + outputMdl + "\"";
+    URHO3D_LOGINFOF("Running: %s", cmd.CString());
+
+    int result = fs->SystemCommand(cmd);
+    if (result != 0)
+    {
+        URHO3D_LOGERRORF("MeshGenerator failed (exit code %d)", result);
+        return;
+    }
+
+    // Load and place
+    auto* model = cache->GetResource<Model>("Models/" + name + ".mdl");
+    if (!model)
+    {
+        URHO3D_LOGERROR("Failed to load generated model");
+        return;
+    }
+
+    Vector3 spawnPos = cameraNode_->GetPosition() + cameraNode_->GetDirection() * 10.0f;
+
+    Node* node = scene_->CreateChild(name);
+    auto* sm = node->CreateComponent<StaticModel>();
+    sm->SetModel(model);
+    sm->SetCastShadows(true);
+
+    // Apply selected material
+    unsigned matIdx = meshMaterialList_ ? meshMaterialList_->GetSelection() : 0;
+    const char* matFiles[] = {"Materials/Stone.xml", "Materials/Mushroom.xml", "Materials/Jack.xml", "Materials/Terrain.xml"};
+    auto* mat = cache->GetResource<Material>(matFiles[matIdx], false);
+    if (mat)
+        sm->SetMaterial(mat);
+
+    node->SetPosition(spawnPos);
+
+    // Add physics
+    auto* body = node->CreateComponent<RigidBody>();
+    body->SetMass(0.0f);
+    auto* shape = node->CreateComponent<CollisionShape>();
+    BoundingBox bb = model->GetBoundingBox();
+    shape->SetBox(bb.Size(), bb.Center());
+
+    // Record undo
+    UndoAction action;
+    action.type = UndoAction::NODE_CREATE;
+    action.nodeID = node->GetID();
+    action.xmlData = SerializeNode(node);
+    action.position = node->GetPosition();
+    action.rotation = node->GetRotation();
+    PushUndo(action);
+
+    URHO3D_LOGINFOF("Generated and placed: %s (%s)", name.CString(), shapeType.CString());
+
+    // Hide panel
+    if (generateMeshPanel_)
+        generateMeshPanel_->SetVisible(false);
+}
+
+void Water::HandleMeshShapeChanged(StringHash eventType, VariantMap& eventData)
+{
+    // Future: update parameter labels based on selected shape
+}
+
+// ============================================================================
+// Undo / Redo
+// ============================================================================
+
+void Water::PushUndo(const UndoAction& action)
+{
+    // Truncate any redo history beyond cursor
+    while ((int)undoStack_.Size() > undoCursor_)
+        undoStack_.Pop();
+
+    undoStack_.Push(action);
+    ++undoCursor_;
+
+    // Cap at 50 entries
+    if (undoStack_.Size() > 50)
+    {
+        undoStack_.Erase(0);
+        --undoCursor_;
+    }
+}
+
+void Water::Undo()
+{
+    if (undoCursor_ <= 0)
+        return;
+
+    --undoCursor_;
+    const UndoAction& action = undoStack_[undoCursor_];
+
+    switch (action.type)
+    {
+    case UndoAction::NODE_DELETE:
+        {
+            // Re-create the deleted node from saved XML
+            XMLFile xmlFile(context_);
+            MemoryBuffer buf(action.xmlData.CString(), action.xmlData.Length());
+            if (xmlFile.Load(buf))
+            {
+                XMLElement rootElem = xmlFile.GetRoot();
+                Node* restored = scene_->CreateChild(String::EMPTY, LOCAL);
+                restored->LoadXML(rootElem);
+                restored->SetPosition(action.position);
+                restored->SetRotation(action.rotation);
+            }
+        }
+        break;
+
+    case UndoAction::NODE_CREATE:
+        {
+            Node* node = scene_->GetNode(action.nodeID);
+            if (node)
+                node->Remove();
+        }
+        break;
+
+    case UndoAction::TERRAIN_EDIT:
+        if (action.beforeHM)
+            RestoreHeightMap(action.beforeHM);
+        break;
+    }
+}
+
+void Water::Redo()
+{
+    if (undoCursor_ >= (int)undoStack_.Size())
+        return;
+
+    const UndoAction& action = undoStack_[undoCursor_];
+    ++undoCursor_;
+
+    switch (action.type)
+    {
+    case UndoAction::NODE_DELETE:
+        {
+            // Re-delete the node
+            Node* node = scene_->GetNode(action.nodeID);
+            if (node)
+            {
+                DeselectNode();
+                node->Remove();
+            }
+        }
+        break;
+
+    case UndoAction::NODE_CREATE:
+        {
+            // Re-create the node
+            XMLFile xmlFile(context_);
+            MemoryBuffer buf(action.xmlData.CString(), action.xmlData.Length());
+            if (xmlFile.Load(buf))
+            {
+                XMLElement rootElem = xmlFile.GetRoot();
+                Node* restored = scene_->CreateChild(String::EMPTY, LOCAL);
+                restored->LoadXML(rootElem);
+                restored->SetPosition(action.position);
+                restored->SetRotation(action.rotation);
+            }
+        }
+        break;
+
+    case UndoAction::TERRAIN_EDIT:
+        if (action.afterHM)
+            RestoreHeightMap(action.afterHM);
+        break;
+    }
+}
+
+String Water::SerializeNode(Node* node)
+{
+    XMLFile xmlFile(context_);
+    XMLElement rootElem = xmlFile.CreateRoot("node");
+    node->SaveXML(rootElem);
+    return xmlFile.ToString();
+}
+
+SharedPtr<Image> Water::CloneHeightMap()
+{
+    if (!editableHeightMap_)
+        return SharedPtr<Image>();
+
+    SharedPtr<Image> clone(new Image(context_));
+    clone->SetSize(editableHeightMap_->GetWidth(), editableHeightMap_->GetHeight(), editableHeightMap_->GetComponents());
+    memcpy(clone->GetData(), editableHeightMap_->GetData(),
+           editableHeightMap_->GetWidth() * editableHeightMap_->GetHeight() * editableHeightMap_->GetComponents());
+    return clone;
+}
+
+void Water::RestoreHeightMap(Image* src)
+{
+    if (!src || !editableHeightMap_ || !terrain_)
+        return;
+
+    memcpy(editableHeightMap_->GetData(), src->GetData(),
+           src->GetWidth() * src->GetHeight() * src->GetComponents());
+    terrain_->ApplyHeightMap();
+    WakeSleepingBodiesOnTerrain();
+}
+
+void Water::BeginTerrainStroke()
+{
+    if (!terrainStrokeActive_)
+    {
+        terrainStrokeBefore_ = CloneHeightMap();
+        terrainStrokeActive_ = true;
+    }
+}
+
+void Water::EndTerrainStroke()
+{
+    if (terrainStrokeActive_)
+    {
+        terrainStrokeActive_ = false;
+        SharedPtr<Image> after = CloneHeightMap();
+
+        if (terrainStrokeBefore_ && after)
+        {
+            UndoAction action;
+            action.type = UndoAction::TERRAIN_EDIT;
+            action.beforeHM = terrainStrokeBefore_;
+            action.afterHM = after;
+            PushUndo(action);
+        }
+        terrainStrokeBefore_.Reset();
+    }
+}
+
+// ============================================================================
 // Minimap
 // ============================================================================
 
@@ -1477,13 +2335,11 @@ void Water::UpdateMinimapCamera()
     if (waterNode_ && terrain_)
         waterH = waterNode_->GetWorldPosition().y_ / terrain_->GetSpacing().y_;
 
-    // Camera facing direction from yaw — stable regardless of pitch
-    // Heightmap Y is inverted from world Z, so negate Z component
-    float yawRad = yaw_ * DEG_TO_RAD;
-    float dirX = sinf(yawRad);
-    float dirZ = -cosf(yawRad);
-
-    float coneHalf = cosf(30.0f * DEG_TO_RAD);
+    // Rotate minimap so camera forward is always "up" on display
+    // Negate yaw because heightmap Y grows in -Z direction (opposite to camera forward at yaw=0)
+    float yawRad = -yaw_ * DEG_TO_RAD;
+    float cosYaw = cosf(yawRad);
+    float sinYaw = sinf(yawRad);
 
     // Render zoomed view: each display pixel maps to a heightmap pixel
     float scale = (float)(viewRadius * 2) / (float)displaySize;
@@ -1492,9 +2348,13 @@ void Water::UpdateMinimapCamera()
     {
         for (int px = 0; px < displaySize; ++px)
         {
-            // Heightmap coordinate for this display pixel
-            int hx = camHX + (int)((px - displaySize / 2) * scale);
-            int hy = camHY + (int)((py - displaySize / 2) * scale);
+            // Display-space offset from center
+            float dx = (float)(px - displaySize / 2) * scale;
+            float dy = (float)(py - displaySize / 2) * scale;
+
+            // Rotate by -yaw: world X = dx*cos + dy*sin, world Z = -dx*sin + dy*cos
+            int hx = camHX + (int)(dx * cosYaw + dy * sinYaw);
+            int hy = camHY + (int)(-dx * sinYaw + dy * cosYaw);
 
             if (hx < 0 || hx >= hmW || hy < 0 || hy >= hmH)
             {
@@ -1550,27 +2410,20 @@ void Water::UpdateMinimapCamera()
                 b = brightness * 0.15f;
             }
 
-            // Spotlight cone overlay
-            float offX = (float)(px - displaySize / 2);
-            float offY = (float)(py - displaySize / 2);
-            float dist = sqrtf(offX * offX + offY * offY);
-            if (dist > 5.0f && dist < displaySize * 0.45f)
-            {
-                float pdx = offX / dist;
-                float pdy = offY / dist;
-                float dot = pdx * dirX + pdy * dirZ;
-                if (dot > coneHalf)
-                {
-                    float angleFade = (dot - coneHalf) / (1.0f - coneHalf);
-                    float distFade = 1.0f - dist / (displaySize * 0.45f);
-                    float bright = angleFade * distFade * 0.4f;
-                    r = Clamp(r + bright, 0.0f, 1.0f);
-                    gb = Clamp(gb + bright, 0.0f, 1.0f);
-                    b = Clamp(b + bright * 0.7f, 0.0f, 1.0f);
-                }
-            }
-
             minimapImg_->SetPixel(px, py, Color(r, gb, b, 1.0f));
+        }
+    }
+
+    // Draw forward indicator — small triangle at top center
+    int cx = displaySize / 2;
+    for (int i = 0; i < 6; ++i)
+    {
+        for (int j = -i; j <= i; ++j)
+        {
+            int px = cx + j;
+            int py = 2 + i;
+            if (px >= 0 && px < displaySize && py >= 0 && py < displaySize)
+                minimapImg_->SetPixel(px, py, Color(1.0f, 1.0f, 0.0f, 1.0f));
         }
     }
 
@@ -1778,9 +2631,44 @@ void Water::MoveCamera(float timeStep)
     if (input->GetKeyPress(KEY_F11))
         GetSubsystem<Graphics>()->ToggleFullscreen();
 
+    // Undo/Redo
+    if ((input->GetQualifiers() & QUAL_CTRL) && input->GetKeyPress(KEY_Z))
+        Undo();
+    if ((input->GetQualifiers() & QUAL_CTRL) && input->GetKeyPress(KEY_Y))
+        Redo();
+
+    // Gizmo mode shortcuts
+    if (input->GetKeyPress(KEY_T))
+        gizmoMode_ = (gizmoMode_ == 1) ? 0 : 1;
+    if (input->GetKeyPress(KEY_R))
+        gizmoMode_ = (gizmoMode_ == 2) ? 0 : 2;
+    if (input->GetKeyPress(KEY_S))
+        gizmoMode_ = (gizmoMode_ == 3) ? 0 : 3;
+    if (input->GetKeyPress(KEY_G))
+    {
+        gizmoLocal_ = !gizmoLocal_;
+        // Update edit menu label
+        if (editMenu_ && editMenu_->GetNumItems() > 5)
+        {
+            auto* item = editMenu_->GetItem(5);
+            auto* label = item ? item->GetChildStaticCast<Text>(0) : nullptr;
+            if (label)
+                label->SetText(gizmoLocal_ ? "Local (G)" : "World (G)");
+        }
+    }
+
     if ((input->GetKeyPress(KEY_BACKSPACE) || input->GetKeyPress(KEY_DELETE)) && selectedNode_ && !selectedNode_.Expired())
     {
         Node* node = selectedNode_;
+        // Record undo before deleting
+        UndoAction action;
+        action.type = UndoAction::NODE_DELETE;
+        action.nodeID = node->GetID();
+        action.xmlData = SerializeNode(node);
+        action.position = node->GetPosition();
+        action.rotation = node->GetRotation();
+        PushUndo(action);
+
         DeselectNode();
         node->Remove();
     }
@@ -1924,8 +2812,7 @@ void Water::MoveCamera(float timeStep)
                     cachedBrushHit_ = results[i].position_;
                     hasBrushHit_ = true;
 
-                    // In menu mode, don't paint if mouse is over a UI element
-                    if (menuOpen_)
+                    // Don't paint if mouse is over a UI element (sliders, panels, menus)
                     {
                         auto* uiElem = GetSubsystem<UI>()->GetElementAt(input->GetMousePosition());
                         if (uiElem)
@@ -1935,14 +2822,23 @@ void Water::MoveCamera(float timeStep)
                     if (brushMode_ == 1)
                     {
                         if (input->GetMouseButtonDown(MOUSEB_LEFT))
+                        {
+                            BeginTerrainStroke();
                             ApplyBrush(cachedBrushHit_, timeStep);
+                        }
                         if (input->GetMouseButtonDown(MOUSEB_RIGHT))
+                        {
+                            BeginTerrainStroke();
                             ApplyLowerBrush(cachedBrushHit_, timeStep);
+                        }
                     }
                     else
                     {
                         if (input->GetMouseButtonDown(MOUSEB_LEFT) || input->GetMouseButtonDown(MOUSEB_RIGHT))
+                        {
+                            BeginTerrainStroke();
                             ApplyBrush(cachedBrushHit_, timeStep);
+                        }
                     }
                     break;
                 }
@@ -1950,8 +2846,111 @@ void Water::MoveCamera(float timeStep)
         }
     }
 
-    // Object selection raycast (when no brush mode active)
-    if (brushMode_ == 0 && input->GetMouseButtonPress(MOUSEB_LEFT))
+    // End terrain stroke on mouse release
+    if (terrainStrokeActive_ && !input->GetMouseButtonDown(MOUSEB_LEFT) && !input->GetMouseButtonDown(MOUSEB_RIGHT))
+        EndTerrainStroke();
+
+    // Gizmo drag handling
+    if (gizmoDragging_ && input->GetMouseButtonDown(MOUSEB_LEFT))
+    {
+        UpdateGizmoDrag();
+    }
+    else if (gizmoDragging_ && !input->GetMouseButtonDown(MOUSEB_LEFT))
+    {
+        EndGizmoDrag();
+    }
+
+    // Gizmo picking — screen-space, only in cursor mode (TAB)
+    if (menuOpen_ && gizmoMode_ != 0 && selectedNode_ && !selectedNode_.Expired() &&
+        brushMode_ == 0 && input->GetMouseButtonPress(MOUSEB_LEFT) && !gizmoDragging_)
+    {
+        auto* uiElem = GetSubsystem<UI>()->GetElementAt(input->GetMousePosition());
+        if (!uiElem)
+        {
+            auto* camera = cameraNode_->GetComponent<Camera>();
+            auto* graphics = GetSubsystem<Graphics>();
+            IntVector2 mousePos = input->GetMousePosition();
+            float w = (float)graphics->GetWidth();
+            float h = (float)graphics->GetHeight();
+            float mx = (float)mousePos.x_;
+            float my = (float)mousePos.y_;
+
+            Vector3 nodePos = selectedNode_->GetWorldPosition();
+            float dist = (nodePos - cameraNode_->GetWorldPosition()).Length();
+            float len = dist * 0.15f;
+
+            // Project node origin to screen
+            Vector2 screenOrigin = camera->WorldToScreenPoint(nodePos);
+            float ox = screenOrigin.x_ * w;
+            float oy = screenOrigin.y_ * h;
+
+            if (gizmoMode_ == 2) // Rotate — arcball, click anywhere near object
+            {
+                float screenDist = sqrtf((mx - ox) * (mx - ox) + (my - oy) * (my - oy));
+                // Accept click within ~2x the gizmo ring radius on screen
+                Vector2 screenRingEdge = camera->WorldToScreenPoint(nodePos + Vector3::RIGHT * len);
+                float ringScreenRadius = sqrtf((screenRingEdge.x_ * w - ox) * (screenRingEdge.x_ * w - ox) +
+                                               (screenRingEdge.y_ * h - oy) * (screenRingEdge.y_ * h - oy));
+                if (screenDist < ringScreenRadius * 2.0f)
+                {
+                    BeginGizmoDrag(0);  // axis ignored for arcball
+                }
+            }
+            else // Translate/Scale — axis picking
+            {
+                Vector3 axes[3];
+                if (gizmoLocal_)
+                {
+                    Quaternion rot = selectedNode_->GetWorldRotation();
+                    axes[0] = rot * Vector3::RIGHT;
+                    axes[1] = rot * Vector3::UP;
+                    axes[2] = rot * Vector3::FORWARD;
+                }
+                else
+                {
+                    axes[0] = Vector3::RIGHT;
+                    axes[1] = Vector3::UP;
+                    axes[2] = Vector3::FORWARD;
+                }
+
+                int bestAxis = -1;
+                float bestDist = 15.0f;  // 15 pixel threshold
+
+                for (int a = 0; a < 3; ++a)
+                {
+                    Vector3 axisEnd = nodePos + axes[a] * len;
+                    Vector2 screenEnd = camera->WorldToScreenPoint(axisEnd);
+                    float ex = screenEnd.x_ * w;
+                    float ey = screenEnd.y_ * h;
+
+                    float segDx = ex - ox;
+                    float segDy = ey - oy;
+                    float segLen2 = segDx * segDx + segDy * segDy;
+                    if (segLen2 < 4.0f) continue;
+
+                    float t = ((mx - ox) * segDx + (my - oy) * segDy) / segLen2;
+                    t = Clamp(t, 0.0f, 1.0f);
+                    float closestX = ox + segDx * t;
+                    float closestY = oy + segDy * t;
+                    float d = sqrtf((mx - closestX) * (mx - closestX) + (my - closestY) * (my - closestY));
+
+                    if (d < bestDist && t > 0.1f)
+                    {
+                        bestDist = d;
+                        bestAxis = a;
+                    }
+                }
+
+                if (bestAxis >= 0)
+                {
+                    BeginGizmoDrag(bestAxis);
+                }
+            }
+        }
+    }
+
+    // Object selection raycast (when no brush mode active, and not gizmo dragging)
+    if (brushMode_ == 0 && !gizmoDragging_ && input->GetMouseButtonPress(MOUSEB_LEFT))
     {
         auto* uiElem = GetSubsystem<UI>()->GetElementAt(input->GetMousePosition());
         if (!uiElem)
@@ -2812,6 +3811,9 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
     if (hasBrushHit_ && (brushMode_ != 0 || (terrainPanel_ && terrainPanel_->IsVisible())))
         DrawBrushOutline(cachedBrushHit_);
 
+    // Draw transform gizmo on selected object
+    DrawGizmo();
+
     if (!drawDebug_)
         return;
 
@@ -2890,6 +3892,9 @@ void Water::RunErosion(int iterations)
         URHO3D_LOGERROR("RunErosion: No terrain or heightmap");
         return;
     }
+
+    // Snapshot for undo before erosion
+    SharedPtr<Image> beforeErosion = CloneHeightMap();
 
     auto* graphics = GetSubsystem<Graphics>();
     auto* cache = GetSubsystem<ResourceCache>();
@@ -3083,6 +4088,14 @@ void Water::RunErosion(int iterations)
         terrain_->ApplyHeightMap();
         WakeSleepingBodiesOnTerrain();
         UpdateMinimapTexture();
+
+        // Push undo for the erosion operation
+        UndoAction action;
+        action.type = UndoAction::TERRAIN_EDIT;
+        action.beforeHM = beforeErosion;
+        action.afterHM = CloneHeightMap();
+        PushUndo(action);
+
         URHO3D_LOGINFO("RunErosion: Complete — terrain updated");
     }
     else

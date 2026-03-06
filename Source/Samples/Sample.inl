@@ -219,12 +219,16 @@ void Sample::HandleKeyUp(StringHash /*eventType*/, VariantMap& eventData)
 
     int key = eventData[P_KEY].GetI32();
 
-    // Close console (if open) or exit when ESC is pressed
+    // Close console (if open), peel editor layers, or exit when ESC is pressed
     if (key == KEY_ESCAPE)
     {
         Console* console = GetSubsystem<Console>();
         if (console->IsVisible())
             console->SetVisible(false);
+        else if (OnEscapePressed())
+        {
+            // Derived class handled it (closed a panel, changed mode, etc.)
+        }
         else
         {
             if (GetPlatform() == "Web")

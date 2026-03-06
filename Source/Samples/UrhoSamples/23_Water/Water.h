@@ -9,6 +9,7 @@
 #include <Urho3D/UI/BorderImage.h>
 #include <Urho3D/UI/Menu.h>
 #include <Urho3D/UI/Window.h>
+#include <Urho3D/UI/LineEdit.h>
 #include <Urho3D/Network/HttpRequest.h>
 #include <Urho3D/UI/FileSelector.h>
 
@@ -23,6 +24,21 @@ class Scene;
 
 }
 
+/// Undo/redo action record.
+struct UndoAction
+{
+    enum Type { NODE_CREATE, NODE_DELETE, TERRAIN_EDIT };
+    Type type;
+    // Node actions
+    unsigned nodeID{};
+    String xmlData;
+    Vector3 position;
+    Quaternion rotation;
+    // Terrain actions — full heightmap snapshots
+    SharedPtr<Image> beforeHM;
+    SharedPtr<Image> afterHM;
+};
+
 /// Water example with dropdown menus, terrain editing, and celestial day/night cycle.
 class Water : public Sample
 {
@@ -33,6 +49,7 @@ public:
 
     void Start() override;
     void Stop() override;
+    bool OnEscapePressed() override;
 
 private:
     void CreateScene();
@@ -125,6 +142,51 @@ private:
     void DeselectNode();
     WeakPtr<Node> selectedNode_;
     Vector<SharedPtr<Material>> originalMaterials_;
+
+    // --- Undo/Redo ---
+    void PushUndo(const UndoAction& action);
+    void Undo();
+    void Redo();
+    void BeginTerrainStroke();
+    void EndTerrainStroke();
+    String SerializeNode(Node* node);
+    SharedPtr<Image> CloneHeightMap();
+    void RestoreHeightMap(Image* src);
+    Vector<UndoAction> undoStack_;
+    int undoCursor_{0};
+    bool terrainStrokeActive_{false};
+    SharedPtr<Image> terrainStrokeBefore_;
+
+    // --- Transform gizmo ---
+    void DrawGizmo();
+    void BeginGizmoDrag(int axis);
+    void UpdateGizmoDrag();
+    void EndGizmoDrag();
+    int gizmoMode_{0};        // 0=none, 1=translate, 2=rotate, 3=scale
+    bool gizmoLocal_{false};  // false=world, true=local
+    bool gizmoDragging_{false};
+    int gizmoAxis_{-1};       // 0=X, 1=Y, 2=Z
+    Vector3 gizmoDragStart_;  // mouse ray hit at drag start
+    Vector3 gizmoNodeStart_;  // node position at drag start
+    Quaternion gizmoRotStart_; // node rotation at drag start
+    Vector3 gizmoScaleStart_; // node scale at drag start
+
+    // --- Import / Generate ---
+    void ShowImportModelDialog();
+    void HandleImportModelChosen(StringHash eventType, VariantMap& eventData);
+    void ShowGenerateMeshPanel();
+    void HandleGenerateMesh(StringHash eventType, VariantMap& eventData);
+    void HandleMeshShapeChanged(StringHash eventType, VariantMap& eventData);
+    SharedPtr<Window> generateMeshPanel_;
+    DropDownList* meshShapeList_{};
+    Slider* meshParam1Slider_{};
+    Slider* meshParam2Slider_{};
+    Slider* meshParam3Slider_{};
+    Text* meshParam1Label_{};
+    Text* meshParam2Label_{};
+    Text* meshParam3Label_{};
+    DropDownList* meshMaterialList_{};
+    LineEdit* meshNameEdit_{};
 
     // --- State ---
     bool menuOpen_{false};

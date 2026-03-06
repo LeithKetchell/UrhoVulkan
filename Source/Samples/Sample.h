@@ -60,6 +60,8 @@ public:
 protected:
     /// Return XML patch instructions for screen joystick layout for a specific sample app, if any.
     virtual String GetScreenJoystickPatchString() const { return String::EMPTY; }
+    /// Called when ESC is pressed. Return true if handled (e.g. closed a panel).
+    virtual bool OnEscapePressed() { return false; }
     /// Move camera with WASD + mouse look. Override for custom camera controls.
     virtual void MoveCamera(float timeStep);
     /// Spawn a physics object from the camera position. Override to customize projectile.
