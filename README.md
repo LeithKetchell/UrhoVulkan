@@ -50,19 +50,66 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Includes: BasicDemo, Chain, CollisionFilter, Constraints, Domino, ForkLift, Gyroscopic, Heightfield, HelloPhysics, Hinge2Vehicle, Kinematic, MotorDemo, Planar2D, PlanetGravity, Raycast, RollingFriction, SoftContact, SoftDemo, Stacking, TwoJoint, and more
 
 ### Editor Sample (23_Water)
-- Terrain editing with configurable brush shapes (circle, square, triangle, star, pentagon, hexagon, octagon)
-- Raise, lower, smooth, and flatten brush modes with adjustable size, strength, and rotation
+
+A lightweight scene editor built into Sample 23 with terrain editing, object management, and a celestial day/night cycle.
+
+**Getting Around**
+- WASD to move, mouse to look (camera mode)
+- TAB to toggle between camera mode and cursor mode (needed for menus and UI)
+- ESC peels back UI layers one at a time (inspector, hierarchy, panels, brush, selection, then cursor mode)
+
+**Menu Bar** (visible in cursor mode)
+- **File**: Save/Load Scene, Save/Load Heightmap, Toggle Fullscreen (F11), Exit
+- **Create**: Import Model, Generate Mesh — new objects are parented under the selected node (or scene root if nothing selected)
+- **Edit**: Undo/Redo (Ctrl+Z/Y), Transform mode (Translate/Rotate/Scale), World/Local toggle
+- **View**: Hierarchy window, Inspector window
+- **Environment**: Toggle Wireframe, Debug Geometry, Height Fog, Profiler, Terrain Tools, Time of Day slider
+
+**Selecting Objects**
+- In cursor mode: click an object in the viewport to select it (yellow outline)
+- In camera mode: crosshair pick (center of screen)
+- BACKSPACE or DELETE removes the selected object
+- Click empty space to deselect
+
+**Scene Hierarchy** (View > Hierarchy)
+- Tree view of all nodes in the scene with expand/collapse
+- Nodes shown in white, components in green
+- Click a node to select it (syncs with viewport outline)
+- Double-click to fly the camera to that node
+
+**Property Inspector** (View > Inspector)
+- Shows the selected node's name, position, rotation, and scale — all editable
+- Lists each component with its registered attributes
+- Floats, ints, strings: text fields. Bools: checkboxes. Enums: dropdowns
+- Vector3/Quaternion/Color: per-axis fields with color-coded labels (R/G/B = X/Y/Z)
+- Changes apply immediately
+
+**Parenting Objects**
+- Select a node in the hierarchy or viewport, then use Create > Import Model or Generate Mesh
+- The new object becomes a child of the selected node
+- If nothing is selected, the new object is created at the scene root
+- Child nodes inherit their parent's transform (move the parent, children follow)
+
+**Terrain Editing** (Environment > Terrain Tools)
+- LMB = raise, RMB = lower (in raise/lower mode)
+- Brush modes: Raise/Lower, Smooth, Flatten
+- Brush shapes: circle, square, triangle, star, pentagon, hexagon, octagon
+- Scroll wheel adjusts brush radius
 - 16-bit heightmap precision (R+G/256 format, 65536 height levels)
-- Heightmap save/load and scene save/load via FileSelector dialogs
-- Object selection with yellow Silhouette outline, BACKSPACE to delete
-- Celestial day/night cycle with real-time sun/moon positioning (network time sync)
-- Atmospheric rendering: sky tint, fog color, ambient light tied to sun altitude
+
+**Day/Night Cycle**
+- Real-time sun/moon positioning synced to network time (Melbourne, AU)
 - Time of Day slider in Environment menu for scrubbing +/-12 hours
-- Height fog auto-scales with time of day (thickens at dusk/night, off during day)
-- H key toggles height fog with manual override of atmospheric auto-control
-- Minimap with camera position indicator
-- Fullscreen toggle (F11) with Vulkan swapchain-only recreation (no device teardown)
-- Menu bar: File, Create, Edit, Environment with dropdown menus
+- Atmospheric rendering: sky tint, fog color, ambient light tied to sun altitude
+- Height fog auto-scales with time of day (thickens at dusk/night)
+- 1/2 keys track sun/moon with camera
+
+**Undo/Redo**
+- Ctrl+Z / Ctrl+Y (also in Edit menu)
+- Tracks object creation, deletion, and terrain strokes
+
+**Minimap**
+- Bottom-right corner, shows terrain overview with camera position dot
 
 ### Vulkan Fixes
 - Fullscreen toggle: RecreateSwapchainResources preserves device/textures/buffers

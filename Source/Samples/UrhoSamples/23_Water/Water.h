@@ -10,6 +10,9 @@
 #include <Urho3D/UI/Menu.h>
 #include <Urho3D/UI/Window.h>
 #include <Urho3D/UI/LineEdit.h>
+#include <Urho3D/UI/ListView.h>
+#include <Urho3D/UI/CheckBox.h>
+#include <Urho3D/UI/ScrollView.h>
 #include <Urho3D/Network/HttpRequest.h>
 #include <Urho3D/UI/FileSelector.h>
 
@@ -66,6 +69,7 @@ private:
     void HandleFileMenu(StringHash eventType, VariantMap& eventData);
     void HandleCreateMenu(StringHash eventType, VariantMap& eventData);
     void HandleEditMenu(StringHash eventType, VariantMap& eventData);
+    void HandleViewMenu(StringHash eventType, VariantMap& eventData);
     void HandleEnvironmentAction(StringHash eventType, VariantMap& eventData);
     void HandleMenuButton(StringHash eventType, VariantMap& eventData);
     void CreateTerrainPanel();
@@ -77,6 +81,7 @@ private:
     SharedPtr<DropDownList> fileMenu_;
     SharedPtr<DropDownList> createMenu_;
     SharedPtr<DropDownList> editMenu_;
+    SharedPtr<DropDownList> viewMenu_;
     Menu* environmentMenu_{};
     SharedPtr<Window> terrainPanel_;
 
@@ -187,6 +192,30 @@ private:
     Text* meshParam3Label_{};
     DropDownList* meshMaterialList_{};
     LineEdit* meshNameEdit_{};
+
+    // --- Hierarchy window ---
+    void ToggleHierarchyWindow();
+    void BuildHierarchyTree();
+    void PopulateHierarchy(Node* node, Text* parentItem, unsigned& index);
+    void HandleHierarchySelectionChanged(StringHash eventType, VariantMap& eventData);
+    void HandleHierarchyDoubleClick(StringHash eventType, VariantMap& eventData);
+    void HighlightInHierarchy(Node* node);
+    SharedPtr<Window> hierarchyWindow_;
+    ListView* hierarchyList_{};
+
+    // --- Inspector window ---
+    void ToggleInspectorWindow();
+    void RebuildInspector();
+    void CreateNodeSection(Node* node);
+    void CreateComponentSection(Component* component, unsigned compIndex);
+    LineEdit* CreateVec3Row(UIElement* parent, const String& label, const Vector3& value, const String& tag);
+    void HandleInspectorTransformEdit(StringHash eventType, VariantMap& eventData);
+    void HandleInspectorAttributeEdit(StringHash eventType, VariantMap& eventData);
+    void HandleInspectorCheckToggle(StringHash eventType, VariantMap& eventData);
+    void HandleInspectorEnumSelect(StringHash eventType, VariantMap& eventData);
+    SharedPtr<Window> inspectorWindow_;
+    ScrollView* inspectorScroll_{};
+    UIElement* inspectorContent_{};
 
     // --- State ---
     bool menuOpen_{false};

@@ -79,6 +79,8 @@ void Water::Stop()
     moonMat_.Reset();
     profilerUI_.Reset();
     terrainPanel_.Reset();
+    hierarchyWindow_.Reset();
+    inspectorWindow_.Reset();
     editableHeightMap_.Reset();
 }
 
@@ -93,6 +95,16 @@ bool Water::OnEscapePressed()
     if (generateMeshPanel_ && generateMeshPanel_->IsVisible())
     {
         generateMeshPanel_->SetVisible(false);
+        return true;
+    }
+    if (inspectorWindow_ && inspectorWindow_->IsVisible())
+    {
+        inspectorWindow_->SetVisible(false);
+        return true;
+    }
+    if (hierarchyWindow_ && hierarchyWindow_->IsVisible())
+    {
+        hierarchyWindow_->SetVisible(false);
         return true;
     }
     if (terrainPanel_ && terrainPanel_->IsVisible())
@@ -153,6 +165,11 @@ void Water::SelectNode(Node* node)
             model->SetMaterial(i, maskMat);
         }
     }
+
+    // Sync hierarchy tree & inspector
+    HighlightInHierarchy(node);
+    if (inspectorWindow_ && inspectorWindow_->IsVisible())
+        RebuildInspector();
 }
 
 void Water::DeselectNode()
@@ -169,6 +186,10 @@ void Water::DeselectNode()
 
     originalMaterials_.Clear();
     selectedNode_.Reset();
+
+    // Clear inspector
+    if (inspectorWindow_ && inspectorWindow_->IsVisible())
+        RebuildInspector();
 }
 
 void Water::Start()
@@ -529,6 +550,15 @@ void Water::CreateMenuBar()
         SubscribeToEvent(editMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleEditMenu));
     }
 
+    // View
+    {
+        Vector<String> items;
+        items.Push("Hierarchy");
+        items.Push("Inspector");
+        viewMenu_ = CreateMenuDropdown("View", items);
+        SubscribeToEvent(viewMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleViewMenu));
+    }
+
     // Environment (Menu-based with Terrain submenu)
     {
         auto* cache = GetSubsystem<ResourceCache>();
@@ -556,7 +586,7 @@ void Water::CreateMenuBar()
         // Action IDs: 100=wireframe, 101=debug, 102=fog, 103=profiler
         CreateMenuItem(envPopup, "Toggle Wireframe  (Z)", 100);
         CreateMenuItem(envPopup, "Toggle Debug Geometry  (Space)", 101);
-        CreateMenuItem(envPopup, "Toggle Height Fog  (H)", 102);
+        CreateMenuItem(envPopup, "Toggle Height Fog", 102);
         CreateMenuItem(envPopup, "Toggle Profiler", 103);
 
         if (terrain_)
@@ -640,6 +670,18 @@ void Water::HandleEditMenu(StringHash eventType, VariantMap& eventData)
                 label->SetText(gizmoLocal_ ? "Local (G)" : "World (G)");
         }
         break;
+    }
+}
+
+void Water::HandleViewMenu(StringHash eventType, VariantMap& eventData)
+{
+    unsigned sel = eventData[ItemSelected::P_SELECTION].GetU32();
+    viewMenu_->SetSelection(M_MAX_UNSIGNED);
+
+    switch (sel)
+    {
+    case 0: ToggleHierarchyWindow(); break;
+    case 1: ToggleInspectorWindow(); break;
     }
 }
 
@@ -1835,7 +1877,8 @@ void Water::HandleImportModelChosen(StringHash eventType, VariantMap& eventData)
     auto* camera = cameraNode_->GetComponent<Camera>();
     Vector3 spawnPos = cameraNode_->GetPosition() + cameraNode_->GetDirection() * 10.0f;
 
-    Node* node = scene_->CreateChild(baseName);
+    Node* parentNode = (selectedNode_ && !selectedNode_.Expired()) ? selectedNode_.Get() : scene_;
+    Node* node = parentNode->CreateChild(baseName);
     auto* sm = node->CreateComponent<StaticModel>();
     sm->SetModel(model);
 
@@ -1865,6 +1908,10 @@ void Water::HandleImportModelChosen(StringHash eventType, VariantMap& eventData)
     action.position = node->GetPosition();
     action.rotation = node->GetRotation();
     PushUndo(action);
+
+    SelectNode(node);
+    if (hierarchyWindow_ && hierarchyWindow_->IsVisible())
+        BuildHierarchyTree();
 
     URHO3D_LOGINFOF("Imported and placed: %s", baseName.CString());
 }
@@ -2057,7 +2104,8 @@ void Water::HandleGenerateMesh(StringHash eventType, VariantMap& eventData)
 
     Vector3 spawnPos = cameraNode_->GetPosition() + cameraNode_->GetDirection() * 10.0f;
 
-    Node* node = scene_->CreateChild(name);
+    Node* parentNode = (selectedNode_ && !selectedNode_.Expired()) ? selectedNode_.Get() : scene_;
+    Node* node = parentNode->CreateChild(name);
     auto* sm = node->CreateComponent<StaticModel>();
     sm->SetModel(model);
     sm->SetCastShadows(true);
@@ -2086,6 +2134,10 @@ void Water::HandleGenerateMesh(StringHash eventType, VariantMap& eventData)
     action.position = node->GetPosition();
     action.rotation = node->GetRotation();
     PushUndo(action);
+
+    SelectNode(node);
+    if (hierarchyWindow_ && hierarchyWindow_->IsVisible())
+        BuildHierarchyTree();
 
     URHO3D_LOGINFOF("Generated and placed: %s (%s)", name.CString(), shapeType.CString());
 
@@ -2606,16 +2658,6 @@ void Water::MoveCamera(float timeStep)
         auto* camera = cameraNode_ ? cameraNode_->GetComponent<Camera>() : nullptr;
         if (camera)
             camera->SetFillMode(camera->GetFillMode() == FILL_SOLID ? FILL_WIREFRAME : FILL_SOLID);
-    }
-
-    if (input->GetKeyPress(KEY_H))
-    {
-        if (zone_)
-        {
-            bool on = !zone_->GetHeightFog();
-            zone_->SetHeightFog(on);
-            heightFogOverride_ = on ? 1 : -1;
-        }
     }
 
     if (input->GetKeyPress(KEY_F))
@@ -4113,4 +4155,677 @@ void Water::RunErosion(int iterations)
     delete[] heightData;
     delete[] waterSedData;
     delete[] fluxData;
+}
+
+// ============================================================================
+// Hierarchy Window
+// ============================================================================
+
+void Water::ToggleHierarchyWindow()
+{
+    if (hierarchyWindow_)
+    {
+        hierarchyWindow_->SetVisible(!hierarchyWindow_->IsVisible());
+        if (hierarchyWindow_->IsVisible())
+            BuildHierarchyTree();
+        return;
+    }
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    auto* uiRoot = GetSubsystem<UI>()->GetRoot();
+
+    hierarchyWindow_ = new Window(context_);
+    uiRoot->AddChild(hierarchyWindow_);
+    hierarchyWindow_->SetStyleAuto();
+    hierarchyWindow_->SetPosition(8, 36);
+    hierarchyWindow_->SetSize(280, 500);
+    hierarchyWindow_->SetResizable(true);
+    hierarchyWindow_->SetMovable(true);
+    hierarchyWindow_->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
+    hierarchyWindow_->SetOpacity(0.85f);
+
+    auto* title = hierarchyWindow_->CreateChild<Text>();
+    title->SetFont(font, 12);
+    title->SetText("Scene");
+    title->SetColor(Color(0.9f, 0.9f, 0.3f));
+
+    hierarchyList_ = hierarchyWindow_->CreateChild<ListView>();
+    hierarchyList_->SetStyle("HierarchyListView");
+    hierarchyList_->SetHighlightMode(HM_ALWAYS);
+    hierarchyList_->SetMinSize(260, 440);
+
+    SubscribeToEvent(hierarchyList_, E_SELECTIONCHANGED, URHO3D_HANDLER(Water, HandleHierarchySelectionChanged));
+    SubscribeToEvent(hierarchyList_, E_ITEMDOUBLECLICKED, URHO3D_HANDLER(Water, HandleHierarchyDoubleClick));
+
+    BuildHierarchyTree();
+}
+
+void Water::BuildHierarchyTree()
+{
+    if (!hierarchyList_ || !scene_)
+        return;
+
+    hierarchyList_->DisableInternalLayoutUpdate();
+    hierarchyList_->RemoveAllItems();
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    // Root scene item
+    auto* rootItem = new Text(context_);
+    rootItem->SetFont(font, 11);
+    rootItem->SetText("Scene");
+    rootItem->SetColor(Color(1.0f, 1.0f, 0.7f));
+    rootItem->SetFixedHeight(16);
+    rootItem->SetVar(StringHash("NodeID"), scene_->GetID());
+    hierarchyList_->AddItem(rootItem);
+
+    unsigned index = 1;
+    const auto& children = scene_->GetChildren();
+    for (unsigned i = 0; i < children.Size(); ++i)
+        PopulateHierarchy(children[i], rootItem, index);
+
+    hierarchyList_->EnableInternalLayoutUpdate();
+    hierarchyList_->UpdateInternalLayout();
+
+    // Expand root
+    hierarchyList_->Expand(0, true);
+}
+
+void Water::PopulateHierarchy(Node* node, Text* parentItem, unsigned& index)
+{
+    if (!node)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    String name = node->GetName().Empty() ? String("Node ") + String(node->GetID()) : node->GetName();
+
+    auto* item = new Text(context_);
+    item->SetFont(font, 11);
+    item->SetText(name);
+    item->SetColor(Color::WHITE);
+    item->SetFixedHeight(16);
+    item->SetVar(StringHash("NodeID"), node->GetID());
+    hierarchyList_->InsertItem(index, item, parentItem);
+    index++;
+
+    // Components (green text)
+    const auto& components = node->GetComponents();
+    for (unsigned c = 0; c < components.Size(); ++c)
+    {
+        Component* comp = components[c];
+        auto* compItem = new Text(context_);
+        compItem->SetFont(font, 10);
+        compItem->SetText("  [" + comp->GetTypeName() + "]");
+        compItem->SetColor(Color(0.4f, 0.9f, 0.4f));
+        compItem->SetFixedHeight(16);
+        compItem->SetVar(StringHash("NodeID"), node->GetID());
+        compItem->SetVar(StringHash("CompIndex"), c);
+        hierarchyList_->InsertItem(index, compItem, item);
+        index++;
+    }
+
+    // Recurse children
+    const auto& children = node->GetChildren();
+    for (unsigned i = 0; i < children.Size(); ++i)
+        PopulateHierarchy(children[i], item, index);
+}
+
+void Water::HandleHierarchySelectionChanged(StringHash eventType, VariantMap& eventData)
+{
+    auto* selected = hierarchyList_->GetSelectedItem();
+    if (!selected)
+        return;
+
+    const Variant& nodeIDVar = selected->GetVar(StringHash("NodeID"));
+    if (nodeIDVar.IsEmpty())
+        return;
+
+    unsigned nodeID = nodeIDVar.GetU32();
+    Node* node = scene_->GetNode(nodeID);
+    if (node && node != scene_ && node != selectedNode_)
+        SelectNode(node);
+}
+
+void Water::HandleHierarchyDoubleClick(StringHash eventType, VariantMap& eventData)
+{
+    using namespace ItemDoubleClicked;
+    auto* item = static_cast<UIElement*>(eventData[P_ITEM].GetPtr());
+    if (!item)
+        return;
+
+    const Variant& nodeIDVar = item->GetVar(StringHash("NodeID"));
+    if (nodeIDVar.IsEmpty())
+        return;
+
+    unsigned nodeID = nodeIDVar.GetU32();
+    Node* node = scene_->GetNode(nodeID);
+    if (node && node != scene_ && cameraNode_)
+    {
+        // Focus camera on node
+        Vector3 target = node->GetWorldPosition();
+        Vector3 dir = (target - cameraNode_->GetPosition());
+        float dist = dir.Length();
+        if (dist > 1.0f)
+        {
+            dir.Normalize();
+            cameraNode_->SetPosition(target - dir * Min(dist, 20.0f));
+            yaw_ = atan2f(dir.x_, dir.z_) * M_RADTODEG;
+            pitch_ = asinf(Clamp(dir.y_, -1.0f, 1.0f)) * M_RADTODEG;
+            cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
+        }
+    }
+}
+
+void Water::HighlightInHierarchy(Node* node)
+{
+    if (!hierarchyList_ || !hierarchyWindow_ || !hierarchyWindow_->IsVisible())
+        return;
+
+    if (!node)
+    {
+        hierarchyList_->ClearSelection();
+        return;
+    }
+
+    unsigned targetID = node->GetID();
+    for (int i = 0; i < hierarchyList_->GetNumItems(); ++i)
+    {
+        auto* item = hierarchyList_->GetItem(i);
+        if (!item)
+            continue;
+        const Variant& v = item->GetVar(StringHash("NodeID"));
+        if (!v.IsEmpty() && v.GetU32() == targetID)
+        {
+            // Only select if it's a node item (not a component item)
+            const Variant& compVar = item->GetVar(StringHash("CompIndex"));
+            if (compVar.IsEmpty())
+            {
+                hierarchyList_->SetSelection(i);
+                hierarchyList_->EnsureItemVisibility(i);
+                break;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Inspector Window
+// ============================================================================
+
+void Water::ToggleInspectorWindow()
+{
+    if (inspectorWindow_)
+    {
+        inspectorWindow_->SetVisible(!inspectorWindow_->IsVisible());
+        if (inspectorWindow_->IsVisible())
+            RebuildInspector();
+        return;
+    }
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    auto* uiRoot = GetSubsystem<UI>()->GetRoot();
+    auto* graphics = GetSubsystem<Graphics>();
+
+    inspectorWindow_ = new Window(context_);
+    uiRoot->AddChild(inspectorWindow_);
+    inspectorWindow_->SetStyleAuto();
+    inspectorWindow_->SetPosition(graphics->GetWidth() - 308, 36);
+    inspectorWindow_->SetSize(300, 500);
+    inspectorWindow_->SetResizable(true);
+    inspectorWindow_->SetMovable(true);
+    inspectorWindow_->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
+    inspectorWindow_->SetOpacity(0.85f);
+
+    auto* title = inspectorWindow_->CreateChild<Text>();
+    title->SetFont(font, 12);
+    title->SetText("Inspector");
+    title->SetColor(Color(0.9f, 0.9f, 0.3f));
+
+    inspectorScroll_ = inspectorWindow_->CreateChild<ScrollView>();
+    inspectorScroll_->SetStyleAuto();
+    inspectorScroll_->SetMinSize(280, 440);
+
+    inspectorContent_ = new UIElement(context_);
+    inspectorContent_->SetLayout(LM_VERTICAL, 2, IntRect(2, 2, 2, 2));
+    inspectorContent_->SetMinWidth(270);
+    inspectorScroll_->SetContentElement(inspectorContent_);
+
+    RebuildInspector();
+}
+
+void Water::RebuildInspector()
+{
+    if (!inspectorContent_)
+        return;
+
+    inspectorContent_->RemoveAllChildren();
+
+    if (!selectedNode_ || selectedNode_.Expired())
+        return;
+
+    Node* node = selectedNode_;
+    CreateNodeSection(node);
+
+    const auto& components = node->GetComponents();
+    for (unsigned i = 0; i < components.Size(); ++i)
+        CreateComponentSection(components[i], i);
+
+    inspectorContent_->SetMinHeight(inspectorContent_->GetNumChildren() * 22 + 40);
+}
+
+void Water::CreateNodeSection(Node* node)
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    // Header
+    auto* header = inspectorContent_->CreateChild<Text>();
+    header->SetFont(font, 12);
+    header->SetText("Node: " + (node->GetName().Empty() ? String("ID ") + String(node->GetID()) : node->GetName()));
+    header->SetColor(Color(0.9f, 0.9f, 0.3f));
+
+    // Name
+    auto* nameRow = inspectorContent_->CreateChild<UIElement>();
+    nameRow->SetLayout(LM_HORIZONTAL, 4, IntRect(2, 1, 2, 1));
+    nameRow->SetFixedHeight(20);
+
+    auto* nameLabel = nameRow->CreateChild<Text>();
+    nameLabel->SetFont(font, 11);
+    nameLabel->SetText("Name");
+    nameLabel->SetColor(Color(0.8f, 0.8f, 0.8f));
+    nameLabel->SetMinWidth(70);
+
+    auto* nameEdit = nameRow->CreateChild<LineEdit>();
+    nameEdit->SetStyleAuto();
+    nameEdit->SetText(node->GetName());
+    nameEdit->SetMinWidth(180);
+    nameEdit->SetFixedHeight(18);
+    nameEdit->SetVar(StringHash("Field"), String("Name"));
+    SubscribeToEvent(nameEdit, E_TEXTFINISHED, URHO3D_HANDLER(Water, HandleInspectorTransformEdit));
+
+    // Position
+    CreateVec3Row(inspectorContent_, "Pos", node->GetPosition(), "Position");
+
+    // Rotation (as Euler)
+    Vector3 euler = node->GetRotation().EulerAngles();
+    CreateVec3Row(inspectorContent_, "Rot", euler, "Rotation");
+
+    // Scale
+    CreateVec3Row(inspectorContent_, "Scale", node->GetScale(), "Scale");
+}
+
+LineEdit* Water::CreateVec3Row(UIElement* parent, const String& label, const Vector3& value, const String& tag)
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    auto* row = parent->CreateChild<UIElement>();
+    row->SetLayout(LM_HORIZONTAL, 2, IntRect(2, 1, 2, 1));
+    row->SetFixedHeight(20);
+
+    auto* lbl = row->CreateChild<Text>();
+    lbl->SetFont(font, 11);
+    lbl->SetText(label);
+    lbl->SetColor(Color(0.8f, 0.8f, 0.8f));
+    lbl->SetMinWidth(42);
+
+    const char* axes[] = {"X", "Y", "Z"};
+    const float vals[] = {value.x_, value.y_, value.z_};
+
+    for (int i = 0; i < 3; ++i)
+    {
+        auto* axLbl = row->CreateChild<Text>();
+        axLbl->SetFont(font, 10);
+        axLbl->SetText(axes[i]);
+        axLbl->SetColor(i == 0 ? Color(1.0f, 0.3f, 0.3f) : (i == 1 ? Color(0.3f, 1.0f, 0.3f) : Color(0.3f, 0.3f, 1.0f)));
+        axLbl->SetMinWidth(10);
+
+        auto* edit = row->CreateChild<LineEdit>();
+        edit->SetStyleAuto();
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", vals[i]);
+        edit->SetText(buf);
+        edit->SetMinWidth(54);
+        edit->SetFixedHeight(18);
+        edit->SetVar(StringHash("Field"), tag);
+        edit->SetVar(StringHash("Axis"), i);
+        SubscribeToEvent(edit, E_TEXTFINISHED, URHO3D_HANDLER(Water, HandleInspectorTransformEdit));
+    }
+
+    return nullptr;
+}
+
+void Water::HandleInspectorTransformEdit(StringHash eventType, VariantMap& eventData)
+{
+    using namespace TextFinished;
+    auto* edit = static_cast<LineEdit*>(eventData[P_ELEMENT].GetPtr());
+    if (!edit || !selectedNode_ || selectedNode_.Expired())
+        return;
+
+    Node* node = selectedNode_;
+    String field = edit->GetVar(StringHash("Field")).GetString();
+
+    if (field == "Name")
+    {
+        node->SetName(edit->GetText());
+        if (hierarchyWindow_ && hierarchyWindow_->IsVisible())
+            BuildHierarchyTree();
+        return;
+    }
+
+    int axis = edit->GetVar(StringHash("Axis")).GetI32();
+    float val = ToFloat(edit->GetText());
+
+    if (field == "Position")
+    {
+        Vector3 pos = node->GetPosition();
+        if (axis == 0) pos.x_ = val;
+        else if (axis == 1) pos.y_ = val;
+        else pos.z_ = val;
+        node->SetPosition(pos);
+    }
+    else if (field == "Rotation")
+    {
+        Vector3 euler = node->GetRotation().EulerAngles();
+        if (axis == 0) euler.x_ = val;
+        else if (axis == 1) euler.y_ = val;
+        else euler.z_ = val;
+        node->SetRotation(Quaternion(euler.x_, euler.y_, euler.z_));
+    }
+    else if (field == "Scale")
+    {
+        Vector3 scale = node->GetScale();
+        if (axis == 0) scale.x_ = val;
+        else if (axis == 1) scale.y_ = val;
+        else scale.z_ = val;
+        node->SetScale(scale);
+    }
+}
+
+void Water::CreateComponentSection(Component* component, unsigned compIndex)
+{
+    if (!component)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    // Component header
+    auto* header = inspectorContent_->CreateChild<Text>();
+    header->SetFont(font, 12);
+    header->SetText(component->GetTypeName());
+    header->SetColor(Color(0.4f, 0.9f, 0.4f));
+
+    const Vector<AttributeInfo>* attrs = component->GetAttributes();
+    if (!attrs)
+        return;
+
+    for (unsigned i = 0; i < attrs->Size(); ++i)
+    {
+        const AttributeInfo& attr = (*attrs)[i];
+
+        // Skip non-editable attributes
+        if (attr.mode_ & AM_NOEDIT)
+            continue;
+
+        Variant value = component->GetAttribute(i);
+
+        auto* row = inspectorContent_->CreateChild<UIElement>();
+        row->SetLayout(LM_HORIZONTAL, 4, IntRect(2, 1, 2, 1));
+        row->SetFixedHeight(20);
+
+        auto* lbl = row->CreateChild<Text>();
+        lbl->SetFont(font, 10);
+        lbl->SetText(attr.name_);
+        lbl->SetColor(Color(0.8f, 0.8f, 0.8f));
+        lbl->SetMinWidth(90);
+
+        switch (attr.type_)
+        {
+        case VAR_FLOAT:
+        case VAR_INT:
+        case VAR_STRING:
+        {
+            auto* edit = row->CreateChild<LineEdit>();
+            edit->SetStyleAuto();
+            edit->SetText(value.ToString());
+            edit->SetMinWidth(140);
+            edit->SetFixedHeight(18);
+            edit->SetVar(StringHash("CompIndex"), compIndex);
+            edit->SetVar(StringHash("AttrIndex"), i);
+            SubscribeToEvent(edit, E_TEXTFINISHED, URHO3D_HANDLER(Water, HandleInspectorAttributeEdit));
+            break;
+        }
+        case VAR_BOOL:
+        {
+            auto* cb = row->CreateChild<CheckBox>();
+            cb->SetStyleAuto();
+            cb->SetChecked(value.GetBool());
+            cb->SetVar(StringHash("CompIndex"), compIndex);
+            cb->SetVar(StringHash("AttrIndex"), i);
+            SubscribeToEvent(cb, E_TOGGLED, URHO3D_HANDLER(Water, HandleInspectorCheckToggle));
+            break;
+        }
+        case VAR_VECTOR3:
+        {
+            Vector3 v = value.GetVector3();
+            const float vals[] = {v.x_, v.y_, v.z_};
+            const char* axes[] = {"X", "Y", "Z"};
+            for (int a = 0; a < 3; ++a)
+            {
+                auto* edit = row->CreateChild<LineEdit>();
+                edit->SetStyleAuto();
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.2f", vals[a]);
+                edit->SetText(buf);
+                edit->SetMinWidth(44);
+                edit->SetFixedHeight(18);
+                edit->SetVar(StringHash("CompIndex"), compIndex);
+                edit->SetVar(StringHash("AttrIndex"), i);
+                edit->SetVar(StringHash("Axis"), a);
+                edit->SetVar(StringHash("AttrType"), (int)VAR_VECTOR3);
+                SubscribeToEvent(edit, E_TEXTFINISHED, URHO3D_HANDLER(Water, HandleInspectorAttributeEdit));
+            }
+            break;
+        }
+        case VAR_QUATERNION:
+        {
+            Vector3 euler = value.GetQuaternion().EulerAngles();
+            const float vals[] = {euler.x_, euler.y_, euler.z_};
+            for (int a = 0; a < 3; ++a)
+            {
+                auto* edit = row->CreateChild<LineEdit>();
+                edit->SetStyleAuto();
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.1f", vals[a]);
+                edit->SetText(buf);
+                edit->SetMinWidth(44);
+                edit->SetFixedHeight(18);
+                edit->SetVar(StringHash("CompIndex"), compIndex);
+                edit->SetVar(StringHash("AttrIndex"), i);
+                edit->SetVar(StringHash("Axis"), a);
+                edit->SetVar(StringHash("AttrType"), (int)VAR_QUATERNION);
+                SubscribeToEvent(edit, E_TEXTFINISHED, URHO3D_HANDLER(Water, HandleInspectorAttributeEdit));
+            }
+            break;
+        }
+        case VAR_COLOR:
+        {
+            Color c = value.GetColor();
+            const float vals[] = {c.r_, c.g_, c.b_, c.a_};
+            const char* chans[] = {"R", "G", "B", "A"};
+            for (int a = 0; a < 4; ++a)
+            {
+                auto* edit = row->CreateChild<LineEdit>();
+                edit->SetStyleAuto();
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.2f", vals[a]);
+                edit->SetText(buf);
+                edit->SetMinWidth(34);
+                edit->SetFixedHeight(18);
+                edit->SetVar(StringHash("CompIndex"), compIndex);
+                edit->SetVar(StringHash("AttrIndex"), i);
+                edit->SetVar(StringHash("Axis"), a);
+                edit->SetVar(StringHash("AttrType"), (int)VAR_COLOR);
+                SubscribeToEvent(edit, E_TEXTFINISHED, URHO3D_HANDLER(Water, HandleInspectorAttributeEdit));
+            }
+            break;
+        }
+        default:
+        {
+            // Enum type
+            if (attr.enumNames_)
+            {
+                auto* dd = row->CreateChild<DropDownList>();
+                dd->SetStyleAuto();
+                dd->SetMinWidth(140);
+                dd->SetFixedHeight(18);
+                dd->SetVar(StringHash("CompIndex"), compIndex);
+                dd->SetVar(StringHash("AttrIndex"), i);
+
+                int enumIdx = 0;
+                for (const char** en = attr.enumNames_; *en; ++en, ++enumIdx)
+                {
+                    auto* t = new Text(context_);
+                    t->SetFont(font, 10);
+                    t->SetText(*en);
+                    dd->AddItem(t);
+                }
+                dd->SetSelection(value.GetI32());
+                SubscribeToEvent(dd, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleInspectorEnumSelect));
+            }
+            else
+            {
+                // Read-only display
+                auto* valText = row->CreateChild<Text>();
+                valText->SetFont(font, 10);
+                valText->SetText(value.ToString());
+                valText->SetColor(Color(0.6f, 0.6f, 0.6f));
+            }
+            break;
+        }
+        }
+    }
+}
+
+void Water::HandleInspectorAttributeEdit(StringHash eventType, VariantMap& eventData)
+{
+    using namespace TextFinished;
+    auto* edit = static_cast<LineEdit*>(eventData[P_ELEMENT].GetPtr());
+    if (!edit || !selectedNode_ || selectedNode_.Expired())
+        return;
+
+    unsigned compIdx = edit->GetVar(StringHash("CompIndex")).GetU32();
+    unsigned attrIdx = edit->GetVar(StringHash("AttrIndex")).GetU32();
+
+    Node* node = selectedNode_;
+    const auto& components = node->GetComponents();
+    if (compIdx >= components.Size())
+        return;
+
+    Component* comp = components[compIdx];
+    const Vector<AttributeInfo>* attrs = comp->GetAttributes();
+    if (!attrs || attrIdx >= attrs->Size())
+        return;
+
+    const AttributeInfo& attr = (*attrs)[attrIdx];
+    int attrType = edit->GetVar(StringHash("AttrType")).GetI32();
+
+    if (attrType == (int)VAR_VECTOR3)
+    {
+        int axis = edit->GetVar(StringHash("Axis")).GetI32();
+        Vector3 v = comp->GetAttribute(attrIdx).GetVector3();
+        float val = ToFloat(edit->GetText());
+        if (axis == 0) v.x_ = val;
+        else if (axis == 1) v.y_ = val;
+        else v.z_ = val;
+        comp->SetAttribute(attrIdx, v);
+    }
+    else if (attrType == (int)VAR_QUATERNION)
+    {
+        int axis = edit->GetVar(StringHash("Axis")).GetI32();
+        Vector3 euler = comp->GetAttribute(attrIdx).GetQuaternion().EulerAngles();
+        float val = ToFloat(edit->GetText());
+        if (axis == 0) euler.x_ = val;
+        else if (axis == 1) euler.y_ = val;
+        else euler.z_ = val;
+        comp->SetAttribute(attrIdx, Quaternion(euler.x_, euler.y_, euler.z_));
+    }
+    else if (attrType == (int)VAR_COLOR)
+    {
+        int axis = edit->GetVar(StringHash("Axis")).GetI32();
+        Color c = comp->GetAttribute(attrIdx).GetColor();
+        float val = ToFloat(edit->GetText());
+        if (axis == 0) c.r_ = val;
+        else if (axis == 1) c.g_ = val;
+        else if (axis == 2) c.b_ = val;
+        else c.a_ = val;
+        comp->SetAttribute(attrIdx, c);
+    }
+    else
+    {
+        // Simple types
+        switch (attr.type_)
+        {
+        case VAR_FLOAT:
+            comp->SetAttribute(attrIdx, ToFloat(edit->GetText()));
+            break;
+        case VAR_INT:
+            comp->SetAttribute(attrIdx, (int)strtol(edit->GetText().CString(), nullptr, 10));
+            break;
+        case VAR_STRING:
+            comp->SetAttribute(attrIdx, edit->GetText());
+            break;
+        default:
+            break;
+        }
+    }
+
+    comp->ApplyAttributes();
+}
+
+void Water::HandleInspectorCheckToggle(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Toggled;
+    auto* cb = static_cast<CheckBox*>(eventData[P_ELEMENT].GetPtr());
+    if (!cb || !selectedNode_ || selectedNode_.Expired())
+        return;
+
+    unsigned compIdx = cb->GetVar(StringHash("CompIndex")).GetU32();
+    unsigned attrIdx = cb->GetVar(StringHash("AttrIndex")).GetU32();
+
+    Node* node = selectedNode_;
+    const auto& components = node->GetComponents();
+    if (compIdx >= components.Size())
+        return;
+
+    Component* comp = components[compIdx];
+    comp->SetAttribute(attrIdx, eventData[P_STATE].GetBool());
+    comp->ApplyAttributes();
+}
+
+void Water::HandleInspectorEnumSelect(StringHash eventType, VariantMap& eventData)
+{
+    using namespace ItemSelected;
+    auto* dd = static_cast<DropDownList*>(eventData[P_ELEMENT].GetPtr());
+    if (!dd || !selectedNode_ || selectedNode_.Expired())
+        return;
+
+    unsigned compIdx = dd->GetVar(StringHash("CompIndex")).GetU32();
+    unsigned attrIdx = dd->GetVar(StringHash("AttrIndex")).GetU32();
+    int sel = eventData[P_SELECTION].GetI32();
+
+    Node* node = selectedNode_;
+    const auto& components = node->GetComponents();
+    if (compIdx >= components.Size())
+        return;
+
+    Component* comp = components[compIdx];
+    comp->SetAttribute(attrIdx, sel);
+    comp->ApplyAttributes();
 }
