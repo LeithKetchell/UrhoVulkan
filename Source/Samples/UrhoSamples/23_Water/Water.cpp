@@ -514,6 +514,31 @@ void Water::CreateMenuBar()
 
         if (terrain_)
             CreateMenuItem(envPopup, "Terrain Tools", 104);
+
+        // Time of Day slider: -12h to +12h offset
+        auto* todRow = envPopup->CreateChild<UIElement>();
+        todRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+        todRow->SetMinHeight(22);
+
+        auto* todText = todRow->CreateChild<Text>();
+        todText->SetFont(font, 12);
+        todText->SetText("Time:");
+        todText->SetColor(Color(0.9f, 0.9f, 0.9f));
+        todText->SetMinWidth(40);
+
+        auto* todSlider = todRow->CreateChild<Slider>();
+        todSlider->SetStyleAuto();
+        todSlider->SetFixedHeight(16);
+        todSlider->SetMinWidth(120);
+        todSlider->SetRange(24.0f);  // 0..24 maps to -12..+12
+        todSlider->SetValue(12.0f);  // center = 0 offset
+        SubscribeToEvent(todSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleTimeOfDaySlider));
+
+        todLabel_ = todRow->CreateChild<Text>();
+        todLabel_->SetFont(font, 12);
+        todLabel_->SetText("+0:00");
+        todLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
+        todLabel_->SetMinWidth(50);
     }
 }
 
@@ -598,6 +623,23 @@ void Water::HandleEnvironmentAction(StringHash eventType, VariantMap& eventData)
     // Close the top-level popup
     if (environmentMenu_ && environmentMenu_->GetShowPopup())
         environmentMenu_->ShowPopup(false);
+}
+
+void Water::HandleTimeOfDaySlider(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    float val = eventData[P_VALUE].GetFloat();  // 0..24
+    timeOfDayOffset_ = val - 12.0f;  // -12..+12
+
+    // Update label
+    if (todLabel_)
+    {
+        int hours = (int)timeOfDayOffset_;
+        int mins = (int)(Abs(timeOfDayOffset_ - hours) * 60.0f);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%+d:%02d", hours, mins);
+        todLabel_->SetText(buf);
+    }
 }
 
 void Water::HandleMenuButton(StringHash eventType, VariantMap& eventData)
@@ -2392,7 +2434,7 @@ void Water::CreateCelestialBodies()
 float Water::CalculateSunAltitude()
 {
     float decl = 23.44f * sinf((360.0f / 365.0f) * (dayOfYear_ - 81) * DEG_TO_RAD);
-    float hourAngle = 15.0f * (timeOfDay_ - SOLAR_NOON);
+    float hourAngle = 15.0f * (timeOfDay_ + timeOfDayOffset_ - SOLAR_NOON);
     float latRad = MELBOURNE_LAT * DEG_TO_RAD;
     float declRad = decl * DEG_TO_RAD;
     float haRad = hourAngle * DEG_TO_RAD;
@@ -2403,7 +2445,7 @@ float Water::CalculateSunAltitude()
 float Water::CalculateSunAzimuth(float altitude)
 {
     float decl = 23.44f * sinf((360.0f / 365.0f) * (dayOfYear_ - 81) * DEG_TO_RAD);
-    float hourAngle = 15.0f * (timeOfDay_ - SOLAR_NOON);
+    float hourAngle = 15.0f * (timeOfDay_ + timeOfDayOffset_ - SOLAR_NOON);
     float latRad = MELBOURNE_LAT * DEG_TO_RAD;
     float declRad = decl * DEG_TO_RAD;
     float altRad = altitude * DEG_TO_RAD;
@@ -2419,7 +2461,7 @@ float Water::CalculateSunAzimuth(float altitude)
 float Water::CalculateMoonAltitude()
 {
     float moonHourOffset = moonAge_ * (360.0f / 29.53f);
-    float moonHourAngle = 15.0f * (timeOfDay_ - SOLAR_NOON) - moonHourOffset;
+    float moonHourAngle = 15.0f * (timeOfDay_ + timeOfDayOffset_ - SOLAR_NOON) - moonHourOffset;
     float moonEclLon = (360.0f / 29.53f) * moonAge_;
     float sunEclLon = (360.0f / 365.0f) * (dayOfYear_ - 81);
     float totalEclLon = sunEclLon + moonEclLon;
@@ -2434,7 +2476,7 @@ float Water::CalculateMoonAltitude()
 float Water::CalculateMoonAzimuth(float moonAlt)
 {
     float moonHourOffset = moonAge_ * (360.0f / 29.53f);
-    float moonHourAngle = 15.0f * (timeOfDay_ - SOLAR_NOON) - moonHourOffset;
+    float moonHourAngle = 15.0f * (timeOfDay_ + timeOfDayOffset_ - SOLAR_NOON) - moonHourOffset;
     float moonEclLon = (360.0f / 29.53f) * moonAge_;
     float sunEclLon = (360.0f / 365.0f) * (dayOfYear_ - 81);
     float totalEclLon = sunEclLon + moonEclLon;
@@ -2563,6 +2605,24 @@ void Water::UpdateAtmosphere(float sunAltitude)
     {
         moonLight_->SetColor(moonColor);
         moonLight_->SetEnabled(moonEnabled);
+    }
+
+    // Height fog: full below 5°, fades out 5°–20°, off above 20°
+    float normalScale = 1.0f / 13.0f;  // 1/(fogMaxHeight - fogMinHeight) = 1/(18-5)
+    if (sunAltitude > 20.0f)
+    {
+        zone_->SetHeightFog(false);
+    }
+    else if (sunAltitude > 5.0f)
+    {
+        float t = (sunAltitude - 5.0f) / 15.0f;  // 0 at 5°, 1 at 20°
+        zone_->SetHeightFog(true);
+        zone_->SetFogHeightScale(Lerp(normalScale, 50.0f, t));  // scale up = range shrinks = fog vanishes
+    }
+    else
+    {
+        zone_->SetHeightFog(true);
+        zone_->SetFogHeightScale(normalScale);
     }
 
     if (skyboxMat_)

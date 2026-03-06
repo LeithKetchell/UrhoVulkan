@@ -105,11 +105,14 @@ private:
     // --- Network time ---
     void FetchNetworkTime();
     void ProcessTimeResponse();
+    void HandleTimeOfDaySlider(StringHash eventType, VariantMap& eventData);
     float timeOfDay_{};
+    float timeOfDayOffset_{};  // manual offset from network time (-12..+12 hours)
     int dayOfYear_{};
     float moonAge_{};
     SharedPtr<HttpRequest> timeRequest_;
     float timeSyncTimer_{};
+    Text* todLabel_{};
 
     // --- Cached celestial calculations ---
     float cachedSunAlt_{};
