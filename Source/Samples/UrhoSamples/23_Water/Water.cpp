@@ -174,11 +174,13 @@ void Water::CreateScene()
     auto* zone = zoneNode->CreateComponent<Zone>();
     zone->SetBoundingBox(BoundingBox(-1000.0f, 1000.0f));
     zone->SetAmbientColor(Color(0.15f, 0.15f, 0.15f));
-    zone->SetFogColor(Color(1.0f, 1.0f, 1.0f));
+    zone->SetFogColor(Color(0.7f, 0.7f, 0.75f));
     zone->SetFogStart(500.0f);
     zone->SetFogEnd(750.0f);
-    zone->SetFogHeight(5.0f);
-    zone->SetFogHeightScale(0.3f);
+    float fogMinHeight = 5.0f;   // fog base (thickest here)
+    float fogMaxHeight = 18.0f;  // fog ceiling (fades to clear)
+    zone->SetFogHeight(fogMinHeight);
+    zone->SetFogHeightScale(1.0f / Max(fogMaxHeight - fogMinHeight, M_EPSILON));
 
     zone_ = zone;
     origFogColor_ = zone->GetFogColor();
@@ -2521,14 +2523,14 @@ void Water::UpdateAtmosphere(float sunAltitude)
     if (sunAltitude > 10.0f)
     {
         ambient = Color(0.15f, 0.15f, 0.15f);
-        fogColor = Color(1.0f, 1.0f, 1.0f);
+        fogColor = Color(0.7f, 0.7f, 0.75f);
         sunColor = Color(1.2f, 1.2f, 1.2f);
     }
     else if (sunAltitude > 0.0f)
     {
         float t = sunAltitude / 10.0f;
         ambient = Color(0.15f, 0.15f, 0.15f).Lerp(Color(0.12f, 0.08f, 0.05f), 1.0f - t);
-        fogColor = Color(1.0f, 1.0f, 1.0f).Lerp(Color(1.0f, 0.6f, 0.3f), 1.0f - t);
+        fogColor = Color(0.7f, 0.7f, 0.75f).Lerp(Color(1.0f, 0.6f, 0.3f), 1.0f - t);
         sunColor = Color(1.2f, 1.2f, 1.2f).Lerp(Color(1.5f, 0.8f, 0.3f), 1.0f - t);
     }
     else if (sunAltitude > -6.0f)

@@ -21,7 +21,11 @@ float GetHeightFogFactor(float depth, float height)
     if (rawHeight >= 1.0)
         return fogFactor;  // above fog ceiling — distance fog only
     if (rawHeight <= 0.0)
-        rawHeight = 0.0;   // below fog base — full height fog
+    {
+        // Inverse fog underwater: thickest at surface, fades with depth over 1/3 of above-water range
+        float underwaterFogFactor = clamp((cFogParams.z - height) * 3.0 * cFogParams.w, 0.0, 1.0);
+        return min(underwaterFogFactor, fogFactor);
+    }
     float heightFogFactor = clamp(rawHeight, 0.0, 1.0);  // linear: 0 at base (opaque), 1 at ceiling (clear)
     return min(heightFogFactor, fogFactor);
 }
