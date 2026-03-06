@@ -117,10 +117,20 @@ private:
     float cachedMoonAlt_{};
     float cachedMoonAz_{};
 
+    // --- Selection ---
+    void SelectNode(Node* node);
+    void DeselectNode();
+    WeakPtr<Node> selectedNode_;
+    Vector<SharedPtr<Material>> originalMaterials_;
+
     // --- State ---
     bool menuOpen_{false};
 
     // --- Heightmap I/O ---
+    void ShowSaveSceneDialog();
+    void ShowLoadSceneDialog();
+    void HandleSceneSaveChosen(StringHash eventType, VariantMap& eventData);
+    void HandleSceneLoadChosen(StringHash eventType, VariantMap& eventData);
     void ShowSaveHeightmapDialog();
     void ShowLoadHeightmapDialog();
     void HandleHeightmapSaveChosen(StringHash eventType, VariantMap& eventData);

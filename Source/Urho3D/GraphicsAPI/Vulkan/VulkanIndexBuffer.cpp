@@ -23,7 +23,15 @@ void IndexBuffer::OnDeviceLost_Vulkan()
 
 void IndexBuffer::OnDeviceReset_Vulkan()
 {
-    // Vulkan buffers persist, no reset needed
+    if (!object_.name_)
+    {
+        Create_Vulkan();
+        dataLost_ = !UpdateToGPU_Vulkan();
+    }
+    else if (dataPending_)
+        dataLost_ = !UpdateToGPU_Vulkan();
+
+    dataPending_ = false;
 }
 
 void IndexBuffer::Release_Vulkan()

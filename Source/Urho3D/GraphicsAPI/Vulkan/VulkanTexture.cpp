@@ -13,6 +13,7 @@
 #include "../../Graphics/Graphics.h"
 #include "../../IO/Log.h"
 #include "../../Resource/Image.h"
+#include "../../Resource/ResourceCache.h"
 #include "../../Container/Vector.h"
 #include "VulkanGraphicsImpl.h"
 #include "VulkanStagingBufferManager.h"
@@ -36,44 +37,57 @@ void Texture2D::OnDeviceLost_Vulkan()
 
 void Texture2D::OnDeviceReset_Vulkan()
 {
-    // Vulkan textures persist
+    if (!object_.ptr_ || dataPending_)
+    {
+        auto* cache = GetSubsystem<ResourceCache>();
+        if (cache && cache->Exists(GetName()))
+            dataLost_ = !cache->ReloadResource(this);
+
+        if (!object_.ptr_)
+        {
+            Create_Vulkan();
+            dataLost_ = true;
+        }
+    }
+
+    dataPending_ = false;
 }
 
 void Texture2D::Release_Vulkan()
 {
-    if (!object_.ptr_)
+    if (!object_.ptr_ && !shaderResourceView_ && !sampler_)
         return;
 
     Graphics* graphics = GetSubsystem<Graphics>();
-    if (!graphics)
-        return;
-
-    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
-    if (!impl)
-        return;
+    VulkanGraphicsImpl* impl = graphics ? graphics->GetImpl_Vulkan() : nullptr;
+    VkDevice device = (impl && impl->GetDevice()) ? impl->GetDevice() : VK_NULL_HANDLE;
+    VmaAllocator allocator = (impl && impl->GetAllocator()) ? impl->GetAllocator() : VK_NULL_HANDLE;
 
     // Release image view
     if (shaderResourceView_)
     {
-        vkDestroyImageView(impl->GetDevice(), (VkImageView)shaderResourceView_, nullptr);
+        if (device)
+            vkDestroyImageView(device, (VkImageView)shaderResourceView_, nullptr);
         shaderResourceView_ = nullptr;
     }
 
     // Release sampler
     if (sampler_)
     {
-        vkDestroySampler(impl->GetDevice(), (VkSampler)sampler_, nullptr);
+        if (device)
+            vkDestroySampler(device, (VkSampler)sampler_, nullptr);
         sampler_ = nullptr;
     }
 
     // Release image
-    VkImage image = (VkImage)(void*)object_.ptr_;
-    // NOTE: VmaAllocation stored in vmaAllocation_ member (see Create_Vulkan)
-    VmaAllocation allocation = (VmaAllocation)vmaAllocation_;
-
-    if (image)
+    if (object_.ptr_)
     {
-        vmaDestroyImage(impl->GetAllocator(), image, allocation);
+        if (allocator)
+        {
+            VkImage image = (VkImage)(void*)object_.ptr_;
+            VmaAllocation allocation = (VmaAllocation)vmaAllocation_;
+            vmaDestroyImage(allocator, image, allocation);
+        }
         object_.ptr_ = nullptr;
         object_.name_ = 0;
     }
@@ -1254,39 +1268,54 @@ void TextureCube::OnDeviceLost_Vulkan()
 
 void TextureCube::OnDeviceReset_Vulkan()
 {
+    if (!object_.ptr_ || dataPending_)
+    {
+        auto* cache = GetSubsystem<ResourceCache>();
+        if (cache && cache->Exists(GetName()))
+            dataLost_ = !cache->ReloadResource(this);
+
+        if (!object_.ptr_)
+        {
+            Create_Vulkan();
+            dataLost_ = true;
+        }
+    }
+
+    dataPending_ = false;
 }
 
 void TextureCube::Release_Vulkan()
 {
-    if (!object_.ptr_)
+    if (!object_.ptr_ && !shaderResourceView_ && !sampler_)
         return;
 
     Graphics* graphics = GetSubsystem<Graphics>();
-    if (!graphics)
-        return;
-
-    VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
-    if (!impl)
-        return;
+    VulkanGraphicsImpl* impl = graphics ? graphics->GetImpl_Vulkan() : nullptr;
+    VkDevice device = (impl && impl->GetDevice()) ? impl->GetDevice() : VK_NULL_HANDLE;
+    VmaAllocator allocator = (impl && impl->GetAllocator()) ? impl->GetAllocator() : VK_NULL_HANDLE;
 
     if (shaderResourceView_)
     {
-        vkDestroyImageView(impl->GetDevice(), (VkImageView)shaderResourceView_, nullptr);
+        if (device)
+            vkDestroyImageView(device, (VkImageView)shaderResourceView_, nullptr);
         shaderResourceView_ = nullptr;
     }
 
     if (sampler_)
     {
-        vkDestroySampler(impl->GetDevice(), (VkSampler)sampler_, nullptr);
+        if (device)
+            vkDestroySampler(device, (VkSampler)sampler_, nullptr);
         sampler_ = nullptr;
     }
 
-    VkImage image = (VkImage)(void*)object_.ptr_;
-    VmaAllocation allocation = (VmaAllocation)vmaAllocation_;
-
-    if (image)
+    if (object_.ptr_)
     {
-        vmaDestroyImage(impl->GetAllocator(), image, allocation);
+        if (allocator)
+        {
+            VkImage image = (VkImage)(void*)object_.ptr_;
+            VmaAllocation allocation = (VmaAllocation)vmaAllocation_;
+            vmaDestroyImage(allocator, image, allocation);
+        }
         object_.ptr_ = nullptr;
     }
 }

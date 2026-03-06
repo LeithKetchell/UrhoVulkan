@@ -365,6 +365,244 @@ void VulkanGraphicsImpl::ProcessDeferredDeletions()
     deferredDeletions_[frame].Clear();
 }
 
+bool VulkanGraphicsImpl::RecreateSwapchainResources(SDL_Window* window, int width, int height)
+{
+    if (!device_)
+        return false;
+
+    vkDeviceWaitIdle(device_);
+
+    // Flush deferred deletions
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        for (auto& del : deferredDeletions_[i])
+        {
+            if (del.buffer && allocator_)
+                vmaDestroyBuffer(allocator_, del.buffer, del.allocation);
+        }
+        deferredDeletions_[i].Clear();
+    }
+
+    // Destroy swapchain-dependent resources (reverse creation order)
+
+    // G-Buffer
+    DestroyGBuffer();
+
+    // Framebuffers
+    for (auto framebuffer : framebuffers_)
+    {
+        if (framebuffer)
+            vkDestroyFramebuffer(device_, framebuffer, nullptr);
+    }
+    framebuffers_.Clear();
+
+    // RTT framebuffer cache
+    for (auto& pair : rttFramebufferCache_)
+    {
+        if (pair.second_)
+            vkDestroyFramebuffer(device_, pair.second_, nullptr);
+    }
+    rttFramebufferCache_.Clear();
+    renderTargetFramebuffer_ = VK_NULL_HANDLE;
+
+    // Render passes
+    for (auto& pair : renderPassCache_)
+    {
+        if (pair.second_ && pair.second_ != renderPass_)
+            vkDestroyRenderPass(device_, pair.second_, nullptr);
+    }
+    renderPassCache_.Clear();
+    renderPassToDescHash_.Clear();
+
+    if (renderPassLoad_)
+    {
+        vkDestroyRenderPass(device_, renderPassLoad_, nullptr);
+        renderPassLoad_ = nullptr;
+    }
+    if (renderPass_)
+    {
+        vkDestroyRenderPass(device_, renderPass_, nullptr);
+        renderPass_ = nullptr;
+    }
+
+    // MSAA color buffer
+    if (msaaColorImageView_)
+    {
+        vkDestroyImageView(device_, msaaColorImageView_, nullptr);
+        msaaColorImageView_ = nullptr;
+    }
+    if (msaaColorImage_)
+    {
+        vmaDestroyImage(allocator_, msaaColorImage_, msaaColorAllocation_);
+        msaaColorImage_ = VK_NULL_HANDLE;
+        msaaColorAllocation_ = nullptr;
+    }
+
+    // Depth buffer
+    if (depthImageView_)
+    {
+        vkDestroyImageView(device_, depthImageView_, nullptr);
+        depthImageView_ = nullptr;
+    }
+    if (depthImage_)
+    {
+        vkDestroyImage(device_, depthImage_, nullptr);
+        depthImage_ = nullptr;
+    }
+    if (depthImageMemory_)
+    {
+        vkFreeMemory(device_, depthImageMemory_, nullptr);
+        depthImageMemory_ = nullptr;
+    }
+
+    // RTT depth buffer
+    if (rttDepthImageView_)
+    {
+        vkDestroyImageView(device_, rttDepthImageView_, nullptr);
+        rttDepthImageView_ = VK_NULL_HANDLE;
+    }
+    if (rttDepthImage_)
+    {
+        vkDestroyImage(device_, rttDepthImage_, nullptr);
+        rttDepthImage_ = VK_NULL_HANDLE;
+    }
+    if (rttDepthImageMemory_)
+    {
+        vkFreeMemory(device_, rttDepthImageMemory_, nullptr);
+        rttDepthImageMemory_ = VK_NULL_HANDLE;
+    }
+
+    // Swapchain image views
+    for (auto imageView : swapchainImageViews_)
+    {
+        if (imageView)
+            vkDestroyImageView(device_, imageView, nullptr);
+    }
+    swapchainImageViews_.Clear();
+    swapchainImages_.Clear();
+
+    // Swapchain
+    if (swapchain_)
+    {
+        vkDestroySwapchainKHR(device_, swapchain_, nullptr);
+        swapchain_ = nullptr;
+    }
+
+    // Per-image semaphores
+    for (auto& semaphores : imageSemaphores_)
+    {
+        if (semaphores.renderComplete != VK_NULL_HANDLE)
+            vkDestroySemaphore(device_, semaphores.renderComplete, nullptr);
+    }
+    imageSemaphores_.Clear();
+
+    // Per-frame sync primitives
+    for (auto& frame : frames_)
+    {
+        if (frame.imageAcquired != VK_NULL_HANDLE)
+            vkDestroySemaphore(device_, frame.imageAcquired, nullptr);
+        if (frame.fence != VK_NULL_HANDLE)
+            vkDestroyFence(device_, frame.fence, nullptr);
+    }
+    frames_.Clear();
+
+    // Surface
+    if (surface_)
+    {
+        vkDestroySurfaceKHR(instance_, surface_, nullptr);
+        surface_ = nullptr;
+    }
+
+    // Reset descriptor pools (don't destroy — just reset for reuse)
+    for (unsigned i = 0; i < descriptorPools_.Size(); ++i)
+    {
+        if (descriptorPools_[i])
+            vkResetDescriptorPool(device_, descriptorPools_[i], 0);
+    }
+
+    // Reset frame tracking
+    currentFrame_ = 0;
+    currentImageIndex_ = 0;
+    renderPassActive_ = false;
+    renderingToTexture_ = false;
+
+    // --- Recreate swapchain-dependent resources ---
+
+    if (!CreateSurface(window))
+    {
+        URHO3D_LOGERROR("Failed to recreate surface");
+        return false;
+    }
+
+    if (!CreateSwapchain(width, height))
+    {
+        URHO3D_LOGERROR("Failed to recreate swapchain");
+        return false;
+    }
+
+    if (!CreateDepthBuffer(VULKAN_PREFERRED_DEPTH_FORMAT, width, height, actualSampleCount_))
+    {
+        if (!CreateDepthBuffer(VULKAN_FALLBACK_DEPTH_FORMAT, width, height, actualSampleCount_))
+        {
+            URHO3D_LOGERROR("Failed to recreate depth buffer");
+            return false;
+        }
+    }
+
+    if (!CreateMSAAColorImage(width, height))
+    {
+        URHO3D_LOGWARNING("Failed to recreate MSAA color image");
+        actualSampleCount_ = VK_SAMPLE_COUNT_1_BIT;
+    }
+
+    if (!CreateRenderPass())
+    {
+        URHO3D_LOGERROR("Failed to recreate render pass");
+        return false;
+    }
+
+    if (!CreateFramebuffers())
+    {
+        URHO3D_LOGERROR("Failed to recreate framebuffers");
+        return false;
+    }
+
+    if (!CreateGBuffer(width, height))
+    {
+        URHO3D_LOGWARNING("Failed to recreate G-Buffer");
+    }
+
+    // Reset existing command pool instead of creating a new one
+    if (commandPool_)
+        vkResetCommandPool(device_, commandPool_, 0);
+
+    // Recreate per-frame resources (command buffers, semaphores, fences)
+    frames_.Resize(MAX_FRAMES_IN_FLIGHT);
+
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = commandPool_;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        FrameResources& frame = frames_[i];
+        vkAllocateCommandBuffers(device_, &allocInfo, &frame.commandBuffer);
+        vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &frame.imageAcquired);
+        vkCreateFence(device_, &fenceInfo, nullptr, &frame.fence);
+    }
+
+    return true;
+}
+
 void VulkanGraphicsImpl::Shutdown()
 {
     if (device_)

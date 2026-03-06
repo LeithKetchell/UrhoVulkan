@@ -81,6 +81,56 @@ void Water::Stop()
     editableHeightMap_.Reset();
 }
 
+void Water::SelectNode(Node* node)
+{
+    if (!node)
+        return;
+
+    DeselectNode();
+    selectedNode_ = node;
+
+    auto* model = node->GetComponent<StaticModel>();
+    if (model)
+    {
+        for (unsigned i = 0; i < model->GetNumGeometries(); ++i)
+        {
+            Material* orig = model->GetMaterial(i);
+            originalMaterials_.Push(SharedPtr<Material>(orig));
+
+            SharedPtr<Material> maskMat(orig->Clone());
+            Technique* origTech = maskMat->GetTechnique(0);
+            if (origTech)
+            {
+                SharedPtr<Technique> techClone = origTech->Clone();
+                Pass* maskPass = techClone->CreatePass("mask");
+                maskPass->SetVertexShader("Silhouette");
+                maskPass->SetPixelShader("Silhouette");
+                maskPass->SetVertexShaderDefines("MASK");
+                maskPass->SetPixelShaderDefines("MASK");
+                maskMat->SetTechnique(0, techClone);
+            }
+            maskMat->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, 1.0f));
+            model->SetMaterial(i, maskMat);
+        }
+    }
+}
+
+void Water::DeselectNode()
+{
+    if (selectedNode_ && !selectedNode_.Expired())
+    {
+        auto* model = selectedNode_->GetComponent<StaticModel>();
+        if (model)
+        {
+            for (unsigned i = 0; i < originalMaterials_.Size() && i < model->GetNumGeometries(); ++i)
+                model->SetMaterial(i, originalMaterials_[i]);
+        }
+    }
+
+    originalMaterials_.Clear();
+    selectedNode_.Reset();
+}
+
 void Water::Start()
 {
     Sample::Start();
@@ -300,7 +350,7 @@ void Water::SetupViewport()
     renderer->SetViewport(0, viewport);
 
     SharedPtr<RenderPath> renderPath(new RenderPath());
-    renderPath->Load(cache->GetResource<XMLFile>("RenderPaths/ForwardHWDepth.xml"));
+    renderPath->Load(cache->GetResource<XMLFile>("RenderPaths/ForwardHWDepthOutline.xml"));
     viewport->SetRenderPath(renderPath);
 
     RenderPath* rp = viewport->GetRenderPath();
@@ -407,6 +457,8 @@ void Water::CreateMenuBar()
     // File
     {
         Vector<String> items;
+        items.Push("Save Scene");
+        items.Push("Load Scene");
         items.Push("Toggle Fullscreen  (F11)");
         items.Push("Exit");
         fileMenu_ = CreateMenuDropdown("File", items);
@@ -470,8 +522,10 @@ void Water::HandleFileMenu(StringHash eventType, VariantMap& eventData)
 
     switch (sel)
     {
-    case 0: GetSubsystem<Graphics>()->ToggleFullscreen(); break;
-    case 1: engine_->Exit(); break;
+    case 0: ShowSaveSceneDialog(); break;
+    case 1: ShowLoadSceneDialog(); break;
+    case 2: GetSubsystem<Graphics>()->ToggleFullscreen(); break;
+    case 3: engine_->Exit(); break;
     }
 
     fileMenu_->SetSelection(M_MAX_UNSIGNED);
@@ -1125,6 +1179,158 @@ void Water::LoadHeightmapFromFile(const String& path)
     URHO3D_LOGINFOF("Heightmap loaded from %s", path.CString());
 }
 
+void Water::ShowSaveSceneDialog()
+{
+    if (!scene_) return;
+
+    auto* ui = GetSubsystem<UI>();
+    auto* style = ui->GetRoot()->GetDefaultStyle();
+
+    fileSelector_ = new FileSelector(context_);
+    fileSelector_->SetDefaultStyle(style);
+    fileSelector_->SetTitle("Save Scene");
+    fileSelector_->SetButtonTexts("Save", "Cancel");
+
+    Vector<String> filters;
+    filters.Push("*.xml");
+    fileSelector_->SetFilters(filters, 0);
+
+    auto* fs = GetSubsystem<FileSystem>();
+    fileSelector_->SetPath(fs->GetProgramDir() + "Data/Scenes/");
+    fileSelector_->SetFileName("Scene.xml");
+
+    SubscribeToEvent(fileSelector_, E_FILESELECTED, URHO3D_HANDLER(Water, HandleSceneSaveChosen));
+}
+
+void Water::ShowLoadSceneDialog()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* style = ui->GetRoot()->GetDefaultStyle();
+
+    fileSelector_ = new FileSelector(context_);
+    fileSelector_->SetDefaultStyle(style);
+    fileSelector_->SetTitle("Load Scene");
+    fileSelector_->SetButtonTexts("Load", "Cancel");
+
+    Vector<String> filters;
+    filters.Push("*.xml");
+    filters.Push("*.*");
+    fileSelector_->SetFilters(filters, 0);
+
+    auto* fs = GetSubsystem<FileSystem>();
+    fileSelector_->SetPath(fs->GetProgramDir() + "Data/Scenes/");
+
+    SubscribeToEvent(fileSelector_, E_FILESELECTED, URHO3D_HANDLER(Water, HandleSceneLoadChosen));
+}
+
+void Water::HandleSceneSaveChosen(StringHash eventType, VariantMap& eventData)
+{
+    using namespace FileSelected;
+    String path = eventData[P_FILENAME].GetString();
+    bool ok = eventData[P_OK].GetBool();
+    fileSelector_.Reset();
+
+    if (!ok || path.Empty()) return;
+
+    File file(context_, path, FILE_WRITE);
+    if (scene_->SaveXML(file))
+        URHO3D_LOGINFOF("Scene saved to %s", path.CString());
+    else
+        URHO3D_LOGERRORF("Failed to save scene to %s", path.CString());
+}
+
+void Water::HandleSceneLoadChosen(StringHash eventType, VariantMap& eventData)
+{
+    using namespace FileSelected;
+    String path = eventData[P_FILENAME].GetString();
+    bool ok = eventData[P_OK].GetBool();
+    fileSelector_.Reset();
+
+    if (!ok || path.Empty()) return;
+
+    File file(context_, path, FILE_READ);
+    if (!file.IsOpen())
+    {
+        URHO3D_LOGERRORF("Failed to open scene file %s", path.CString());
+        return;
+    }
+
+    if (scene_->LoadXML(file))
+    {
+        // Re-bind cached pointers after scene load
+        zone_ = scene_->GetComponent<Zone>(true);
+        terrain_ = scene_->GetComponent<Terrain>(true);
+        if (terrain_)
+        {
+            Image* origHM = terrain_->GetHeightMap();
+            if (origHM)
+            {
+                int w = origHM->GetWidth();
+                int h = origHM->GetHeight();
+                int origComps = origHM->GetComponents();
+                editableHeightMap_ = new Image(context_);
+                editableHeightMap_->SetSize(w, h, 2);
+                editableHeightMap_->SetName(origHM->GetName());
+                unsigned char* src = origHM->GetData();
+                unsigned char* dst = editableHeightMap_->GetData();
+                for (int i = 0; i < w * h; ++i)
+                {
+                    dst[i * 2] = src[i * origComps];
+                    dst[i * 2 + 1] = (origComps >= 2) ? src[i * origComps + 1] : 0;
+                }
+                terrain_->SetHeightMap(editableHeightMap_);
+            }
+        }
+        sunNode_ = scene_->GetChild("Sun", true);
+        moonNode_ = scene_->GetChild("Moon", true);
+        // sunLight_ is on "DirectionalLight" node, NOT the "Sun" billboard node
+        Node* dlNode = scene_->GetChild("DirectionalLight", true);
+        sunLight_ = dlNode ? dlNode->GetComponent<Light>() : nullptr;
+        Node* mlNode = scene_->GetChild("MoonLight", true);
+        moonLight_ = mlNode ? mlNode->GetComponent<Light>() : nullptr;
+
+        // Re-bind water node (it's a scene child, destroyed by LoadXML)
+        waterNode_ = scene_->GetChild("Water", true);
+        if (waterNode_)
+        {
+            // Re-derive water planes from loaded water node transform
+            waterPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
+            waterClipPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
+
+            // Update reflection camera planes
+            if (reflectionCameraNode_)
+            {
+                auto* reflectionCamera = reflectionCameraNode_->GetComponent<Camera>();
+                if (reflectionCamera)
+                {
+                    reflectionCamera->SetReflectionPlane(waterPlane_);
+                    reflectionCamera->SetClipPlane(waterClipPlane_);
+                }
+            }
+
+            // Update render path WaterLevel parameter
+            if (renderPath_)
+                renderPath_->SetShaderParameter("WaterLevel", waterNode_->GetWorldPosition().y_);
+        }
+
+        // Re-bind fog parameters from loaded zone
+        if (zone_)
+        {
+            origFogColor_ = zone_->GetFogColor();
+            origFogStart_ = zone_->GetFogStart();
+            origFogEnd_ = zone_->GetFogEnd();
+        }
+
+        // Deselect any previously selected node (it's gone now)
+        selectedNode_.Reset();
+        originalMaterials_.Clear();
+
+        URHO3D_LOGINFOF("Scene loaded from %s", path.CString());
+    }
+    else
+        URHO3D_LOGERRORF("Failed to load scene from %s", path.CString());
+}
+
 void Water::WakeSleepingBodiesOnTerrain()
 {
     auto* physicsWorld = scene_->GetComponent<PhysicsWorld>();
@@ -1500,8 +1706,31 @@ void Water::MoveCamera(float timeStep)
             camera->SetFillMode(camera->GetFillMode() == FILL_SOLID ? FILL_WIREFRAME : FILL_SOLID);
     }
 
+    if (input->GetKeyPress(KEY_H))
+    {
+        if (zone_)
+            zone_->SetHeightFog(!zone_->GetHeightFog());
+    }
+
+    if (input->GetKeyPress(KEY_F))
+    {
+        auto* camera = cameraNode_ ? cameraNode_->GetComponent<Camera>() : nullptr;
+        if (camera)
+            camera->SetFillMode(camera->GetFillMode() == FILL_SOLID ? FILL_WIREFRAME : FILL_SOLID);
+    }
+
+    if (input->GetKeyPress(KEY_F5))
+        drawDebug_ = !drawDebug_;
+
     if (input->GetKeyPress(KEY_F11))
         GetSubsystem<Graphics>()->ToggleFullscreen();
+
+    if ((input->GetKeyPress(KEY_BACKSPACE) || input->GetKeyPress(KEY_DELETE)) && selectedNode_ && !selectedNode_.Expired())
+    {
+        Node* node = selectedNode_;
+        DeselectNode();
+        node->Remove();
+    }
 
     // 1/2 = track sun/moon
     if (input->GetKeyPress(KEY_1))
@@ -1663,6 +1892,55 @@ void Water::MoveCamera(float timeStep)
                             ApplyBrush(cachedBrushHit_, timeStep);
                     }
                     break;
+                }
+            }
+        }
+    }
+
+    // Object selection raycast (when no brush mode active)
+    if (brushMode_ == 0 && input->GetMouseButtonPress(MOUSEB_LEFT))
+    {
+        auto* uiElem = GetSubsystem<UI>()->GetElementAt(input->GetMousePosition());
+        if (!uiElem)
+        {
+            auto* camera = cameraNode_->GetComponent<Camera>();
+            auto* graphics = GetSubsystem<Graphics>();
+            if (camera && graphics)
+            {
+                Ray pickRay;
+                if (menuOpen_)
+                {
+                    IntVector2 pos = input->GetMousePosition();
+                    pickRay = camera->GetScreenRay(
+                        (float)pos.x_ / (float)graphics->GetWidth(),
+                        (float)pos.y_ / (float)graphics->GetHeight());
+                }
+                else
+                {
+                    pickRay = camera->GetScreenRay(0.5f, 0.5f);
+                }
+
+                auto* physicsWorld = scene_->GetComponent<PhysicsWorld>();
+                if (physicsWorld)
+                {
+                    Vector<PhysicsRaycastResult> results;
+                    physicsWorld->Raycast(results, pickRay, 300.0f);
+
+                    Node* hitNode = nullptr;
+                    for (unsigned i = 0; i < results.Size(); ++i)
+                    {
+                        Node* node = results[i].body_->GetNode();
+                        if (node && !node->HasComponent<Terrain>())
+                        {
+                            hitNode = node;
+                            break;
+                        }
+                    }
+
+                    if (hitNode)
+                        SelectNode(hitNode);
+                    else
+                        DeselectNode();
                 }
             }
         }
@@ -2209,16 +2487,24 @@ void Water::UpdateCelestialBodies(float timeStep)
     cachedSunAz_ = CalculateSunAzimuth(cachedSunAlt_);
     Vector3 sunOffset = AltAzToFlatEarth(cachedSunAlt_, cachedSunAz_);
     Vector3 camPos = cameraNode_ ? cameraNode_->GetWorldPosition() : Vector3::ZERO;
-    sunNode_->SetPosition(camPos + sunOffset);
-    sunNode_->LookAt(camPos);
-    sunLight_->GetNode()->SetDirection((camPos - sunNode_->GetPosition()).Normalized());
+    if (sunNode_)
+    {
+        sunNode_->SetPosition(camPos + sunOffset);
+        sunNode_->LookAt(camPos);
+    }
+    if (sunLight_)
+        sunLight_->GetNode()->SetDirection((camPos - (sunNode_ ? sunNode_->GetPosition() : Vector3::ZERO)).Normalized());
 
     cachedMoonAlt_ = CalculateMoonAltitude();
     cachedMoonAz_ = CalculateMoonAzimuth(cachedMoonAlt_);
     Vector3 moonOffset = AltAzToFlatEarth(cachedMoonAlt_, cachedMoonAz_);
-    moonNode_->SetPosition(camPos + moonOffset);
-    moonNode_->LookAt(camPos);
-    moonLight_->GetNode()->SetDirection(-moonOffset.Normalized());
+    if (moonNode_)
+    {
+        moonNode_->SetPosition(camPos + moonOffset);
+        moonNode_->LookAt(camPos);
+    }
+    if (moonLight_)
+        moonLight_->GetNode()->SetDirection(-moonOffset.Normalized());
 
     UpdateAtmosphere(cachedSunAlt_);
 }
@@ -2266,10 +2552,16 @@ void Water::UpdateAtmosphere(float sunAltitude)
 
     zone_->SetAmbientColor(ambient);
     zone_->SetFogColor(fogColor);
-    sunLight_->SetColor(sunColor);
-    sunLight_->SetEnabled(sunEnabled);
-    moonLight_->SetColor(moonColor);
-    moonLight_->SetEnabled(moonEnabled);
+    if (sunLight_)
+    {
+        sunLight_->SetColor(sunColor);
+        sunLight_->SetEnabled(sunEnabled);
+    }
+    if (moonLight_)
+    {
+        moonLight_->SetColor(moonColor);
+        moonLight_->SetEnabled(moonEnabled);
+    }
 
     if (skyboxMat_)
     {

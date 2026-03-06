@@ -262,6 +262,12 @@ public:
     /// Can be called multiple times safely.
     void Shutdown();
 
+    /// \brief Recreate swapchain-dependent resources for window/resolution change
+    /// \details Destroys and recreates surface, swapchain, depth buffer, render passes,
+    /// framebuffers, G-buffer, and synchronization primitives. Device, allocator,
+    /// textures, buffers, shaders, and caches all survive.
+    bool RecreateSwapchainResources(SDL_Window* window, int width, int height);
+
     /// \brief Acquire next swapchain image for rendering
     /// \returns True if image acquired successfully, false on out-of-date swapchain
     /// \details Waits for image availability and updates currentImageIndex_.

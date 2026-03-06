@@ -81,32 +81,83 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
     if (IsInitialized_Vulkan() && width == width_ && height == height_ && screenParams_ == newParams)
         return true;
 
-    // Clean up existing Vulkan resources and window before re-creating
+    // If already initialized, do lightweight swapchain recreation (preserves device, textures, buffers)
     if (IsInitialized_Vulkan())
     {
-        URHO3D_LOGINFO("Vulkan: Cleaning up existing resources for screen mode change");
-        VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
-        if (vkImpl && vkImpl->GetDevice())
-            vkDeviceWaitIdle(vkImpl->GetDevice());
+        URHO3D_LOGINFO("Vulkan: Recreating swapchain for screen mode change");
 
-        // Release GPU objects so they can be recreated
-        {
-            MutexLock lock(gpuObjectMutex_);
-            for (Vector<GPUObject*>::Iterator i = gpuObjects_.Begin(); i != gpuObjects_.End(); ++i)
-                (*i)->Release();
-        }
-
-        if (vkImpl)
-            vkImpl->Shutdown();
-
+        // Destroy old window
         if (window_)
         {
             SDL_DestroyWindow(window_);
             window_ = nullptr;
         }
+
+        // Create new SDL window
+        unsigned flags = SDL_WINDOW_SHOWN;
+        if (newParams.resizable_)
+            flags |= SDL_WINDOW_RESIZABLE;
+        if (newParams.borderless_)
+            flags |= SDL_WINDOW_BORDERLESS;
+        if (!externalWindow_)
+            flags |= SDL_WINDOW_VULKAN;
+        if (newParams.fullscreen_)
+            flags |= SDL_WINDOW_FULLSCREEN;
+        if (maximize)
+            flags |= SDL_WINDOW_MAXIMIZED;
+        if (newParams.highDPI_)
+            flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+
+        SDL_SetHint(SDL_HINT_ORIENTATIONS, orientations_.CString());
+
+        int posX = position_.x_;
+        int posY = position_.y_;
+        if (newParams.fullscreen_)
+        {
+            SDL_Rect displayBounds;
+            SDL_GetDisplayBounds(newParams.monitor_, &displayBounds);
+            posX = displayBounds.x;
+            posY = displayBounds.y;
+        }
+
+        window_ = SDL_CreateWindow(windowTitle_.CString(), posX, posY, width, height, flags);
+        if (!window_)
+        {
+            URHO3D_LOGERROR(String("Failed to create SDL window: ") + SDL_GetError());
+            return false;
+        }
+
+        CreateWindowIcon();
+        SDL_PumpEvents();
+
+        int actualWidth = width;
+        int actualHeight = height;
+        SDL_GetWindowSize(window_, &actualWidth, &actualHeight);
+        if (actualWidth <= 1 || actualHeight <= 1)
+        {
+            actualWidth = 1024;
+            actualHeight = 768;
+            SDL_SetWindowSize(window_, actualWidth, actualHeight);
+        }
+
+        VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+        if (!vkImpl->RecreateSwapchainResources(window_, actualWidth, actualHeight))
+        {
+            URHO3D_LOGERROR("Failed to recreate swapchain resources");
+            return false;
+        }
+
+        width_ = actualWidth;
+        height_ = actualHeight;
+        screenParams_ = newParams;
+
+        URHO3D_LOGINFO(String("Vulkan swapchain recreated: ") + String(actualWidth) + "x" + String(actualHeight));
+
+        OnScreenModeChanged();
+        return true;
     }
 
-    // Create SDL window with Vulkan support
+    // First-time initialization: create everything from scratch
     unsigned flags = SDL_WINDOW_SHOWN;
     if (newParams.resizable_)
         flags |= SDL_WINDOW_RESIZABLE;
@@ -165,11 +216,6 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
             actualWidth = 1024;
             actualHeight = 768;
             SDL_SetWindowSize(window_, actualWidth, actualHeight);
-            URHO3D_LOGDEBUG(String("[VULKAN] Window size was invalid, set to default: ") + String(actualWidth) + "x" + String(actualHeight));
-        }
-        else
-        {
-            URHO3D_LOGDEBUG(String("[VULKAN] Window maximized to: ") + String(actualWidth) + "x" + String(actualHeight));
         }
     }
 
@@ -196,13 +242,6 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
 
     // Notify subsystems that screen mode has changed (triggers Renderer::Initialize())
     OnScreenModeChanged();
-
-    // Restore GPU objects (vertex/index buffers, textures, shaders)
-    {
-        MutexLock lock(gpuObjectMutex_);
-        for (Vector<GPUObject*>::Iterator i = gpuObjects_.Begin(); i != gpuObjects_.End(); ++i)
-            (*i)->OnDeviceReset();
-    }
 
     return true;
 }
@@ -586,6 +625,13 @@ void Graphics::Clear_Vulkan(ClearTargetFlags flags, const Color& color, float de
 
             vkCmdClearAttachments(cmdBuffer, clearAttachments.Size(), clearAttachments.Buffer(), 1, &clearRect);
         }
+    }
+    else if (vkImpl->IsRenderTargetsDirty())
+    {
+        // Targets changed — clear values are stored for loadOp=CLEAR.
+        // Force the render pass to start NOW so the clear actually executes,
+        // even if no draw calls follow (e.g. empty mask pass after object deletion).
+        vkImpl->EnsureRenderPassStarted();
     }
 }
 
