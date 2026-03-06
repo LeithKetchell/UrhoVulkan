@@ -40,11 +40,35 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Bloom post-process
 - Motion blur post-process with camera-based reprojection (Sample 58)
 - Custom shader uniform support (bare GLSL uniforms wrapped into constant buffer blocks)
+- Selection outline system (Silhouette mask + Sobel edge detection)
+- Height fog with min/max height range, underwater inverse fog, and atmospheric time-of-day cycling
+- 4-layer terrain texture blending (4 detail layers from 3 texture fetches via alpha channel packing)
 
 ### Bullet SDK Samples
 - Faithful ports of Bullet SDK examples as standalone Urho3D samples
 - Build with `-DURHO3D_BULLET_SAMPLES=1`
 - Includes: BasicDemo, Chain, CollisionFilter, Constraints, Domino, ForkLift, Gyroscopic, Heightfield, HelloPhysics, Hinge2Vehicle, Kinematic, MotorDemo, Planar2D, PlanetGravity, Raycast, RollingFriction, SoftContact, SoftDemo, Stacking, TwoJoint, and more
+
+### Editor Sample (23_Water)
+- Terrain editing with configurable brush shapes (circle, square, triangle, star, pentagon, hexagon, octagon)
+- Raise, lower, smooth, and flatten brush modes with adjustable size, strength, and rotation
+- 16-bit heightmap precision (R+G/256 format, 65536 height levels)
+- Heightmap save/load and scene save/load via FileSelector dialogs
+- Object selection with yellow Silhouette outline, BACKSPACE to delete
+- Celestial day/night cycle with real-time sun/moon positioning (network time sync)
+- Atmospheric rendering: sky tint, fog color, ambient light tied to sun altitude
+- Time of Day slider in Environment menu for scrubbing +/-12 hours
+- Height fog auto-scales with time of day (thickens at dusk/night, off during day)
+- H key toggles height fog with manual override of atmospheric auto-control
+- Minimap with camera position indicator
+- Fullscreen toggle (F11) with Vulkan swapchain-only recreation (no device teardown)
+- Menu bar: File, Create, Edit, Environment with dropdown menus
+
+### Vulkan Fixes
+- Fullscreen toggle: RecreateSwapchainResources preserves device/textures/buffers
+- Clear command: force EnsureRenderPassStarted when targets are dirty (fixes stale RT data)
+- OnDeviceReset: proper reload for Texture2D, TextureCube, VertexBuffer, IndexBuffer
+- Release null-safety for device/allocator teardown ordering
 
 ### Engine
 - AngelScript bindings for new RigidBody shape API and MultiBody
