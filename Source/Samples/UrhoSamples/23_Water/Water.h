@@ -128,6 +128,7 @@ private:
 
     // --- State ---
     bool menuOpen_{false};
+    int heightFogOverride_{0};  // 0=auto (time-based), 1=forced on, -1=forced off
 
     // --- Heightmap I/O ---
     void ShowSaveSceneDialog();

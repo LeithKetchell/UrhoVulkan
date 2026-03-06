@@ -500,7 +500,8 @@ void Water::CreateMenuBar()
 
         auto* envPopup = new Window(context_);
         envPopup->SetStyleAuto();
-        envPopup->SetLayout(LM_VERTICAL, 2, IntRect(2, 2, 2, 2));
+        envPopup->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
+        envPopup->SetMinWidth(320);
         envPopup->SetDefaultStyle(GetSubsystem<UI>()->GetRoot()->GetDefaultStyle());
         envPopup->SetOpacity(0.85f);
         environmentMenu_->SetPopup(envPopup);
@@ -529,7 +530,7 @@ void Water::CreateMenuBar()
         auto* todSlider = todRow->CreateChild<Slider>();
         todSlider->SetStyleAuto();
         todSlider->SetFixedHeight(16);
-        todSlider->SetMinWidth(120);
+        todSlider->SetMinWidth(220);
         todSlider->SetRange(24.0f);  // 0..24 maps to -12..+12
         todSlider->SetValue(12.0f);  // center = 0 offset
         SubscribeToEvent(todSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleTimeOfDaySlider));
@@ -609,7 +610,11 @@ void Water::HandleEnvironmentAction(StringHash eventType, VariantMap& eventData)
     case 101: drawDebug_ = !drawDebug_; break;
     case 102:
         if (zone_)
-            zone_->SetHeightFog(!zone_->GetHeightFog());
+        {
+            bool on = !zone_->GetHeightFog();
+            zone_->SetHeightFog(on);
+            heightFogOverride_ = on ? 1 : -1;
+        }
         break;
     case 103:
         if (profilerUI_)
@@ -1753,7 +1758,11 @@ void Water::MoveCamera(float timeStep)
     if (input->GetKeyPress(KEY_H))
     {
         if (zone_)
-            zone_->SetHeightFog(!zone_->GetHeightFog());
+        {
+            bool on = !zone_->GetHeightFog();
+            zone_->SetHeightFog(on);
+            heightFogOverride_ = on ? 1 : -1;
+        }
     }
 
     if (input->GetKeyPress(KEY_F))
@@ -2607,22 +2616,25 @@ void Water::UpdateAtmosphere(float sunAltitude)
         moonLight_->SetEnabled(moonEnabled);
     }
 
-    // Height fog: full below 5°, fades out 5°–20°, off above 20°
-    float normalScale = 1.0f / 13.0f;  // 1/(fogMaxHeight - fogMinHeight) = 1/(18-5)
-    if (sunAltitude > 20.0f)
+    // Height fog: auto (time-based) unless user overrode with H key
+    if (heightFogOverride_ == 0)
     {
-        zone_->SetHeightFog(false);
-    }
-    else if (sunAltitude > 5.0f)
-    {
-        float t = (sunAltitude - 5.0f) / 15.0f;  // 0 at 5°, 1 at 20°
-        zone_->SetHeightFog(true);
-        zone_->SetFogHeightScale(Lerp(normalScale, 50.0f, t));  // scale up = range shrinks = fog vanishes
-    }
-    else
-    {
-        zone_->SetHeightFog(true);
-        zone_->SetFogHeightScale(normalScale);
+        float normalScale = 1.0f / 13.0f;  // 1/(fogMaxHeight - fogMinHeight) = 1/(18-5)
+        if (sunAltitude > 20.0f)
+        {
+            zone_->SetHeightFog(false);
+        }
+        else if (sunAltitude > 5.0f)
+        {
+            float t = (sunAltitude - 5.0f) / 15.0f;  // 0 at 5°, 1 at 20°
+            zone_->SetHeightFog(true);
+            zone_->SetFogHeightScale(Lerp(normalScale, 50.0f, t));  // scale up = range shrinks = fog vanishes
+        }
+        else
+        {
+            zone_->SetHeightFog(true);
+            zone_->SetFogHeightScale(normalScale);
+        }
     }
 
     if (skyboxMat_)
