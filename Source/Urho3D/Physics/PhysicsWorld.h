@@ -355,6 +355,8 @@ private:
     void PostStep(float timeStep);
     /// Send accumulated collision events.
     void SendCollisionEvents();
+    /// Send rigid body activation state change events.
+    void SendActivationEvents();
 
     /// Bullet collision configuration.
     btCollisionConfiguration* collisionConfiguration_{};
@@ -406,6 +408,10 @@ private:
     VariantMap physicsCollisionData_;
     /// Preallocated event data map for node collision events.
     VariantMap nodeCollisionData_;
+    /// Preallocated event data map for activation events.
+    VariantMap activationEventData_;
+    /// Previous activation state for each tracked rigid body (true = active).
+    HashMap<RigidBody*, bool> rigidBodyActiveState_;
     /// Preallocated buffer for physics collision contact data.
     VectorBuffer contacts_;
     /// Simulation substeps per second.

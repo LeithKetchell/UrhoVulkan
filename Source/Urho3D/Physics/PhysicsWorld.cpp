@@ -764,6 +764,7 @@ void PhysicsWorld::RemoveMultiBody(MultiBody* body)
 void PhysicsWorld::AddRigidBody(RigidBody* body)
 {
     rigidBodies_.Push(body);
+    rigidBodyActiveState_[body] = body->IsActive();
 }
 
 void PhysicsWorld::RemoveRigidBody(RigidBody* body)
@@ -771,6 +772,7 @@ void PhysicsWorld::RemoveRigidBody(RigidBody* body)
     rigidBodies_.Remove(body);
     // Remove possible dangling pointer from the delayedWorldTransforms structure
     delayedWorldTransforms_.Erase(body);
+    rigidBodyActiveState_.Erase(body);
 }
 
 void PhysicsWorld::AddCollisionShape(CollisionShape* shape)
@@ -921,6 +923,7 @@ void PhysicsWorld::PostStep(float timeStep)
         (*i)->UpdateTransforms();
 
     SendCollisionEvents();
+    SendActivationEvents();
 
     // Send post-step event
     using namespace PhysicsPostStep;
@@ -1175,6 +1178,39 @@ void PhysicsWorld::SendCollisionEvents()
     }
 
     previousCollisions_ = currentCollisions_;
+}
+
+void PhysicsWorld::SendActivationEvents()
+{
+    activationEventData_.Clear();
+
+    for (Vector<RigidBody*>::Iterator i = rigidBodies_.Begin(); i != rigidBodies_.End(); ++i)
+    {
+        RigidBody* body = *i;
+        if (!body || !body->GetNode())
+            continue;
+
+        bool currentlyActive = body->IsActive();
+        HashMap<RigidBody*, bool>::Iterator prev = rigidBodyActiveState_.Find(body);
+
+        if (prev == rigidBodyActiveState_.End())
+        {
+            // New body, just record state
+            rigidBodyActiveState_[body] = currentlyActive;
+            continue;
+        }
+
+        if (prev->second_ != currentlyActive)
+        {
+            prev->second_ = currentlyActive;
+            activationEventData_[RigidBodySleep::P_BODY] = body;
+
+            if (currentlyActive)
+                body->GetNode()->SendEvent(E_RIGIDBODYWAKEUP, activationEventData_);
+            else
+                body->GetNode()->SendEvent(E_RIGIDBODYSLEEP, activationEventData_);
+        }
+    }
 }
 
 void RegisterPhysicsLibrary(Context* context)

@@ -71,6 +71,7 @@ private:
     void HandleEditMenu(StringHash eventType, VariantMap& eventData);
     void HandleViewMenu(StringHash eventType, VariantMap& eventData);
     void HandleEnvironmentAction(StringHash eventType, VariantMap& eventData);
+    void HandleOverlayMenu(StringHash eventType, VariantMap& eventData);
     void HandleMenuButton(StringHash eventType, VariantMap& eventData);
     void CreateTerrainPanel();
     void ToggleTerrainPanel();
@@ -82,6 +83,7 @@ private:
     SharedPtr<DropDownList> createMenu_;
     SharedPtr<DropDownList> editMenu_;
     SharedPtr<DropDownList> viewMenu_;
+    SharedPtr<DropDownList> overlayMenu_;
     Menu* environmentMenu_{};
     SharedPtr<Window> terrainPanel_;
 
@@ -99,11 +101,18 @@ private:
     float brushStrength_{0.05f};
     float smoothStrength_{0.3f};
     Vector3 cachedBrushHit_;
+    Vector3 cachedBrushNormal_{Vector3::UP};
     bool hasBrushHit_{false};
     Text* brushSizeLabel_{};
     Text* brushStrLabel_{};
+    Text* brushRotLabel_{};
+    LineEdit* brushRotEdit_{};
+    void HandleBrushRotEdit(StringHash eventType, VariantMap& eventData);
     float lockedFlattenHeight_{-1.0f};  // locked on first click, reset on release
     BorderImage* shapeIcons_[7]{};     // shape icon images for rotation updates
+    Button* activeModeBtn_{};           // currently selected mode button
+    Button* activeShapeBtn_{};          // currently selected shape button
+    void HighlightBrushButton(Button*& active, Button* btn);
 
     // --- Celestial bodies ---
     void CreateCelestialBodies();
@@ -222,6 +231,14 @@ private:
     int heightFogOverride_{0};  // 0=auto (time-based), 1=forced on, -1=forced off
 
     // --- Heightmap I/O ---
+    void ShowExportPrefabDialog();
+    void HandlePrefabExportChosen(StringHash eventType, VariantMap& eventData);
+    void ShowLoadPrefabDialog();
+    void HandlePrefabLoadChosen(StringHash eventType, VariantMap& eventData);
+    SharedPtr<Node> prefabBrush_;   // loaded prefab template, cloned on each instance
+    void HandleRigidBodySleep(StringHash eventType, VariantMap& eventData);
+    Text* prefabBrushLabel_{};      // "Object Brush: X" label in Create menu
+    void UpdatePrefabBrushLabel();
     void ShowSaveSceneDialog();
     void ShowLoadSceneDialog();
     void HandleSceneSaveChosen(StringHash eventType, VariantMap& eventData);
@@ -237,13 +254,11 @@ private:
 
     // --- Minimap ---
     void CreateMinimap();
-    void UpdateMinimapTexture();
     void UpdateMinimapCamera();
     BorderImage* minimap_{};
     BorderImage* minimapCameraDot_{};
     SharedPtr<Texture2D> minimapTex_;
-    SharedPtr<Image> minimapImg_;
-    SharedPtr<Image> weightMapImg_;
+    SharedPtr<Node> minimapCameraNode_;
 
     // --- Compute shader / Erosion ---
     void TestComputeShader();

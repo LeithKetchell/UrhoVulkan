@@ -973,13 +973,17 @@ void Terrain::CreateGeometry()
         {
             URHO3D_PROFILE(CopyHeightData);
 
-            // If more than 1 component, use the green channel for more accuracy
+            // If more than 1 component, use additional channels for more accuracy
+            // 2 components: R + G/256 (16-bit), 4 components: R + G/256 + B/65536 + A/16777216 (32-bit)
             for (int z = 0; z < numVertices_.y_; ++z)
             {
                 for (int x = 0; x < numVertices_.x_; ++x)
                 {
-                    float newHeight = ((float)src[imgRow * (numVertices_.y_ - 1 - z) + imgComps * x] +
-                                       (float)src[imgRow * (numVertices_.y_ - 1 - z) + imgComps * x + 1] / 256.0f) * spacing_.y_;
+                    unsigned offset = imgRow * (numVertices_.y_ - 1 - z) + imgComps * x;
+                    float newHeight = (float)src[offset] + (float)src[offset + 1] / 256.0f;
+                    if (imgComps >= 4)
+                        newHeight += (float)src[offset + 2] / 65536.0f + (float)src[offset + 3] / 16777216.0f;
+                    newHeight *= spacing_.y_;
 
                     if (updateAll)
                         *dest = newHeight;

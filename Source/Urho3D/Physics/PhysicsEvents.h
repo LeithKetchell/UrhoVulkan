@@ -86,4 +86,16 @@ URHO3D_EVENT(E_NODECOLLISIONEND, NodeCollisionEnd)
     URHO3D_PARAM(P_TRIGGER, Trigger);              // bool
 }
 
+/// Rigid body has gone to sleep (deactivated). Sent by the body's scene node.
+URHO3D_EVENT(E_RIGIDBODYSLEEP, RigidBodySleep)
+{
+    URHO3D_PARAM(P_BODY, Body);                    // RigidBody pointer
+}
+
+/// Rigid body has woken up (activated). Sent by the body's scene node.
+URHO3D_EVENT(E_RIGIDBODYWAKEUP, RigidBodyWakeUp)
+{
+    URHO3D_PARAM(P_BODY, Body);                    // RigidBody pointer
+}
+
 }

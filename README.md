@@ -58,7 +58,7 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - TAB to toggle between camera mode and cursor mode (needed for menus and UI)
 - ESC peels back UI layers one at a time (inspector, hierarchy, panels, brush, selection, then cursor mode)
 
-**Menu Bar** (visible in cursor mode)
+**Menu Bar** (always visible)
 - **File**: Save/Load Scene, Save/Load Heightmap, Toggle Fullscreen (F11), Exit
 - **Create**: Import Model, Generate Mesh — new objects are parented under the selected node (or scene root if nothing selected)
 - **Edit**: Undo/Redo (Ctrl+Z/Y), Transform mode (Translate/Rotate/Scale), World/Local toggle
