@@ -114,8 +114,8 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 **Prefab System**
 - Export selected node subtree as XML prefab (File > Export Prefab)
 - Load prefab as object brush (Create > From Prefab), click terrain to instance clones
-- Clones orient to terrain surface normal and settle via physics (temp mass + friction)
-- Rigid body sleep/wake events (E_RIGIDBODYSLEEP/E_RIGIDBODYWAKEUP) restore static mass after settlement
+- Clones orient to terrain surface normal
+- Static (zero-mass) clones receive temporary mass to settle into a safe resting state via physics, then revert to static once the body sleeps
 
 **Minimap**
 - Bottom-right corner, GPU-rendered top-down orthographic RTT camera
