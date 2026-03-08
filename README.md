@@ -120,7 +120,7 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - Static (zero-mass) clones receive temporary mass to settle into a safe resting state via physics, then revert to static once the body sleeps
 
 **Underwater Fish — The Urho**
-- The Urho is the official mascot of the Urho3D engine — a spiny, prehistoric-looking fish native to Finnish waters. 50 of them now swim in the editor's ocean with emergent AI behaviour
+- The Urho is the official mascot of the Urho3D engine — a spiny, prehistoric-looking fish native to Finnish waters. 50 of them now swim in the editor's ocean with reactive steering behaviours
 - CC0 fish model by Modanung (Urho3D community contributor) via OpenGameArt — first known UMD3 model loaded by the engine
 - Auto-scaled from Blender centimetres to engine metres via oversized model gate
 - The fish model shipped with 0 of its 29 bones intact (lost during stale AssetImporter conversion), so we gave it a vertex shader tail wiggle instead (FishWiggle.glsl) — sine wave displacement ramping from body midpoint to tail, amplitude and frequency adjustable via Environment menu sliders
