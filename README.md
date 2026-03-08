@@ -34,6 +34,7 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - MultiBody component — btMultiBody integration for articulated rigid body chains
 - Soft body physics via btSoftBody integration (Sample 59)
 - Legacy CollisionShape component still supported for backward compatibility
+- Rigid body activation events (E_RIGIDBODYSLEEP / E_RIGIDBODYWAKEUP) — dispatched by PhysicsWorld when bodies transition between active and sleeping states
 
 ### Rendering
 - FXAA anti-aliasing post-process
@@ -59,11 +60,12 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - ESC peels back UI layers one at a time (inspector, hierarchy, panels, brush, selection, then cursor mode)
 
 **Menu Bar** (always visible)
-- **File**: Save/Load Scene, Save/Load Heightmap, Toggle Fullscreen (F11), Exit
-- **Create**: Import Model, Generate Mesh — new objects are parented under the selected node (or scene root if nothing selected)
+- **File**: Save/Load Scene, Import Model, Generate Primitive (disabled), Export Prefab, Exit
+- **Create**: From Prefab (load XML as object brush), Clear Object Brush, brush status label
 - **Edit**: Undo/Redo (Ctrl+Z/Y), Transform mode (Translate/Rotate/Scale), World/Local toggle
 - **View**: Hierarchy window, Inspector window
-- **Environment**: Toggle Wireframe, Debug Geometry, Height Fog, Profiler, Terrain Tools, Time of Day slider
+- **Environment**: Terrain Tools, Time of Day slider (-12h to +12h)
+- **Overlay**: Toggle Fullscreen (F11), Wireframe (Z), Debug Geometry (Space), Height Fog (H), Profiler
 
 **Selecting Objects**
 - In cursor mode: click an object in the viewport to select it (yellow outline)
@@ -95,7 +97,8 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - Brush modes: Raise/Lower, Smooth, Flatten
 - Brush shapes: circle, square, triangle, star, pentagon, hexagon, octagon
 - Scroll wheel adjusts brush radius
-- 16-bit heightmap precision (R+G/256 format, 65536 height levels)
+- 32-bit heightmap precision (R + G/256 + B/65536 + A/16M, ~4 billion height levels)
+- Brush rotation slider (-180 to +180 degrees) with text input for precise angles
 
 **Day/Night Cycle**
 - Real-time sun/moon positioning synced to network time (Melbourne, AU)
@@ -108,8 +111,16 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - Ctrl+Z / Ctrl+Y (also in Edit menu)
 - Tracks object creation, deletion, and terrain strokes
 
+**Prefab System**
+- Export selected node subtree as XML prefab (File > Export Prefab)
+- Load prefab as object brush (Create > From Prefab), click terrain to instance clones
+- Clones orient to terrain surface normal and settle via physics (temp mass + friction)
+- Rigid body sleep/wake events (E_RIGIDBODYSLEEP/E_RIGIDBODYWAKEUP) restore static mass after settlement
+
 **Minimap**
-- Bottom-right corner, shows terrain overview with camera position dot
+- Bottom-right corner, GPU-rendered top-down orthographic RTT camera
+- Rotates to match camera yaw (forward is always up)
+- Red dot shows camera position
 
 ### Vulkan Fixes
 - Fullscreen toggle: RecreateSwapchainResources preserves device/textures/buffers
