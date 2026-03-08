@@ -59,7 +59,7 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - TAB to toggle between camera mode and cursor mode (needed for menus and UI)
 - ESC peels back UI layers one at a time (inspector, hierarchy, panels, brush, selection, then cursor mode)
 
-**Menu Bar** (Numpad Enter toggles all UI on/off)
+**Menu Bar** (the secondary Enter key on your NumPad toggles all UI on/off)
 - **File**: Save/Load Scene, Import Model, Generate Primitive (disabled), Export Prefab, Exit
 - **Create**: From Prefab (load XML as object brush), Clear Object Brush, brush status label
 - **Edit**: Undo/Redo (Ctrl+Z/Y), Transform mode (Translate/Rotate/Scale), World/Local toggle
