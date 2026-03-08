@@ -211,7 +211,7 @@ bool StaticModel::DrawOcclusion(OcclusionBuffer* buffer)
     return true;
 }
 
-void StaticModel::SetModel(Model* model)
+void StaticModel::SetModel(Model* model, bool allowOversized)
 {
     if (model == model_)
         return;
@@ -220,6 +220,31 @@ void StaticModel::SetModel(Model* model)
     {
         URHO3D_LOGERROR("Can not set model while model component is not attached to a scene node");
         return;
+    }
+
+    // Check model bounding box size — reject oversized models unless explicitly allowed
+    if (model && !allowOversized)
+    {
+        const BoundingBox& box = model->GetBoundingBox();
+        Vector3 size = box.max_ - box.min_;
+        if (size.x_ > 10.0f || size.y_ > 10.0f || size.z_ > 10.0f)
+        {
+            URHO3D_LOGERROR("Model \"" + model->GetName() + "\" bounding box (" +
+                String(size.x_, 1) + ", " + String(size.y_, 1) + ", " + String(size.z_, 1) +
+                ") exceeds 10 units. Call SetModel(model, true) to override.");
+            return;
+        }
+    }
+    else if (model && allowOversized)
+    {
+        const BoundingBox& box = model->GetBoundingBox();
+        Vector3 size = box.max_ - box.min_;
+        if (size.x_ > 10.0f || size.y_ > 10.0f || size.z_ > 10.0f)
+        {
+            URHO3D_LOGWARNING("Model \"" + model->GetName() + "\" bounding box (" +
+                String(size.x_, 1) + ", " + String(size.y_, 1) + ", " + String(size.z_, 1) +
+                ") exceeds 10 units (oversized override active).");
+        }
     }
 
     // Unsubscribe from the reload event of previous model (if any), then subscribe to the new

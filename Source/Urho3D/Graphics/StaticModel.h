@@ -44,9 +44,9 @@ public:
     /// Draw to occlusion buffer. Return true if did not run out of triangles.
     bool DrawOcclusion(OcclusionBuffer* buffer) override;
 
-    /// Set model.
+    /// Set model. Rejects models with bounding box exceeding 10 units unless allowOversized is true.
     /// @manualbind
-    virtual void SetModel(Model* model);
+    virtual void SetModel(Model* model, bool allowOversized = false);
     /// Set material on all geometries.
     /// @property
     virtual void SetMaterial(Material* material);

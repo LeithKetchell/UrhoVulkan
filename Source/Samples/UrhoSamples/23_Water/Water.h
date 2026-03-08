@@ -17,6 +17,7 @@
 #include <Urho3D/UI/FileSelector.h>
 
 #include "Sample.h"
+#include "OOFO.h"
 #include <Urho3D/Graphics/ProfilerUI.h>
 
 namespace Urho3D
@@ -72,6 +73,8 @@ private:
     void HandleViewMenu(StringHash eventType, VariantMap& eventData);
     void HandleEnvironmentAction(StringHash eventType, VariantMap& eventData);
     void HandleOverlayMenu(StringHash eventType, VariantMap& eventData);
+    void HandleFishWiggleSlider(StringHash eventType, VariantMap& eventData);
+    void HandleFishSpeedSlider(StringHash eventType, VariantMap& eventData);
     void HandleMenuButton(StringHash eventType, VariantMap& eventData);
     void CreateTerrainPanel();
     void ToggleTerrainPanel();
@@ -86,6 +89,8 @@ private:
     SharedPtr<DropDownList> overlayMenu_;
     Menu* environmentMenu_{};
     SharedPtr<Window> terrainPanel_;
+    Text* fishWiggleLabel_{};
+    Text* fishSpeedLabel_{};
 
     // --- Terrain editing ---
     void ApplyBrush(const Vector3& worldPos, float timeStep);
@@ -176,6 +181,7 @@ private:
     void BeginGizmoDrag(int axis);
     void UpdateGizmoDrag();
     void EndGizmoDrag();
+    void WakeSelectedNode();
     int gizmoMode_{0};        // 0=none, 1=translate, 2=rotate, 3=scale
     bool gizmoLocal_{false};  // false=world, true=local
     bool gizmoDragging_{false};
@@ -279,6 +285,25 @@ private:
     Text* erosionFloorLabel_{};
     Text* erosionRidgeLabel_{};
     Text* erosionBorderLabel_{};
+
+    // --- Fish ---
+    void CreateFish();
+    void UpdateFish(float timeStep);
+    Vector<WeakPtr<Node>> fishNodes_;
+    SharedPtr<Material> fishBaseMat_;     // shared base material (normal wiggle)
+    SharedPtr<Material> fishOrbitMat_;    // pre-cloned: agitated wiggle
+    SharedPtr<Material> fishStareMat_;    // pre-cloned: slow gentle wiggle
+    bool fishRayVisible_{false};
+
+    // --- OOFO fleet ---
+    void CreateOOFOs();
+    void UpdateOOFOs(float timeStep);
+    static const int NUM_OOFOS = 3;
+    Vector<SharedPtr<OOFO>> oofos_;
+    Vector<Vector3> oofoCloudPositions_;
+    float oofoSpawnTimers_[3]{};  // countdown per OOFO before spawning
+    int oofosSpawned_{0};
+    bool oofoRayVisible_{false};
 
     // --- Water / rendering ---
     SharedPtr<Node> reflectionCameraNode_;

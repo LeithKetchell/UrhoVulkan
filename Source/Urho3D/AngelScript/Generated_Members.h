@@ -22888,8 +22888,8 @@ template <class T> void RegisterMembers_AnimatedModel(asIScriptEngine* engine, c
     engine->RegisterObjectMethod(className, "void SetAnimationLodBias(float)", AS_METHODPR(T, SetAnimationLodBias, (float), void), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "void set_animationLodBias(float)", AS_METHODPR(T, SetAnimationLodBias, (float), void), AS_CALL_THISCALL);
 
-    // void AnimatedModel::SetModel(Model* model, bool createBones = true)
-    engine->RegisterObjectMethod(className, "void SetModel(Model@+, bool = true)", AS_METHODPR(T, SetModel, (Model*, bool), void), AS_CALL_THISCALL);
+    // void AnimatedModel::SetModel(Model* model, bool createBones = true, bool allowOversized = false)
+    engine->RegisterObjectMethod(className, "void SetModel(Model@+, bool = true, bool = false)", AS_METHODPR(T, SetModel, (Model*, bool, bool), void), AS_CALL_THISCALL);
 
     // void AnimatedModel::SetMorphWeight(i32 index, float weight)
     engine->RegisterObjectMethod(className, "void SetMorphWeight(int, float)", AS_METHODPR(T, SetMorphWeight, (i32, float), void), AS_CALL_THISCALL);

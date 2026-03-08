@@ -103,9 +103,11 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 **Day/Night Cycle**
 - Real-time sun/moon positioning synced to network time (Melbourne, AU)
 - Time of Day slider in Environment menu for scrubbing +/-12 hours
+- Cloud layer and star field rotate independently — clouds drift slowly, stars track celestial time
 - Atmospheric rendering: sky tint, fog color, ambient light tied to sun altitude
 - Height fog auto-scales with time of day (thickens at dusk/night)
 - 1/2 keys track sun/moon with camera
+- An OOFO has been spotted hiding behind clouds and is known to zip between them — only visible during daylight, since there are no clouds at night
 
 **Undo/Redo**
 - Ctrl+Z / Ctrl+Y (also in Edit menu)
@@ -117,6 +119,22 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - Clones orient to terrain surface normal
 - Static (zero-mass) clones receive temporary mass to settle into a safe resting state via physics, then revert to static once the body sleeps
 
+**Underwater Fish**
+- 50 Urho fish (the engine's namesake!) swimming underwater with emergent AI behaviour
+- Official CC0 fish model from OpenGameArt (by Modanung) — first known UMD3 model loaded by the engine
+- Auto-scaled from Blender centimetres to engine metres via oversized model gate
+- The fish model shipped with 0 of its 29 bones intact (lost during stale AssetImporter conversion), so we gave it a vertex shader tail wiggle instead (FishWiggle.glsl) — sine wave displacement ramping from body midpoint to tail, amplitude and frequency adjustable via Environment menu sliders
+- Terrain-aware spawning — fish only placed where water depth is sufficient
+- Reactive steering behaviours:
+  - Nearest-neighbour avoidance (lone wolf fish, not schooling)
+  - Random wander with vertical pitch changes
+  - Shallow water avoidance — probe ahead, turn back to deeper water
+  - Boundary containment — steer toward center when too far out
+  - Camera interaction — three zones: orbit (3-15m, agitated wiggle, circle the diver), stare (<3m, slow wiggle, face the camera), veer-off (<1m, slide away naturally based on current heading)
+  - Speed fades smoothly from full at 15m to 15% near the camera
+  - Per-zone material swap (3 pre-built materials, zero runtime allocation) for wiggle variation
+- Water column clamping — fish stay between terrain floor and water surface at all times
+
 **Minimap**
 - Bottom-right corner, GPU-rendered top-down orthographic RTT camera
 - Rotates to match camera yaw (forward is always up)
@@ -127,6 +145,11 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - Clear command: force EnsureRenderPassStarted when targets are dirty (fixes stale RT data)
 - OnDeviceReset: proper reload for Texture2D, TextureCube, VertexBuffer, IndexBuffer
 - Release null-safety for device/allocator teardown ordering
+
+### Model Format
+- UMD3 model format support — reverse-engineered and documented (bounding box at header, otherwise identical to UMD2)
+- Oversized model rejection — `SetModel()` rejects models with bounding box exceeding 10 units unless `allowOversized = true`, preventing accidental stadium-sized geometry from Blender centimetre exports
+- Engine now reads all three Urho model formats: UMDL (legacy bitmask), UMD2 (explicit vertex elements), UMD3 (header bounding box)
 
 ### Engine
 - AngelScript bindings for new RigidBody shape API and MultiBody

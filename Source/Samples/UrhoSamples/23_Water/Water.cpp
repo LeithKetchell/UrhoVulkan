@@ -16,6 +16,9 @@
 #include <Urho3D/Graphics/RenderPath.h>
 #include <Urho3D/Graphics/Skybox.h>
 #include <Urho3D/Graphics/StaticModel.h>
+#include <Urho3D/Graphics/AnimatedModel.h>
+#include <Urho3D/Graphics/Animation.h>
+#include <Urho3D/Graphics/AnimationController.h>
 #include <Urho3D/Graphics/Terrain.h>
 #include <Urho3D/Graphics/TerrainPatch.h>
 #include <Urho3D/Graphics/Zone.h>
@@ -47,6 +50,7 @@
 #include <Urho3D/DebugNew.h>
 #include <Urho3D/Graphics/ProfilerUI.h>
 
+#include <Urho3D/Math/Random.h>
 #include <ctime>
 #include <cmath>
 
@@ -191,6 +195,10 @@ void Water::DeselectNode()
             for (unsigned i = 0; i < originalMaterials_.Size() && i < model->GetNumGeometries(); ++i)
                 model->SetMaterial(i, originalMaterials_[i]);
         }
+
+        // Wake rigid bodies so physics settles the object after transforms
+        if (gizmoMode_ != 0)
+            WakeSelectedNode();
     }
 
     originalMaterials_.Clear();
@@ -204,6 +212,10 @@ void Water::DeselectNode()
 void Water::Start()
 {
     Sample::Start();
+
+    // Fallback RNG seed — local time + favourite prime.
+    // Will be re-seeded from network noise once time sync completes.
+    SetRandomSeed((unsigned)time(nullptr) + 25773u);
 
     auto* cache = GetSubsystem<ResourceCache>();
     auto* uiStyle = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
@@ -385,6 +397,8 @@ void Water::CreateScene()
     timeSyncTimer_ = timeOverride ? 9999.0f : 300.0f;
 
     CreateCelestialBodies();
+    CreateOOFOs();
+    CreateFish();
 
     // Camera
     cameraNode_ = new Node(context_);
@@ -637,6 +651,56 @@ void Water::CreateMenuBar()
         todLabel_->SetText("+0:00");
         todLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
         todLabel_->SetMinWidth(50);
+
+        // Fish wiggle amplitude slider
+        auto* fishAmpRow = envPopup->CreateChild<UIElement>();
+        fishAmpRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+        fishAmpRow->SetMinHeight(22);
+
+        auto* fishAmpText = fishAmpRow->CreateChild<Text>();
+        fishAmpText->SetFont(font, 12);
+        fishAmpText->SetText("Fish Wiggle:");
+        fishAmpText->SetColor(Color(0.9f, 0.9f, 0.9f));
+        fishAmpText->SetMinWidth(80);
+
+        auto* fishAmpSlider = fishAmpRow->CreateChild<Slider>();
+        fishAmpSlider->SetStyleAuto();
+        fishAmpSlider->SetFixedHeight(16);
+        fishAmpSlider->SetMinWidth(180);
+        fishAmpSlider->SetRange(1.0f);  // 0..1 maps to 0..0.1 amplitude
+        fishAmpSlider->SetValue(0.3f);  // default 0.03
+        SubscribeToEvent(fishAmpSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleFishWiggleSlider));
+
+        fishWiggleLabel_ = fishAmpRow->CreateChild<Text>();
+        fishWiggleLabel_->SetFont(font, 12);
+        fishWiggleLabel_->SetText("0.030");
+        fishWiggleLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
+        fishWiggleLabel_->SetMinWidth(50);
+
+        // Fish wiggle speed slider
+        auto* fishSpdRow = envPopup->CreateChild<UIElement>();
+        fishSpdRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+        fishSpdRow->SetMinHeight(22);
+
+        auto* fishSpdText = fishSpdRow->CreateChild<Text>();
+        fishSpdText->SetFont(font, 12);
+        fishSpdText->SetText("Fish Speed:");
+        fishSpdText->SetColor(Color(0.9f, 0.9f, 0.9f));
+        fishSpdText->SetMinWidth(80);
+
+        auto* fishSpdSlider = fishSpdRow->CreateChild<Slider>();
+        fishSpdSlider->SetStyleAuto();
+        fishSpdSlider->SetFixedHeight(16);
+        fishSpdSlider->SetMinWidth(180);
+        fishSpdSlider->SetRange(1.0f);  // 0..1 maps to 0..8 Hz
+        fishSpdSlider->SetValue(0.25f);  // default 2 Hz
+        SubscribeToEvent(fishSpdSlider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleFishSpeedSlider));
+
+        fishSpeedLabel_ = fishSpdRow->CreateChild<Text>();
+        fishSpeedLabel_->SetFont(font, 12);
+        fishSpeedLabel_->SetText("2.0 Hz");
+        fishSpeedLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
+        fishSpeedLabel_->SetMinWidth(50);
     }
 
     // Overlay Options (last menu — debug draw and UI overlays)
@@ -647,6 +711,13 @@ void Water::CreateMenuBar()
         items.Push("Toggle Debug Geometry  (Space)");
         items.Push("Toggle Height Fog  (H)");
         items.Push("Toggle Profiler");
+        items.Push("Toggle OOFO Ray");
+        // Count fish in scene
+        int fishCount = 0;
+        const Vector<SharedPtr<Node>>& sceneChildren = scene_->GetChildren();
+        for (unsigned ci = 0; ci < sceneChildren.Size(); ++ci)
+            if (sceneChildren[ci]->GetName() == "Fish") ++fishCount;
+        items.Push("Toggle Fish Ray (" + String(fishCount) + " fish)");
         overlayMenu_ = CreateMenuDropdown("Overlay", items);
         SubscribeToEvent(overlayMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleOverlayMenu));
     }
@@ -760,6 +831,12 @@ void Water::HandleOverlayMenu(StringHash eventType, VariantMap& eventData)
         if (profilerUI_)
             profilerUI_->SetVisible(!profilerUI_->IsVisible());
         break;
+    case 5: // Toggle OOFO Ray
+        oofoRayVisible_ = !oofoRayVisible_;
+        break;
+    case 6: // Toggle Fish Ray
+        fishRayVisible_ = !fishRayVisible_;
+        break;
     }
 }
 
@@ -818,6 +895,62 @@ void Water::HandleTimeOfDaySlider(StringHash eventType, VariantMap& eventData)
         char buf[16];
         snprintf(buf, sizeof(buf), "%+d:%02d", hours, mins);
         todLabel_->SetText(buf);
+    }
+}
+
+void Water::HandleFishWiggleSlider(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    float val = eventData[P_VALUE].GetFloat();  // 0..1
+    float amplitude = val * 0.1f;  // 0..0.1 world units
+
+    // Update all fish materials
+    const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
+    for (unsigned i = 0; i < children.Size(); ++i)
+    {
+        if (children[i]->GetName() == "Fish")
+        {
+            auto* sm = children[i]->GetComponent<StaticModel>();
+            if (sm && sm->GetMaterial())
+            {
+                sm->GetMaterial()->SetShaderParameter("WiggleAmplitude", amplitude);
+            }
+        }
+    }
+
+    if (fishWiggleLabel_)
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%.3f", amplitude);
+        fishWiggleLabel_->SetText(buf);
+    }
+}
+
+void Water::HandleFishSpeedSlider(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    float val = eventData[P_VALUE].GetFloat();  // 0..1
+    float freq = val * 8.0f;  // 0..8 Hz
+
+    // Update all fish materials
+    const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
+    for (unsigned i = 0; i < children.Size(); ++i)
+    {
+        if (children[i]->GetName() == "Fish")
+        {
+            auto* sm = children[i]->GetComponent<StaticModel>();
+            if (sm && sm->GetMaterial())
+            {
+                sm->GetMaterial()->SetShaderParameter("WiggleFrequency", freq);
+            }
+        }
+    }
+
+    if (fishSpeedLabel_)
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%.1f Hz", freq);
+        fishSpeedLabel_->SetText(buf);
     }
 }
 
@@ -2027,15 +2160,30 @@ void Water::EndGizmoDrag()
     if (!gizmoDragging_)
         return;
 
-    if (selectedNode_ && !selectedNode_.Expired())
-    {
-        // Record undo — store the before/after as a NODE_DELETE + NODE_CREATE pair is overkill
-        // Instead, just push a terrain-style undo isn't right either.
-        // For now, the transform is committed. Undo for transforms is a future enhancement.
-    }
-
     gizmoDragging_ = false;
     gizmoAxis_ = -1;
+}
+
+void Water::WakeSelectedNode()
+{
+    if (!selectedNode_ || selectedNode_.Expired())
+        return;
+
+    Vector<RigidBody*> bodies;
+    selectedNode_->GetDerivedComponents<RigidBody>(bodies, true);
+    for (unsigned b = 0; b < bodies.Size(); ++b)
+    {
+        RigidBody* rb = bodies[b];
+        if (rb->GetMass() == 0.0f)
+        {
+            rb->SetMass(100.0f);
+            rb->SetFriction(0.75f);
+            rb->SetLinearDamping(0.9f);
+            rb->SetAngularDamping(0.9f);
+            SubscribeToEvent(selectedNode_, E_RIGIDBODYSLEEP, URHO3D_HANDLER(Water, HandleRigidBodySleep));
+        }
+        rb->Activate();
+    }
 }
 
 // ============================================================================
@@ -2788,6 +2936,19 @@ void Water::MoveCamera(float timeStep)
         }
     }
 
+    // Click outside dismisses floating panels (terrain tools, generate mesh)
+    if (input->GetMouseButtonPress(MOUSEB_LEFT) || input->GetMouseButtonPress(MOUSEB_RIGHT))
+    {
+        auto* uiElem = GetSubsystem<UI>()->GetElementAt(input->GetMousePosition());
+        if (!uiElem)
+        {
+            if (terrainPanel_ && terrainPanel_->IsVisible())
+                terrainPanel_->SetVisible(false);
+            if (generateMeshPanel_ && generateMeshPanel_->IsVisible())
+                generateMeshPanel_->SetVisible(false);
+        }
+    }
+
     if (GetSubsystem<UI>()->GetFocusElement())
         return;
 
@@ -2828,13 +2989,28 @@ void Water::MoveCamera(float timeStep)
     if ((input->GetQualifiers() & QUAL_CTRL) && input->GetKeyPress(KEY_Y))
         Redo();
 
-    // Gizmo mode shortcuts
+    // Gizmo mode shortcuts — wake physics when exiting the tool entirely
     if (input->GetKeyPress(KEY_T))
-        gizmoMode_ = (gizmoMode_ == 1) ? 0 : 1;
+    {
+        int prev = gizmoMode_;
+        gizmoMode_ = (prev == 1) ? 0 : 1;
+        if (prev != 0 && gizmoMode_ == 0)
+            WakeSelectedNode();
+    }
     if (input->GetKeyPress(KEY_R))
-        gizmoMode_ = (gizmoMode_ == 2) ? 0 : 2;
+    {
+        int prev = gizmoMode_;
+        gizmoMode_ = (prev == 2) ? 0 : 2;
+        if (prev != 0 && gizmoMode_ == 0)
+            WakeSelectedNode();
+    }
     if (input->GetKeyPress(KEY_S))
-        gizmoMode_ = (gizmoMode_ == 3) ? 0 : 3;
+    {
+        int prev = gizmoMode_;
+        gizmoMode_ = (prev == 3) ? 0 : 3;
+        if (prev != 0 && gizmoMode_ == 0)
+            WakeSelectedNode();
+    }
     if (input->GetKeyPress(KEY_G))
     {
         gizmoLocal_ = !gizmoLocal_;
@@ -2886,10 +3062,15 @@ void Water::MoveCamera(float timeStep)
         }
     }
 
-    // Scroll wheel = adjust brush radius
+    // Scroll wheel: tool active = adjust brush radius, no tool = inch camera forward/back
     int wheel = input->GetMouseMoveWheel();
     if (wheel != 0)
-        brushRadius_ = Clamp(brushRadius_ + wheel * 0.25f, 0.25f, 50.0f);
+    {
+        if (brushMode_ != 0)
+            brushRadius_ = Clamp(brushRadius_ + wheel * 0.25f, 0.25f, 50.0f);
+        else
+            cameraNode_->Translate(Vector3::FORWARD * (float)wheel * 0.5f);
+    }
 
     // Mouse look (when menu closed)
     if (!menuOpen_)
@@ -3794,12 +3975,14 @@ void Water::UpdateCelestialBodies(float timeStep)
 
     cloudAngle_ += timeStep * CELESTIAL_TIME_SCALE * 6.2831853f / (18.0f * 3600.0f);
     if (cloudAngle_ > 6.2831853f) cloudAngle_ -= 6.2831853f;
+    // Cloud angle includes time offset so scrubbing visibly rotates clouds
+    float cloudTotal = cloudAngle_ + timeOfDayOffset_ * 6.2831853f / 18.0f;
 
-    float starAngle = 6.2831853f * (timeOfDay_ / 24.0f + (float)dayOfYear_ / 365.25f);
+    float starAngle = 6.2831853f * ((timeOfDay_ + timeOfDayOffset_) / 24.0f + (float)dayOfYear_ / 365.25f);
 
     if (skyboxMat_)
     {
-        skyboxMat_->SetShaderParameter("CloudAngle", cloudAngle_);
+        skyboxMat_->SetShaderParameter("CloudAngle", cloudTotal);
         skyboxMat_->SetShaderParameter("StarAngle", starAngle);
     }
 
@@ -3827,6 +4010,314 @@ void Water::UpdateCelestialBodies(float timeStep)
         moonLight_->GetNode()->SetDirection(-moonOffset.Normalized());
 
     UpdateAtmosphere(cachedSunAlt_);
+}
+
+// ============================================================================
+// Fish
+// ============================================================================
+
+void Water::CreateFish()
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* fishModel = cache->GetResource<Model>("Models/UrhoFish.mdl");
+    auto* fishMat = cache->GetResource<Material>("Materials/UrhoFish.xml");
+
+    if (!fishModel || !fishMat)
+    {
+        URHO3D_LOGERROR("Failed to load fish model or material");
+        return;
+    }
+    fishBaseMat_ = fishMat;
+
+    fishOrbitMat_ = fishMat->Clone();
+    fishOrbitMat_->SetShaderParameter("WiggleAmplitude", 0.06f);
+    fishOrbitMat_->SetShaderParameter("WiggleFrequency", 5.0f);
+
+    fishStareMat_ = fishMat->Clone();
+    fishStareMat_->SetShaderParameter("WiggleAmplitude", 0.01f);
+    fishStareMat_->SetShaderParameter("WiggleFrequency", 0.8f);
+
+    const int NUM_FISH = 50;
+    const float waterY = 5.0f;
+    const float spawnRadius = 80.0f;
+    const float MIN_DEPTH = 1.0f;   // fish must be at least this far below surface
+    Terrain* t = terrain_;
+
+    for (int i = 0; i < NUM_FISH; ++i)
+    {
+        Node* fishNode = scene_->CreateChild("Fish");
+
+        // Pick a random position that's actually underwater with enough depth
+        Vector3 pos;
+        int tries = 0;
+        for (;;)
+        {
+            float x = Random(-spawnRadius, spawnRadius);
+            float z = Random(-spawnRadius, spawnRadius);
+            float terrainH = t ? t->GetHeight(Vector3(x, 0.0f, z)) : 0.0f;
+            float availableDepth = waterY - terrainH;
+
+            if (availableDepth >= MIN_DEPTH + 0.5f || ++tries > 50)
+            {
+                // Place between terrain + 0.5 and water - 1.0
+                float minY = Max(terrainH + 0.5f, waterY - 4.0f);
+                float maxY = waterY - MIN_DEPTH;
+                if (minY > maxY) minY = maxY;
+                pos = Vector3(x, Random(minY, maxY), z);
+                break;
+            }
+        }
+        fishNode->SetPosition(pos);
+
+        // Random facing
+        fishNode->SetRotation(Quaternion(0.0f, Random(0.0f, 360.0f), 0.0f));
+
+        // Scale down — model is in centimetres (~423 units long), we want ~0.5m fish
+        fishNode->SetScale(0.001f);
+
+        auto* sm = fishNode->CreateComponent<StaticModel>();
+        sm->SetModel(fishModel, true);  // allowOversized=true
+        sm->SetMaterial(fishMat);
+        sm->SetCastShadows(false);
+
+        fishNodes_.Push(WeakPtr<Node>(fishNode));
+    }
+
+    URHO3D_LOGINFOF("Spawned %d fish", NUM_FISH);
+}
+
+void Water::UpdateFish(float timeStep)
+{
+    const float WATER_Y = 5.0f;
+    const float SWIM_SPEED = 0.5f;         // metres per second
+    const float TURN_SPEED = 2.0f;        // radians per second
+    const float COMFORT_DIST = 12.0f;     // start turning away at this distance
+    const float BOUNDARY = 75.0f;         // stay within this radius of origin
+    const float MIN_DEPTH = 1.0f;         // min distance below water surface
+    const float MAX_DEPTH = 4.0f;         // max distance below water surface
+
+    for (unsigned i = 0; i < fishNodes_.Size(); ++i)
+    {
+        Node* fish = fishNodes_[i];
+        if (!fish) continue;
+
+        Vector3 pos = fish->GetPosition();
+        Quaternion rot = fish->GetRotation();
+        // Fish model faces -Z, so its "forward" is BACK in Urho's coordinate system
+        Vector3 forward = rot * Vector3::BACK;
+
+        // Find nearest neighbour
+        float nearestDist = M_INFINITY;
+        Vector3 nearestDir;
+        for (unsigned j = 0; j < fishNodes_.Size(); ++j)
+        {
+            if (i == j || !fishNodes_[j]) continue;
+            Vector3 diff = fishNodes_[j]->GetPosition() - pos;
+            float dist = diff.Length();
+            if (dist < nearestDist)
+            {
+                nearestDist = dist;
+                nearestDir = diff;
+            }
+        }
+
+        // Desired heading: away from nearest neighbour
+        Vector3 desiredDir = forward;
+
+        if (nearestDist < COMFORT_DIST && nearestDist > 0.001f)
+        {
+            // Steer away — the closer they are, the harder the turn
+            float urgency = 1.0f - (nearestDist / COMFORT_DIST);
+            Vector3 awayDir = -nearestDir.Normalized();
+            // Keep it horizontal
+            awayDir.y_ = 0.0f;
+            if (awayDir.LengthSquared() > 0.001f)
+                awayDir.Normalize();
+            else
+                awayDir = forward;
+
+            desiredDir = forward.Lerp(awayDir, urgency);
+        }
+
+        // Camera interaction — three zones based on distance
+        Vector3 camPos = cameraNode_->GetPosition();
+        Vector3 toCam3D = camPos - pos;          // full 3D vector for pitch
+        Vector3 toCamFlat = toCam3D;
+        toCamFlat.y_ = 0.0f;
+        float camDist = toCamFlat.Length();
+        const float STARE_DIST = 3.0f;   // very close — face camera, wiggle slowly
+        const float ORBIT_NEAR = 5.0f;   // close — circle camera, agitated wiggle
+        const float ORBIT_FAR = 15.0f;   // transition zone
+        int fishZone = 0;  // 0=normal, 1=orbit, 2=stare
+
+        if (camDist < 1.0f && camDist > 0.01f)
+        {
+            // Too close — slide off in whichever tangent matches current heading
+            Vector3 radial = toCamFlat.LengthSquared() > 0.001f ? toCamFlat.Normalized() : forward;
+            Vector3 tangentCW(radial.z_, 0.0f, -radial.x_);
+            Vector3 tangentCCW(-radial.z_, 0.0f, radial.x_);
+            // Pick the tangent closest to current forward direction
+            desiredDir = (forward.DotProduct(tangentCW) >= forward.DotProduct(tangentCCW)) ? tangentCW : tangentCCW;
+            fishZone = 1;  // use orbit wiggle for the dodge
+        }
+        else if (camDist < STARE_DIST && camDist > 0.5f)
+        {
+            // Face the camera in full 3D — pitch nose toward it
+            Vector3 faceCam = toCam3D;
+            if (faceCam.LengthSquared() > 0.001f)
+                faceCam.Normalize();
+            desiredDir = faceCam;
+            fishZone = 2;
+        }
+        else if (camDist < ORBIT_FAR && camDist > 1.0f)
+        {
+            // Tangent direction — circle around camera, pick side matching current heading
+            Vector3 radial = toCamFlat / camDist;
+            Vector3 tangentCW(radial.z_, 0.0f, -radial.x_);
+            Vector3 tangentCCW(-radial.z_, 0.0f, radial.x_);
+            Vector3 tangent = (forward.DotProduct(tangentCW) >= forward.DotProduct(tangentCCW)) ? tangentCW : tangentCCW;
+            float orbitStrength = Clamp(1.0f - (camDist - ORBIT_NEAR) / (ORBIT_FAR - ORBIT_NEAR), 0.0f, 0.8f);
+            desiredDir = desiredDir.Lerp(tangent, orbitStrength);
+            fishZone = 1;
+        }
+
+        // Random wander — small occasional impulse so fish don't swim in straight lines
+        if (Random(1.0f) < 0.02f)  // ~2% chance per frame ≈ every couple of seconds
+        {
+            float wanderAngle = Random(-90.0f, 90.0f);
+            Quaternion wanderRot(wanderAngle, Vector3::UP);
+            desiredDir = wanderRot * desiredDir;
+            // Vertical pitch change — nose up or down slightly
+            desiredDir.y_ += Random(-0.15f, 0.15f);
+        }
+
+        // Boundary avoidance — steer back toward center if too far out
+        float distFromCenter = Vector2(pos.x_, pos.z_).Length();
+        if (distFromCenter > BOUNDARY)
+        {
+            Vector3 toCenter = -pos;
+            toCenter.y_ = 0.0f;
+            toCenter.Normalize();
+            float boundaryUrgency = Clamp((distFromCenter - BOUNDARY) / 10.0f, 0.0f, 1.0f);
+            desiredDir = desiredDir.Lerp(toCenter, boundaryUrgency);
+        }
+
+        // Shallow water avoidance — probe ahead, turn back toward deeper water
+        if (terrain_)
+        {
+            Vector3 probe = pos + forward * 3.0f;  // look 3m ahead
+            float probeH = terrain_->GetHeight(probe);
+            float probeDepth = WATER_Y - probeH;
+            if (probeDepth < 1.5f)
+            {
+                // Shallows ahead — steer toward deeper water (away from shore)
+                Vector3 toDeep = pos - probe;
+                toDeep.y_ = 0.0f;
+                if (toDeep.LengthSquared() > 0.001f)
+                    toDeep.Normalize();
+                float shallowUrgency = Clamp(1.0f - (probeDepth / 1.5f), 0.0f, 1.0f);
+                desiredDir = desiredDir.Lerp(toDeep, shallowUrgency);
+            }
+        }
+
+        // Gently decay vertical component — fish naturally level out but can pitch up/down
+        desiredDir.y_ *= 0.8f;
+        if (desiredDir.LengthSquared() > 0.001f)
+            desiredDir.Normalize();
+        else
+            desiredDir = forward;
+
+        // Slerp rotation toward desired heading
+        // FromLookRotation points +Z along desiredDir, but model faces -Z,
+        // so rotate 180° around Y to align the model's nose with desiredDir
+        Quaternion targetRot;
+        targetRot.FromLookRotation(-desiredDir);
+        rot = rot.Slerp(targetRot, TURN_SPEED * timeStep);
+        fish->SetRotation(rot);
+
+        // Move forward (model faces -Z) — smooth speed falloff near camera
+        float speedFactor = (camDist < ORBIT_FAR) ?
+            Lerp(0.15f, 1.0f, Clamp(camDist / ORBIT_FAR, 0.0f, 1.0f)) : 1.0f;
+        float speed = SWIM_SPEED * speedFactor;
+        forward = rot * Vector3::BACK;
+        pos += forward * speed * timeStep;
+
+        // Clamp to water column — stay between terrain floor + 0.3m and water surface - 0.3m
+        float terrainH = terrain_ ? terrain_->GetHeight(pos) : 0.0f;
+        float floorY = terrainH + 0.3f;
+        float ceilY = WATER_Y - 0.3f;
+        if (floorY > ceilY)
+            floorY = ceilY;  // water too shallow — hug the surface
+        pos.y_ = Clamp(pos.y_, floorY, ceilY);
+
+        fish->SetPosition(pos);
+
+        // Per-fish wiggle — swap between 3 pre-built materials (zero allocation)
+        auto* sm = fish->GetComponent<StaticModel>();
+        if (sm)
+        {
+            Material* want = (fishZone == 2) ? fishStareMat_.Get() :
+                             (fishZone == 1) ? fishOrbitMat_.Get() :
+                                               fishBaseMat_.Get();
+            if (sm->GetMaterial() != want)
+                sm->SetMaterial(want);
+        }
+    }
+}
+
+// ============================================================================
+// OOFO fleet
+// ============================================================================
+
+void Water::CreateOOFOs()
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    oofoCloudPositions_ = OOFO::BuildCloudPositions(cache);
+
+    // Stagger spawns with random delays so OOFOs don't all appear at once
+    oofosSpawned_ = 0;
+    for (int i = 0; i < NUM_OOFOS; ++i)
+        oofoSpawnTimers_[i] = Random(1.0f, 8.0f) + i * Random(2.0f, 5.0f);
+}
+
+void Water::UpdateOOFOs(float timeStep)
+{
+    // Spawn OOFOs on their individual delayed timers
+    if (oofosSpawned_ < NUM_OOFOS)
+    {
+        auto* cache = GetSubsystem<ResourceCache>();
+        for (int i = 0; i < NUM_OOFOS; ++i)
+        {
+            if (oofoSpawnTimers_[i] > -1.0f)  // not yet spawned (-1 = done)
+            {
+                oofoSpawnTimers_[i] -= timeStep;
+                if (oofoSpawnTimers_[i] <= 0.0f)
+                {
+                    SharedPtr<OOFO> o(new OOFO());
+                    o->Init(scene_, cache, &oofoCloudPositions_);
+                    oofos_.Push(o);
+                    ++oofosSpawned_;
+                    oofoSpawnTimers_[i] = -1.0f;  // mark spawned
+                }
+            }
+        }
+    }
+
+    if (oofos_.Empty()) return;
+
+    float nightFactor = 0.0f;
+    if (skyboxMat_)
+    {
+        Variant nf = skyboxMat_->GetShaderParameter("NightFactor");
+        if (nf.GetType() == VAR_FLOAT)
+            nightFactor = nf.GetFloat();
+    }
+
+    float cloudTotal = cloudAngle_ + timeOfDayOffset_ * 6.2831853f / 18.0f;
+    Vector3 camPos = cameraNode_ ? cameraNode_->GetWorldPosition() : Vector3::ZERO;
+
+    for (unsigned i = 0; i < oofos_.Size(); ++i)
+        oofos_[i]->Update(timeStep, camPos, cloudTotal, nightFactor);
 }
 
 void Water::UpdateAtmosphere(float sunAltitude)
@@ -4035,6 +4526,14 @@ void Water::ProcessTimeResponse()
 
     timeOfDay_ = newTimeOfDay;
     dayOfYear_ = newDayOfYear;
+
+    // Seed RNG from network response noise — byte-level hash of the raw
+    // response gives entropy from server timing, content jitter, etc.
+    unsigned seed = 5381;
+    for (unsigned i = 0; i < response.Length(); ++i)
+        seed = seed * 33 + (unsigned char)response.CString()[i];
+    SetRandomSeed(seed);
+    URHO3D_LOGINFOF("RNG seeded from network noise: %u", seed);
 }
 
 // ============================================================================
@@ -4059,6 +4558,8 @@ void Water::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     // Update celestial bodies
     UpdateCelestialBodies(timeStep);
+    UpdateOOFOs(timeStep);
+    UpdateFish(timeStep);
 
     // Update minimap camera position
     UpdateMinimapCamera();
@@ -4105,6 +4606,44 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
 
     // Draw transform gizmo on selected object
     DrawGizmo();
+
+    // OOFO rays — green lines from each OOFO aimed at camera cursor on near plane
+    if (oofoRayVisible_ && cameraNode_)
+    {
+        auto* debug = scene_->GetComponent<DebugRenderer>();
+        auto* camera = cameraNode_->GetComponent<Camera>();
+        if (debug && camera)
+        {
+            // Screen center → near plane world position
+            Ray cursorRay = camera->GetScreenRay(0.5f, 0.5f);
+            Vector3 cursorNear = cursorRay.origin_ + cursorRay.direction_ * camera->GetNearClip();
+
+            for (unsigned i = 0; i < oofos_.Size(); ++i)
+            {
+                Node* n = oofos_[i]->GetNode();
+                if (n) debug->AddLine(n->GetWorldPosition(), cursorNear, Color::GREEN, true);
+            }
+        }
+    }
+
+    // Fish rays — yellow lines from camera to each fish
+    if (fishRayVisible_)
+    {
+        auto* debug = scene_->GetComponent<DebugRenderer>();
+        if (debug)
+        {
+            Vector3 camPos = cameraNode_ ? cameraNode_->GetWorldPosition() : Vector3::ZERO;
+            const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
+            for (unsigned i = 0; i < children.Size(); ++i)
+            {
+                if (children[i]->GetName() == "Fish")
+                {
+                    Vector3 pos = children[i]->GetWorldPosition();
+                    debug->AddSphere(Sphere(pos, 3.0f), Color::RED, false);
+                }
+            }
+        }
+    }
 
     if (!drawDebug_)
         return;

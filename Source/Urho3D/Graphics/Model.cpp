@@ -58,13 +58,14 @@ bool Model::BeginLoad(Deserializer& source)
 {
     // Check ID
     String fileID = source.ReadFileID();
-    if (fileID != "UMDL" && fileID != "UMD2")
+    if (fileID != "UMDL" && fileID != "UMD2" && fileID != "UMD3")
     {
         URHO3D_LOGERROR(source.GetName() + " is not a valid model file");
         return false;
     }
 
-    bool hasVertexDeclarations = (fileID == "UMD2");
+    bool hasVertexDeclarations = (fileID == "UMD2" || fileID == "UMD3");
+    bool hasBoundingBoxHeader = (fileID == "UMD3");
 
     geometries_.Clear();
     geometryBoneMappings_.Clear();
@@ -75,6 +76,10 @@ bool Model::BeginLoad(Deserializer& source)
 
     unsigned memoryUse = sizeof(Model);
     bool async = GetAsyncLoadState() == ASYNC_LOADING;
+
+    // UMD3: bounding box is at the start of the file
+    if (hasBoundingBoxHeader)
+        boundingBox_ = source.ReadBoundingBox();
 
     // Read vertex buffers
     unsigned numVertexBuffers = source.ReadU32();
@@ -279,8 +284,9 @@ bool Model::BeginLoad(Deserializer& source)
     skeleton_.Load(source);
     memoryUse += skeleton_.GetNumBones() * sizeof(Bone);
 
-    // Read bounding box
-    boundingBox_ = source.ReadBoundingBox();
+    // Read bounding box (UMD3 already read it from the header)
+    if (!hasBoundingBoxHeader)
+        boundingBox_ = source.ReadBoundingBox();
 
     // Read geometry centers
     for (unsigned i = 0; i < geometries_.Size() && !source.IsEof(); ++i)

@@ -50,8 +50,8 @@ public:
     /// Visualize the component as debug geometry.
     void DrawDebugGeometry(DebugRenderer* debug, bool depthTest) override;
 
-    /// Set model.
-    void SetModel(Model* model, bool createBones = true);
+    /// Set model. Rejects models with bounding box exceeding 10 units unless allowOversized is true.
+    void SetModel(Model* model, bool createBones = true, bool allowOversized = false);
     /// Add an animation.
     AnimationState* AddAnimationState(Animation* animation);
     /// Remove an animation by animation pointer.
