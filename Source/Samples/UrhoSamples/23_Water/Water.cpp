@@ -711,13 +711,13 @@ void Water::CreateMenuBar()
         items.Push("Toggle Debug Geometry  (Space)");
         items.Push("Toggle Height Fog  (H)");
         items.Push("Toggle Profiler");
-        items.Push("Toggle OOFO Ray");
+        items.Push("Toggle OOFO Detector");
         // Count fish in scene
         int fishCount = 0;
         const Vector<SharedPtr<Node>>& sceneChildren = scene_->GetChildren();
         for (unsigned ci = 0; ci < sceneChildren.Size(); ++ci)
             if (sceneChildren[ci]->GetName() == "Fish") ++fishCount;
-        items.Push("Toggle Fish Ray (" + String(fishCount) + " fish)");
+        items.Push("Toggle Fish Detector (" + String(fishCount) + " fish)");
         overlayMenu_ = CreateMenuDropdown("Overlay", items);
         SubscribeToEvent(overlayMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleOverlayMenu));
     }
@@ -831,10 +831,10 @@ void Water::HandleOverlayMenu(StringHash eventType, VariantMap& eventData)
         if (profilerUI_)
             profilerUI_->SetVisible(!profilerUI_->IsVisible());
         break;
-    case 5: // Toggle OOFO Ray
+    case 5: // Toggle OOFO Detector
         oofoRayVisible_ = !oofoRayVisible_;
         break;
-    case 6: // Toggle Fish Ray
+    case 6: // Toggle Fish Detector
         fishRayVisible_ = !fishRayVisible_;
         break;
     }

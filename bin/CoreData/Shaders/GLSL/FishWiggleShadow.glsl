@@ -19,8 +19,9 @@ void VS()
     // Fish tail wiggle (must match FishWiggle.glsl)
     float t = (iPos.z + 159.0) / 422.0;
     float ramp = smoothstep(cWiggleBodyStart, 1.0, t);
-    float phase = cElapsedTime * cWiggleFrequency + t * 6.283;
-    worldPos.x += ramp * cWiggleAmplitude * sin(phase);
+    float localFreq = cWiggleFrequency * (1.0 + 2.0 * t);
+    float phase = cElapsedTime * localFreq + t * 6.283;
+    worldPos.x += ramp * cWiggleAmplitude * (1.0 + 0.5 * t) * sin(phase);
 
     gl_Position = GetClipPos(worldPos);
     #ifdef VSM_SHADOW

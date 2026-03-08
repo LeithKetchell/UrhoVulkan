@@ -52,8 +52,9 @@ void VS()
     // Model-space Z: -159 (head) to +263 (tail), total 422 cm
     float t = (iPos.z + 159.0) / 422.0;                    // 0 at head, 1 at tail
     float ramp = smoothstep(cWiggleBodyStart, 1.0, t);      // 0 before midpoint, ramps to 1 at tail
-    float phase = cElapsedTime * cWiggleFrequency + t * 6.283;  // wave travels head-to-tail
-    worldPos.x += ramp * cWiggleAmplitude * sin(phase);
+    float localFreq = cWiggleFrequency * (1.0 + 2.0 * t);       // 1x at head, 3x at tail
+    float phase = cElapsedTime * localFreq + t * 6.283;          // wave travels head-to-tail
+    worldPos.x += ramp * cWiggleAmplitude * (1.0 + 0.5 * t) * sin(phase);  // 1x at head, 1.5x at tail
 
     gl_Position = GetClipPos(worldPos);
     vNormal = GetWorldNormal(modelMatrix);
