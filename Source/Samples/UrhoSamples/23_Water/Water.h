@@ -233,6 +233,7 @@ private:
     UIElement* inspectorContent_{};
 
     // --- State ---
+    Text* instructionText_{};
     bool menuOpen_{false};
     int heightFogOverride_{0};  // 0=auto (time-based), 1=forced on, -1=forced off
     bool godRaysEnabled_{true};
@@ -313,6 +314,7 @@ private:
     Plane waterClipPlane_;
     SharedPtr<ProfilerUI> profilerUI_;
     RenderPath* renderPath_{};
+    RenderPath* reflectionRenderPath_{};
     WeakPtr<Zone> zone_;
     WeakPtr<Terrain> terrain_;
     Color origFogColor_;

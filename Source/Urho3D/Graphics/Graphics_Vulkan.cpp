@@ -4123,9 +4123,144 @@ void Graphics::SetForceGL2_Vulkan(bool enable)
 
 bool Graphics::TakeScreenShot_Vulkan(Image& destImage)
 {
-    // TODO: Implement via vkCmdCopyImageToBuffer from swapchain image
-    URHO3D_LOGWARNING("TakeScreenShot_Vulkan: Not yet implemented");
-    return false;
+    if (!impl_)
+        return false;
+
+    VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
+    if (!vkImpl)
+        return false;
+
+    VkDevice device = vkImpl->GetDevice();
+    VkQueue queue = vkImpl->GetGraphicsQueue();
+    VmaAllocator allocator = vkImpl->GetAllocator();
+
+    if (!device || !queue || !allocator)
+        return false;
+
+    // Wait for GPU to finish all work so swapchain image is safe to read
+    vkDeviceWaitIdle(device);
+
+    // Get the current swapchain image
+    const Vector<VkImage>& swapchainImages = vkImpl->GetSwapchainImages();
+    uint32_t imageIndex = vkImpl->GetCurrentImageIndex();
+    if (imageIndex >= swapchainImages.Size())
+        return false;
+
+    VkImage srcImage = swapchainImages[imageIndex];
+    VkFormat format = vkImpl->GetSwapchainFormat();
+
+    // Determine bytes per pixel based on swapchain format
+    unsigned bpp = 4;  // Most swapchain formats are 4 bytes (BGRA/RGBA)
+
+    // Create staging buffer
+    VkDeviceSize bufferSize = (VkDeviceSize)width_ * height_ * bpp;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+    allocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+    VkBuffer stagingBuffer;
+    VmaAllocation stagingAllocation;
+    VmaAllocationInfo stagingAllocInfo;
+
+    if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &stagingBuffer, &stagingAllocation, &stagingAllocInfo) != VK_SUCCESS)
+    {
+        URHO3D_LOGERROR("TakeScreenShot_Vulkan: Failed to create staging buffer");
+        return false;
+    }
+
+    // Create a one-shot command buffer
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = vkImpl->GetCommandPool();
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmdBuffer;
+    if (vkAllocateCommandBuffers(device, &cmdAllocInfo, &cmdBuffer) != VK_SUCCESS)
+    {
+        vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
+        return false;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmdBuffer, &beginInfo);
+
+    // Transition swapchain image: PRESENT_SRC → TRANSFER_SRC
+    vkImpl->TransitionImageLayout(cmdBuffer, srcImage, format,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 1);
+
+    // Copy image to staging buffer
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;  // tightly packed
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {(uint32_t)width_, (uint32_t)height_, 1};
+
+    vkCmdCopyImageToBuffer(cmdBuffer, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           stagingBuffer, 1, &region);
+
+    // Transition back: TRANSFER_SRC → PRESENT_SRC
+    vkImpl->TransitionImageLayout(cmdBuffer, srcImage, format,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, 1);
+
+    vkEndCommandBuffer(cmdBuffer);
+
+    // Submit and wait
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuffer;
+
+    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(queue);
+
+    // Read pixels from staging buffer
+    destImage.SetSize(width_, height_, 3);
+    unsigned char* src = static_cast<unsigned char*>(stagingAllocInfo.pMappedData);
+    unsigned char* dest = destImage.GetData();
+
+    // Convert BGRA/RGBA to RGB, handling swapchain format
+    bool isBGR = (format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB);
+    for (int y = 0; y < height_; ++y)
+    {
+        for (int x = 0; x < width_; ++x)
+        {
+            unsigned idx = (y * width_ + x) * bpp;
+            unsigned outIdx = (y * width_ + x) * 3;
+            if (isBGR)
+            {
+                dest[outIdx + 0] = src[idx + 2];  // R from B
+                dest[outIdx + 1] = src[idx + 1];  // G
+                dest[outIdx + 2] = src[idx + 0];  // B from R
+            }
+            else
+            {
+                dest[outIdx + 0] = src[idx + 0];
+                dest[outIdx + 1] = src[idx + 1];
+                dest[outIdx + 2] = src[idx + 2];
+            }
+        }
+    }
+
+    // Cleanup
+    vkFreeCommandBuffers(device, vkImpl->GetCommandPool(), 1, &cmdBuffer);
+    vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
+
+    return true;
 }
 
 bool Graphics::ResolveToTexture_Vulkan(Texture2D* destination, const IntRect& viewport)

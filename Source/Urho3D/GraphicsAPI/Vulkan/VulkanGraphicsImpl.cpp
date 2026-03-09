@@ -3890,6 +3890,11 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkImage image, VkFormat format,
         srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     }
+    else if (oldLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        barrier.srcAccessMask = 0;
+    }
 
     if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
     {
@@ -4010,6 +4015,11 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, Vk
     {
         srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+    {
+        srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        barrier.srcAccessMask = 0;
     }
 
     if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)

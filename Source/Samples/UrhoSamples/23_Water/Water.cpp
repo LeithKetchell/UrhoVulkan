@@ -40,7 +40,9 @@
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UI.h>
 #include <Urho3D/UI/UIEvents.h>
+#include <Urho3D/Core/Timer.h>
 #include <Urho3D/Network/Network.h>
+#include <Urho3D/Resource/Image.h>
 #include <Urho3D/GraphicsAPI/Shader.h>
 #include <Urho3D/GraphicsAPI/ShaderVariation.h>
 #include <Urho3D/GraphicsAPI/VertexBuffer.h>
@@ -412,21 +414,17 @@ void Water::CreateInstructions()
     auto* cache = GetSubsystem<ResourceCache>();
     auto* ui = GetSubsystem<UI>();
 
-    auto* instructionText = ui->GetRoot()->CreateChild<Text>();
-    instructionText->SetText(
-        "WASD = move, Mouse = look\n"
-        "Tab = toggle cursor/camera mode\n"
-        "LMB = raise terrain, RMB = lower\n"
-        "[ ] = cycle brush shape\n"
-        "Scroll = brush radius\n"
-        "Space = debug geometry, Z = wireframe\n"
-        "H = height fog, F11 = fullscreen\n"
-        "1 = track sun, 2 = track moon");
-    instructionText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 15);
-    instructionText->SetTextAlignment(HA_CENTER);
-    instructionText->SetHorizontalAlignment(HA_CENTER);
-    instructionText->SetVerticalAlignment(VA_CENTER);
-    instructionText->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
+    instructionText_ = ui->GetRoot()->CreateChild<Text>();
+    instructionText_->SetText(
+        "WASD move, Mouse look, Tab cursor mode\n"
+        "LMB raise, RMB lower, Scroll brush size\n"
+        "F5 debug, F fill, H fog, F11 fullscreen\n"
+        "NumPad Enter hide UI, 1 sun, 2 moon");
+    instructionText_->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 15);
+    instructionText_->SetTextAlignment(HA_CENTER);
+    instructionText_->SetHorizontalAlignment(HA_CENTER);
+    instructionText_->SetVerticalAlignment(VA_CENTER);
+    instructionText_->SetPosition(0, ui->GetRoot()->GetHeight() / 4);
 }
 
 // ============================================================================
@@ -483,6 +481,12 @@ void Water::SetupViewport()
     RenderSurface* surface = renderTexture->GetRenderSurface();
     SharedPtr<Viewport> rttViewport(new Viewport(context_, scene_, reflectionCamera));
     rttViewport->SetDrawDebug(false);
+    // Append god rays to reflection render path so water reflects the glow
+    SharedPtr<RenderPath> reflRp(new RenderPath());
+    reflRp->Load(cache->GetResource<XMLFile>("RenderPaths/ForwardHWDepth.xml"));
+    reflRp->Append(cache->GetResource<XMLFile>("PostProcess/GodRays.xml"));
+    rttViewport->SetRenderPath(reflRp);
+    reflectionRenderPath_ = rttViewport->GetRenderPath();
     surface->SetViewport(0, rttViewport);
     auto* waterMat = cache->GetResource<Material>("Materials/Water.xml");
     waterMat->SetTexture(TU_DIFFUSE, renderTexture);
@@ -557,6 +561,7 @@ void Water::CreateMenuBar()
         items.Push("Import Model...");
         items.Push("Generate Primitive...");
         items.Push("Export Prefab");
+        items.Push("Screenshot");
         items.Push("Exit");
         fileMenu_ = CreateMenuDropdown("File", items);
         // Grey out Generate Primitive — MeshGenerator only supports hardcoded shapes
@@ -708,8 +713,8 @@ void Water::CreateMenuBar()
     {
         Vector<String> items;
         items.Push("Toggle Fullscreen  (F11)");
-        items.Push("Toggle Wireframe  (Z)");
-        items.Push("Toggle Debug Geometry  (Space)");
+        items.Push("Toggle Wireframe  (F)");
+        items.Push("Toggle Debug Geometry  (F5)");
         items.Push("Toggle Height Fog  (H)");
         items.Push("Toggle Profiler");
         items.Push("Toggle OOFO Detector");
@@ -725,10 +730,24 @@ void Water::CreateMenuBar()
     }
 }
 
+static const char* DEFAULT_INSTRUCTIONS =
+    "WASD move, Mouse look, Tab cursor mode\n"
+    "LMB raise, RMB lower, Scroll brush size\n"
+    "F5 debug, F fill, H fog, F11 fullscreen\n"
+    "NumPad Enter hide UI, 1 sun, 2 moon";
+
 void Water::HandleFileMenu(StringHash eventType, VariantMap& eventData)
 {
     using namespace ItemSelected;
     int sel = eventData[P_SELECTION].GetI32();
+
+    if (sel < 0 || sel >= (int)fileMenu_->GetNumItems())
+        return;
+
+    if (instructionText_)
+        instructionText_->SetText(
+            "Save/Load Scene, Import Model, Export Prefab\n"
+            "Screenshot saves to ~/Documents/Urho3D/Screenshots/");
 
     switch (sel)
     {
@@ -737,7 +756,23 @@ void Water::HandleFileMenu(StringHash eventType, VariantMap& eventData)
     case 2: ShowImportModelDialog(); break;
     case 3: break; // Generate Primitive — disabled (MeshGenerator only supports hardcoded shapes)
     case 4: ShowExportPrefabDialog(); break;
-    case 5: engine_->Exit(); break;
+    case 5:
+    {
+        // Screenshot — save to timestamped PNG
+        auto* graphics = GetSubsystem<Graphics>();
+        Image screenshot(context_);
+        if (graphics->TakeScreenShot(screenshot))
+        {
+            auto* fs = GetSubsystem<FileSystem>();
+            String dir = fs->GetUserDocumentsDir() + "Urho3D/Screenshots/";
+            fs->CreateDir(dir);
+            String filename = dir + "screenshot_" + String(Time::GetTimeSinceEpoch()) + ".png";
+            screenshot.SavePNG(filename);
+            URHO3D_LOGINFO("Screenshot saved: " + filename);
+        }
+        break;
+    }
+    case 6: engine_->Exit(); break;
     }
 
     fileMenu_->SetSelection(M_MAX_UNSIGNED);
@@ -747,6 +782,13 @@ void Water::HandleCreateMenu(StringHash eventType, VariantMap& eventData)
 {
     unsigned sel = eventData[ItemSelected::P_SELECTION].GetU32();
     createMenu_->SetSelection(M_MAX_UNSIGNED);
+
+    if (sel >= createMenu_->GetNumItems())
+        return;
+    if (instructionText_)
+        instructionText_->SetText(
+            "Load a prefab (.xml) as an object brush\n"
+            "LMB places instances on terrain");
 
     switch (sel)
     {
@@ -767,6 +809,13 @@ void Water::HandleEditMenu(StringHash eventType, VariantMap& eventData)
 {
     unsigned sel = eventData[ItemSelected::P_SELECTION].GetU32();
     editMenu_->SetSelection(M_MAX_UNSIGNED);
+
+    if (sel >= editMenu_->GetNumItems())
+        return;
+    if (instructionText_)
+        instructionText_->SetText(
+            "T translate, R rotate, S scale, G toggle local/world\n"
+            "Ctrl+Z undo, Ctrl+Y redo, Backspace delete");
 
     switch (sel)
     {
@@ -794,6 +843,13 @@ void Water::HandleViewMenu(StringHash eventType, VariantMap& eventData)
     unsigned sel = eventData[ItemSelected::P_SELECTION].GetU32();
     viewMenu_->SetSelection(M_MAX_UNSIGNED);
 
+    if (sel >= viewMenu_->GetNumItems())
+        return;
+    if (instructionText_)
+        instructionText_->SetText(
+            "Hierarchy: scene node tree, double-click to focus\n"
+            "Inspector: edit selected node properties");
+
     switch (sel)
     {
     case 0: ToggleHierarchyWindow(); break;
@@ -805,6 +861,13 @@ void Water::HandleOverlayMenu(StringHash eventType, VariantMap& eventData)
 {
     unsigned sel = eventData[ItemSelected::P_SELECTION].GetU32();
     overlayMenu_->SetSelection(M_MAX_UNSIGNED);
+
+    if (sel >= overlayMenu_->GetNumItems())
+        return;
+    if (instructionText_)
+        instructionText_->SetText(
+            "F5 debug, F fill mode, H height fog\n"
+            "F11 fullscreen, NumPad Enter hide all");
 
     switch (sel)
     {
@@ -2900,11 +2963,12 @@ void Water::MoveCamera(float timeStep)
 {
     auto* input = GetSubsystem<Input>();
 
-    // Numpad Enter = toggle all UI visibility
+    // Numpad Enter = toggle all UI and debug draw visibility
     if (input->GetKeyPress(KEY_KP_ENTER))
     {
         auto* uiRoot = GetSubsystem<UI>()->GetRoot();
         uiRoot->SetVisible(!uiRoot->IsVisible());
+        drawDebug_ = uiRoot->IsVisible();
     }
 
     // Tab = toggle cursor/camera mode (checked before UI focus guard)
@@ -4036,26 +4100,42 @@ void Water::UpdateCelestialBodies(float timeStep)
             {
                 Vector2 screenPos = cam->WorldToScreenPoint(sunNode_->GetWorldPosition());
 
-                // Sun halo varies with altitude:
-                // Near horizon (0-15 deg): wider halo, dimmer, warmer (atmospheric scattering)
-                // High (30+ deg): tighter halo, brighter, whiter
-                float altFactor = Clamp(cachedSunAlt_ / 30.0f, 0.0f, 1.0f);  // 0=horizon, 1=high
+                // Sun halo varies with altitude in three phases:
+                //   High (20+):  pale yellow, tight, bright
+                //   Sunset (0-20): deepening red, wider, dimmer
+                //   Below horizon (-5 to 0): red fading to white, dimming out
+                Vector3 sunColor;
+                float intensity, exposure, radiusMult;
 
-                // Halo radius: wide at horizon (2.0x), tight when high (1.0x)
-                float radiusMult = Lerp(2.0f, 1.0f, altFactor);
+                if (cachedSunAlt_ >= 20.0f)
+                {
+                    // High sky — pale warm white
+                    float t = Clamp((cachedSunAlt_ - 20.0f) / 30.0f, 0.0f, 1.0f);
+                    sunColor = Vector3(1.0f, Lerp(0.85f, 0.95f, t), Lerp(0.65f, 0.85f, t));
+                    intensity = Lerp(0.7f, 0.8f, t);
+                    exposure = 0.4f;
+                    radiusMult = 1.0f;
+                }
+                else if (cachedSunAlt_ >= 0.0f)
+                {
+                    // Sunset — deepening red as altitude drops toward 0
+                    float t = cachedSunAlt_ / 20.0f;  // 1=20deg, 0=horizon
+                    sunColor = Vector3(1.0f, Lerp(0.25f, 0.85f, t), Lerp(0.1f, 0.65f, t));
+                    intensity = Lerp(0.5f, 0.7f, t);
+                    exposure = Lerp(0.3f, 0.4f, t);
+                    radiusMult = Lerp(2.0f, 1.0f, t);
+                }
+                else
+                {
+                    // Below horizon — fade from red toward white, dimming out
+                    float t = Clamp((cachedSunAlt_ + 5.0f) / 5.0f, 0.0f, 1.0f);  // 1=horizon, 0=-5deg
+                    sunColor = Vector3(1.0f, Lerp(0.8f, 0.25f, t), Lerp(0.7f, 0.1f, t));
+                    intensity = Lerp(0.0f, 0.5f, t);
+                    exposure = Lerp(0.1f, 0.3f, t);
+                    radiusMult = Lerp(1.5f, 2.0f, t);
+                }
+
                 float screenRadius = (30.0f / sunDist) / tanHalf * 0.5f * radiusMult;
-
-                // Color: warm orange at horizon → pale yellow when high
-                Vector3 sunColor = Vector3(
-                    1.0f,
-                    Lerp(0.6f, 0.95f, altFactor),
-                    Lerp(0.3f, 0.8f, altFactor));
-
-                // Intensity: dimmer at horizon (0.4), brighter when high (0.8)
-                float intensity = Lerp(0.4f, 0.8f, altFactor);
-
-                // Exposure: lower at horizon to keep the wide halo subtle
-                float exposure = Lerp(0.25f, 0.4f, altFactor);
 
                 renderPath_->SetShaderParameter("LightScreenPos", screenPos);
                 renderPath_->SetShaderParameter("LightRadius", screenRadius);
@@ -4094,6 +4174,28 @@ void Water::UpdateCelestialBodies(float timeStep)
             }
         }
         renderPath_->SetEnabled("GodRays", rayActive);
+
+        // Mirror god ray params to reflection render path for water glow
+        if (reflectionRenderPath_ && reflectionCameraNode_ && rayActive)
+        {
+            auto* reflCam = reflectionCameraNode_->GetComponent<Camera>();
+            // Use whichever body is active (sun takes priority)
+            Node* activeLight = (godRaysEnabled_ && sunNode_ && cachedSunAlt_ > -5.0f) ? sunNode_ : moonNode_;
+            if (reflCam && activeLight)
+            {
+                Vector2 reflScreenPos = reflCam->WorldToScreenPoint(activeLight->GetWorldPosition());
+                reflectionRenderPath_->SetShaderParameter("LightScreenPos", reflScreenPos);
+                reflectionRenderPath_->SetShaderParameter("LightRadius", renderPath_->GetShaderParameter("LightRadius"));
+                reflectionRenderPath_->SetShaderParameter("GodRayColor", renderPath_->GetShaderParameter("GodRayColor"));
+                reflectionRenderPath_->SetShaderParameter("GodRayDensity", 0.5f);
+                reflectionRenderPath_->SetShaderParameter("GodRayDecay", 0.97f);
+                reflectionRenderPath_->SetShaderParameter("GodRayWeight", 0.4f);
+                reflectionRenderPath_->SetShaderParameter("GodRayExposure", renderPath_->GetShaderParameter("GodRayExposure"));
+                reflectionRenderPath_->SetShaderParameter("GodRayIntensity", renderPath_->GetShaderParameter("GodRayIntensity"));
+            }
+        }
+        if (reflectionRenderPath_)
+            reflectionRenderPath_->SetEnabled("GodRays", rayActive);
     }
 }
 
@@ -4662,6 +4764,9 @@ void Water::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
 void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
 {
+    if (!drawDebug_)
+        return;
+
     if (hasBrushHit_ && brushMode_ != 0)
         DrawBrushOutline(cachedBrushHit_);
 
@@ -4699,7 +4804,6 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
         auto* camera = cameraNode_->GetComponent<Camera>();
         if (debug && camera)
         {
-            // Screen center → near plane world position
             Ray cursorRay = camera->GetScreenRay(0.5f, 0.5f);
             Vector3 cursorNear = cursorRay.origin_ + cursorRay.direction_ * camera->GetNearClip();
 
@@ -4717,7 +4821,6 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
         auto* debug = scene_->GetComponent<DebugRenderer>();
         if (debug)
         {
-            Vector3 camPos = cameraNode_ ? cameraNode_->GetWorldPosition() : Vector3::ZERO;
             const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
             for (unsigned i = 0; i < children.Size(); ++i)
             {
@@ -4730,7 +4833,7 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
         }
     }
 
-    // Sun & Moon rays — always visible to help locate celestial bodies
+    // Sun & Moon rays — locate celestial bodies
     if (cameraNode_)
     {
         auto* debug = scene_->GetComponent<DebugRenderer>();
@@ -4746,9 +4849,6 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
                 debug->AddLine(moonNode_->GetWorldPosition(), cursorNear, Color(0.0f, 0.8f, 1.0f), true);
         }
     }
-
-    if (!drawDebug_)
-        return;
 
     auto* physics = scene_->GetComponent<PhysicsWorld>();
     if (physics)
