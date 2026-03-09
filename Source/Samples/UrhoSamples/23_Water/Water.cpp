@@ -449,6 +449,7 @@ void Water::SetupViewport()
 
     RenderPath* rp = viewport->GetRenderPath();
     rp->Append(cache->GetResource<XMLFile>("PostProcess/Underwater.xml"));
+    rp->Append(cache->GetResource<XMLFile>("PostProcess/GodRays.xml"));
     rp->SetShaderParameter("WaterLevel", waterNode_->GetWorldPosition().y_);
     rp->SetShaderParameter("NoiseStrength", 0.015f);
     rp->SetShaderParameter("NoiseTiling", 1.0f);
@@ -718,6 +719,7 @@ void Water::CreateMenuBar()
         for (unsigned ci = 0; ci < sceneChildren.Size(); ++ci)
             if (sceneChildren[ci]->GetName() == "Fish") ++fishCount;
         items.Push("Toggle Fish Detector (" + String(fishCount) + " fish)");
+        items.Push("Toggle God Rays");
         overlayMenu_ = CreateMenuDropdown("Overlay", items);
         SubscribeToEvent(overlayMenu_, E_ITEMSELECTED, URHO3D_HANDLER(Water, HandleOverlayMenu));
     }
@@ -836,6 +838,9 @@ void Water::HandleOverlayMenu(StringHash eventType, VariantMap& eventData)
         break;
     case 6: // Toggle Fish Detector
         fishRayVisible_ = !fishRayVisible_;
+        break;
+    case 7: // Toggle God Rays
+        godRaysEnabled_ = !godRaysEnabled_;
         break;
     }
 }
@@ -4010,6 +4015,86 @@ void Water::UpdateCelestialBodies(float timeStep)
         moonLight_->GetNode()->SetDirection(-moonOffset.Normalized());
 
     UpdateAtmosphere(cachedSunAlt_);
+
+    // --- God rays tracking ---
+    if (renderPath_ && cameraNode_)
+    {
+        auto* cam = cameraNode_->GetComponent<Camera>();
+        bool rayActive = false;
+
+        // Try sun first, then moon
+        // Screen radius: billboard half-size / distance / tan(FOV/2) * 0.5
+        float halfFov = cam->GetFov() * 0.5f * M_DEGTORAD;
+        float tanHalf = tanf(halfFov);
+
+        if (godRaysEnabled_ && sunNode_ && cachedSunAlt_ > -5.0f)
+        {
+            Vector3 toSun = (sunNode_->GetWorldPosition() - camPos);
+            float sunDist = toSun.Length();
+            toSun /= sunDist;
+            if (cameraNode_->GetWorldDirection().DotProduct(toSun) > 0.0f)
+            {
+                Vector2 screenPos = cam->WorldToScreenPoint(sunNode_->GetWorldPosition());
+
+                // Sun halo varies with altitude:
+                // Near horizon (0-15 deg): wider halo, dimmer, warmer (atmospheric scattering)
+                // High (30+ deg): tighter halo, brighter, whiter
+                float altFactor = Clamp(cachedSunAlt_ / 30.0f, 0.0f, 1.0f);  // 0=horizon, 1=high
+
+                // Halo radius: wide at horizon (2.0x), tight when high (1.0x)
+                float radiusMult = Lerp(2.0f, 1.0f, altFactor);
+                float screenRadius = (30.0f / sunDist) / tanHalf * 0.5f * radiusMult;
+
+                // Color: warm orange at horizon → pale yellow when high
+                Vector3 sunColor = Vector3(
+                    1.0f,
+                    Lerp(0.6f, 0.95f, altFactor),
+                    Lerp(0.3f, 0.8f, altFactor));
+
+                // Intensity: dimmer at horizon (0.4), brighter when high (0.8)
+                float intensity = Lerp(0.4f, 0.8f, altFactor);
+
+                // Exposure: lower at horizon to keep the wide halo subtle
+                float exposure = Lerp(0.25f, 0.4f, altFactor);
+
+                renderPath_->SetShaderParameter("LightScreenPos", screenPos);
+                renderPath_->SetShaderParameter("LightRadius", screenRadius);
+                renderPath_->SetShaderParameter("GodRayColor", sunColor);
+                renderPath_->SetShaderParameter("GodRayDensity", 0.5f);
+                renderPath_->SetShaderParameter("GodRayDecay", 0.97f);
+                renderPath_->SetShaderParameter("GodRayWeight", 0.4f);
+                renderPath_->SetShaderParameter("GodRayExposure", exposure);
+                renderPath_->SetShaderParameter("GodRayIntensity", intensity);
+                rayActive = true;
+            }
+        }
+        if (!rayActive && godRaysEnabled_ && moonNode_ && cachedMoonAlt_ > -5.0f)
+        {
+            Vector3 toMoon = (moonNode_->GetWorldPosition() - camPos);
+            float moonDist = toMoon.Length();
+            toMoon /= moonDist;
+            if (cameraNode_->GetWorldDirection().DotProduct(toMoon) > 0.0f)
+            {
+                Vector2 screenPos = cam->WorldToScreenPoint(moonNode_->GetWorldPosition());
+                float screenRadius = (20.0f / moonDist) / tanHalf * 0.5f;
+
+                // Moon: simple fade in at moonrise, fade out at moonset
+                // Full intensity above 5 deg, fades to zero at -5 deg
+                float moonFade = Clamp((cachedMoonAlt_ + 5.0f) / 10.0f, 0.0f, 1.0f);
+
+                renderPath_->SetShaderParameter("LightScreenPos", screenPos);
+                renderPath_->SetShaderParameter("LightRadius", screenRadius);
+                renderPath_->SetShaderParameter("GodRayColor", Vector3(0.6f, 0.7f, 0.9f));
+                renderPath_->SetShaderParameter("GodRayDensity", 0.5f);
+                renderPath_->SetShaderParameter("GodRayDecay", 0.97f);
+                renderPath_->SetShaderParameter("GodRayWeight", 0.4f);
+                renderPath_->SetShaderParameter("GodRayExposure", 0.4f);
+                renderPath_->SetShaderParameter("GodRayIntensity", 0.8f * moonFade);
+                rayActive = true;
+            }
+        }
+        renderPath_->SetEnabled("GodRays", rayActive);
+    }
 }
 
 // ============================================================================
@@ -4626,7 +4711,7 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
         }
     }
 
-    // Fish rays — yellow lines from camera to each fish
+    // Fish markers — red spheres around each fish
     if (fishRayVisible_)
     {
         auto* debug = scene_->GetComponent<DebugRenderer>();
@@ -4642,6 +4727,23 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
                     debug->AddSphere(Sphere(pos, 3.0f), Color::RED, false);
                 }
             }
+        }
+    }
+
+    // Sun & Moon rays — always visible to help locate celestial bodies
+    if (cameraNode_)
+    {
+        auto* debug = scene_->GetComponent<DebugRenderer>();
+        auto* camera = cameraNode_->GetComponent<Camera>();
+        if (debug && camera)
+        {
+            Ray cursorRay = camera->GetScreenRay(0.5f, 0.5f);
+            Vector3 cursorNear = cursorRay.origin_ + cursorRay.direction_ * camera->GetNearClip();
+
+            if (sunNode_)
+                debug->AddLine(sunNode_->GetWorldPosition(), cursorNear, Color(1.0f, 0.6f, 0.0f), true);
+            if (moonNode_)
+                debug->AddLine(moonNode_->GetWorldPosition(), cursorNear, Color(0.0f, 0.8f, 1.0f), true);
         }
     }
 
