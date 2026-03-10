@@ -39,12 +39,14 @@ void PS()
     if (ufoTex.a < 0.1)
         discard;
 
-    // Sample the skybox cloud cubemap at this fragment's direction
-    vec3 cloudDir = RotateClouds(vWorldDir);
-    float cloudAlpha = textureCube(sEnvCubeMap, cloudDir).a;
+    // Sample the skybox at this fragment's direction
+    vec3 skyColor = textureCube(sEnvCubeMap, vWorldDir).rgb;
 
-    // Hide behind any cloud cover: even light haze hides the UFO
-    float visibility = 1.0 - smoothstep(0.05, 0.25, cloudAlpha);
+    // How "blue" is the sky behind us?
+    // Blue sky: high blue, low red/green. Clouds/other: more uniform RGB.
+    float blueness = skyColor.b - max(skyColor.r, skyColor.g);
+    // Blue sky = visible, cloud/other = hidden behind cloud
+    float visibility = smoothstep(-0.05, 0.15, blueness);
 
     // Fade out at night
     visibility *= 1.0 - cNightFactor;

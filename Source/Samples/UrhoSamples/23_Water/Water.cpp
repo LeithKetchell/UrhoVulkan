@@ -366,6 +366,7 @@ void Water::CreateScene()
         int yday = utc->tm_yday + 1;
         if (hour >= 24) { hour -= 24; yday++; }
         dayOfYear_ = yday;
+        baseDayOfYear_ = yday;
         timeOfDay_ = (float)hour + utc->tm_min / 60.0f + utc->tm_sec / 3600.0f;
 
         struct tm refMoon = {};
@@ -377,6 +378,7 @@ void Water::CreateScene()
         double daysSinceNewMoon = difftime(now, refTime) / 86400.0;
         moonAge_ = (float)fmod(daysSinceNewMoon, 29.53);
         if (moonAge_ < 0.0f) moonAge_ += 29.53f;
+        baseMoonAge_ = moonAge_;
     }
 
     // Command-line override: -time 10.5
@@ -481,12 +483,6 @@ void Water::SetupViewport()
     RenderSurface* surface = renderTexture->GetRenderSurface();
     SharedPtr<Viewport> rttViewport(new Viewport(context_, scene_, reflectionCamera));
     rttViewport->SetDrawDebug(false);
-    // Append god rays to reflection render path so water reflects the glow
-    SharedPtr<RenderPath> reflRp(new RenderPath());
-    reflRp->Load(cache->GetResource<XMLFile>("RenderPaths/ForwardHWDepth.xml"));
-    reflRp->Append(cache->GetResource<XMLFile>("PostProcess/GodRays.xml"));
-    rttViewport->SetRenderPath(reflRp);
-    reflectionRenderPath_ = rttViewport->GetRenderPath();
     surface->SetViewport(0, rttViewport);
     auto* waterMat = cache->GetResource<Material>("Materials/Water.xml");
     waterMat->SetTexture(TU_DIFFUSE, renderTexture);
@@ -657,6 +653,38 @@ void Water::CreateMenuBar()
         todLabel_->SetText("+0:00");
         todLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
         todLabel_->SetMinWidth(50);
+
+        // Date offset sliders: ±15 days, ±6 months, ±15 years
+        auto createDateSlider = [&](const String& label, float range, Text*& outLabel, int sliderId) {
+            auto* row = envPopup->CreateChild<UIElement>();
+            row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+            row->SetMinHeight(22);
+
+            auto* lbl = row->CreateChild<Text>();
+            lbl->SetFont(font, 12);
+            lbl->SetText(label);
+            lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+            lbl->SetMinWidth(55);
+
+            auto* slider = row->CreateChild<Slider>();
+            slider->SetStyleAuto();
+            slider->SetFixedHeight(16);
+            slider->SetMinWidth(200);
+            slider->SetRange(range);
+            slider->SetValue(range * 0.5f);  // center = 0 offset
+            slider->SetVar("SliderID", sliderId);
+            SubscribeToEvent(slider, E_SLIDERCHANGED, URHO3D_HANDLER(Water, HandleDateOffsetSlider));
+
+            outLabel = row->CreateChild<Text>();
+            outLabel->SetFont(font, 12);
+            outLabel->SetText("0");
+            outLabel->SetColor(Color(0.9f, 0.9f, 0.9f));
+            outLabel->SetMinWidth(55);
+        };
+
+        createDateSlider("Days:", 30.0f, dayOffsetLabel_, 20);      // ±15 days
+        createDateSlider("Months:", 12.0f, monthOffsetLabel_, 21);   // ±6 months
+        createDateSlider("Years:", 30.0f, yearOffsetLabel_, 22);     // ±15 years
 
         // Fish wiggle amplitude slider
         auto* fishAmpRow = envPopup->CreateChild<UIElement>();
@@ -964,6 +992,62 @@ void Water::HandleTimeOfDaySlider(StringHash eventType, VariantMap& eventData)
         snprintf(buf, sizeof(buf), "%+d:%02d", hours, mins);
         todLabel_->SetText(buf);
     }
+}
+
+void Water::HandleDateOffsetSlider(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    auto* slider = static_cast<Slider*>(eventData[P_ELEMENT].GetPtr());
+    float val = eventData[P_VALUE].GetFloat();
+    int id = slider->GetVar("SliderID").GetI32();
+
+    if (id == 20)  // ±15 days
+    {
+        daySliderOffset_ = val - 15.0f;
+        if (dayOffsetLabel_)
+        {
+            char buf[16]; snprintf(buf, sizeof(buf), "%+.0f d", daySliderOffset_);
+            dayOffsetLabel_->SetText(buf);
+        }
+    }
+    else if (id == 21)  // ±6 months (in days)
+    {
+        monthSliderOffset_ = (val - 6.0f) * 30.44f;  // ~30.44 days/month
+        if (monthOffsetLabel_)
+        {
+            float months = val - 6.0f;
+            char buf[16]; snprintf(buf, sizeof(buf), "%+.0f mo", months);
+            monthOffsetLabel_->SetText(buf);
+        }
+    }
+    else if (id == 22)  // ±15 years (in days)
+    {
+        yearSliderOffset_ = (val - 15.0f) * 365.25f;
+        if (yearOffsetLabel_)
+        {
+            float years = val - 15.0f;
+            char buf[16]; snprintf(buf, sizeof(buf), "%+.0f yr", years);
+            yearOffsetLabel_->SetText(buf);
+        }
+    }
+
+    ApplyDateOffsets();
+}
+
+void Water::ApplyDateOffsets()
+{
+    float totalDayOffset = daySliderOffset_ + monthSliderOffset_ + yearSliderOffset_;
+    int newDay = baseDayOfYear_ + (int)totalDayOffset;
+    // Wrap to 1-365
+    newDay = ((newDay - 1) % 365 + 365) % 365 + 1;
+    dayOfYear_ = newDay;
+
+    // Moon age cycles every 29.53 days
+    moonAge_ = baseMoonAge_ + totalDayOffset;
+    moonAge_ = fmodf(fmodf(moonAge_, 29.53f) + 29.53f, 29.53f);
+
+    // Force atmosphere update
+    UpdateAtmosphere(CalculateSunAltitude());
 }
 
 void Water::HandleFishWiggleSlider(StringHash eventType, VariantMap& eventData)
@@ -4063,6 +4147,8 @@ void Water::UpdateCelestialBodies(float timeStep)
     {
         sunNode_->SetPosition(camPos + sunOffset);
         sunNode_->LookAt(camPos);
+        auto* bb = sunNode_->GetComponent<BillboardSet>();
+        if (bb) bb->SetEnabled(cachedSunAlt_ > 0.0f);  // hide at/below horizon
     }
     if (sunLight_)
         sunLight_->GetNode()->SetDirection((camPos - (sunNode_ ? sunNode_->GetPosition() : Vector3::ZERO)).Normalized());
@@ -4074,6 +4160,8 @@ void Water::UpdateCelestialBodies(float timeStep)
     {
         moonNode_->SetPosition(camPos + moonOffset);
         moonNode_->LookAt(camPos);
+        auto* bb = moonNode_->GetComponent<BillboardSet>();
+        if (bb) bb->SetEnabled(cachedMoonAlt_ > 0.0f);  // hide at/below horizon
     }
     if (moonLight_)
         moonLight_->GetNode()->SetDirection(-moonOffset.Normalized());
@@ -4175,27 +4263,6 @@ void Water::UpdateCelestialBodies(float timeStep)
         }
         renderPath_->SetEnabled("GodRays", rayActive);
 
-        // Mirror god ray params to reflection render path for water glow
-        if (reflectionRenderPath_ && reflectionCameraNode_ && rayActive)
-        {
-            auto* reflCam = reflectionCameraNode_->GetComponent<Camera>();
-            // Use whichever body is active (sun takes priority)
-            Node* activeLight = (godRaysEnabled_ && sunNode_ && cachedSunAlt_ > -5.0f) ? sunNode_ : moonNode_;
-            if (reflCam && activeLight)
-            {
-                Vector2 reflScreenPos = reflCam->WorldToScreenPoint(activeLight->GetWorldPosition());
-                reflectionRenderPath_->SetShaderParameter("LightScreenPos", reflScreenPos);
-                reflectionRenderPath_->SetShaderParameter("LightRadius", renderPath_->GetShaderParameter("LightRadius"));
-                reflectionRenderPath_->SetShaderParameter("GodRayColor", renderPath_->GetShaderParameter("GodRayColor"));
-                reflectionRenderPath_->SetShaderParameter("GodRayDensity", 0.5f);
-                reflectionRenderPath_->SetShaderParameter("GodRayDecay", 0.97f);
-                reflectionRenderPath_->SetShaderParameter("GodRayWeight", 0.4f);
-                reflectionRenderPath_->SetShaderParameter("GodRayExposure", renderPath_->GetShaderParameter("GodRayExposure"));
-                reflectionRenderPath_->SetShaderParameter("GodRayIntensity", renderPath_->GetShaderParameter("GodRayIntensity"));
-            }
-        }
-        if (reflectionRenderPath_)
-            reflectionRenderPath_->SetEnabled("GodRays", rayActive);
     }
 }
 
@@ -4507,10 +4574,75 @@ void Water::UpdateOOFOs(float timeStep)
         oofos_[i]->Update(timeStep, camPos, cloudTotal, nightFactor);
 }
 
+void Water::UpdateSeasonalEffects()
+{
+    if (dayOfYear_ == lastSeasonDay_)
+        return;
+    lastSeasonDay_ = dayOfYear_;
+
+    // Season factor: 0=winter solstice, 1=summer solstice
+    cachedSeasonFactor_ = 0.5f + 0.5f * sinf((dayOfYear_ - 81) * 6.2831853f / 365.0f);
+
+    // Sky/fog seasonal bias (applied per-frame only during daytime)
+    Color summerBias(1.02f, 0.98f, 0.92f);
+    Color winterBias(0.92f, 0.95f, 1.05f);
+    cachedSeasonBias_ = winterBias.Lerp(summerBias, cachedSeasonFactor_);
+
+    // Fog distance
+    cachedFogStart_ = Lerp(350.0f, 600.0f, cachedSeasonFactor_);
+    cachedFogEnd_ = Lerp(600.0f, 800.0f, cachedSeasonFactor_);
+
+    // Terrain tint — 4-point seasonal lerp
+    if (terrain_)
+    {
+        float seasonAngle = fmodf((dayOfYear_ - 81) / 365.0f + 1.0f, 1.0f);
+        Color spring(0.85f, 1.0f, 0.8f);
+        Color summer(0.9f, 1.0f, 0.85f);
+        Color autumn(1.0f, 0.85f, 0.7f);
+        Color winter(0.85f, 0.85f, 0.9f);
+
+        if (seasonAngle < 0.25f)
+            cachedTerrainTint_ = spring.Lerp(summer, seasonAngle / 0.25f);
+        else if (seasonAngle < 0.5f)
+            cachedTerrainTint_ = summer.Lerp(autumn, (seasonAngle - 0.25f) / 0.25f);
+        else if (seasonAngle < 0.75f)
+            cachedTerrainTint_ = autumn.Lerp(winter, (seasonAngle - 0.5f) / 0.25f);
+        else
+            cachedTerrainTint_ = winter.Lerp(spring, (seasonAngle - 0.75f) / 0.25f);
+
+        auto* terrainMat = terrain_->GetMaterial();
+        if (terrainMat)
+            terrainMat->SetShaderParameter("MatDiffColor", cachedTerrainTint_);
+    }
+
+    // Water color
+    if (waterNode_)
+    {
+        auto* sm = waterNode_->GetComponent<StaticModel>();
+        auto* waterMat = sm ? sm->GetMaterial() : nullptr;
+        if (waterMat)
+        {
+            Color summerShallow(0.2f, 0.6f, 0.5f);
+            Color winterShallow(0.15f, 0.35f, 0.35f);
+            Color summerDeep(0.02f, 0.1f, 0.2f);
+            Color winterDeep(0.02f, 0.06f, 0.12f);
+
+            cachedShallowColor_ = winterShallow.Lerp(summerShallow, cachedSeasonFactor_);
+            cachedDeepColor_ = winterDeep.Lerp(summerDeep, cachedSeasonFactor_);
+
+            waterMat->SetShaderParameter("ShallowColor", cachedShallowColor_);
+            waterMat->SetShaderParameter("DeepColor", cachedDeepColor_);
+        }
+    }
+}
+
 void Water::UpdateAtmosphere(float sunAltitude)
 {
     if (!zone_)
         return;
+
+    // Recompute seasonal cache only when dayOfYear_ changes
+    UpdateSeasonalEffects();
 
     Color ambient, fogColor, sunColor, moonColor;
     bool sunEnabled = true;
@@ -4548,8 +4680,18 @@ void Water::UpdateAtmosphere(float sunAltitude)
         moonEnabled = true;
     }
 
+    // Apply cached seasonal bias during daytime
+    if (sunAltitude > 0.0f)
+    {
+        fogColor = Color(fogColor.r_ * cachedSeasonBias_.r_, fogColor.g_ * cachedSeasonBias_.g_, fogColor.b_ * cachedSeasonBias_.b_);
+        ambient = Color(ambient.r_ * cachedSeasonBias_.r_, ambient.g_ * cachedSeasonBias_.g_, ambient.b_ * cachedSeasonBias_.b_);
+    }
+
+    zone_->SetFogStart(cachedFogStart_);
+    zone_->SetFogEnd(cachedFogEnd_);
     zone_->SetAmbientColor(ambient);
     zone_->SetFogColor(fogColor);
+
     if (sunLight_)
     {
         sunLight_->SetColor(sunColor);
@@ -4564,16 +4706,16 @@ void Water::UpdateAtmosphere(float sunAltitude)
     // Height fog: auto (time-based) unless user overrode with H key
     if (heightFogOverride_ == 0)
     {
-        float normalScale = 1.0f / 13.0f;  // 1/(fogMaxHeight - fogMinHeight) = 1/(18-5)
+        float normalScale = 1.0f / 13.0f;
         if (sunAltitude > 20.0f)
         {
             zone_->SetHeightFog(false);
         }
         else if (sunAltitude > 5.0f)
         {
-            float t = (sunAltitude - 5.0f) / 15.0f;  // 0 at 5°, 1 at 20°
+            float t = (sunAltitude - 5.0f) / 15.0f;
             zone_->SetHeightFog(true);
-            zone_->SetFogHeightScale(Lerp(normalScale, 50.0f, t));  // scale up = range shrinks = fog vanishes
+            zone_->SetFogHeightScale(Lerp(normalScale, 50.0f, t));
         }
         else
         {
@@ -4764,91 +4906,73 @@ void Water::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
 void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
 {
-    if (!drawDebug_)
-        return;
+    auto* debug = scene_->GetComponent<DebugRenderer>();
 
-    if (hasBrushHit_ && brushMode_ != 0)
-        DrawBrushOutline(cachedBrushHit_);
-
-    // Draw prefab brush bounding box at raycast position
-    if (prefabBrush_ && hasBrushHit_)
+    // Overlay rays — independent of drawDebug_, toggled from Overlay menu
+    if (debug && cameraNode_)
     {
-        auto* debug = scene_->GetComponent<DebugRenderer>();
-        if (debug)
-        {
-            // Compute combined local bounding box from all drawables in the prefab subtree
-            BoundingBox combined;
-            Vector<Drawable*> drawables;
-            prefabBrush_->GetDerivedComponents<Drawable>(drawables, true);
-            for (unsigned i = 0; i < drawables.Size(); ++i)
-                combined.Merge(drawables[i]->GetBoundingBox());
-
-            if (combined.Defined())
-            {
-                Vector3 pos(cachedBrushHit_.x_, cachedBrushHit_.y_, cachedBrushHit_.z_);
-                Matrix3x4 transform(pos, cachedBrushNormal_ != Vector3::UP ?
-                    Quaternion(Vector3::UP, cachedBrushNormal_) : Quaternion::IDENTITY,
-                    prefabBrush_->GetScale());
-                debug->AddBoundingBox(combined, transform, Color::CYAN, false);
-            }
-        }
-    }
-
-    // Draw transform gizmo on selected object
-    DrawGizmo();
-
-    // OOFO rays — green lines from each OOFO aimed at camera cursor on near plane
-    if (oofoRayVisible_ && cameraNode_)
-    {
-        auto* debug = scene_->GetComponent<DebugRenderer>();
         auto* camera = cameraNode_->GetComponent<Camera>();
-        if (debug && camera)
+        if (camera)
         {
             Ray cursorRay = camera->GetScreenRay(0.5f, 0.5f);
             Vector3 cursorNear = cursorRay.origin_ + cursorRay.direction_ * camera->GetNearClip();
 
-            for (unsigned i = 0; i < oofos_.Size(); ++i)
+            // OOFO detector rays
+            if (oofoRayVisible_)
             {
-                Node* n = oofos_[i]->GetNode();
-                if (n) debug->AddLine(n->GetWorldPosition(), cursorNear, Color::GREEN, true);
-            }
-        }
-    }
-
-    // Fish markers — red spheres around each fish
-    if (fishRayVisible_)
-    {
-        auto* debug = scene_->GetComponent<DebugRenderer>();
-        if (debug)
-        {
-            const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
-            for (unsigned i = 0; i < children.Size(); ++i)
-            {
-                if (children[i]->GetName() == "Fish")
+                for (unsigned i = 0; i < oofos_.Size(); ++i)
                 {
-                    Vector3 pos = children[i]->GetWorldPosition();
-                    debug->AddSphere(Sphere(pos, 3.0f), Color::RED, false);
+                    Node* n = oofos_[i]->GetNode();
+                    if (n && n->IsEnabled())
+                        debug->AddLine(n->GetWorldPosition(), cursorNear, Color::GREEN, true);
                 }
             }
-        }
-    }
 
-    // Sun & Moon rays — locate celestial bodies
-    if (cameraNode_)
-    {
-        auto* debug = scene_->GetComponent<DebugRenderer>();
-        auto* camera = cameraNode_->GetComponent<Camera>();
-        if (debug && camera)
-        {
-            Ray cursorRay = camera->GetScreenRay(0.5f, 0.5f);
-            Vector3 cursorNear = cursorRay.origin_ + cursorRay.direction_ * camera->GetNearClip();
-
+            // Sun & Moon locator rays — always draw, even when billboard is hidden below horizon
             if (sunNode_)
                 debug->AddLine(sunNode_->GetWorldPosition(), cursorNear, Color(1.0f, 0.6f, 0.0f), true);
             if (moonNode_)
                 debug->AddLine(moonNode_->GetWorldPosition(), cursorNear, Color(0.0f, 0.8f, 1.0f), true);
         }
+
+        // Fish markers
+        if (fishRayVisible_)
+        {
+            const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
+            for (unsigned i = 0; i < children.Size(); ++i)
+            {
+                if (children[i]->GetName() == "Fish")
+                    debug->AddSphere(Sphere(children[i]->GetWorldPosition(), 3.0f), Color::RED, false);
+            }
+        }
     }
+
+    if (!drawDebug_)
+        return;
+
+    // Editor overlays — gated by drawDebug_ (F5 / NumPad Enter)
+    if (hasBrushHit_ && brushMode_ != 0)
+        DrawBrushOutline(cachedBrushHit_);
+
+    if (prefabBrush_ && hasBrushHit_ && debug)
+    {
+        BoundingBox combined;
+        Vector<Drawable*> drawables;
+        prefabBrush_->GetDerivedComponents<Drawable>(drawables, true);
+        for (unsigned i = 0; i < drawables.Size(); ++i)
+            combined.Merge(drawables[i]->GetBoundingBox());
+
+        if (combined.Defined())
+        {
+            Vector3 pos(cachedBrushHit_.x_, cachedBrushHit_.y_, cachedBrushHit_.z_);
+            Matrix3x4 transform(pos, cachedBrushNormal_ != Vector3::UP ?
+                Quaternion(Vector3::UP, cachedBrushNormal_) : Quaternion::IDENTITY,
+                prefabBrush_->GetScale());
+            debug->AddBoundingBox(combined, transform, Color::CYAN, false);
+        }
+    }
+
+    DrawGizmo();
 
     auto* physics = scene_->GetComponent<PhysicsWorld>();
     if (physics)

@@ -123,6 +123,7 @@ private:
     void CreateCelestialBodies();
     void UpdateCelestialBodies(float timeStep);
     void UpdateAtmosphere(float sunAltitude);
+    void UpdateSeasonalEffects();
     float CalculateSunAltitude();
     float CalculateSunAzimuth(float altitude);
     float CalculateMoonAltitude();
@@ -142,13 +143,23 @@ private:
     void FetchNetworkTime();
     void ProcessTimeResponse();
     void HandleTimeOfDaySlider(StringHash eventType, VariantMap& eventData);
+    void HandleDateOffsetSlider(StringHash eventType, VariantMap& eventData);
+    void ApplyDateOffsets();
     float timeOfDay_{};
     float timeOfDayOffset_{};  // manual offset from network time (-12..+12 hours)
     int dayOfYear_{};
+    int baseDayOfYear_{};      // from network time, before offsets
+    float baseMoonAge_{};      // from network time, before offsets
     float moonAge_{};
+    float daySliderOffset_{};    // ±15 days
+    float monthSliderOffset_{};  // ±6 months (in days)
+    float yearSliderOffset_{};   // ±15 years (in days)
     SharedPtr<HttpRequest> timeRequest_;
     float timeSyncTimer_{};
     Text* todLabel_{};
+    Text* dayOffsetLabel_{};
+    Text* monthOffsetLabel_{};
+    Text* yearOffsetLabel_{};
 
     // --- Cached celestial calculations ---
     float cachedSunAlt_{};
@@ -237,6 +248,16 @@ private:
     bool menuOpen_{false};
     int heightFogOverride_{0};  // 0=auto (time-based), 1=forced on, -1=forced off
     bool godRaysEnabled_{true};
+
+    // --- Cached seasonal state (only recomputed when dayOfYear_ changes) ---
+    int lastSeasonDay_{-1};
+    float cachedSeasonFactor_{};
+    Color cachedSeasonBias_;
+    float cachedFogStart_{500.0f};
+    float cachedFogEnd_{750.0f};
+    Color cachedTerrainTint_{Color::WHITE};
+    Color cachedShallowColor_;
+    Color cachedDeepColor_;
 
     // --- Heightmap I/O ---
     void ShowExportPrefabDialog();
