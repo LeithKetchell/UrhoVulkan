@@ -36,23 +36,49 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Legacy CollisionShape component still supported for backward compatibility
 - Rigid body activation events (E_RIGIDBODYSLEEP / E_RIGIDBODYWAKEUP) — dispatched by PhysicsWorld when bodies transition between active and sleeping states
 
+### Particle System Enhancements
+- Particle collision system — Kill, Bounce, and Stick modes for particles hitting surfaces
+- Y-plane collision (fast, no physics dependency) and physics raycast collision (accurate, uses scene physics)
+- Decal spawning on particle impact — configurable material, size, and lifetime
+- Full XML serialization — collision settings saved/loaded with particle effect files
+- Zero cost when disabled — no collision checks unless explicitly enabled per effect
+- Backward compatible — existing particle effects work unchanged
+
 ### Rendering
 - FXAA anti-aliasing post-process
 - Bloom post-process
 - Motion blur post-process with camera-based reprojection (Sample 58)
+- God rays post-process with 3-phase sun glow (pale white → vivid red at sunset → fade below horizon) and cool blue moon glow
 - Custom shader uniform support (bare GLSL uniforms wrapped into constant buffer blocks)
 - Selection outline system (Silhouette mask + Sobel edge detection)
 - Height fog with min/max height range, underwater inverse fog, and atmospheric time-of-day cycling
-- 4-layer terrain texture blending (4 detail layers from 3 texture fetches via alpha channel packing)
+- Underwater color dynamically tracks zone fog color per frame instead of hardcoded values
+- 4-layer terrain texture blending (4 detail layers from 3 texture fetches via alpha channel packing) with division-by-zero guard on empty weight maps
+- Celestial body depth — sun and moon write depth (0.9999) so terrain occludes them correctly
 
 ### Bullet SDK Samples
 - Faithful ports of Bullet SDK examples as standalone Urho3D samples
 - Build with `-DURHO3D_BULLET_SAMPLES=1`
 - Includes: BasicDemo, Chain, CollisionFilter, Constraints, Domino, ForkLift, Gyroscopic, Heightfield, HelloPhysics, Hinge2Vehicle, Kinematic, MotorDemo, Planar2D, PlanetGravity, Raycast, RollingFriction, SoftContact, SoftDemo, Stacking, TwoJoint, and more
 
-### Editor Sample (23_Water)
+### Networking & AuthServer
+- **AuthServer** — central authority server for multiplayer terrain editing (port 9090, UDP via SLikeNet)
+- **PAKE authentication** — Password-Authenticated Key Exchange using libsodium (X25519 + XChaCha20-Poly1305)
+- 4-message encrypted login flow: key exchange, key reply, encrypted identity, encrypted auth result
+- Username enumeration prevention — unknown users get random hash, same timing
+- Forward secrecy — ephemeral key pairs per connection, session keys never transmitted
+- **SQLite database** — user accounts (username, password hash, admin level) and terrain patch ownership
+- **Patch ownership** — grid-based territory system (128-unit patches), claim and query via protocol
+- **Edit validation** — server validates terrain/object edits by patch ownership, broadcasts to all authenticated clients
+- **Peer brokering framework** — AuthServer introduces peers with shared random tokens for future NAT punchthrough
+- **Relay framework** — subclient-to-AuthServer message relay through subservers
+- **Debug GUI** — live client list, color-coded activity log, connection status
+- **LAN discovery** — broadcast beacon for auto-discovery on local network
+- Build with `-DURHO3D_NETWORK=1 -DURHO3D_DATABASE_SQLITE=1`
 
-A lightweight scene editor built into Sample 23 with terrain editing, object management, and a celestial day/night cycle.
+### Editor Sample (23_Water / 60_TerrainNode)
+
+A lightweight scene editor built into Sample 23 (standalone) and forked as Sample 60 (networked). Sample 60 adds multiplayer connectivity via AuthServer — LAN discovery, encrypted login, collaborative terrain/object editing with server-authoritative validation.
 
 **Getting Around**
 - WASD to move, mouse to look (camera mode)
@@ -100,14 +126,16 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - 32-bit heightmap precision (R + G/256 + B/65536 + A/16M, ~4 billion height levels)
 - Brush rotation slider (-180 to +180 degrees) with text input for precise angles
 
-**Day/Night Cycle**
+**Day/Night Cycle & Seasonal Environment**
 - Real-time sun/moon positioning synced to network time (Melbourne, AU)
 - Time of Day slider in Environment menu for scrubbing +/-12 hours
+- Date/Month/Year sliders for seasonal variation — sun arc, day length, sky color, and fog respond to calendar date
 - Cloud layer and star field rotate independently — clouds drift slowly, stars track celestial time
 - Atmospheric rendering: sky tint, fog color, ambient light tied to sun altitude
 - Height fog auto-scales with time of day (thickens at dusk/night)
+- God rays on sun and moon, reflected in water surface
 - 1/2 keys track sun/moon with camera
-- An OOFO has been spotted hiding behind clouds and is known to zip between them — only visible during daylight, since there are no clouds at night
+- An OOFO fleet has been spotted hiding behind clouds — they camouflage against cloud cover and zip between positions, only visible during daylight
 
 **Undo/Redo**
 - Ctrl+Z / Ctrl+Y (also in Edit menu)
@@ -134,6 +162,7 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
   - Speed fades smoothly from full at 15m to 15% near the camera
   - Per-zone material swap (3 pre-built materials, zero runtime allocation) for wiggle variation
 - Water column clamping — fish stay between terrain floor and water surface at all times
+- Depth-dependent behaviour — fish stay deep by default, rising to the surface only at dawn and dusk with per-fish randomized schedule, depth preference, and eagerness
 
 **Minimap**
 - Bottom-right corner, GPU-rendered top-down orthographic RTT camera
@@ -146,6 +175,26 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 - OnDeviceReset: proper reload for Texture2D, TextureCube, VertexBuffer, IndexBuffer
 - Release null-safety for device/allocator teardown ordering
 
+### Tools
+- **ModelViewer** — standalone model inspection and repair tool (`build/bin/ModelViewer`)
+  - Load any .mdl file, auto-apply material lists, orbital camera with auto-framing
+  - Mesh inspector: per-geometry vertex/index counts, vertex element layout, LOD levels, bounding box dimensions
+  - Skeleton inspector: bone hierarchy with indentation, radius display, bone picking (click to highlight subtree)
+  - Animation inspector: track listing with channel masks (P/R/S), keyframe counts, time ranges, trigger points
+  - Material inspector: techniques, texture bindings by unit name, shader parameters, VS/PS defines
+  - Morph target display with current weights
+  - Multi-animation blending: per-layer weight sliders, Lerp/Add toggle, loop/reverse controls
+  - **Vertex Editor** — press V to enter vertex edit mode on any loaded model
+    - All vertices drawn as colored crosses (red = unselected, yellow = selected), scaled by camera distance
+    - Click to select nearest vertex (ray-based picking with distance-scaled threshold)
+    - Drag to move vertex (constrained to camera-facing plane)
+    - DEL to delete vertex — removes vertex, culls all referencing triangles, remaps surviving indices, recalculates bounding box
+    - Ctrl+S to save edited model back to disk (.mdl binary format)
+    - Clone-on-edit: original model untouched until explicit save
+    - Automatic 16/32-bit index type selection based on vertex count
+  - Collapsible info panel sections with visual separators between Model, Materials, and Animation groups
+  - Help overlay (H key) with full keybinding reference
+
 ### Model Format
 - UMD3 model format support — reverse-engineered and documented (bounding box at header, otherwise identical to UMD2)
 - Oversized model rejection — `SetModel()` rejects models with bounding box exceeding 10 units unless `allowOversized = true`, preventing accidental stadium-sized geometry from Blender centimetre exports
@@ -154,6 +203,9 @@ A lightweight scene editor built into Sample 23 with terrain editing, object man
 ### Engine
 - AngelScript bindings for new RigidBody shape API and MultiBody
 - Multi-viewport instancing fix for deferred GPU execution
+- Vulkan screenshot capture (swapchain → staging buffer → BGRA→RGB → PNG)
+- Format string parsing fix in Str.cpp (flags, width, precision, length modifiers)
+- Fixed upstream 1.9 bug in binding generator (`RemoveRefs` in `XmlAnalyzer.cpp`) — Doxygen XML nodes were concatenated without whitespace, producing broken AngelScript type declarations like `"constint"`, `"constfloat"`, `"constString"` etc. (~188 global property registrations affected)
 
 ## License
 Licensed under the MIT license, see [LICENSE](licenses/urho3d/LICENSE) for details.
@@ -164,7 +216,7 @@ Before making pull requests, please read the [Contribution checklist](https://ur
 ## Credits
 
 ### Vulkan Backend & Engine Enhancements (v2.0.1)
-- Leith Ketchell (https://github.com/LeithKetchell) — Vulkan backend, physics integration, soft body support, rendering enhancements
+- Leith Ketchell (https://github.com/LeithKetchell) — Vulkan backend, physics integration, soft body support, rendering enhancements, networking & AuthServer
 - Claude (https://github.com/anthropics) — AI pair programming assistant
 
 ### Original Engine
@@ -199,6 +251,7 @@ Urho3D uses the following third-party libraries:
 - FreeType 2.8 (https://www.freetype.org)
 - GLEW 1.13.0 (http://glew.sourceforge.net)
 - SLikeNet (https://github.com/SLikeSoft/SLikeNet)
+- libsodium 1.0.21 (https://libsodium.gitbook.io) - X25519 key exchange, XChaCha20-Poly1305 AEAD encryption, BLAKE2b hashing
 - libcpuid 0.4.0+ (https://github.com/anrieff/libcpuid)
 - Lua 5.1 (https://www.lua.org)
 - LuaJIT 2.1.0+ (http://www.luajit.org)
@@ -311,7 +364,8 @@ export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
 | `URHO3D_SAMPLES=1` | No | Build example projects |
 | `URHO3D_PHYSICS=1` | No | Bullet physics support |
 | `URHO3D_NAVIGATION=1` | No | Recast/Detour pathfinding |
-| `URHO3D_NETWORK=1` | No | SLikeNet networking |
+| `URHO3D_NETWORK=1` | No | SLikeNet networking + libsodium encryption |
+| `URHO3D_DATABASE_SQLITE=1` | No | SQLite database (required for AuthServer) |
 | `URHO3D_ANGELSCRIPT=1` | No | AngelScript scripting |
 | `CMAKE_BUILD_TYPE=Release` | No | Optimized build (recommended) |
 

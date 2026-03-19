@@ -72,7 +72,7 @@ void PS()
     // How far below the water surface this pixel is
     float depthBelowWater = cWaterLevel - worldPos.y;
 
-    // Skybox / far plane — darken toward underwater color
+    // Skybox / far plane — fade toward fog color underwater
     if (hwDepth > 0.999)
     {
         float darkness = clamp((cWaterLevel - cMainCameraY) * cDepthFalloff, 0.0, 1.0) * breachFade;

@@ -68,11 +68,8 @@ void PS()
     vec3 finalColor;
     if (eyeDotN < 0.0)
     {
-        // Viewed from below — use the viewport/refraction texture which shows what's behind
-        // the water surface from the camera's viewpoint (sky, above-water terrain).
-        // The reflection texture UV mapping is designed for above-water viewing and maps
-        // incorrectly from below, so we avoid it entirely.
-        // Snell's window: looking straight up = see through, grazing = subtle water tint
+        // Viewed from below — Snell's window: looking straight up = see through,
+        // grazing = subtle water tint. Keep tint low to avoid painting the sky aqua.
         float transparency = clamp(-eyeDotN, 0.0, 1.0);
         vec3 waterColor = mix(cShallowColor, cDeepColor, 0.5);
         float tint = 0.15 * (1.0 - transparency);

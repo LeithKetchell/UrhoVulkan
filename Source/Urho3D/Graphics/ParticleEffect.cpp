@@ -29,6 +29,15 @@ static const char* emitterTypeNames[] =
     nullptr
 };
 
+static const char* collisionModeNames[] =
+{
+    "None",
+    "Kill",
+    "Bounce",
+    "Stick",
+    nullptr
+};
+
 static const Vector2 DEFAULT_PARTICLE_SIZE(0.1f, 0.1f);
 static const float DEFAULT_EMISSION_RATE = 10.0f;
 static const float MIN_EMISSION_RATE = 0.01f;
@@ -68,7 +77,16 @@ ParticleEffect::ParticleEffect(Context* context) :
     rotationSpeedMax_(0.0f),
     sizeAdd_(0.0f),
     sizeMul_(1.0f),
-    faceCameraMode_(FC_ROTATE_XYZ)
+    faceCameraMode_(FC_ROTATE_XYZ),
+    collisionMode_(PCOLLISION_NONE),
+    collisionBounce_(0.5f),
+    collisionFriction_(0.2f),
+    collisionMask_(M_MAX_UNSIGNED),
+    collisionBudget_(50),
+    collisionPlaneY_(M_INFINITY),
+    collisionDecalSize_(0.2f),
+    collisionDecalLifetime_(5.0f),
+    collisionDecalMaxPerFrame_(10)
 {
 }
 
@@ -105,6 +123,13 @@ bool ParticleEffect::EndLoad()
     {
         SetMaterial(GetSubsystem<ResourceCache>()->GetResource<Material>(loadMaterialName_));
         loadMaterialName_.Clear();
+    }
+
+    // Apply collision decal material
+    if (!loadCollisionDecalMaterialName_.Empty())
+    {
+        SetCollisionDecalMaterial(GetSubsystem<ResourceCache>()->GetResource<Material>(loadCollisionDecalMaterialName_));
+        loadCollisionDecalMaterialName_.Clear();
     }
 
     return true;
@@ -146,6 +171,17 @@ bool ParticleEffect::Load(const XMLElement& source)
     colorFrames_.Clear();
     textureFrames_.Clear();
     faceCameraMode_ = FC_ROTATE_XYZ;
+    collisionMode_ = PCOLLISION_NONE;
+    collisionBounce_ = 0.5f;
+    collisionFriction_ = 0.2f;
+    collisionMask_ = M_MAX_UNSIGNED;
+    collisionBudget_ = 50;
+    collisionPlaneY_ = M_INFINITY;
+    collisionDecalMaterial_.Reset();
+    collisionDecalSize_ = 0.2f;
+    collisionDecalLifetime_ = 5.0f;
+    collisionDecalMaxPerFrame_ = 10;
+    loadCollisionDecalMaterialName_.Clear();
 
     if (source.IsNull())
     {
@@ -295,6 +331,43 @@ bool ParticleEffect::Load(const XMLElement& source)
         SetTextureFrames(animations);
     }
 
+    if (source.HasChild("collision"))
+    {
+        XMLElement collisionElem = source.GetChild("collision");
+        if (collisionElem.HasAttribute("mode"))
+        {
+            String mode = collisionElem.GetAttributeLower("mode");
+            collisionMode_ = (ParticleCollisionMode)GetStringListIndex(mode.CString(), collisionModeNames, PCOLLISION_NONE);
+        }
+        if (collisionElem.HasAttribute("bounce"))
+            collisionBounce_ = collisionElem.GetFloat("bounce");
+        if (collisionElem.HasAttribute("friction"))
+            collisionFriction_ = collisionElem.GetFloat("friction");
+        if (collisionElem.HasAttribute("mask"))
+            collisionMask_ = collisionElem.GetU32("mask");
+        if (collisionElem.HasAttribute("budget"))
+            collisionBudget_ = collisionElem.GetU32("budget");
+        if (collisionElem.HasAttribute("planeY"))
+            collisionPlaneY_ = collisionElem.GetFloat("planeY");
+    }
+
+    if (source.HasChild("collisiondecal"))
+    {
+        XMLElement decalElem = source.GetChild("collisiondecal");
+        if (decalElem.HasAttribute("material"))
+        {
+            loadCollisionDecalMaterialName_ = decalElem.GetAttribute("material");
+            if (GetAsyncLoadState() == ASYNC_LOADING)
+                GetSubsystem<ResourceCache>()->BackgroundLoadResource<Material>(loadCollisionDecalMaterialName_, true, this);
+        }
+        if (decalElem.HasAttribute("size"))
+            collisionDecalSize_ = decalElem.GetFloat("size");
+        if (decalElem.HasAttribute("lifetime"))
+            collisionDecalLifetime_ = decalElem.GetFloat("lifetime");
+        if (decalElem.HasAttribute("maxperframe"))
+            collisionDecalMaxPerFrame_ = decalElem.GetU32("maxperframe");
+    }
+
     return true;
 }
 
@@ -413,6 +486,27 @@ bool ParticleEffect::Save(XMLElement& dest) const
         childElem = dest.CreateChild("texanim");
         childElem.SetRect("uv", textureFrame.uv_);
         childElem.SetFloat("time", textureFrame.time_);
+    }
+
+    if (collisionMode_ != PCOLLISION_NONE)
+    {
+        childElem = dest.CreateChild("collision");
+        childElem.SetAttribute("mode", collisionModeNames[collisionMode_]);
+        childElem.SetFloat("bounce", collisionBounce_);
+        childElem.SetFloat("friction", collisionFriction_);
+        childElem.SetU32("mask", collisionMask_);
+        childElem.SetU32("budget", collisionBudget_);
+        if (collisionPlaneY_ != M_INFINITY)
+            childElem.SetFloat("planeY", collisionPlaneY_);
+    }
+
+    if (collisionDecalMaterial_)
+    {
+        childElem = dest.CreateChild("collisiondecal");
+        childElem.SetAttribute("material", GetResourceName(collisionDecalMaterial_));
+        childElem.SetFloat("size", collisionDecalSize_);
+        childElem.SetFloat("lifetime", collisionDecalLifetime_);
+        childElem.SetU32("maxperframe", collisionDecalMaxPerFrame_);
     }
 
     return true;
@@ -752,6 +846,16 @@ SharedPtr<ParticleEffect> ParticleEffect::Clone(const String& cloneName) const
     ret->colorFrames_ = colorFrames_;
     ret->textureFrames_ = textureFrames_;
     ret->faceCameraMode_ = faceCameraMode_;
+    ret->collisionMode_ = collisionMode_;
+    ret->collisionBounce_ = collisionBounce_;
+    ret->collisionFriction_ = collisionFriction_;
+    ret->collisionMask_ = collisionMask_;
+    ret->collisionBudget_ = collisionBudget_;
+    ret->collisionPlaneY_ = collisionPlaneY_;
+    ret->collisionDecalMaterial_ = collisionDecalMaterial_;
+    ret->collisionDecalSize_ = collisionDecalSize_;
+    ret->collisionDecalLifetime_ = collisionDecalLifetime_;
+    ret->collisionDecalMaxPerFrame_ = collisionDecalMaxPerFrame_;
     /// \todo Zero if source was created programmatically
     ret->SetMemoryUse(GetMemoryUse());
 

@@ -11,6 +11,15 @@
 namespace Urho3D
 {
 
+/// Particle collision response modes.
+enum ParticleCollisionMode
+{
+    PCOLLISION_NONE = 0,
+    PCOLLISION_KILL,
+    PCOLLISION_BOUNCE,
+    PCOLLISION_STICK
+};
+
 /// Particle emitter shapes.
 enum EmitterType
 {
@@ -208,6 +217,27 @@ public:
     /// @property
     void SetFaceCameraMode(FaceCameraMode mode);
 
+    /// Set particle collision mode.
+    void SetCollisionMode(ParticleCollisionMode mode) { collisionMode_ = mode; }
+    /// Set collision bounce restitution (0-1).
+    void SetCollisionBounce(float bounce) { collisionBounce_ = bounce; }
+    /// Set collision friction (tangential velocity loss, 0-1).
+    void SetCollisionFriction(float friction) { collisionFriction_ = friction; }
+    /// Set collision layer mask for physics raycasts.
+    void SetCollisionMask(unsigned mask) { collisionMask_ = mask; }
+    /// Set max physics raycasts per frame.
+    void SetCollisionBudget(unsigned budget) { collisionBudget_ = budget; }
+    /// Set Y-plane collision height (M_INFINITY = disabled).
+    void SetCollisionPlaneY(float y) { collisionPlaneY_ = y; }
+    /// Set collision decal material.
+    void SetCollisionDecalMaterial(Material* material) { collisionDecalMaterial_ = material; }
+    /// Set collision decal size.
+    void SetCollisionDecalSize(float size) { collisionDecalSize_ = size; }
+    /// Set collision decal lifetime.
+    void SetCollisionDecalLifetime(float lifetime) { collisionDecalLifetime_ = lifetime; }
+    /// Set max decals spawned per frame.
+    void SetCollisionDecalMaxPerFrame(unsigned max) { collisionDecalMaxPerFrame_ = max; }
+
     /// Add a color frame sorted in the correct position based on time.
     void AddColorTime(const Color& color, float time);
     /// Add a color frame sorted in the correct position based on time.
@@ -390,6 +420,27 @@ public:
     /// @property
     FaceCameraMode GetFaceCameraMode() const { return faceCameraMode_; }
 
+    /// Return particle collision mode.
+    ParticleCollisionMode GetCollisionMode() const { return collisionMode_; }
+    /// Return collision bounce restitution.
+    float GetCollisionBounce() const { return collisionBounce_; }
+    /// Return collision friction.
+    float GetCollisionFriction() const { return collisionFriction_; }
+    /// Return collision layer mask.
+    unsigned GetCollisionMask() const { return collisionMask_; }
+    /// Return max physics raycasts per frame.
+    unsigned GetCollisionBudget() const { return collisionBudget_; }
+    /// Return Y-plane collision height.
+    float GetCollisionPlaneY() const { return collisionPlaneY_; }
+    /// Return collision decal material.
+    Material* GetCollisionDecalMaterial() const { return collisionDecalMaterial_; }
+    /// Return collision decal size.
+    float GetCollisionDecalSize() const { return collisionDecalSize_; }
+    /// Return collision decal lifetime.
+    float GetCollisionDecalLifetime() const { return collisionDecalLifetime_; }
+    /// Return max decals spawned per frame.
+    unsigned GetCollisionDecalMaxPerFrame() const { return collisionDecalMaxPerFrame_; }
+
     /// Return random direction.
     Vector3 GetRandomDirection() const;
     /// Return random size.
@@ -479,6 +530,28 @@ private:
     String loadMaterialName_;
     /// Particle rotation mode in relation to the camera.
     FaceCameraMode faceCameraMode_;
+    /// Particle collision response mode.
+    ParticleCollisionMode collisionMode_;
+    /// Collision bounce restitution (0-1).
+    float collisionBounce_;
+    /// Collision friction (tangential velocity loss, 0-1).
+    float collisionFriction_;
+    /// Collision layer mask for physics raycasts.
+    unsigned collisionMask_;
+    /// Max physics raycasts per frame.
+    unsigned collisionBudget_;
+    /// Y-plane collision height (M_INFINITY = disabled).
+    float collisionPlaneY_;
+    /// Collision decal material.
+    SharedPtr<Material> collisionDecalMaterial_;
+    /// Collision decal size.
+    float collisionDecalSize_;
+    /// Collision decal lifetime.
+    float collisionDecalLifetime_;
+    /// Max decals spawned per frame.
+    unsigned collisionDecalMaxPerFrame_;
+    /// Decal material name acquired during BeginLoad().
+    String loadCollisionDecalMaterialName_;
 };
 
 }

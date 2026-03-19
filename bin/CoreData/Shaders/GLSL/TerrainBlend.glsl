@@ -107,7 +107,10 @@ void PS()
     // Get material diffuse albedo
     vec3 weights = texture2D(sWeightMap0, vTexCoord).rgb;
     float sumWeights = weights.r + weights.g + weights.b;
-    weights /= sumWeights;
+    if (sumWeights < 0.001)
+        weights = vec3(1.0, 0.0, 0.0);  // fallback to layer 1 where weight map is empty
+    else
+        weights /= sumWeights;
     vec4 diffColor = cMatDiffColor * (
         weights.r * texture2D(sDetailMap1, vDetailTexCoord) +
         weights.g * texture2D(sDetailMap2, vDetailTexCoord) +

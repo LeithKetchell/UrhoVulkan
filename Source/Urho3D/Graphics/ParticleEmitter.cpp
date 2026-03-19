@@ -5,9 +5,17 @@
 
 #include "../Core/Context.h"
 #include "../Core/Profiler.h"
+#include "../Graphics/DecalSet.h"
 #include "../Graphics/DrawableEvents.h"
+#include "../Graphics/Material.h"
 #include "../Graphics/ParticleEffect.h"
 #include "../Graphics/ParticleEmitter.h"
+#include "../Graphics/StaticModel.h"
+#include "../Math/Ray.h"
+#ifdef URHO3D_PHYSICS
+#include "../Physics/PhysicsWorld.h"
+#include "../Physics/RigidBody.h"
+#endif
 #include "../Resource/ResourceCache.h"
 #include "../Resource/ResourceEvents.h"
 #include "../Scene/Scene.h"
@@ -35,7 +43,9 @@ ParticleEmitter::ParticleEmitter(Context* context) :
     needUpdate_(false),
     serializeParticles_(true),
     sendFinishedEvent_(true),
-    autoRemove_(REMOVE_DISABLED)
+    autoRemove_(REMOVE_DISABLED),
+    decalsThisFrame_(0),
+    raycastsThisFrame_(0)
 {
     SetNumParticles(DEFAULT_NUM_PARTICLES);
 }
@@ -259,6 +269,10 @@ void ParticleEmitter::Update(const FrameInfo& frame)
         }
     }
 
+    // Process particle collisions if enabled
+    if (effect_->GetCollisionMode() != PCOLLISION_NONE)
+        ProcessCollisions();
+
     if (needCommit)
         Commit();
 
@@ -408,6 +422,8 @@ void ParticleEmitter::SetParticlesAttr(const VariantVector& value)
         i->rotationSpeed_ = value[index++].GetFloat();
         i->colorIndex_ = value[index++].GetI32();
         i->texIndex_ = value[index++].GetI32();
+        if (index < value.Size())
+            i->collided_ = value[index++].GetBool();
     }
 }
 
@@ -420,7 +436,7 @@ VariantVector ParticleEmitter::GetParticlesAttr() const
         return ret;
     }
 
-    ret.Reserve(particles_.Size() * 8 + 1);
+    ret.Reserve(particles_.Size() * 9 + 1);
     ret.Push(particles_.Size());
     for (Vector<Particle>::ConstIterator i = particles_.Begin(); i != particles_.End(); ++i)
     {
@@ -432,6 +448,7 @@ VariantVector ParticleEmitter::GetParticlesAttr() const
         ret.Push(i->rotationSpeed_);
         ret.Push(i->colorIndex_);
         ret.Push(i->texIndex_);
+        ret.Push(i->collided_);
     }
     return ret;
 }
@@ -470,6 +487,14 @@ void ParticleEmitter::OnSceneSet(Scene* scene)
         SubscribeToEvent(scene, E_SCENEPOSTUPDATE, URHO3D_HANDLER(ParticleEmitter, HandleScenePostUpdate));
     else if (!scene)
          UnsubscribeFromEvent(E_SCENEPOSTUPDATE);
+
+#ifdef URHO3D_PHYSICS
+    // Cache physics world for collision raycasts
+    if (scene)
+        physicsWorld_ = scene->GetComponent<PhysicsWorld>();
+    else
+        physicsWorld_.Reset();
+#endif
 }
 
 bool ParticleEmitter::EmitNewParticle()
@@ -547,6 +572,7 @@ bool ParticleEmitter::EmitNewParticle()
     particle.rotationSpeed_ = effect_->GetRandomRotationSpeed();
     particle.colorIndex_ = 0;
     particle.texIndex_ = 0;
+    particle.collided_ = false;
 
     if (faceCameraMode_ == FC_DIRECTION)
     {
@@ -622,6 +648,170 @@ bool ParticleEmitter::CheckActiveParticles() const
     }
 
     return false;
+}
+
+void ParticleEmitter::ProcessCollisions()
+{
+    if (!effect_)
+        return;
+
+    ParticleCollisionMode mode = effect_->GetCollisionMode();
+    if (mode == PCOLLISION_NONE)
+        return;
+
+    float planeY = effect_->GetCollisionPlaneY();
+    bool usePlane = (planeY != M_INFINITY);
+#ifdef URHO3D_PHYSICS
+    bool usePhysics = physicsWorld_ && !usePlane;
+#else
+    bool usePhysics = false;
+#endif
+    unsigned budget = effect_->GetCollisionBudget();
+    float bounce = effect_->GetCollisionBounce();
+    float friction = effect_->GetCollisionFriction();
+    unsigned collisionMask = effect_->GetCollisionMask();
+    Material* decalMaterial = effect_->GetCollisionDecalMaterial();
+
+    decalsThisFrame_ = 0;
+    raycastsThisFrame_ = 0;
+
+    for (i32 i = 0; i < particles_.Size(); ++i)
+    {
+        Particle& particle = particles_[i];
+        Billboard& billboard = billboards_[i];
+
+        if (!billboard.enabled_ || particle.collided_)
+            continue;
+
+        // Skip near-zero velocity particles
+        float speedSq = particle.velocity_.LengthSquared();
+        if (speedSq < 0.0001f)
+            continue;
+
+        Vector3 hitPosition;
+        Vector3 hitNormal;
+        Node* hitNode = nullptr;
+        bool hit = false;
+
+        if (usePlane)
+        {
+            // Y-plane collision: check if particle crossed the plane this frame
+            float oldY = billboard.position_.y_ - lastTimeStep_ * particle.velocity_.y_;
+            float newY = billboard.position_.y_;
+
+            if ((oldY > planeY && newY <= planeY) || (oldY < planeY && newY >= planeY))
+            {
+                // Interpolate hit position
+                float t = (oldY != newY) ? (planeY - oldY) / (newY - oldY) : 0.0f;
+                hitPosition = billboard.position_ - lastTimeStep_ * particle.velocity_ * (1.0f - t) +
+                              lastTimeStep_ * particle.velocity_ * t;
+                // Simpler: just snap to plane Y
+                hitPosition = billboard.position_;
+                hitPosition.y_ = planeY;
+                hitNormal = Vector3::UP;
+                hit = true;
+            }
+        }
+#ifdef URHO3D_PHYSICS
+        else if (usePhysics && raycastsThisFrame_ < budget)
+        {
+            // Physics raycast along velocity
+            float speed = Sqrt(speedSq);
+            float distance = speed * lastTimeStep_;
+            if (distance > 0.001f)
+            {
+                Ray ray(billboard.position_ - particle.velocity_ * lastTimeStep_, particle.velocity_ / speed);
+                PhysicsRaycastResult result;
+                physicsWorld_->RaycastSingle(result, ray, distance, collisionMask);
+                ++raycastsThisFrame_;
+
+                if (result.body_)
+                {
+                    hitPosition = result.position_;
+                    hitNormal = result.normal_;
+                    hitNode = result.body_->GetNode();
+                    hit = true;
+                }
+            }
+        }
+#endif
+
+        if (hit)
+        {
+            switch (mode)
+            {
+            case PCOLLISION_KILL:
+                billboard.enabled_ = false;
+                break;
+
+            case PCOLLISION_BOUNCE:
+                {
+                    // Reflect velocity around hit normal
+                    Vector3 vel = particle.velocity_;
+                    Vector3 normalComponent = hitNormal * vel.DotProduct(hitNormal);
+                    Vector3 tangentComponent = vel - normalComponent;
+                    particle.velocity_ = -normalComponent * bounce + tangentComponent * (1.0f - friction);
+                    billboard.position_ = hitPosition + hitNormal * 0.01f;
+                }
+                break;
+
+            case PCOLLISION_STICK:
+                particle.velocity_ = Vector3::ZERO;
+                particle.collided_ = true;
+                billboard.position_ = hitPosition;
+                break;
+
+            default:
+                break;
+            }
+
+            // Spawn decal at hit point
+            if (decalMaterial)
+                SpawnCollisionDecal(hitPosition, hitNormal, hitNode);
+        }
+    }
+}
+
+void ParticleEmitter::SpawnCollisionDecal(const Vector3& position, const Vector3& normal, Node* hitNode)
+{
+    if (!effect_)
+        return;
+
+    unsigned maxPerFrame = effect_->GetCollisionDecalMaxPerFrame();
+    if (decalsThisFrame_ >= maxPerFrame)
+        return;
+
+    // For Y-plane collisions, hitNode may be null — use scene root
+    Node* targetNode = hitNode ? hitNode : (node_ ? node_->GetScene() : nullptr);
+    if (!targetNode)
+        return;
+
+    // Get or create DecalSet on target node
+    DecalSet* decalSet = targetNode->GetComponent<DecalSet>();
+    if (!decalSet)
+    {
+        decalSet = targetNode->CreateComponent<DecalSet>();
+        decalSet->SetMaterial(effect_->GetCollisionDecalMaterial());
+        decalSet->SetMaxVertices(4096);
+    }
+
+    float size = effect_->GetCollisionDecalSize();
+    float lifetime = effect_->GetCollisionDecalLifetime();
+
+    // Calculate rotation from normal
+    Quaternion rotation;
+    rotation.FromRotationTo(Vector3::UP, normal);
+
+    // Find a drawable to decal onto — try StaticModel first
+    Drawable* target = targetNode->GetComponent<StaticModel>();
+
+    if (target)
+    {
+        decalSet->AddDecal(target, position, rotation, size, 1.0f, 1.0f,
+            Vector2::ZERO, Vector2::ONE, lifetime);
+    }
+
+    ++decalsThisFrame_;
 }
 
 void ParticleEmitter::HandleScenePostUpdate(StringHash eventType, VariantMap& eventData)

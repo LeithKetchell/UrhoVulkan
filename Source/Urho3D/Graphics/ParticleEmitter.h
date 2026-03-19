@@ -9,7 +9,11 @@
 namespace Urho3D
 {
 
+class DecalSet;
 class ParticleEffect;
+#ifdef URHO3D_PHYSICS
+class PhysicsWorld;
+#endif
 
 /// One particle in the particle system.
 struct Particle
@@ -30,6 +34,8 @@ struct Particle
     i32 colorIndex_;
     /// Current texture animation index.
     i32 texIndex_;
+    /// Whether particle has collided and is stuck.
+    bool collided_;
 };
 
 /// %Particle emitter component.
@@ -116,6 +122,10 @@ protected:
     i32 GetFreeParticle() const;
     /// Return whether has active particles.
     bool CheckActiveParticles() const;
+    /// Process particle collisions (Y-plane and/or physics raycast).
+    void ProcessCollisions();
+    /// Spawn a decal at a collision hit point.
+    void SpawnCollisionDecal(const Vector3& position, const Vector3& normal, Node* hitNode);
 
 private:
     /// Handle scene post-update event.
@@ -147,6 +157,14 @@ private:
     bool sendFinishedEvent_;
     /// Automatic removal mode.
     AutoRemoveMode autoRemove_;
+#ifdef URHO3D_PHYSICS
+    /// Cached physics world for collision raycasts.
+    WeakPtr<PhysicsWorld> physicsWorld_;
+#endif
+    /// Number of decals spawned this frame.
+    unsigned decalsThisFrame_;
+    /// Number of raycasts performed this frame.
+    unsigned raycastsThisFrame_;
 };
 
 }
