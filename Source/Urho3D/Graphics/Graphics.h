@@ -98,6 +98,8 @@ struct ScreenModeParams
     bool fullscreen_{};
     /// Whether to hide window borders. Window is always borderless in fullscreen.
     bool borderless_{};
+    /// Whether to span across all monitors (borderless fullscreen spanning all displays).
+    bool spanned_{};
     /// Whether the window is resizable.
     bool resizable_{};
     /// Whether the high DPI is enabled.
@@ -119,6 +121,7 @@ struct ScreenModeParams
     {
         return fullscreen_ == rhs.fullscreen_
             && borderless_ == rhs.borderless_
+            && spanned_ == rhs.spanned_
             && resizable_ == rhs.resizable_
             && highDPI_ == rhs.highDPI_
             // && vsync_ == rhs.vsync_
@@ -432,6 +435,12 @@ public:
     /// Return whether window is borderless.
     /// @property
     bool GetBorderless() const { return screenParams_.borderless_; }
+
+    /// Return whether window is spanned across all monitors.
+    bool GetSpanned() const { return screenParams_.spanned_; }
+
+    /// Get the bounding rectangle spanning all monitors.
+    static IntRect GetSpannedBounds();
 
     /// Return whether window is resizable.
     /// @property

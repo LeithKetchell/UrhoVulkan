@@ -8,6 +8,8 @@ varying vec3 vTexCoord;
 uniform float cNightFactor;
 uniform float cCloudAngle;
 uniform float cStarAngle;
+uniform float cSeasonBlend;       // 0..1 blend between current and next season cubemap
+uniform samplerCube sSpecCubeMap; // next season cubemap (on TU_SPECULAR)
 
 // Rodrigues rotation around an arbitrary axis
 vec3 RotateAroundAxis(vec3 dir, vec3 axis, float angle)
@@ -55,7 +57,11 @@ void PS()
 {
     // Rotate day sky lookup for cloud drift
     vec3 cloudDir = RotateClouds(vTexCoord);
-    vec4 daySky = cMatDiffColor * textureCube(sDiffCubeMap, cloudDir);
+
+    // Sample current and next season cubemaps, blend between them
+    vec4 currentSeason = textureCube(sDiffCubeMap, cloudDir);
+    vec4 nextSeason = textureCube(sSpecCubeMap, cloudDir);
+    vec4 daySky = cMatDiffColor * mix(currentSeason, nextSeason, cSeasonBlend);
 
     // Rotate star field around celestial pole
     vec3 starDir = RotateStars(vTexCoord);

@@ -22,10 +22,20 @@ string RemoveRefs(xml_node node)
 
     for (xml_node part : node.children())
     {
+        string partValue;
         if (part.name() == string("ref"))
-            result += part.child_value();
+            partValue = part.child_value();
         else
-            result += part.value();
+            partValue = part.value();
+
+        // Insert space between adjacent alphanumeric tokens
+        // (prevents "constint" when Doxygen XML lacks whitespace between text and <ref> nodes)
+        if (!result.empty() && !partValue.empty()
+            && isalnum(static_cast<unsigned char>(result.back()))
+            && isalnum(static_cast<unsigned char>(partValue.front())))
+            result += ' ';
+
+        result += partValue;
     }
 
     return result;

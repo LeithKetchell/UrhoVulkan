@@ -406,17 +406,6 @@ void AnimatedModel::SetModel(Model* model, bool createBones, bool allowOversized
         skinMatrices_.Resize(skeleton_.GetNumBones());
         SetGeometryBoneMappings();
 
-        // DIAGNOSTIC: Log geometry and bone mapping info
-        URHO3D_LOGINFO("[SKINNED_MODEL] numGeometries=" + String(batches_.Size()) +
-                       " numBones=" + String(skeleton_.GetNumBones()) +
-                       " numBoneMappings=" + String(geometryBoneMappings_.Size()));
-        for (unsigned d = 0; d < geometryBoneMappings_.Size(); ++d)
-        {
-            URHO3D_LOGINFO("[SKINNED_MODEL] geom " + String(d) +
-                           " boneMappingSize=" + String(geometryBoneMappings_[d].Size()) +
-                           " skinMatricesSize=" + String(geometrySkinMatrices_.Size() > d ? geometrySkinMatrices_[d].Size() : 0));
-        }
-
         // Enable skinning in batches
         for (unsigned i = 0; i < batches_.Size(); ++i)
         {

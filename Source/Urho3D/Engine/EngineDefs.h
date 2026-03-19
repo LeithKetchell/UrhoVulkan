@@ -48,6 +48,7 @@ static const String EP_TEXTURE_QUALITY = "TextureQuality";
 static const String EP_TIME_OUT = "TimeOut";
 static const String EP_TOUCH_EMULATION = "TouchEmulation";
 static const String EP_TRIPLE_BUFFER = "TripleBuffer";
+static const String EP_SPANNED = "Spanned";
 static const String EP_VSYNC = "VSync";
 static const String EP_WINDOW_HEIGHT = "WindowHeight";
 static const String EP_WINDOW_ICON = "WindowIcon";

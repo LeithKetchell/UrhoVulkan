@@ -61,6 +61,8 @@ if (URHO3D_TOOLS)
     add_subdirectory (MeshGenerator)
     add_subdirectory (RampGenerator)
     add_subdirectory (SpritePacker)
+    add_subdirectory (ImposterBaker)
+    add_subdirectory (ModelViewer)
     add_subdirectory (Tests)
     if (URHO3D_ANGELSCRIPT)
         add_subdirectory (ScriptCompiler)
@@ -72,4 +74,9 @@ endif ()
 
 if (NOT CMAKE_CROSSCOMPILING AND URHO3D_GENERATEBINDINGS)
     add_subdirectory (BindingGenerator)
+endif ()
+
+# AuthServer — private central authority for TerrainNode network
+if (URHO3D_NETWORK AND URHO3D_DATABASE_SQLITE)
+    add_subdirectory (AuthServer)
 endif ()

@@ -92,6 +92,18 @@ String::String(float value)
     *this = tempBuffer;
 }
 
+String::String(double value, i32 precision)
+    : String()
+{
+    char tempBuffer[CONVERSION_BUFFER_LENGTH];
+    char fmt[8];
+    if (precision < 0) precision = 0;
+    if (precision > 15) precision = 15;
+    sprintf(fmt, "%%.%df", precision);
+    sprintf(tempBuffer, fmt, value);
+    *this = tempBuffer;
+}
+
 String::String(double value)
     : String()
 {
@@ -1142,8 +1154,37 @@ String& String::AppendWithFormatArgs(const char* formatString, va_list args)
         if (pos >= length)
             return *this;
 
-        char format = formatString[pos + 1];
-        pos += 2;
+        // Skip past flags (-+0 space #), width (digits or *), precision (.digits or .*),
+        // and length modifiers (h hh l ll z t) to find the conversion character
+        int fmtPos = pos + 1;
+        // Skip flags
+        while (fmtPos < length && (formatString[fmtPos] == '-' || formatString[fmtPos] == '+'
+            || formatString[fmtPos] == '0' || formatString[fmtPos] == ' ' || formatString[fmtPos] == '#'))
+            fmtPos++;
+        // Skip width
+        while (fmtPos < length && formatString[fmtPos] >= '0' && formatString[fmtPos] <= '9')
+            fmtPos++;
+        if (fmtPos < length && formatString[fmtPos] == '*')
+            fmtPos++;
+        // Skip precision
+        if (fmtPos < length && formatString[fmtPos] == '.')
+        {
+            fmtPos++;
+            while (fmtPos < length && formatString[fmtPos] >= '0' && formatString[fmtPos] <= '9')
+                fmtPos++;
+            if (fmtPos < length && formatString[fmtPos] == '*')
+                fmtPos++;
+        }
+        // Skip length modifiers (h, hh, l, ll, z, t)
+        if (fmtPos < length && (formatString[fmtPos] == 'h' || formatString[fmtPos] == 'l'
+            || formatString[fmtPos] == 'z' || formatString[fmtPos] == 't'))
+        {
+            fmtPos++;
+            if (fmtPos < length && (formatString[fmtPos] == 'h' || formatString[fmtPos] == 'l'))
+                fmtPos++;
+        }
+        char format = (fmtPos < length) ? formatString[fmtPos] : '\0';
+        pos = fmtPos + 1;
         lastPos = pos;
 
         switch (format)

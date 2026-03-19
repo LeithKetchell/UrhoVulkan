@@ -1,0 +1,2 @@
+Models/Animals/Materials/Fur.xml
+Models/Animals/Materials/Fur.001.xml

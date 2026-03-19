@@ -18597,51 +18597,51 @@ template <class T> void RegisterMembers_OffMeshConnection(asIScriptEngine* engin
 
 #ifdef URHO3D_NETWORK
 
-// class NetworkPriority | File: ../Network/NetworkPriority.h
-template <class T> void RegisterMembers_NetworkPriority(asIScriptEngine* engine, const char* className)
+// class NetworkIdentity | File: ../Network/NetworkIdentity.h
+template <class T> void RegisterMembers_NetworkIdentity(asIScriptEngine* engine, const char* className)
 {
     RegisterMembers_Component<T>(engine, className);
 
-    // bool NetworkPriority::CheckUpdate(float distance, float& accumulator)
+    // bool NetworkIdentity::CheckUpdate(float distance, float& accumulator)
     engine->RegisterObjectMethod(className, "bool CheckUpdate(float, float&)", AS_METHODPR(T, CheckUpdate, (float, float&), bool), AS_CALL_THISCALL);
 
     // virtual void Component::DrawDebugGeometry(DebugRenderer* debug, bool depthTest)
     engine->RegisterObjectMethod(className, "void DrawDebugGeometry(DebugRenderer@+, bool)", AS_METHODPR(T, DrawDebugGeometry, (DebugRenderer*, bool), void), AS_CALL_THISCALL);
 
-    // bool NetworkPriority::GetAlwaysUpdateOwner() const
+    // bool NetworkIdentity::GetAlwaysUpdateOwner() const
     engine->RegisterObjectMethod(className, "bool GetAlwaysUpdateOwner() const", AS_METHODPR(T, GetAlwaysUpdateOwner, () const, bool), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "bool get_alwaysUpdateOwner() const", AS_METHODPR(T, GetAlwaysUpdateOwner, () const, bool), AS_CALL_THISCALL);
 
-    // float NetworkPriority::GetBasePriority() const
+    // float NetworkIdentity::GetBasePriority() const
     engine->RegisterObjectMethod(className, "float GetBasePriority() const", AS_METHODPR(T, GetBasePriority, () const, float), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "float get_basePriority() const", AS_METHODPR(T, GetBasePriority, () const, float), AS_CALL_THISCALL);
 
-    // float NetworkPriority::GetDistanceFactor() const
+    // float NetworkIdentity::GetDistanceFactor() const
     engine->RegisterObjectMethod(className, "float GetDistanceFactor() const", AS_METHODPR(T, GetDistanceFactor, () const, float), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "float get_distanceFactor() const", AS_METHODPR(T, GetDistanceFactor, () const, float), AS_CALL_THISCALL);
 
-    // float NetworkPriority::GetMinPriority() const
+    // float NetworkIdentity::GetMinPriority() const
     engine->RegisterObjectMethod(className, "float GetMinPriority() const", AS_METHODPR(T, GetMinPriority, () const, float), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "float get_minPriority() const", AS_METHODPR(T, GetMinPriority, () const, float), AS_CALL_THISCALL);
 
-    // void NetworkPriority::SetAlwaysUpdateOwner(bool enable)
+    // void NetworkIdentity::SetAlwaysUpdateOwner(bool enable)
     engine->RegisterObjectMethod(className, "void SetAlwaysUpdateOwner(bool)", AS_METHODPR(T, SetAlwaysUpdateOwner, (bool), void), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "void set_alwaysUpdateOwner(bool)", AS_METHODPR(T, SetAlwaysUpdateOwner, (bool), void), AS_CALL_THISCALL);
 
-    // void NetworkPriority::SetBasePriority(float priority)
+    // void NetworkIdentity::SetBasePriority(float priority)
     engine->RegisterObjectMethod(className, "void SetBasePriority(float)", AS_METHODPR(T, SetBasePriority, (float), void), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "void set_basePriority(float)", AS_METHODPR(T, SetBasePriority, (float), void), AS_CALL_THISCALL);
 
-    // void NetworkPriority::SetDistanceFactor(float factor)
+    // void NetworkIdentity::SetDistanceFactor(float factor)
     engine->RegisterObjectMethod(className, "void SetDistanceFactor(float)", AS_METHODPR(T, SetDistanceFactor, (float), void), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "void set_distanceFactor(float)", AS_METHODPR(T, SetDistanceFactor, (float), void), AS_CALL_THISCALL);
 
-    // void NetworkPriority::SetMinPriority(float priority)
+    // void NetworkIdentity::SetMinPriority(float priority)
     engine->RegisterObjectMethod(className, "void SetMinPriority(float)", AS_METHODPR(T, SetMinPriority, (float), void), AS_CALL_THISCALL);
     engine->RegisterObjectMethod(className, "void set_minPriority(float)", AS_METHODPR(T, SetMinPriority, (float), void), AS_CALL_THISCALL);
 
-    #ifdef REGISTER_MEMBERS_MANUAL_PART_NetworkPriority
-        REGISTER_MEMBERS_MANUAL_PART_NetworkPriority();
+    #ifdef REGISTER_MEMBERS_MANUAL_PART_NetworkIdentity
+        REGISTER_MEMBERS_MANUAL_PART_NetworkIdentity();
     #endif
 }
 

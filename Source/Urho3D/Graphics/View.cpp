@@ -1698,6 +1698,28 @@ void View::ExecuteRenderPathCommands()
                 break;
 
             case CMD_FORWARDLIGHTS:
+                // [DIAG] ForwardLights batch logging — uncomment to debug lit batch counts
+                // {
+                //     static int lightDiagCount = 0;
+                //     if (lightDiagCount < 10 && actualView->geometries_.Size() > 10)
+                //     {
+                //         unsigned numLightQueues = actualView->lightQueues_.Size();
+                //         unsigned totalLitBase = 0, totalLitAdd = 0, totalShadowBatches = 0;
+                //         for (unsigned lq = 0; lq < numLightQueues; lq++)
+                //         {
+                //             totalLitBase += actualView->lightQueues_[lq].litBaseBatches_.sortedBatches_.Size()
+                //                           + actualView->lightQueues_[lq].litBaseBatches_.batchGroups_.Size();
+                //             totalLitAdd += actualView->lightQueues_[lq].litBatches_.sortedBatches_.Size()
+                //                          + actualView->lightQueues_[lq].litBatches_.batchGroups_.Size();
+                //             for (unsigned sm = 0; sm < actualView->lightQueues_[lq].shadowSplits_.Size(); sm++)
+                //                 totalShadowBatches += actualView->lightQueues_[lq].shadowSplits_[sm].shadowBatches_.sortedBatches_.Size()
+                //                                     + actualView->lightQueues_[lq].shadowSplits_[sm].shadowBatches_.batchGroups_.Size();
+                //         }
+                //         URHO3D_LOGINFOF("[VIEW DIAG] ForwardLights: %d lightQueues, litBase=%d litAdd=%d shadowBatches=%d",
+                //             numLightQueues, totalLitBase, totalLitAdd, totalShadowBatches);
+                //         lightDiagCount++;
+                //     }
+                // }
                 // Render shadow maps + opaque objects' additive lighting
                 if (!actualView->lightQueues_.Empty())
                 {

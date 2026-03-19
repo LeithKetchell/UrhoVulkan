@@ -68,6 +68,7 @@ endif ()
 if (URHO3D_NETWORK)
     add_subdirectory (ThirdParty/Civetweb)
     add_subdirectory (ThirdParty/SLikeNet)
+    add_subdirectory (ThirdParty/libsodium)
 endif ()
 
 if (URHO3D_DATABASE_ODBC)

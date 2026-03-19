@@ -12,9 +12,12 @@
 #include "../Network/Connection.h"
 #include "../Network/Network.h"
 #include "../Network/NetworkEvents.h"
-#include "../Network/NetworkPriority.h"
+#include "../Network/NetworkIdentity.h"
 #include "../Network/Protocol.h"
+#include "../Network/SodiumCipher.h"
 #include "../Resource/ResourceCache.h"
+
+#include <libsodium/sodium.h>
 #include "../Scene/Scene.h"
 #include "../Scene/SceneEvents.h"
 #include "../Scene/SmoothedTransform.h"
@@ -59,7 +62,9 @@ Connection::Connection(Context* context, bool isClient, const SLNet::AddressOrGU
     sceneLoaded_(false),
     logStatistics_(false),
     address_(nullptr),
-    packedMessageLimit_(1024)
+    packedMessageLimit_(1024),
+    encryptionReady_(false),
+    pakeAuthenticated_(false)
 {
     sceneState_.connection_ = this;
     port_ = address.systemAddress.GetPort();
@@ -373,8 +378,29 @@ void Connection::SendBuffer(PacketType type)
         reliability = PacketReliability::RELIABLE;
 
     if (peer_) {
-        peer_->Send((const char *) buffer.GetData(), (int) buffer.GetSize(), HIGH_PRIORITY, reliability, (char) 0,
-                    *address_, false);
+        if (encryptionReady_ && cipher_ && cipher_->IsReady())
+        {
+            // Encrypt everything after the SLikeNet routing byte (ID_USER_PACKET_ENUM)
+            const unsigned char* payload = reinterpret_cast<const unsigned char*>(buffer.GetData() + 1);
+            unsigned payloadSize = buffer.GetSize() - 1;
+            Vector<unsigned char> encrypted;
+            if (cipher_->Encrypt(payload, payloadSize, encrypted))
+            {
+                // Reassemble: routing byte + ciphertext
+                VectorBuffer packet;
+                packet.WriteU8((unsigned char)buffer.GetData()[0]);  // ID_USER_PACKET_ENUM
+                packet.Write(encrypted.Buffer(), encrypted.Size());
+                peer_->Send((const char*)packet.GetData(), (int)packet.GetSize(), HIGH_PRIORITY, reliability, (char)0,
+                            *address_, false);
+            }
+            else
+                URHO3D_LOGERROR("Connection: Encryption failed, dropping packet");
+        }
+        else
+        {
+            peer_->Send((const char *) buffer.GetData(), (int) buffer.GetSize(), HIGH_PRIORITY, reliability, (char) 0,
+                        *address_, false);
+        }
         tempPacketCounter_.y_++;
     }
 
@@ -490,6 +516,15 @@ bool Connection::ProcessMessage(int msgID, MemoryBuffer& buffer)
             case MSG_PACKAGEINFO:
                 ProcessPackageInfo(msgID, msg);
                 break;
+
+            case MSG_KEY_EXCHANGE:
+                ProcessKeyExchange(msg);
+                break;
+
+            case MSG_KEY_EXCHANGE_REPLY:
+                ProcessKeyExchangeReply(msg);
+                break;
+
             default:
                 ProcessUnknownMessage(msgID, msg);
                 break;
@@ -1165,6 +1200,12 @@ void Connection::SetPacketSizeLimit(int limit)
     packedMessageLimit_ = limit;
 }
 
+void Connection::SetCipher(Cipher* cipher)
+{
+    cipher_ = cipher;
+    encryptionReady_ = cipher && cipher->IsReady();
+}
+
 void Connection::HandleAsyncLoadFinished(StringHash eventType, VariantMap& eventData)
 {
     sceneLoaded_ = true;
@@ -1289,7 +1330,7 @@ void Connection::ProcessExistingNode(Node* node, NodeReplicationState& nodeState
 
     // Check from the interest management component, if exists, whether should update
     /// \todo Searching for the component is a potential CPU hotspot. It should be cached
-    auto* priority = node->GetComponent<NetworkPriority>();
+    auto* priority = node->GetComponent<NetworkIdentity>();
     if (priority && (!priority->GetAlwaysUpdateOwner() || node->GetOwner() != this))
     {
         float distance = (node->GetWorldPosition() - position_).Length();
@@ -1622,6 +1663,137 @@ void Connection::ProcessPackageInfo(int msgID, MemoryBuffer& msg)
     }
 
     RequestNeededPackages(1, msg);
+}
+
+void Connection::ProcessKeyExchange(MemoryBuffer& msg)
+{
+    // Server receives client's username (may be empty) + public key
+    if (!isClient_)
+    {
+        URHO3D_LOGWARNING("Connection: Received MSG_KEY_EXCHANGE on client side — ignoring");
+        return;
+    }
+
+    // Read username (empty = unauthenticated DH, non-empty = PAKE)
+    String username = msg.ReadString();
+
+    unsigned keySize = msg.GetSize() - msg.GetPosition();
+    if (keySize < 32)
+    {
+        URHO3D_LOGERROR("Connection: MSG_KEY_EXCHANGE public key too short (" + String(keySize) + " bytes)");
+        return;
+    }
+
+    const unsigned char* clientPubKey = reinterpret_cast<const unsigned char*>(msg.GetData() + msg.GetPosition());
+
+    // Generate server keypair and derive session keys
+    SharedPtr<SodiumCipher> cipher(new SodiumCipher());
+    if (!cipher->GenerateKeyPair())
+    {
+        URHO3D_LOGERROR("Connection: Server key pair generation failed");
+        return;
+    }
+
+    if (!cipher->DeriveSessionKeys(clientPubKey, keySize, true))
+    {
+        URHO3D_LOGERROR("Connection: Server session key derivation failed");
+        return;
+    }
+
+    // PAKE: if username is present, mix password hash into session keys
+    if (!username.Empty())
+    {
+        pakeUsername_ = username;
+
+        // Fire event to let the app provide the password hash
+        using namespace KeyExchangeAuth;
+        VariantMap& authData = GetEventDataMap();
+        authData[P_CONNECTION] = this;
+        authData[P_USERNAME] = username;
+        authData[P_FOUND] = false;
+        // App fills P_PASSWORDHASH buffer
+        SendEvent(E_KEYEXCHANGEAUTH, authData);
+
+        const auto& hashBuf = authData[P_PASSWORDHASH].GetBuffer();
+        bool found = authData[P_FOUND].GetBool();
+
+        if (found && hashBuf.Size() >= 32)
+        {
+            cipher->MixPasswordIntoKeys(reinterpret_cast<const unsigned char*>(hashBuf.Buffer()), hashBuf.Size());
+            URHO3D_LOGINFO("Connection: PAKE — password mixed for user '" + username + "'");
+        }
+        else
+        {
+            // Unknown user: mix random hash to prevent username enumeration
+            unsigned char randomHash[32];
+            randombytes_buf(randomHash, 32);
+            cipher->MixPasswordIntoKeys(randomHash, 32);
+            URHO3D_LOGINFO("Connection: PAKE — unknown user '" + username + "', mixed random hash");
+        }
+    }
+
+    cipher_ = cipher;
+
+    // Send server public key back BEFORE enabling encryption
+    // (client needs to receive this plaintext to derive its own keys)
+    const auto& serverPubKey = cipher->GetPublicKey();
+    VectorBuffer reply;
+    reply.Write(serverPubKey.Buffer(), serverPubKey.Size());
+    SendMessage(MSG_KEY_EXCHANGE_REPLY, true, true, reply);
+    SendAllBuffers();  // flush immediately so it goes out plaintext
+
+    // NOW enable encryption for all subsequent traffic
+    encryptionReady_ = true;
+    URHO3D_LOGINFO("Connection: Encryption established (server side) — " + String(cipher->GetName())
+        + (username.Empty() ? "" : " [PAKE]"));
+}
+
+void Connection::ProcessKeyExchangeReply(MemoryBuffer& msg)
+{
+    // Client receives server's public key
+    if (isClient_)
+    {
+        URHO3D_LOGWARNING("Connection: Received MSG_KEY_EXCHANGE_REPLY on server side — ignoring");
+        return;
+    }
+
+    if (!cipher_)
+    {
+        URHO3D_LOGERROR("Connection: Received key exchange reply but no cipher set");
+        return;
+    }
+
+    unsigned keySize = msg.GetSize() - msg.GetPosition();
+    if (keySize < 32)
+    {
+        URHO3D_LOGERROR("Connection: MSG_KEY_EXCHANGE_REPLY public key too short (" + String(keySize) + " bytes)");
+        return;
+    }
+
+    const unsigned char* serverPubKey = reinterpret_cast<const unsigned char*>(msg.GetData() + msg.GetPosition());
+
+    if (!cipher_->DeriveSessionKeys(serverPubKey, keySize, false))
+    {
+        URHO3D_LOGERROR("Connection: Client session key derivation failed");
+        return;
+    }
+
+    // PAKE: if credentials were set, mix password hash into session keys
+    auto* network = GetSubsystem<Network>();
+    if (network && network->HasCredentials())
+    {
+        const auto& pwHash = network->GetPasswordHash();
+        cipher_->MixPasswordIntoKeys(pwHash.Buffer(), pwHash.Size());
+        URHO3D_LOGINFO("Connection: PAKE — password mixed into session keys (client side)");
+    }
+
+    encryptionReady_ = true;
+    URHO3D_LOGINFO("Connection: Encryption established (client side) — " + String(cipher_->GetName())
+        + (network && network->HasCredentials() ? " [PAKE]" : ""));
+
+    // Now send the deferred identity
+    if (network)
+        network->SendIdentityNow();
 }
 
 void Connection::ProcessUnknownMessage(int msgID, MemoryBuffer& msg)

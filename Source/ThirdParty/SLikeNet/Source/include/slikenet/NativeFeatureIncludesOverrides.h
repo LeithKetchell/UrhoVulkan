@@ -14,6 +14,8 @@
 #ifndef __NATIVE_FEATURE_INCLDUES_OVERRIDES_H
 #define __NATIVE_FEATURE_INCLDUES_OVERRIDES_H
 
+// LIBCAT_SECURITY requires cat/ crypto sources which are not in this distribution.
+// Use TwoWayAuthentication plugin instead (SHA-1 fallback, no cat dependency).
 //#define LIBCAT_SECURITY 1
 
 #endif

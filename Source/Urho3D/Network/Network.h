@@ -88,6 +88,44 @@ public:
     void SendPackageToClients(Scene* scene, PackageFile* package);
     /// Perform an HTTP request to the specified URL. Empty verb defaults to a GET request. Return a request object which can be used to read the response data.
     SharedPtr<HttpRequest> MakeHttpRequest(const String& url, const String& verb = String::EMPTY, const Vector<String>& headers = Vector<String>(), const String& postData = String::EMPTY);
+    /// Send the deferred identity message (called after key exchange completes).
+    void SendIdentityNow();
+    /// Set PAKE credentials for the next connection. Hashes password with BLAKE2b.
+    void SetCredentials(const String& username, const String& password);
+    /// Return whether PAKE credentials have been set.
+    bool HasCredentials() const { return !pakeUsername_.Empty(); }
+    /// Return the PAKE username.
+    const String& GetPakeUsername() const { return pakeUsername_; }
+    /// Return the 32-byte BLAKE2b password hash.
+    const Vector<unsigned char>& GetPasswordHash() const { return pakePasswordHash_; }
+    /// Clear stored PAKE credentials.
+    void ClearCredentials();
+    /// Set the expected peer token for validating incoming peer connections.
+    void SetExpectedPeerToken(const Vector<unsigned char>& token);
+    /// Return the expected peer token.
+    const Vector<unsigned char>& GetExpectedPeerToken() const { return expectedPeerToken_; }
+    /// Set the pending peer GUID (GUID of peer we're expecting a connection from).
+    void SetPendingPeerGuid(const String& guid) { pendingPeerGuid_ = guid; }
+    /// Return the pending peer GUID.
+    const String& GetPendingPeerGuid() const { return pendingPeerGuid_; }
+    /// Set pending peer patch coordinates (for context on which patch triggered the introduction).
+    void SetPendingPeerPatch(int x, int z) { pendingPeerPatchX_ = x; pendingPeerPatchZ_ = z; }
+    /// Return pending peer patch X.
+    int GetPendingPeerPatchX() const { return pendingPeerPatchX_; }
+    /// Return pending peer patch Z.
+    int GetPendingPeerPatchZ() const { return pendingPeerPatchZ_; }
+    /// Return whether a peer introduction is pending.
+    bool IsPeerPending() const { return !pendingPeerGuid_.Empty(); }
+    /// Clear pending peer state.
+    void ClearPendingPeer();
+    /// Add a peer connection.
+    void AddPeerConnection(const String& guid, Connection* connection);
+    /// Remove a peer connection by GUID.
+    void RemovePeerConnection(const String& guid);
+    /// Return a peer connection by GUID, or null.
+    Connection* GetPeerConnection(const String& guid) const;
+    /// Return all peer connections.
+    const HashMap<String, SharedPtr<Connection>>& GetPeerConnections() const { return peerConnections_; }
     /// Ban specific IP addresses.
     void BanAddress(const String& address);
     /// Return network update FPS.
@@ -183,6 +221,23 @@ private:
     SLNet::RakNetGUID* remoteGUID_;
     /// Local server GUID.
     String guid_;
+    /// Pending identity to send after key exchange completes.
+    VariantMap pendingIdentity_;
+    /// Whether identity send is deferred pending key exchange.
+    bool identityPending_;
+    /// PAKE username for the next connection.
+    String pakeUsername_;
+    /// PAKE 32-byte BLAKE2b password hash.
+    Vector<unsigned char> pakePasswordHash_;
+    /// Peer connections (GUID → Connection) for NAT punchthrough peers.
+    HashMap<String, SharedPtr<Connection>> peerConnections_;
+    /// Token expected from an incoming peer connection.
+    Vector<unsigned char> expectedPeerToken_;
+    /// GUID of peer we're trying to reach via NAT punchthrough.
+    String pendingPeerGuid_;
+    /// Patch coordinates associated with pending peer introduction.
+    int pendingPeerPatchX_{0};
+    int pendingPeerPatchZ_{0};
 };
 
 /// Register Network library objects.

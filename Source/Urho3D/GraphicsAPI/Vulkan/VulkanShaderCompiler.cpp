@@ -271,6 +271,7 @@ static int GetSamplerBinding(const String& name)
     if (name == "sDiffCubeMap")         return 101;
     if (name == "sNormalMap")           return 102;
     if (name == "sSpecMap")             return 103;
+    if (name == "sSpecCubeMap")         return 103;
     if (name == "sEmissiveMap")         return 104;
     if (name == "sEnvMap")              return 105;
     if (name == "sEnvCubeMap")          return 106;

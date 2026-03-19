@@ -4712,7 +4712,10 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
             attr.binding = 0;
 
             // Map vertex element semantic to shader input location
-            // Shader locations: 0=iPos, 1=iNormal, 2=iColor, 3=iTexCoord, 4=iTexCoord1, 5=iTangent, etc.
+            // Must match Transform.glsl attribute declaration order:
+            // 0=iPos, 1=iNormal, 2=iColor, 3=iTexCoord, 4=iTexCoord1, 5=iTangent,
+            // 6=iBlendWeights, 7=iBlendIndices, 8=iBinormal, 13=iObjectIndex
+            // [VTXLOC] diagnostic removed — was per-pipeline-creation log spam
             switch (element.semantic_)
             {
                 case SEM_POSITION:
@@ -4722,7 +4725,7 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
                     attr.location = 1;
                     break;
                 case SEM_COLOR:
-                    attr.location = 2;
+                    attr.location = (element.index_ == 0) ? 2 : 9;  // iColor=2, extra color channels to unused location 9
                     break;
                 case SEM_TEXCOORD:
                     attr.location = 3 + element.index_;  // iTexCoord=3, iTexCoord1=4
@@ -4736,8 +4739,14 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
                 case SEM_BLENDINDICES:
                     attr.location = 7;
                     break;
+                case SEM_BINORMAL:
+                    attr.location = 8;
+                    break;
+                case SEM_OBJECTINDEX:
+                    attr.location = 13;
+                    break;
                 default:
-                    attr.location = i;  // Fallback to sequential
+                    attr.location = 14 + i;  // Safe fallback — high locations avoid conflicts
                     break;
             }
 
@@ -4864,6 +4873,25 @@ VkPipeline VulkanGraphicsImpl::GetOrCreateGraphicsPipeline(
                 dummy.format = standardLocations[i].format;
                 dummy.offset = 0;
                 attributeDescriptions.Push(dummy);
+            }
+        }
+    }
+
+    // Check for duplicate locations and log them
+    {
+        HashMap<unsigned, unsigned> locationCount;
+        for (unsigned i = 0; i < attributeDescriptions.Size(); ++i)
+            locationCount[attributeDescriptions[i].location]++;
+        for (auto it = locationCount.Begin(); it != locationCount.End(); ++it)
+        {
+            if (it->second_ > 1)
+            {
+                URHO3D_LOGDEBUGF("DUPLICATE vertex location %d (%d times). Full attribute list:", it->first_, it->second_);
+                for (unsigned i = 0; i < attributeDescriptions.Size(); ++i)
+                    URHO3D_LOGINFOF("  attr[%d]: binding=%d location=%d format=%d offset=%d",
+                        i, attributeDescriptions[i].binding, attributeDescriptions[i].location,
+                        attributeDescriptions[i].format, attributeDescriptions[i].offset);
+                break;
             }
         }
     }

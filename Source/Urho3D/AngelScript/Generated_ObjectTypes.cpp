@@ -987,8 +987,8 @@ void ASRegisterGeneratedObjectTypes(asIScriptEngine* engine)
 #endif
 
 #ifdef URHO3D_NETWORK
-    // class NetworkPriority | File: ../Network/NetworkPriority.h
-    engine->RegisterObjectType("NetworkPriority", 0, asOBJ_REF);
+    // class NetworkIdentity | File: ../Network/NetworkIdentity.h
+    engine->RegisterObjectType("NetworkIdentity", 0, asOBJ_REF);
 #endif
 
 #ifdef URHO3D_PHYSICS

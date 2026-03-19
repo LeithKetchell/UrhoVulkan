@@ -48,6 +48,38 @@ static const int MSG_PACKAGEINFO = 0x98;
 /// Packet that includes all the above messages
 static const int MSG_PACKED_MESSAGE = 0x99;
 
+/// Client->server: send client public key for key exchange.
+static const int MSG_KEY_EXCHANGE = 0x9A;
+/// Server->client: send server public key for key exchange.
+static const int MSG_KEY_EXCHANGE_REPLY = 0x9B;
+
+/// AuthServer->client: introduce a peer for NAT punchthrough (GUID + token + patch coords).
+static const int MSG_PEER_INTRODUCE = 0x9C;
+/// Client->AuthServer: peer connection established, reporting assigned role.
+static const int MSG_PEER_READY = 0x9D;
+/// Client->AuthServer: NAT punchthrough to peer failed.
+static const int MSG_PEER_CONNECT_FAILED = 0x9E;
+/// Client->AuthServer: peer connection lost.
+static const int MSG_PEER_DISCONNECTED = 0x9F;
+/// Subclient->subserver: relay an inner message to AuthServer.
+static const int MSG_RELAY_TO_AUTH = 0xA0;
+/// Subserver->subclient: relay an AuthServer response to subclient.
+static const int MSG_RELAY_FROM_AUTH = 0xA1;
+
+/// Client->server: terrain brush edit request (optimistic — client applies first).
+static const int MSG_EDIT_TERRAIN = 0xA2;
+/// Client->server: object create/delete/transform edit request.
+static const int MSG_EDIT_OBJECT = 0xA3;
+/// Server->client: edit rejected, client should rollback.
+static const int MSG_EDIT_REJECT = 0xA4;
+/// Server->client(s): validated edit broadcast to replay.
+static const int MSG_EDIT_BROADCAST = 0xA5;
+
+/// Server->client: full water heightmap sent on connect.
+static const int MSG_WATER_MAP = 0xB0;
+/// Client->server or server->client(s): incremental water edit (brush stroke).
+static const int MSG_WATER_EDIT = 0xB1;
+
 /// Used to define custom messages, usually of the form MSG_USER + x, where x is an integer value.
 static const int MSG_USER = 0x200;
 

@@ -26,6 +26,9 @@
 #include "../Scene/Scene.h"
 #include "../UI/CheckBox.h"
 #include "../UI/Cursor.h"
+#include "../UI/DockManager.h"
+#include "../UI/DockPanel.h"
+#include "../UI/DockSplit.h"
 #include "../UI/DropDownList.h"
 #include "../UI/FileSelector.h"
 #include "../UI/Font.h"
@@ -2236,6 +2239,9 @@ void RegisterUILibrary(Context* context)
     Text::RegisterObject(context);
     Text3D::RegisterObject(context);
     Window::RegisterObject(context);
+    DockSplit::RegisterObject(context);
+    DockPanel::RegisterObject(context);
+    DockManager::RegisterObject(context);
     View3D::RegisterObject(context);
     LineEdit::RegisterObject(context);
     Slider::RegisterObject(context);

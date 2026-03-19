@@ -6243,29 +6243,29 @@ static void Register_OffMeshConnection(asIScriptEngine* engine)
 
 #ifdef URHO3D_NETWORK
 
-// explicit NetworkPriority::NetworkPriority(Context* context)
-static NetworkPriority* NetworkPriority__NetworkPriority_Contextstar()
+// explicit NetworkIdentity::NetworkIdentity(Context* context)
+static NetworkIdentity* NetworkIdentity__NetworkIdentity_Contextstar()
 {
     Context* context = GetScriptContext();
-    return new NetworkPriority(context);
+    return new NetworkIdentity(context);
 }
 
-// class NetworkPriority | File: ../Network/NetworkPriority.h
-static void Register_NetworkPriority(asIScriptEngine* engine)
+// class NetworkIdentity | File: ../Network/NetworkIdentity.h
+static void Register_NetworkIdentity(asIScriptEngine* engine)
 {
-    // explicit NetworkPriority::NetworkPriority(Context* context)
-    engine->RegisterObjectBehaviour("NetworkPriority", asBEHAVE_FACTORY, "NetworkPriority@+ f()", AS_FUNCTION(NetworkPriority__NetworkPriority_Contextstar) , AS_CALL_CDECL);
+    // explicit NetworkIdentity::NetworkIdentity(Context* context)
+    engine->RegisterObjectBehaviour("NetworkIdentity", asBEHAVE_FACTORY, "NetworkIdentity@+ f()", AS_FUNCTION(NetworkIdentity__NetworkIdentity_Contextstar) , AS_CALL_CDECL);
 
-    RegisterSubclass<Component, NetworkPriority>(engine, "Component", "NetworkPriority");
-    RegisterSubclass<Animatable, NetworkPriority>(engine, "Animatable", "NetworkPriority");
-    RegisterSubclass<Serializable, NetworkPriority>(engine, "Serializable", "NetworkPriority");
-    RegisterSubclass<Object, NetworkPriority>(engine, "Object", "NetworkPriority");
-    RegisterSubclass<RefCounted, NetworkPriority>(engine, "RefCounted", "NetworkPriority");
+    RegisterSubclass<Component, NetworkIdentity>(engine, "Component", "NetworkIdentity");
+    RegisterSubclass<Animatable, NetworkIdentity>(engine, "Animatable", "NetworkIdentity");
+    RegisterSubclass<Serializable, NetworkIdentity>(engine, "Serializable", "NetworkIdentity");
+    RegisterSubclass<Object, NetworkIdentity>(engine, "Object", "NetworkIdentity");
+    RegisterSubclass<RefCounted, NetworkIdentity>(engine, "RefCounted", "NetworkIdentity");
 
-    RegisterMembers_NetworkPriority<NetworkPriority>(engine, "NetworkPriority");
+    RegisterMembers_NetworkIdentity<NetworkIdentity>(engine, "NetworkIdentity");
 
-    #ifdef REGISTER_CLASS_MANUAL_PART_NetworkPriority
-        REGISTER_CLASS_MANUAL_PART_NetworkPriority();
+    #ifdef REGISTER_CLASS_MANUAL_PART_NetworkIdentity
+        REGISTER_CLASS_MANUAL_PART_NetworkIdentity();
     #endif
 }
 
@@ -8250,7 +8250,7 @@ void ASRegisterGeneratedClasses(asIScriptEngine* engine)
 #endif
 
 #ifdef URHO3D_NETWORK
-    Register_NetworkPriority(engine);
+    Register_NetworkIdentity(engine);
 #endif
 
 #ifdef URHO3D_PHYSICS

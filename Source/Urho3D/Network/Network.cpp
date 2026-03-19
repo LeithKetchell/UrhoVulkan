@@ -15,9 +15,12 @@
 #include "../Network/HttpRequest.h"
 #include "../Network/Network.h"
 #include "../Network/NetworkEvents.h"
-#include "../Network/NetworkPriority.h"
+#include "../Network/NetworkIdentity.h"
 #include "../Network/Protocol.h"
+#include "../Network/SodiumCipher.h"
 #include "../Scene/Scene.h"
+
+#include <libsodium/sodium.h>
 
 #include <slikenet/MessageIdentifiers.h>
 #include <slikenet/NatPunchthroughClient.h>
@@ -184,7 +187,8 @@ Network::Network(Context* context) :
     isServer_(false),
     scene_(nullptr),
     natPunchServerAddress_(nullptr),
-    remoteGUID_(nullptr)
+    remoteGUID_(nullptr),
+    identityPending_(false)
 {
     rakPeer_ = SLNet::RakPeerInterface::GetInstance();
     rakPeerClient_ = SLNet::RakPeerInterface::GetInstance();
@@ -256,6 +260,7 @@ Network::~Network()
     serverConnection_.Reset();
 
     clientConnections_.Clear();
+    peerConnections_.Clear();
 
     delete natPunchthroughServerClient_;
     natPunchthroughServerClient_ = nullptr;
@@ -266,6 +271,9 @@ Network::~Network()
     delete natPunchServerAddress_;
     natPunchServerAddress_ = nullptr;
 
+    // Shutdown both peers before destroying — DestroyInstance on an active peer hangs
+    rakPeer_->Shutdown(300);
+    rakPeerClient_->Shutdown(300);
     SLNet::RakPeerInterface::DestroyInstance(rakPeer_);
     SLNet::RakPeerInterface::DestroyInstance(rakPeerClient_);
     rakPeer_ = nullptr;
@@ -499,18 +507,15 @@ void Network::BroadcastMessage(int msgID, bool reliable, bool inOrder, const Vec
 void Network::BroadcastMessage(int msgID, bool reliable, bool inOrder, const byte* data, unsigned numBytes,
     unsigned contentID)
 {
-    if (!rakPeer_)
-        return;
-
-    VectorBuffer msgData;
-    msgData.WriteU8((unsigned char)ID_USER_PACKET_ENUM);
-    msgData.WriteU32((unsigned int)msgID);
-    msgData.Write(data, numBytes);
-
-    if (isServer_)
-        rakPeer_->Send((const char*)msgData.GetData(), (int)msgData.GetSize(), HIGH_PRIORITY, RELIABLE, (char)0, SLNet::UNASSIGNED_RAKNET_GUID, true);
-    else
+    if (!isServer_)
+    {
         URHO3D_LOGERROR("Server not running, can not broadcast messages");
+        return;
+    }
+
+    // With per-connection encryption, broadcast must go through each connection
+    for (auto i = clientConnections_.Begin(); i != clientConnections_.End(); ++i)
+        i->second_->SendMessage(msgID, reliable, inOrder, data, numBytes, contentID);
 }
 
 void Network::BroadcastRemoteEvent(StringHash eventType, bool inOrder, const VariantMap& eventData)
@@ -627,6 +632,36 @@ SharedPtr<HttpRequest> Network::MakeHttpRequest(const String& url, const String&
     return request;
 }
 
+void Network::SetExpectedPeerToken(const Vector<unsigned char>& token)
+{
+    expectedPeerToken_ = token;
+}
+
+void Network::ClearPendingPeer()
+{
+    pendingPeerGuid_.Clear();
+    expectedPeerToken_.Clear();
+    pendingPeerPatchX_ = 0;
+    pendingPeerPatchZ_ = 0;
+}
+
+void Network::AddPeerConnection(const String& guid, Connection* connection)
+{
+    if (connection)
+        peerConnections_[guid] = SharedPtr<Connection>(connection);
+}
+
+void Network::RemovePeerConnection(const String& guid)
+{
+    peerConnections_.Erase(guid);
+}
+
+Connection* Network::GetPeerConnection(const String& guid) const
+{
+    auto it = peerConnections_.Find(guid);
+    return it != peerConnections_.End() ? it->second_ : nullptr;
+}
+
 void Network::BanAddress(const String& address)
 {
     rakPeer_->AddToBanList(address.CString(), 0);
@@ -694,6 +729,25 @@ void Network::HandleIncomingPacket(SLNet::Packet* packet, bool isServer)
             NewConnectionEstablished(packet->systemAddress);
             packetHandled = true;
         }
+        else if (IsPeerPending())
+        {
+            // NAT punchthrough gave us an incoming connection on rakPeerClient_ — we are the subserver
+            URHO3D_LOGINFO("Peer incoming connection (we are subserver): " + String(packet->systemAddress.ToString()));
+
+            // Create a Connection object for the peer using rakPeerClient_ (the peer interface it arrived on)
+            SharedPtr<Connection> peerConn(new Connection(context_, true, packet->systemAddress, rakPeerClient_));
+            peerConn->ConfigureNetworkSimulator(simulatedLatency_, simulatedPacketLoss_);
+            AddPeerConnection(pendingPeerGuid_, peerConn);
+
+            using namespace PeerConnected;
+            VariantMap& eventData = GetEventDataMap();
+            eventData[P_CONNECTION] = peerConn;
+            eventData[P_ISSUBSERVER] = true;
+            SendEvent(E_PEERCONNECTED, eventData);
+
+            ClearPendingPeer();
+            packetHandled = true;
+        }
     }
     else if (packetID == ID_ALREADY_CONNECTED)
     {
@@ -715,6 +769,21 @@ void Network::HandleIncomingPacket(SLNet::Packet* packet, bool isServer)
             {
                 natPunchthroughClient_->OpenNAT(*remoteGUID_, *natPunchServerAddress_);
             }
+        } else if (!isServer && IsPeerPending()) {
+            // NAT punchthrough accepted our connection — we are the subclient
+            URHO3D_LOGINFO("Peer connection accepted (we are subclient): " + String(packet->systemAddress.ToString()));
+
+            SharedPtr<Connection> peerConn(new Connection(context_, false, packet->systemAddress, rakPeerClient_));
+            peerConn->ConfigureNetworkSimulator(simulatedLatency_, simulatedPacketLoss_);
+            AddPeerConnection(pendingPeerGuid_, peerConn);
+
+            using namespace PeerConnected;
+            VariantMap& eventData = GetEventDataMap();
+            eventData[P_CONNECTION] = peerConn;
+            eventData[P_ISSUBSERVER] = false;
+            SendEvent(E_PEERCONNECTED, eventData);
+
+            ClearPendingPeer();
         } else {
             if (!isServer)
             {
@@ -728,27 +797,31 @@ void Network::HandleIncomingPacket(SLNet::Packet* packet, bool isServer)
         URHO3D_LOGERROR("Target server not connected to NAT master server!");
         packetHandled = true;
     }
-    else if (packetID == ID_CONNECTION_LOST) // We've lost connectivity with the packet source
+    else if (packetID == ID_CONNECTION_LOST || packetID == ID_DISCONNECTION_NOTIFICATION)
     {
-        if (isServer)
+        // Check if this is a peer connection first
+        bool wasPeer = false;
+        for (auto it = peerConnections_.Begin(); it != peerConnections_.End(); ++it)
         {
-            ClientDisconnected(packet->systemAddress);
+            if (it->second_ && it->second_->GetAddressOrGUID() == packet->systemAddress)
+            {
+                URHO3D_LOGINFO("Peer connection lost: " + it->first_);
+                using namespace PeerDisconnected;
+                VariantMap& eventData = GetEventDataMap();
+                eventData[P_CONNECTION] = it->second_;
+                SendEvent(E_PEERDISCONNECTED, eventData);
+                peerConnections_.Erase(it);
+                wasPeer = true;
+                break;
+            }
         }
-        else
+
+        if (!wasPeer)
         {
-            OnServerDisconnected(packet->systemAddress);
-        }
-        packetHandled = true;
-    }
-    else if (packetID == ID_DISCONNECTION_NOTIFICATION) // We've lost connection with the other side
-    {
-        if (isServer)
-        {
-            ClientDisconnected(packet->systemAddress);
-        }
-        else
-        {
-            OnServerDisconnected(packet->systemAddress);
+            if (isServer)
+                ClientDisconnected(packet->systemAddress);
+            else
+                OnServerDisconnected(packet->systemAddress);
         }
         packetHandled = true;
     }
@@ -778,8 +851,18 @@ void Network::HandleIncomingPacket(SLNet::Packet* packet, bool isServer)
             eventMap[P_ADDRESS] = remotePeer.ToString(false);
             eventMap[P_PORT] = remotePeer.GetPort();
             SendEvent(E_NETWORKNATPUNCHTROUGHSUCCEEDED, eventMap);
-            URHO3D_LOGINFO("Connecting to server behind NAT: " + String(remotePeer.ToString()));
-            Connect(String(remotePeer.ToString(false)), remotePeer.GetPort(), scene_, identity_);
+
+            // If a peer introduction is pending, don't auto-connect —
+            // the application layer handles role assignment and token exchange
+            if (!IsPeerPending())
+            {
+                URHO3D_LOGINFO("Connecting to server behind NAT: " + String(remotePeer.ToString()));
+                Connect(String(remotePeer.ToString(false)), remotePeer.GetPort(), scene_, identity_);
+            }
+            else
+            {
+                URHO3D_LOGINFO("Peer introduction pending — application will handle connection");
+            }
         }
         packetHandled = true;
     }
@@ -841,20 +924,92 @@ void Network::HandleIncomingPacket(SLNet::Packet* packet, bool isServer)
     // Urho3D messages
     if (packetID >= ID_USER_PACKET_ENUM)
     {
-        unsigned int messageID = *(unsigned int*)(packet->data + dataStart);
-        dataStart += sizeof(unsigned int);
-
+        // Determine which connection this packet belongs to
+        Connection* conn = nullptr;
         if (isServer)
         {
-            HandleMessage(packet->systemAddress, 0, messageID, (const char*)(packet->data + dataStart), packet->length - dataStart);
+            auto it = clientConnections_.Find(packet->systemAddress);
+            if (it != clientConnections_.End())
+                conn = it->second_;
         }
         else
         {
-            MemoryBuffer buffer(packet->data + dataStart, packet->length - dataStart);
-            bool processed = serverConnection_ && serverConnection_->ProcessMessage(messageID, buffer);
-            if (!processed)
+            // Check peer connections first (they share rakPeerClient_ with the server connection)
+            for (auto it = peerConnections_.Begin(); it != peerConnections_.End(); ++it)
             {
-                HandleMessage(packet->systemAddress, 0, messageID, (const char*)(packet->data + dataStart), packet->length - dataStart);
+                if (it->second_ && it->second_->GetAddressOrGUID() == packet->systemAddress)
+                {
+                    conn = it->second_;
+                    break;
+                }
+            }
+            if (!conn)
+                conn = serverConnection_;
+        }
+
+        const unsigned char* msgData = packet->data + dataStart;
+        unsigned msgLength = packet->length - dataStart;
+        Vector<unsigned char> decryptedBuf;
+
+        // Decrypt the entire payload up front if encryption is active
+        if (conn && conn->IsEncryptionReady() && conn->GetCipher() && conn->GetCipher()->IsReady())
+        {
+            if (conn->GetCipher()->Decrypt(msgData, msgLength, decryptedBuf))
+            {
+                msgData = decryptedBuf.Buffer();
+                msgLength = decryptedBuf.Size();
+
+                // PAKE: first successful decrypt = authenticated
+                if (isServer && conn->IsPakeConnection() && !conn->IsPakeAuthenticated())
+                {
+                    conn->SetPakeAuthenticated(true);
+                    URHO3D_LOGINFO("Network: PAKE authentication confirmed for '" + conn->GetPakeUsername() + "'");
+
+                    using namespace ClientAuthenticated;
+                    VariantMap& authData = GetEventDataMap();
+                    authData[P_CONNECTION] = conn;
+                    authData[P_USERNAME] = conn->GetPakeUsername();
+                    SendEvent(E_CLIENTAUTHENTICATED, authData);
+                }
+            }
+            else
+            {
+                // PAKE: decrypt failure on authenticated connection = wrong password
+                if (isServer && conn->IsPakeConnection() && !conn->IsPakeAuthenticated())
+                {
+                    URHO3D_LOGERROR("Network: PAKE authentication failed for '" + conn->GetPakeUsername() + "' — wrong password, disconnecting");
+                    conn->Disconnect();
+                    packetHandled = true;
+                    msgLength = 0;
+                }
+                else
+                {
+                    URHO3D_LOGERROR("Network: Decryption failed — dropping packet");
+                    packetHandled = true;
+                    // fall through to avoid processing garbage
+                    msgLength = 0;
+                }
+            }
+        }
+
+        if (msgLength >= sizeof(unsigned int))
+        {
+            unsigned int messageID = *(unsigned int*)(msgData);
+            const unsigned char* payload = msgData + sizeof(unsigned int);
+            unsigned payloadLength = msgLength - sizeof(unsigned int);
+
+            if (isServer)
+            {
+                HandleMessage(packet->systemAddress, 0, messageID, (const char*)payload, payloadLength);
+            }
+            else
+            {
+                MemoryBuffer buffer(payload, payloadLength);
+                bool processed = serverConnection_ && serverConnection_->ProcessMessage(messageID, buffer);
+                if (!processed)
+                {
+                    HandleMessage(packet->systemAddress, 0, messageID, (const char*)payload, payloadLength);
+                }
             }
         }
         packetHandled = true;
@@ -947,6 +1102,31 @@ void Network::PostUpdate(float timeStep)
             serverConnection_->SendAllBuffers();
         }
 
+        // Send replication updates through peer connections (subserver → subclient)
+        if (!peerConnections_.Empty())
+        {
+            // Prepare scenes used by peer connections
+            for (auto it = peerConnections_.Begin(); it != peerConnections_.End(); ++it)
+            {
+                Scene* scene = it->second_->GetScene();
+                if (scene)
+                {
+                    networkScenes_.Insert(scene);
+                    scene->PrepareNetworkUpdate();
+                }
+            }
+
+            for (auto it = peerConnections_.Begin(); it != peerConnections_.End(); ++it)
+            {
+                if (it->second_->GetScene())
+                {
+                    it->second_->SendServerUpdate();
+                    it->second_->SendRemoteEvents();
+                    it->second_->SendAllBuffers();
+                }
+            }
+        }
+
         // Notify that the update was sent
         SendEvent(E_NETWORKUPDATESENT);
     }
@@ -972,12 +1152,77 @@ void Network::OnServerConnected(const SLNet::AddressOrGUID& address)
     serverConnection_->SetAddressOrGUID(address);
     URHO3D_LOGINFO("Connected to server!");
 
-    // Send the identity map now
-    VectorBuffer msg;
-    msg.WriteVariantMap(serverConnection_->GetIdentity());
-    serverConnection_->SendMessage(MSG_IDENTITY, true, true, msg);
+    // Initiate key exchange before sending identity
+    SharedPtr<SodiumCipher> cipher(new SodiumCipher());
+    if (cipher->GenerateKeyPair())
+    {
+        serverConnection_->SetCipher(cipher);
+
+        // Send username (if PAKE) + public key to the server
+        VectorBuffer keyMsg;
+        keyMsg.WriteString(HasCredentials() ? pakeUsername_ : String::EMPTY);
+        const auto& pubKey = cipher->GetPublicKey();
+        keyMsg.Write(pubKey.Buffer(), pubKey.Size());
+        serverConnection_->SendMessage(MSG_KEY_EXCHANGE, true, true, keyMsg);
+
+        // Defer identity until key exchange completes
+        pendingIdentity_ = serverConnection_->GetIdentity();
+        identityPending_ = true;
+
+        URHO3D_LOGINFO(HasCredentials()
+            ? "PAKE key exchange initiated for '" + pakeUsername_ + "', identity deferred"
+            : "Key exchange initiated, identity deferred until encryption ready");
+    }
+    else
+    {
+        // Key generation failed — fall back to plaintext
+        URHO3D_LOGWARNING("Key pair generation failed — sending identity without encryption");
+        VectorBuffer msg;
+        msg.WriteVariantMap(serverConnection_->GetIdentity());
+        serverConnection_->SendMessage(MSG_IDENTITY, true, true, msg);
+    }
 
     SendEvent(E_SERVERCONNECTED);
+}
+
+void Network::SendIdentityNow()
+{
+    if (!identityPending_ || !serverConnection_)
+        return;
+
+    VectorBuffer msg;
+    msg.WriteVariantMap(pendingIdentity_);
+    serverConnection_->SendMessage(MSG_IDENTITY, true, true, msg);
+
+    identityPending_ = false;
+    URHO3D_LOGINFO("Identity sent (encrypted)");
+}
+
+void Network::SetCredentials(const String& username, const String& password)
+{
+    if (sodium_init() < 0)
+    {
+        URHO3D_LOGERROR("Network::SetCredentials: sodium_init() failed");
+        return;
+    }
+
+    pakeUsername_ = username;
+    pakePasswordHash_.Resize(32);
+    crypto_generichash(pakePasswordHash_.Buffer(), 32,
+        reinterpret_cast<const unsigned char*>(password.CString()), password.Length(),
+        nullptr, 0);
+
+    URHO3D_LOGINFO("Network: PAKE credentials set for user '" + username + "'");
+}
+
+void Network::ClearCredentials()
+{
+    pakeUsername_.Clear();
+    if (pakePasswordHash_.Size())
+    {
+        sodium_memzero(pakePasswordHash_.Buffer(), pakePasswordHash_.Size());
+        pakePasswordHash_.Clear();
+    }
 }
 
 void Network::OnServerDisconnected(const SLNet::AddressOrGUID& address)
@@ -1015,7 +1260,7 @@ void Network::ConfigureNetworkSimulator()
 
 void RegisterNetworkLibrary(Context* context)
 {
-    NetworkPriority::RegisterObject(context);
+    NetworkIdentity::RegisterObject(context);
 }
 
 }

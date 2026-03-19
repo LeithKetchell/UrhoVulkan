@@ -15,6 +15,7 @@
 #include "Renderer.h"
 #include "../GraphicsAPI/Texture.h"
 #include "../GraphicsAPI/Texture2D.h"
+#include "../GraphicsAPI/TextureCube.h"
 #include "../GraphicsAPI/RenderSurface.h"
 #include "../GraphicsAPI/Shader.h"
 #include "../GraphicsAPI/VertexBuffer.h"
@@ -22,6 +23,7 @@
 #include "../Resource/ResourceCache.h"
 #include "../IO/Log.h"
 #include <SDL/SDL.h>
+#include <SDL/SDL_vulkan.h>
 
 #ifdef URHO3D_VULKAN
 
@@ -97,7 +99,7 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
         unsigned flags = SDL_WINDOW_SHOWN;
         if (newParams.resizable_)
             flags |= SDL_WINDOW_RESIZABLE;
-        if (newParams.borderless_)
+        if (newParams.borderless_ || newParams.spanned_)
             flags |= SDL_WINDOW_BORDERLESS;
         if (!externalWindow_)
             flags |= SDL_WINDOW_VULKAN;
@@ -118,6 +120,12 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
             SDL_GetDisplayBounds(newParams.monitor_, &displayBounds);
             posX = displayBounds.x;
             posY = displayBounds.y;
+        }
+        else if (newParams.spanned_)
+        {
+            IntRect bounds = GetSpannedBounds();
+            posX = bounds.left_;
+            posY = bounds.top_;
         }
 
         window_ = SDL_CreateWindow(windowTitle_.CString(), posX, posY, width, height, flags);
@@ -161,7 +169,7 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
     unsigned flags = SDL_WINDOW_SHOWN;
     if (newParams.resizable_)
         flags |= SDL_WINDOW_RESIZABLE;
-    if (newParams.borderless_)
+    if (newParams.borderless_ || newParams.spanned_)
         flags |= SDL_WINDOW_BORDERLESS;
     if (!externalWindow_)
         flags |= SDL_WINDOW_VULKAN;
@@ -174,7 +182,7 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
 
     SDL_SetHint(SDL_HINT_ORIENTATIONS, orientations_.CString());
 
-    // For fullscreen, position on the correct monitor
+    // For fullscreen, position on the correct monitor. For spanned, position at top-left of all monitors.
     int posX = position_.x_;
     int posY = position_.y_;
     if (newParams.fullscreen_)
@@ -183,6 +191,12 @@ bool Graphics::SetScreenMode_Vulkan(int width, int height, const ScreenModeParam
         SDL_GetDisplayBounds(newParams.monitor_, &displayBounds);
         posX = displayBounds.x;
         posY = displayBounds.y;
+    }
+    else if (newParams.spanned_)
+    {
+        IntRect bounds = GetSpannedBounds();
+        posX = bounds.left_;
+        posY = bounds.top_;
     }
 
     if (!externalWindow_)
@@ -845,6 +859,22 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
             break;
         }
     }
+    // Also check material textures — if no engine textures are set yet (e.g. first
+    // draw call is postopaque with no prior base pass), the material itself provides
+    // valid textures that can serve as fallback for unused descriptor bindings.
+    if (!defaultTexture && currentMaterial_)
+    {
+        const HashMap<TextureUnit, SharedPtr<Texture>>& matTex = currentMaterial_->GetTextures();
+        for (auto it = matTex.Begin(); it != matTex.End(); ++it)
+        {
+            Texture* t = it->second_.Get();
+            if (t && t->GetVkImageView() && t->GetSampler_Vulkan())
+            {
+                defaultTexture = t;
+                break;
+            }
+        }
+    }
 
     // Build map of which texture units have textures
     HashMap<unsigned, Texture*> bindingToTexture;  // binding -> texture
@@ -880,7 +910,15 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
             if (unit < MAX_TEXTURE_UNITS)
             {
                 unsigned binding = unitToBinding[unit];
-                bindingToTexture[binding] = it->second_.Get();
+                // TextureCube must map to the cube sampler binding, not the 2D binding
+                // sDiffMap(100) → sDiffCubeMap(101), sEnvMap(105) → sEnvCubeMap(106)
+                Texture* tex = it->second_.Get();
+                if (tex && tex->GetType() == TextureCube::GetTypeStatic())
+                {
+                    if (binding == 100) binding = 101;       // TU_DIFFUSE → sDiffCubeMap
+                    else if (binding == 105) binding = 106;   // TU_ENVIRONMENT → sEnvCubeMap
+                }
+                bindingToTexture[binding] = tex;
             }
         }
 
@@ -891,6 +929,11 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
             if (textures_[unit])
             {
                 unsigned binding = unitToBinding[unit];
+                if (textures_[unit]->GetType() == TextureCube::GetTypeStatic())
+                {
+                    if (binding == 100) binding = 101;
+                    else if (binding == 105) binding = 106;
+                }
                 // Don't overwrite material textures — material takes priority
                 if (!bindingToTexture.Contains(binding))
                     bindingToTexture[binding] = textures_[unit];
@@ -905,6 +948,11 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
             if (textures_[unit])
             {
                 unsigned binding = unitToBinding[unit];
+                if (textures_[unit]->GetType() == TextureCube::GetTypeStatic())
+                {
+                    if (binding == 100) binding = 101;
+                    else if (binding == 105) binding = 106;
+                }
                 bindingToTexture[binding] = textures_[unit];
             }
         }
@@ -4073,8 +4121,12 @@ void Graphics::OnWindowResized_Vulkan()
         return;
 
     int newWidth, newHeight;
-    SDL_GL_GetDrawableSize(window_, &newWidth, &newHeight);
+    SDL_Vulkan_GetDrawableSize(window_, &newWidth, &newHeight);
     if (newWidth == width_ && newHeight == height_)
+        return;
+
+    // Reject degenerate sizes
+    if (newWidth <= 1 || newHeight <= 1)
         return;
 
     width_ = newWidth;
@@ -4084,10 +4136,13 @@ void Graphics::OnWindowResized_Vulkan()
     SDL_GetWindowSize(window_, &logicalWidth, &logicalHeight);
     screenParams_.highDPI_ = (width_ != logicalWidth) || (height_ != logicalHeight);
 
-    // Recreate swapchain on resize
+    // Full swapchain resource recreation (depth, render pass, framebuffers, sync)
     VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
     if (vkImpl)
-        vkImpl->CreateSwapchain(width_, height_);
+    {
+        if (!vkImpl->RecreateSwapchainResources(window_, width_, height_))
+            URHO3D_LOGERROR("OnWindowResized_Vulkan: Failed to recreate swapchain resources");
+    }
 }
 
 void Graphics::OnWindowMoved_Vulkan()

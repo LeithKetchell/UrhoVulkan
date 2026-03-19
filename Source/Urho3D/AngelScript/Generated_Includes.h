@@ -166,7 +166,7 @@
 #include "../Network/Connection.h"
 #include "../Network/HttpRequest.h"
 #include "../Network/Network.h"
-#include "../Network/NetworkPriority.h"
+#include "../Network/NetworkIdentity.h"
 #include "../Network/Protocol.h"
 #endif
 

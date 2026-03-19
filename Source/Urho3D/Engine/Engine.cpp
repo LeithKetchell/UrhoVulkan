@@ -295,6 +295,17 @@ bool Engine::Initialize(const VariantMap& parameters)
         ))
             return false;
 
+        // If spanned mode requested, re-apply with spanned flag and auto-computed bounds
+        if (GetParameter(parameters, EP_SPANNED, false).GetBool())
+        {
+            ScreenModeParams spannedParams = graphics->GetScreenModeParams();
+            spannedParams.spanned_ = true;
+            spannedParams.fullscreen_ = false;
+            spannedParams.borderless_ = false;
+            IntRect bounds = Graphics::GetSpannedBounds();
+            graphics->SetScreenMode(bounds.right_ - bounds.left_, bounds.bottom_ - bounds.top_, spannedParams);
+        }
+
         graphics->SetShaderCacheDir(GetParameter(parameters, EP_SHADER_CACHE_DIR, fileSystem->GetAppPreferencesDir("urho3d", "shadercache")).GetString());
 
         if (HasParameter(parameters, EP_DUMP_SHADERS))
@@ -896,6 +907,8 @@ VariantMap Engine::ParseParameters(const Vector<String>& arguments)
                 ret[EP_FULL_SCREEN] = false;
             else if (argument == "borderless")
                 ret[EP_BORDERLESS] = true;
+            else if (argument == "spanned")
+                ret[EP_SPANNED] = true;
             else if (argument == "lowdpi")
                 ret[EP_HIGH_DPI] = false;
             else if (argument == "s")

@@ -112,17 +112,18 @@ bool Graphics::SetDefaultWindowModes(int width, int height, const ScreenModePara
     secondaryWindowMode.width_ = 0;
     secondaryWindowMode.height_ = 0;
 
-    if (params.fullscreen_ || params.borderless_)
+    if (params.fullscreen_ || params.borderless_ || params.spanned_)
     {
         secondaryWindowMode.screenParams_.fullscreen_ = false;
         secondaryWindowMode.screenParams_.borderless_ = false;
+        secondaryWindowMode.screenParams_.spanned_ = false;
     }
     else
     {
         secondaryWindowMode.screenParams_.borderless_ = true;
     }
 
-    const bool maximize = (!width || !height) && !params.fullscreen_ && !params.borderless_ && params.resizable_;
+    const bool maximize = (!width || !height) && !params.fullscreen_ && !params.borderless_ && !params.spanned_ && params.resizable_;
     return SetWindowModes(primaryWindowMode, secondaryWindowMode, maximize);
 }
 
@@ -493,6 +494,28 @@ void Graphics::CreateWindowIcon()
     }
 }
 
+IntRect Graphics::GetSpannedBounds()
+{
+    int numDisplays = SDL_GetNumVideoDisplays();
+    if (numDisplays <= 0)
+        return IntRect(0, 0, 1920, 1080);
+
+    int minX = M_MAX_INT, minY = M_MAX_INT;
+    int maxX = M_MIN_INT, maxY = M_MIN_INT;
+    for (int i = 0; i < numDisplays; ++i)
+    {
+        SDL_Rect bounds;
+        if (SDL_GetDisplayBounds(i, &bounds) == 0)
+        {
+            minX = Min(minX, bounds.x);
+            minY = Min(minY, bounds.y);
+            maxX = Max(maxX, bounds.x + bounds.w);
+            maxY = Max(maxY, bounds.y + bounds.h);
+        }
+    }
+    return IntRect(minX, minY, maxX, maxY);
+}
+
 void Graphics::AdjustScreenMode(int& newWidth, int& newHeight, ScreenModeParams& params, bool& maximize) const
 {
     // High DPI is supported only for OpenGL backend
@@ -520,6 +543,15 @@ void Graphics::AdjustScreenMode(int& newWidth, int& newHeight, ScreenModeParams&
     if (params.borderless_)
         params.fullscreen_ = false;
 
+    // Spanned is mutually exclusive with fullscreen and borderless
+    if (params.spanned_)
+    {
+        params.fullscreen_ = false;
+        params.borderless_ = false;
+        params.resizable_ = false;
+        maximize = false;
+    }
+
     // On iOS window needs to be resizable to handle orientation changes properly
 #ifdef IOS
     if (!externalWindow_)
@@ -530,10 +562,16 @@ void Graphics::AdjustScreenMode(int& newWidth, int& newHeight, ScreenModeParams&
     params.multiSample_ = NextPowerOfTwo(Clamp(params.multiSample_, 1, 16));
 
     // If zero dimensions in windowed mode, set windowed mode to maximize and set a predefined default restored window size.
-    // If zero in fullscreen, use desktop mode
+    // If zero in fullscreen, use desktop mode. If spanned, use union of all monitor bounds.
     if (!newWidth || !newHeight)
     {
-        if (params.fullscreen_ || params.borderless_)
+        if (params.spanned_)
+        {
+            IntRect bounds = GetSpannedBounds();
+            newWidth = bounds.right_ - bounds.left_;
+            newHeight = bounds.bottom_ - bounds.top_;
+        }
+        else if (params.fullscreen_ || params.borderless_)
         {
             SDL_DisplayMode mode;
             SDL_GetDesktopDisplayMode(params.monitor_, &mode);
@@ -579,6 +617,8 @@ void Graphics::OnScreenModeChanged()
         (screenParams_.fullscreen_ ? "fullscreen" : "windowed"), screenParams_.monitor_);
     if (screenParams_.borderless_)
         msg.Append(" borderless");
+    if (screenParams_.spanned_)
+        msg.Append(" spanned");
     if (screenParams_.resizable_)
         msg.Append(" resizable");
     if (screenParams_.highDPI_)
@@ -595,6 +635,7 @@ void Graphics::OnScreenModeChanged()
     eventData[P_HEIGHT] = height_;
     eventData[P_FULLSCREEN] = screenParams_.fullscreen_;
     eventData[P_BORDERLESS] = screenParams_.borderless_;
+    eventData[P_SPANNED] = screenParams_.spanned_;
     eventData[P_RESIZABLE] = screenParams_.resizable_;
     eventData[P_HIGHDPI] = screenParams_.highDPI_;
     eventData[P_MONITOR] = screenParams_.monitor_;

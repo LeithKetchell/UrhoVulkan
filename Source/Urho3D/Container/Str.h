@@ -110,6 +110,8 @@ public:
     explicit String(unsigned long long value);
     /// Construct from a float.
     explicit String(float value);
+    /// Construct from a float/double with specified decimal precision.
+    explicit String(double value, i32 precision);
     /// Construct from a double.
     explicit String(double value);
     /// Construct from a bool.

@@ -174,9 +174,19 @@ void Batch::CalculateSortKey()
 
 void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool allowDepthWrite) const
 {
-    // Only log mushroom batches
     if (!vertexShader_ || !pixelShader_)
+    {
+        static int shaderMissCount = 0;
+        if (shaderMissCount < 10)
+        {
+            URHO3D_LOGWARNINGF("[BATCH DIAG] Prepare skipped: vs=%p ps=%p pass=%s mat=%s",
+                (void*)vertexShader_, (void*)pixelShader_,
+                pass_ ? pass_->GetName().CString() : "null",
+                material_ ? material_->GetName().CString() : "null");
+            shaderMissCount++;
+        }
         return;
+    }
 
     Graphics* graphics = view->GetGraphics();
     Renderer* renderer = view->GetRenderer();

@@ -250,6 +250,7 @@ void Run(const Vector<String>& arguments)
             "scene       Output a scene\n"
             "node        Output a node and its children (prefab)\n"
             "dump        Dump scene node structure. No output file is generated\n"
+            "info        Show model/animation info. Supports native .mdl/.ani and all Assimp formats\n"
             "lod         Combine several Urho3D models as LOD levels of the output model\n"
             "            Syntax: lod <dist0> <mdl0> <dist1 <mdl1> ... <output file>\n"
             "\n"
@@ -456,7 +457,180 @@ void Run(const Vector<String>& arguments)
         }
     }
 
-    if (command == "model" || command == "scene" || command == "anim" || command == "node" || command == "dump")
+    // Native Urho3D format info — handle .ani and .mdl without Assimp
+    if (command == "info")
+    {
+        String inFile = arguments[1];
+        String ext = GetExtension(inFile).ToLower();
+
+        if (ext == ".ani")
+        {
+            SharedPtr<File> file(new File(context_, inFile));
+            if (!file->IsOpen())
+                ErrorExit("Could not open " + inFile);
+
+            SharedPtr<Animation> anim(new Animation(context_));
+            if (!anim->BeginLoad(*file))
+                ErrorExit("Failed to load animation " + inFile);
+
+            PrintLine("");
+            PrintLine("Animation Info: " + inFile);
+            PrintLine("  Name:     " + anim->GetAnimationName());
+            PrintLine("  Length:   " + String(anim->GetLength(), 4) + " s");
+            PrintLine("  Tracks:   " + String(anim->GetNumTracks()));
+
+            const Vector<AnimationTriggerPoint>& triggers = anim->GetTriggers();
+            if (!triggers.Empty())
+                PrintLine("  Triggers: " + String(triggers.Size()));
+
+            PrintLine("");
+
+            const HashMap<StringHash, AnimationTrack>& tracks = anim->GetTracks();
+            int totalKeys = 0;
+            for (HashMap<StringHash, AnimationTrack>::ConstIterator it = tracks.Begin(); it != tracks.End(); ++it)
+            {
+                const AnimationTrack& track = it->second_;
+                totalKeys += track.GetNumKeyFrames();
+
+                String ch;
+                if ((track.channelMask_ & AnimationChannels::Position) != AnimationChannels::None) ch += "P";
+                if ((track.channelMask_ & AnimationChannels::Rotation) != AnimationChannels::None) ch += "R";
+                if ((track.channelMask_ & AnimationChannels::Scale) != AnimationChannels::None) ch += "S";
+
+                String line = "  " + track.name_ + " [" + ch + "] " + String(track.GetNumKeyFrames()) + " keys";
+
+                if (track.GetNumKeyFrames() > 0)
+                {
+                    const AnimationKeyFrame& first = track.keyFrames_[0];
+                    const AnimationKeyFrame& last = track.keyFrames_[track.keyFrames_.Size() - 1];
+                    line += "  t: " + String(first.time_, 3) + " -> " + String(last.time_, 3);
+
+                    if ((track.channelMask_ & AnimationChannels::Position) != AnimationChannels::None)
+                    {
+                        Vector3 posMin(M_INFINITY, M_INFINITY, M_INFINITY);
+                        Vector3 posMax(-M_INFINITY, -M_INFINITY, -M_INFINITY);
+                        for (unsigned k = 0; k < track.keyFrames_.Size(); ++k)
+                        {
+                            const Vector3& p = track.keyFrames_[k].position_;
+                            posMin.x_ = Min(posMin.x_, p.x_);
+                            posMin.y_ = Min(posMin.y_, p.y_);
+                            posMin.z_ = Min(posMin.z_, p.z_);
+                            posMax.x_ = Max(posMax.x_, p.x_);
+                            posMax.y_ = Max(posMax.y_, p.y_);
+                            posMax.z_ = Max(posMax.z_, p.z_);
+                        }
+                        line += "\n                                    pos: " + posMin.ToString() + " -> " + posMax.ToString();
+                    }
+                }
+                PrintLine(line);
+            }
+
+            PrintLine("");
+            PrintLine("  Total keyframes: " + String(totalKeys));
+
+            if (!triggers.Empty())
+            {
+                PrintLine("");
+                PrintLine("  Triggers:");
+                for (unsigned i = 0; i < triggers.Size(); ++i)
+                    PrintLine("    @" + String(triggers[i].time_, 3) + " s: " + triggers[i].data_.ToString());
+            }
+            PrintLine("");
+            return;
+        }
+
+        if (ext == ".mdl")
+        {
+            // Model::BeginLoad creates VertexBuffer/IndexBuffer which need Graphics subsystem.
+            // Register a headless Graphics so buffers can be created without a window.
+            if (!context_->GetSubsystem<Graphics>())
+            {
+                auto* graphics = new Graphics(context_);
+                context_->RegisterSubsystem(graphics);
+            }
+
+            SharedPtr<File> file(new File(context_, inFile));
+            if (!file->IsOpen())
+                ErrorExit("Could not open " + inFile);
+
+            SharedPtr<Model> model(new Model(context_));
+            if (!model->BeginLoad(*file))
+                ErrorExit("Failed to load model " + inFile);
+
+            BoundingBox bbox = model->GetBoundingBox();
+            Vector3 dims = bbox.max_ - bbox.min_;
+            float diagonal = dims.Length();
+            Skeleton& skel = model->GetSkeleton();
+
+            int totalVerts = 0, totalIndices = 0;
+            for (unsigned g = 0; g < model->GetNumGeometries(); ++g)
+            {
+                Geometry* geom = model->GetGeometry(g, 0);
+                if (geom) { totalVerts += geom->GetVertexCount(); totalIndices += geom->GetIndexCount(); }
+            }
+
+            PrintLine("");
+            PrintLine("Model Info: " + inFile);
+            PrintLine("  Geometries:  " + String(model->GetNumGeometries()));
+            PrintLine("  Vertices:    " + String(totalVerts));
+            PrintLine("  Triangles:   " + String(totalIndices / 3));
+            PrintLine("  Bones:       " + String(skel.GetNumBones()));
+            PrintLine("  Morphs:      " + String(model->GetNumMorphs()));
+            PrintLine("");
+            PrintLine("  BBox min:    " + bbox.min_.ToString());
+            PrintLine("  BBox max:    " + bbox.max_.ToString());
+            PrintLine("  Size:        " + String(dims.x_, 2) + " x " + String(dims.y_, 2) + " x " + String(dims.z_, 2));
+            PrintLine("  Diagonal:    " + String(diagonal, 2));
+
+            if (diagonal > 50.0f)
+            {
+                PrintLine("");
+                PrintLine("  WARNING: Model appears oversized (likely centimeter units)");
+                PrintLine("    Suggested: -scale " + String(2.0f / diagonal, 6) + "  (normalize to ~2.0 units)");
+                PrintLine("    Common:    -scale 0.010000  (cm to meters)");
+            }
+
+            for (unsigned g = 0; g < model->GetNumGeometries(); ++g)
+            {
+                PrintLine("");
+                PrintLine("  Geometry " + String(g) + ":");
+                int numLods = model->GetNumGeometryLodLevels(g);
+                PrintLine("    LOD levels: " + String(numLods));
+
+                for (int l = 0; l < numLods; ++l)
+                {
+                    Geometry* geom = model->GetGeometry(g, l);
+                    if (!geom) continue;
+                    PrintLine("    Verts: " + String(geom->GetVertexCount()) +
+                        "  Idx: " + String(geom->GetIndexCount()) +
+                        "  Tris: " + String(geom->GetIndexCount() / 3));
+                }
+            }
+
+            if (skel.GetNumBones() > 1)
+            {
+                PrintLine("");
+                PrintLine("  Skeleton (" + String(skel.GetNumBones()) + " bones):");
+                const Vector<Bone>& bones = skel.GetBones();
+                for (unsigned i = 0; i < bones.Size(); ++i)
+                {
+                    const Bone& bone = bones[i];
+                    int depth = 0;
+                    int p = bone.parentIndex_;
+                    while (p > 0 && depth < 10) { p = bones[p].parentIndex_; depth++; }
+
+                    String indent;
+                    for (int d = 0; d < depth; ++d) indent += "  ";
+                    PrintLine("    " + indent + bone.name_);
+                }
+            }
+
+            PrintLine("");
+            return;
+        }
+    }
+
+    if (command == "model" || command == "scene" || command == "anim" || command == "node" || command == "dump" || command == "info")
     {
         String inFile = arguments[1];
         String outFile;
@@ -482,7 +656,7 @@ void Run(const Vector<String>& arguments)
 
         resourcePath_ = AddTrailingSlash(resourcePath_);
 
-        if (command != "dump" && outFile.Empty())
+        if (command != "dump" && command != "info" && outFile.Empty())
             ErrorExit("No output file defined");
 
         if (verboseLog_)
@@ -533,6 +707,67 @@ void Run(const Vector<String>& arguments)
         if (command == "dump")
         {
             DumpNodes(rootNode_, 0);
+            return;
+        }
+
+        if (command == "info")
+        {
+            // Collect mesh info and compute bounding box in import units
+            unsigned totalMeshes = scene_->mNumMeshes;
+            unsigned totalVertices = 0;
+            unsigned totalBones = 0;
+            BoundingBox box;
+
+            // Track unique bone names across all meshes
+            HashSet<String> boneNames;
+
+            for (unsigned i = 0; i < totalMeshes; ++i)
+            {
+                aiMesh* mesh = scene_->mMeshes[i];
+                totalVertices += mesh->mNumVertices;
+
+                for (unsigned j = 0; j < mesh->mNumBones; ++j)
+                    boneNames.Insert(FromAIString(mesh->mBones[j]->mName));
+
+                for (unsigned v = 0; v < mesh->mNumVertices; ++v)
+                {
+                    Vector3 vertex(mesh->mVertices[v].x, mesh->mVertices[v].y, mesh->mVertices[v].z);
+                    box.Merge(vertex);
+                }
+            }
+            totalBones = boneNames.Size();
+
+            Vector3 size = box.Size();
+            float maxDim = Max(Max(size.x_, size.y_), size.z_);
+
+            char buf[256];
+
+            PrintLine("");
+            PrintLine("Model Info:");
+            PrintLine("  Meshes:      " + String(totalMeshes) + " (" + String(totalVertices) + " total vertices)");
+            PrintLine("  Bones:       " + String(totalBones));
+            PrintLine("  Animations:  " + String(scene_->mNumAnimations));
+            PrintLine("  Materials:   " + String(scene_->mNumMaterials));
+            PrintLine("");
+            sprintf(buf, "  Bounding box min: (%.2f, %.2f, %.2f)", box.min_.x_, box.min_.y_, box.min_.z_);
+            PrintLine(buf);
+            sprintf(buf, "  Bounding box max: (%.2f, %.2f, %.2f)", box.max_.x_, box.max_.y_, box.max_.z_);
+            PrintLine(buf);
+            sprintf(buf, "  Size:        %.2f x %.2f x %.2f (import units)", size.x_, size.y_, size.z_);
+            PrintLine(buf);
+            PrintLine("");
+
+            if (maxDim > 0.0f)
+            {
+                PrintLine("  Suggested -scale values:");
+                sprintf(buf, "    -scale %.6f  (normalize to ~1.0 unit)", 1.0f / maxDim);
+                PrintLine(buf);
+                sprintf(buf, "    -scale %.6f  (normalize to ~2.0 units, human height)", 2.0f / maxDim);
+                PrintLine(buf);
+                if (maxDim > 10.0f)
+                    PrintLine("    -scale 0.010000  (centimeters to meters, common for Blender/Mixamo)");
+            }
+            PrintLine("");
             return;
         }
 
@@ -1178,11 +1413,21 @@ void BuildAndSaveModel(OutModel& model)
                 transform = GetDerivedTransform(boneNode, model.rootNode_, false);
 
             GetPosRotScale(transform, newBone.initialPosition_, newBone.initialRotation_, newBone.initialScale_);
+            newBone.initialPosition_ *= importScale_;
 
             // Get offset information if exists
             newBone.offsetMatrix_ = GetOffsetMatrix(model, boneName);
-            newBone.radius_ = model.boneRadii_[i];
+            if (importScale_ != 1.0f)
+            {
+                // Scale the translation component of the offset matrix to match scaled vertex space
+                newBone.offsetMatrix_.m03_ *= importScale_;
+                newBone.offsetMatrix_.m13_ *= importScale_;
+                newBone.offsetMatrix_.m23_ *= importScale_;
+            }
+            newBone.radius_ = model.boneRadii_[i] * importScale_;
             newBone.boundingBox_ = model.boneHitboxes_[i];
+            newBone.boundingBox_.min_ *= importScale_;
+            newBone.boundingBox_.max_ *= importScale_;
             newBone.collisionMask_ = BONECOLLISION_SPHERE | BONECOLLISION_BOX;
             newBone.parentIndex_ = i;
             bones.Push(newBone);
@@ -1211,8 +1456,8 @@ void BuildAndSaveModel(OutModel& model)
         ErrorExit("Could not open output file " + model.outName_);
     outModel->Save(outFile);
 
-    // If exporting materials, also save material list for use by the editor
-    if (!noMaterials_ && saveMaterialList_)
+    // Save material list for use by the editor — always when multiple materials, or when -l flag is set
+    if (!noMaterials_ && (saveMaterialList_ || model.meshes_.Size() > 1))
     {
         String materialListName = ReplaceExtension(model.outName_, ".txt");
         File listFile(context_);

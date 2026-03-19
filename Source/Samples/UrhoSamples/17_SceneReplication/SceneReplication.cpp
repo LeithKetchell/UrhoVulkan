@@ -407,7 +407,7 @@ void SceneReplication::HandlePhysicsPreStep(StringHash eventType, VariantMap& ev
         }
 
         serverConnection->SetControls(controls);
-        // In case the server wants to do position-based interest management using the NetworkPriority components, we should also
+        // In case the server wants to do position-based interest management using the NetworkIdentity components, we should also
         // tell it our observer (camera) position. In this sample it is not in use, but eg. the NinjaSnowWar game uses it
         serverConnection->SetPosition(cameraNode_->GetPosition());
     }

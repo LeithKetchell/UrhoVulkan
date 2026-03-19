@@ -11,6 +11,7 @@
 #include "../Input/Controls.h"
 #include "../IO/VectorBuffer.h"
 #include "../Scene/ReplicationState.h"
+#include "Cipher.h"
 
 namespace SLNet
 {
@@ -126,7 +127,7 @@ public:
     /// Set the observer position for interest management, to be sent to the server.
     /// @property
     void SetPosition(const Vector3& position);
-    /// Set the observer rotation for interest management, to be sent to the server. Note: not used by the NetworkPriority component.
+    /// Set the observer rotation for interest management, to be sent to the server. Note: not used by the NetworkIdentity component.
     /// @property
     void SetRotation(const Quaternion& rotation);
     /// Set the connection pending status. Called by Network.
@@ -245,6 +246,22 @@ public:
     /// Trigger client connection to download a package file from the server. Can be used to download additional resource packages when client is already joined in a scene. The package must have been added as a requirement to the scene the client is joined in, or else the eventual download will fail.
     void SendPackageToClient(PackageFile* package);
 
+    /// Set the cipher for this connection. Called during key exchange.
+    void SetCipher(Cipher* cipher);
+    /// Return the cipher assigned to this connection.
+    Cipher* GetCipher() const { return cipher_; }
+    /// Return whether encryption is ready (key exchange complete).
+    bool IsEncryptionReady() const { return encryptionReady_; }
+
+    /// Return the PAKE username (set during key exchange if present).
+    const String& GetPakeUsername() const { return pakeUsername_; }
+    /// Return whether this is a PAKE-authenticated connection (username was sent in key exchange).
+    bool IsPakeConnection() const { return !pakeUsername_.Empty(); }
+    /// Return whether PAKE authentication has been confirmed (first successful decrypt).
+    bool IsPakeAuthenticated() const { return pakeAuthenticated_; }
+    /// Set PAKE authentication status.
+    void SetPakeAuthenticated(bool authenticated) { pakeAuthenticated_ = authenticated; }
+
     /// Set network simulation parameters. Called by Network.
     void ConfigureNetworkSimulator(int latencyMs, float packetLoss);
     /// Buffered packet size limit, when reached, packet is sent out immediately
@@ -284,6 +301,10 @@ private:
     void ProcessExistingNode(Node* node, NodeReplicationState& nodeState);
     /// Process a SyncPackagesInfo message from server.
     void ProcessPackageInfo(int msgID, MemoryBuffer& msg);
+    /// Process a key exchange message from the client. Called by Network.
+    void ProcessKeyExchange(MemoryBuffer& msg);
+    /// Process a key exchange reply from the server. Called by Network.
+    void ProcessKeyExchangeReply(MemoryBuffer& msg);
     /// Process unknown message. All unknown messages are forwarded as an events
     void ProcessUnknownMessage(int msgID, MemoryBuffer& msg);
     /// Check a package list received from server and initiate package downloads as necessary. Return true on success, or false if failed to initialze downloads (cache dir not set).
@@ -353,6 +374,14 @@ private:
     HashMap<int, VectorBuffer> outgoingBuffer_;
     /// Outgoing packet size limit
     int packedMessageLimit_;
+    /// Cipher for encrypting/decrypting traffic.
+    SharedPtr<Cipher> cipher_;
+    /// Whether encryption is active (key exchange complete).
+    bool encryptionReady_;
+    /// PAKE username from key exchange (empty = unauthenticated DH).
+    String pakeUsername_;
+    /// Whether PAKE authentication has been confirmed.
+    bool pakeAuthenticated_;
 };
 
 }

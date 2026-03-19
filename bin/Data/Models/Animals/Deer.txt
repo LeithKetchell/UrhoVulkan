@@ -1,0 +1,3 @@
+Models/Animals/Materials/head.xml
+Models/Animals/Materials/Eye.xml
+Models/Animals/Materials/body.xml
