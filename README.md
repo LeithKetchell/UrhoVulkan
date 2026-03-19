@@ -195,7 +195,7 @@ A lightweight scene editor built into Sample 23 (standalone) and forked as Sampl
   - Collapsible info panel sections with visual separators between Model, Materials, and Animation groups
   - Help overlay (H key) with full keybinding reference
 - **AssetImporter** improvements
-  - `info` command — inspect native .mdl and .ani files without Assimp: geometry/vertex/triangle counts, bounding box with oversized model warning, skeleton hierarchy, and for .ani files track listing with channel masks and keyframe ranges
+  - `info` command — inspect native .mdl and .ani files without Assimp: geometry counts, bounding box dimensions, skeleton hierarchy, animation tracks with channel masks and keyframe ranges. Most useful for diagnosing scale — artists rarely model to engine scale, so `info` shows the bounding box diagonal and warns when a model is oversized, suggesting the correct `-scale` factor to bring it into range
   - Bone scaling bug fixed — initialPosition, offsetMatrix translation, radius, and boundingBox now scale correctly with `-scale` flag
   - Auto material list generation — multi-material models automatically get a .txt material list file alongside the .mdl
 
