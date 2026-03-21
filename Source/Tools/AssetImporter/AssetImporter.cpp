@@ -633,9 +633,18 @@ void Run(const Vector<String>& arguments)
     if (command == "model" || command == "scene" || command == "anim" || command == "node" || command == "dump" || command == "info")
     {
         String inFile = arguments[1];
+        // Strip stray line endings from input path (can come from shell copy-paste)
+        inFile.Replace("\r\n", "");
+        inFile.Replace("\r", "");
+        inFile.Replace("\n", "");
         String outFile;
         if (arguments.Size() > 2 && arguments[2][0] != '-')
+        {
             outFile = GetInternalPath(arguments[2]);
+            outFile.Replace("\r\n", "");
+            outFile.Replace("\r", "");
+            outFile.Replace("\n", "");
+        }
 
         inputName_ = GetFileName(inFile);
         outName_ = outFile;
@@ -2858,6 +2867,10 @@ String SanitateAssetName(const String& name)
     fixedName.Replace("/", "");
     fixedName.Replace("\\", "");
     fixedName.Replace("|", "");
+    // Strip line endings — CR (\r), LF (\n), CRLF (\r\n)
+    fixedName.Replace("\r\n", "");
+    fixedName.Replace("\r", "");
+    fixedName.Replace("\n", "");
 
     return fixedName;
 }
