@@ -45,4 +45,5 @@ void PS()
         discard;
 
     gl_FragColor = vec4(bodyColor.rgb, alpha);
+    gl_FragDepth = 0.9999;
 }

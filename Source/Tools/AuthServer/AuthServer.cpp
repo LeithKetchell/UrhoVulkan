@@ -28,6 +28,7 @@
 #include "PlayerCharacter.h"
 
 #include <libsodium/sodium.h>
+#include <ctime>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -313,6 +314,7 @@ void AuthServer::Start()
     // Only REPLICATED nodes (avatars, AI entities) get sent to clients.
     LoadScene();
     RegisterExistingTerrain();
+    InitTerrainBrush();
     SetupGodCamera();
 
     // Generate a test terrain at grid (1,0) to verify the generator works
@@ -354,6 +356,12 @@ void AuthServer::Start()
 
     statusText_->SetText("ONLINE — port " + String(listenPort_));
     statusText_->SetColor(Color(0.2f, 1.0f, 0.2f));
+
+    // Melbourne clock — lower right corner
+    auto* clockFont = GetSubsystem<ResourceCache>()->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    melbourneClock_ = new MelbourneClock(context_);
+    melbourneClock_->Initialize(GetSubsystem<UI>()->GetRoot(), clockFont, 14);
+
     LogMessage("AuthServer ready.");
 }
 
@@ -406,6 +414,7 @@ void AuthServer::CreateUI()
     CreateNetworkingPanel(bg, font);
     CreateDatabasePanel(bg, font);
     CreateWeatherPanel(bg, font);
+    CreateSceneViewPanel(bg, font);
 
     SwitchTab(0);  // Networking tab active by default
 
@@ -444,9 +453,18 @@ void AuthServer::CreateMenuBar(BorderImage* bg, Font* font)
     wxLabel->SetText("Weather");
     wxLabel->SetAlignment(HA_CENTER, VA_CENTER);
 
+    sceneViewTab_ = menuBar->CreateChild<Button>("SceneViewTab");
+    sceneViewTab_->SetStyle("Button");
+    sceneViewTab_->SetFixedSize(100, 24);
+    auto* svLabel = sceneViewTab_->CreateChild<Text>("Label");
+    svLabel->SetFont(font, 12);
+    svLabel->SetText("Scene");
+    svLabel->SetAlignment(HA_CENTER, VA_CENTER);
+
     SubscribeToEvent(networkingTab_, "Released", URHO3D_HANDLER(AuthServer, HandleTabClicked));
     SubscribeToEvent(databaseTab_, "Released", URHO3D_HANDLER(AuthServer, HandleTabClicked));
     SubscribeToEvent(weatherTab_, "Released", URHO3D_HANDLER(AuthServer, HandleTabClicked));
+    SubscribeToEvent(sceneViewTab_, "Released", URHO3D_HANDLER(AuthServer, HandleTabClicked));
 }
 
 void AuthServer::CreateNetworkingPanel(BorderImage* bg, Font* font)
@@ -721,6 +739,152 @@ void AuthServer::RefreshWeatherPanel()
     }
 }
 
+void AuthServer::CreateSceneViewPanel(BorderImage* bg, Font* font)
+{
+    sceneViewPanel_ = bg->CreateChild<BorderImage>("SceneViewPanel");
+    sceneViewPanel_->SetColor(Color(0.0f, 0.0f, 0.0f, 0.0f));  // transparent — 3D renders behind
+    sceneViewPanel_->SetLayout(LM_VERTICAL, 4, IntRect(8, 8, 8, 8));
+
+    // Instructions
+    auto* instrText = sceneViewPanel_->CreateChild<Text>("SceneInstr");
+    instrText->SetFont(font, 11);
+    instrText->SetText("RMB+WASD: fly camera  |  LMB: raise water  |  MMB: lower water  |  Scroll: brush size");
+    instrText->SetColor(Color(0.6f, 0.6f, 0.7f));
+
+    // Scene stats (updated each frame)
+    sceneStatsText_ = sceneViewPanel_->CreateChild<Text>("SceneStats");
+    sceneStatsText_->SetFont(font, 11);
+    sceneStatsText_->SetText("Nodes: -- | Clients: --");
+    sceneStatsText_->SetColor(Color(0.5f, 0.8f, 0.5f));
+
+    // Brush info
+    auto* brushText = sceneViewPanel_->CreateChild<Text>("BrushInfo");
+    brushText->SetFont(font, 11);
+    brushText->SetText("Water Brush: radius 8, strength 0.02");
+    brushText->SetColor(Color(0.4f, 0.6f, 0.9f));
+    brushText->SetVar("IsBrushInfo", true);
+}
+
+void AuthServer::PaintWater(float worldX, float worldZ, bool raise)
+{
+    if (!waterHeightMap_)
+        return;
+
+    int width = waterHeightMap_->GetWidth();
+    int height = waterHeightMap_->GetHeight();
+
+    // Convert world coords to pixel coords (same math as HandleWaterEdit)
+    float terrainSpacingX = 2.0f;
+    float terrainSpacingZ = 2.0f;
+    float halfSize = (width - 1) * terrainSpacingX * 0.5f;
+
+    int centerPX = (int)((worldX + halfSize) / terrainSpacingX);
+    int centerPZ = (int)((worldZ + halfSize) / terrainSpacingZ);
+    int pixelRadius = (int)(waterBrushRadius_ / terrainSpacingX);
+
+    HashSet<unsigned long long> touchedPatches;
+    int modified = 0;
+
+    for (int pz = Max(0, centerPZ - pixelRadius); pz <= Min(height - 1, centerPZ + pixelRadius); ++pz)
+    {
+        for (int px = Max(0, centerPX - pixelRadius); px <= Min(width - 1, centerPX + pixelRadius); ++px)
+        {
+            float dx = (float)(px - centerPX);
+            float dz = (float)(pz - centerPZ);
+            float dist = sqrtf(dx * dx + dz * dz);
+            if (dist > pixelRadius)
+                continue;
+
+            float falloff = 1.0f - (dist / (float)pixelRadius);
+            float delta = waterBrushStrength_ * falloff;
+
+            Color c = waterHeightMap_->GetPixel(px, pz);
+            float val = c.r_;
+            if (raise)
+                val = Min(val + delta, 1.0f);
+            else
+                val = Max(val - delta, 0.0f);
+            waterHeightMap_->SetPixel(px, pz, Color(val, val, val));
+            ++modified;
+
+            // Record which patch this pixel belongs to
+            int patchPixels = 64;  // PATCH_PIXELS
+            int patchPX = (px - width / 2) / patchPixels;
+            int patchPZ = (pz - height / 2) / patchPixels;
+            if (px < width / 2) patchPX--;
+            if (pz < height / 2) patchPZ--;
+            touchedPatches.Insert(PatchKey(patchPX, patchPZ));
+        }
+    }
+
+    if (modified == 0)
+        return;
+
+    // Broadcast affected patches to all connected clients
+    for (auto pit = touchedPatches.Begin(); pit != touchedPatches.End(); ++pit)
+    {
+        int tpx = (int)(*pit >> 32);
+        int tpz = (int)(*pit & 0xFFFFFFFF);
+        BroadcastAffectedPatch(tpx, tpz, "water_heightmap", waterHeightMap_);
+    }
+}
+
+void AuthServer::UpdateSceneView(float timeStep)
+{
+    if (activeTab_ != 3)
+        return;
+
+    // Update scene stats
+    if (sceneStatsText_ && scene_)
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Nodes: %d | Clients: %d | Brush: r=%.0f s=%.3f",
+                 scene_->GetNumChildren(true), sessions_.Size(),
+                 waterBrushRadius_, waterBrushStrength_);
+        sceneStatsText_->SetText(buf);
+    }
+
+    auto* input = GetSubsystem<Input>();
+    auto* ui = GetSubsystem<UI>();
+
+    // Scroll wheel adjusts brush radius
+    int wheel = input->GetMouseMoveWheel();
+    if (wheel != 0)
+    {
+        waterBrushRadius_ = Clamp(waterBrushRadius_ + wheel * 2.0f, 2.0f, 64.0f);
+    }
+
+    // LMB = raise water, MMB = lower water (only when not over UI)
+    bool lmb = input->GetMouseButtonDown(MOUSEB_LEFT);
+    bool mmb = input->GetMouseButtonDown(MOUSEB_MIDDLE);
+    bool rmb = input->GetMouseButtonDown(MOUSEB_RIGHT);
+
+    if ((lmb || mmb) && !rmb && !ui->GetFocusElement())
+    {
+        // Raycast from camera through cursor
+        auto* camera = godCamNode_ ? godCamNode_->GetComponent<Camera>() : nullptr;
+        if (camera)
+        {
+            auto* graphics = GetSubsystem<Graphics>();
+            IntVector2 mousePos = input->GetMousePosition();
+            Ray ray = camera->GetScreenRay(
+                (float)mousePos.x_ / graphics->GetWidth(),
+                (float)mousePos.y_ / graphics->GetHeight());
+
+            auto* physicsWorld = scene_->GetComponent<PhysicsWorld>();
+            if (physicsWorld)
+            {
+                PhysicsRaycastResult result;
+                physicsWorld->RaycastSingle(result, ray, 2000.0f);
+                if (result.body_)
+                {
+                    PaintWater(result.position_.x_, result.position_.z_, lmb);
+                }
+            }
+        }
+    }
+}
+
 void AuthServer::HandleKeyDown(StringHash eventType, VariantMap& eventData)
 {
     using namespace KeyDown;
@@ -738,6 +902,8 @@ void AuthServer::HandleTabClicked(StringHash eventType, VariantMap& eventData)
         SwitchTab(1);
     else if (element == weatherTab_)
         SwitchTab(2);
+    else if (element == sceneViewTab_)
+        SwitchTab(3);
 }
 
 void AuthServer::SwitchTab(int tab)
@@ -747,17 +913,22 @@ void AuthServer::SwitchTab(int tab)
     databasePanel_->SetVisible(tab == 1);
     if (weatherPanel_)
         weatherPanel_->SetVisible(tab == 2);
+    if (sceneViewPanel_)
+        sceneViewPanel_->SetVisible(tab == 3);
 
     // Update tab button colors
     auto* netLabel = static_cast<Text*>(networkingTab_->GetChild("Label", false));
     auto* dbLabel = static_cast<Text*>(databaseTab_->GetChild("Label", false));
     auto* wxLabel = weatherTab_ ? static_cast<Text*>(weatherTab_->GetChild("Label", false)) : nullptr;
+    auto* svLabel = sceneViewTab_ ? static_cast<Text*>(sceneViewTab_->GetChild("Label", false)) : nullptr;
     if (netLabel)
         netLabel->SetColor(tab == 0 ? Color(0.8f, 0.8f, 1.0f) : Color(0.5f, 0.5f, 0.5f));
     if (dbLabel)
         dbLabel->SetColor(tab == 1 ? Color(0.8f, 0.8f, 1.0f) : Color(0.5f, 0.5f, 0.5f));
     if (wxLabel)
         wxLabel->SetColor(tab == 2 ? Color(0.8f, 0.8f, 1.0f) : Color(0.5f, 0.5f, 0.5f));
+    if (svLabel)
+        svLabel->SetColor(tab == 3 ? Color(0.8f, 0.8f, 1.0f) : Color(0.5f, 0.5f, 0.5f));
 
     // Refresh weather panel when switching to it
     if (tab == 2)
@@ -1558,6 +1729,34 @@ void AuthServer::LoadScene()
         LogMessage("[ERROR] Failed to save bootstrap scene");
 }
 
+void AuthServer::InitTerrainBrush()
+{
+    if (!scene_)
+        return;
+
+    auto* terrain = scene_->GetComponent<Terrain>(true);
+    if (!terrain)
+    {
+        LogMessage("[WARN] No terrain in scene — server brush not available");
+        return;
+    }
+
+    auto* heightMap = terrain->GetHeightMap();
+    if (!heightMap)
+    {
+        LogMessage("[WARN] Terrain has no heightmap — server brush not available");
+        return;
+    }
+
+    terrainBrush_ = new TerrainBrush(context_);
+    terrainBrush_->SetTerrain(terrain, heightMap);
+    if (waterHeightMap_)
+        terrainBrush_->SetWaterMap(waterHeightMap_);
+
+    LogMessage("Server terrain brush initialized (" +
+               String(heightMap->GetWidth()) + "x" + String(heightMap->GetHeight()) + ")");
+}
+
 void AuthServer::SetupGodCamera()
 {
     if (!scene_)
@@ -1932,6 +2131,18 @@ void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventDat
         break;
     }
 
+    case MSG_PATCH_POSITION:
+    {
+        HandlePatchPosition(connection, msg);
+        break;
+    }
+
+    case MSG_TERRAIN_SYNC:
+    {
+        HandleTerrainSync(connection, msg);
+        break;
+    }
+
     default:
         LogMessage("Unknown msg ID " + String(msgID) + " from " + connection->ToString());
         break;
@@ -1947,6 +2158,13 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // God camera movement
     if (godCamActive_)
         UpdateGodCamera(dt);
+
+    // Scene view water brush
+    UpdateSceneView(dt);
+
+    // Melbourne clock
+    if (melbourneClock_)
+        melbourneClock_->Update();
 
     // BOM weather fetch (every 10 minutes, first fetch at startup)
     weatherFetchTimer_ -= dt;
@@ -1968,6 +2186,14 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
             weatherBroadcastTimer_ = WEATHER_BROADCAST_INTERVAL;
             BroadcastWeather();
         }
+    }
+
+    // Trim terrain edit journals periodically
+    journalTrimTimer_ -= dt;
+    if (journalTrimTimer_ <= 0.0f)
+    {
+        journalTrimTimer_ = JOURNAL_TRIM_INTERVAL;
+        journalManager_.TrimAll();
     }
 }
 
@@ -2105,9 +2331,10 @@ void AuthServer::HandleClientAuthenticated(StringHash eventType, VariantMap& eve
     if (weatherReady_)
         SendWeatherToClient(connection);
 
-    // Send authoritative water heightmap
-    if (waterHeightMap_)
-        SendWaterMapToClient(connection);
+    // Per-patch resource streaming — send 3×3 neighbourhood around home patch
+    sessions_[connection].lastPatchPos = IntVector2(homePatchX, homePatchZ);
+    sessions_[connection].sentPatches.Clear();
+    SendPatchNeighbourhood(connection, homePatchX, homePatchZ);
 }
 
 // ============================================================
@@ -2492,7 +2719,48 @@ void AuthServer::HandleEditTerrain(Connection* connection, MemoryBuffer& msg)
         return;
     }
 
-    // Valid — broadcast to all other authenticated clients
+    // Apply edit to server's authoritative terrain
+    if (terrainBrush_)
+    {
+        terrainBrush_->SetMode(brushMode);
+        terrainBrush_->SetShape(brushShape);
+        terrainBrush_->SetRadius(brushRadius);
+        terrainBrush_->SetStrength(brushStrength);
+        terrainBrush_->SetSmoothStrength(smoothStrength);
+        terrainBrush_->SetRotation(brushRotation);
+        terrainBrush_->SetFlattenHeight(lockedFlattenHeight);
+        terrainBrush_->Apply(worldPos, timeStep);
+    }
+
+    // Record edit in journal for reconnect sync
+    {
+        // Determine which grid cell this edit belongs to (currently only grid 0,0)
+        int gridX = 0, gridZ = 0;
+        TerrainJournal& journal = journalManager_.GetJournal(gridX, gridZ);
+        TerrainEdit terrainEdit;
+        terrainEdit.version = journal.GetVersion() + 1;
+        terrainEdit.worldPos = worldPos;
+        terrainEdit.brushMode = brushMode;
+        terrainEdit.brushShape = brushShape;
+        terrainEdit.brushRadius = brushRadius;
+        terrainEdit.brushStrength = brushStrength;
+        terrainEdit.smoothStrength = smoothStrength;
+        terrainEdit.brushRotation = brushRotation;
+        terrainEdit.flattenHeight = lockedFlattenHeight;
+        terrainEdit.timeStep = timeStep;
+        terrainEdit.timestamp = (unsigned)time(nullptr);
+        journalManager_.RecordEdit(gridX, gridZ, terrainEdit);
+
+        // Update hash periodically (every 50 edits to avoid per-edit cost)
+        if (terrainEdit.version % 50 == 0)
+        {
+            auto* terrain = scene_->GetComponent<Terrain>(true);
+            if (terrain && terrain->GetHeightMap())
+                journal.UpdateHash(terrain->GetHeightMap());
+        }
+    }
+
+    // Broadcast to all other authenticated clients
     VectorBuffer broadcastPayload;
     broadcastPayload.WriteU32(editID);
     broadcastPayload.WriteVector3(worldPos);
@@ -2675,7 +2943,28 @@ void AuthServer::RegisterExistingTerrain()
     {
         terrainGrid_[IntVector2(0, 0)] = terrain;
         LogMessage("Registered existing terrain as grid (0,0)");
+
+        // Initialize journal hash from current heightmap
+        if (terrain->GetHeightMap())
+        {
+            TerrainJournal& journal = journalManager_.GetJournal(0, 0);
+            journal.UpdateHash(terrain->GetHeightMap());
+            LogMessage("Terrain journal initialized — hash: " + String(journal.GetHash()));
+        }
     }
+}
+
+void AuthServer::HandleTerrainSync(Connection* connection, MemoryBuffer& msg)
+{
+    auto it = sessions_.Find(connection);
+    if (it == sessions_.End() || !it->second_.authenticated)
+    {
+        LogMessage("[WARN] MSG_TERRAIN_SYNC from unauthenticated client — ignoring");
+        return;
+    }
+
+    journalManager_.HandleSyncRequest(connection, msg, terrainGrid_);
+    LogMessage("Terrain sync request from " + it->second_.username);
 }
 
 SharedPtr<Image> AuthServer::GenerateTerrainHeightmap(int gridX, int gridZ)
@@ -3064,25 +3353,118 @@ void AuthServer::SaveWaterMap()
     LogMessage("Water map saved: " + fullPath);
 }
 
-void AuthServer::SendWaterMapToClient(Connection* connection)
+// ============================================================
+// Per-patch resource streaming
+// ============================================================
+
+static const float PATCH_WORLD_SIZE = 128.0f;  // 64 cells × 2.0 spacing
+static const int PATCH_PIXELS = 64;             // pixels per patch in resource map
+
+void AuthServer::SendResourcePatch(Connection* connection, const String& resourceID, Image* resourceMap, int patchX, int patchZ)
 {
-    if (!waterHeightMap_)
+    if (!resourceMap)
         return;
 
-    // Serialize the water heightmap as PNG into a VectorBuffer
-    VectorBuffer imageData;
-    waterHeightMap_->Save(imageData);
+    int imgW = resourceMap->GetWidth();
+    int imgH = resourceMap->GetHeight();
+    int components = resourceMap->GetComponents();
+
+    // Patch pixel origin in the resource image (0,0 patch is centered)
+    int pixelX = imgW / 2 + patchX * PATCH_PIXELS;
+    int pixelZ = imgH / 2 + patchZ * PATCH_PIXELS;
+
+    // Clamp to image bounds
+    int x0 = Clamp(pixelX, 0, imgW);
+    int z0 = Clamp(pixelZ, 0, imgH);
+    int x1 = Clamp(pixelX + PATCH_PIXELS, 0, imgW);
+    int z1 = Clamp(pixelZ + PATCH_PIXELS, 0, imgH);
+    int pixelW = x1 - x0;
+    int pixelH = z1 - z0;
+
+    if (pixelW <= 0 || pixelH <= 0)
+        return;  // patch is entirely outside the image
+
+    // Copy raw pixel data
+    unsigned dataSize = pixelW * pixelH * components;
+    const unsigned char* src = resourceMap->GetData();
+    int stride = imgW * components;
 
     VectorBuffer msg;
-    msg.WriteI32(waterHeightMap_->GetWidth());
-    msg.WriteI32(waterHeightMap_->GetHeight());
-    msg.WriteI32(waterHeightMap_->GetComponents());
-    msg.WriteU32(imageData.GetSize());
-    msg.Write(imageData.GetData(), imageData.GetSize());
+    msg.WriteString(resourceID);
+    msg.WriteI32(patchX);
+    msg.WriteI32(patchZ);
+    msg.WriteI32(x0);
+    msg.WriteI32(z0);
+    msg.WriteI32(pixelW);
+    msg.WriteI32(pixelH);
+    msg.WriteI32(components);
+    msg.WriteU32(dataSize);
 
-    connection->SendMessage(MSG_WATER_MAP, true, true, msg);
-    LogMessage("Water map sent to " + connection->ToString() +
-               " (" + String(imageData.GetSize()) + " bytes)");
+    for (int row = 0; row < pixelH; ++row)
+        msg.Write(src + (z0 + row) * stride + x0 * components, pixelW * components);
+
+    connection->SendMessage(MSG_RESOURCE_PATCH, true, true, msg);
+}
+
+void AuthServer::SendPatchNeighbourhood(Connection* connection, int centerX, int centerZ)
+{
+    auto it = sessions_.Find(connection);
+    if (it == sessions_.End())
+        return;
+
+    int sent = 0;
+    for (int dz = -1; dz <= 1; ++dz)
+    {
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            int px = centerX + dx;
+            int pz = centerZ + dz;
+            unsigned long long key = PatchKey(px, pz);
+
+            if (it->second_.sentPatches.Contains(key))
+                continue;  // already sent this patch
+
+            // Send water heightmap patch
+            if (waterHeightMap_)
+                SendResourcePatch(connection, "water_heightmap", waterHeightMap_, px, pz);
+
+            // Future: send other resource maps here (moisture, vegetation, etc.)
+
+            it->second_.sentPatches.Insert(key);
+            ++sent;
+        }
+    }
+
+    if (sent > 0)
+        LogMessage("Streamed " + String(sent) + " resource patch(es) to " + connection->ToString() +
+                   " around (" + String(centerX) + "," + String(centerZ) + ")");
+}
+
+void AuthServer::HandlePatchPosition(Connection* connection, MemoryBuffer& msg)
+{
+    auto it = sessions_.Find(connection);
+    if (it == sessions_.End() || !it->second_.authenticated)
+        return;
+
+    int patchX = msg.ReadI32();
+    int patchZ = msg.ReadI32();
+
+    it->second_.lastPatchPos = IntVector2(patchX, patchZ);
+    SendPatchNeighbourhood(connection, patchX, patchZ);
+}
+
+void AuthServer::BroadcastAffectedPatch(int editPatchX, int editPatchZ, const String& resourceID, Image* resourceMap)
+{
+    for (auto it = sessions_.Begin(); it != sessions_.End(); ++it)
+    {
+        if (!it->second_.authenticated)
+            continue;
+
+        IntVector2 clientPatch = it->second_.lastPatchPos;
+        // Check if editPatch falls within client's 3×3 window
+        if (Abs(editPatchX - clientPatch.x_) <= 1 && Abs(editPatchZ - clientPatch.y_) <= 1)
+            SendResourcePatch(it->first_, resourceID, resourceMap, editPatchX, editPatchZ);
+    }
 }
 
 void AuthServer::HandleWaterEdit(Connection* connection, MemoryBuffer& msg)
@@ -3100,7 +3482,7 @@ void AuthServer::HandleWaterEdit(Connection* connection, MemoryBuffer& msg)
     float worldZ = msg.ReadFloat();
     float radius = msg.ReadFloat();
     float strength = msg.ReadFloat();
-    bool raise = msg.ReadBool();  // true = add water, false = remove water
+    bool raise = msg.ReadBool();
 
     if (!waterHeightMap_)
         return;
@@ -3108,7 +3490,7 @@ void AuthServer::HandleWaterEdit(Connection* connection, MemoryBuffer& msg)
     int width = waterHeightMap_->GetWidth();
     int height = waterHeightMap_->GetHeight();
 
-    // Convert world coords to pixel coords (terrain spans -1024..+1024 with spacing 2.0)
+    // Convert world coords to pixel coords
     float terrainSpacingX = 2.0f;
     float terrainSpacingZ = 2.0f;
     float halfSize = (width - 1) * terrainSpacingX * 0.5f;
@@ -3116,6 +3498,9 @@ void AuthServer::HandleWaterEdit(Connection* connection, MemoryBuffer& msg)
     int centerPX = (int)((worldX + halfSize) / terrainSpacingX);
     int centerPZ = (int)((worldZ + halfSize) / terrainSpacingZ);
     int pixelRadius = (int)(radius / terrainSpacingX);
+
+    // Track which patches are touched by this edit
+    HashSet<unsigned long long> touchedPatches;
 
     int modified = 0;
     for (int pz = Max(0, centerPZ - pixelRadius); pz <= Min(height - 1, centerPZ + pixelRadius); ++pz)
@@ -3139,24 +3524,24 @@ void AuthServer::HandleWaterEdit(Connection* connection, MemoryBuffer& msg)
                 val = Max(val - delta, 0.0f);
             waterHeightMap_->SetPixel(px, pz, Color(val, val, val));
             ++modified;
+
+            // Record which patch this pixel belongs to
+            int patchPX = (px - width / 2) / PATCH_PIXELS;
+            int patchPZ = (pz - height / 2) / PATCH_PIXELS;
+            if (px < width / 2) patchPX--;  // negative side rounds down
+            if (pz < height / 2) patchPZ--;
+            touchedPatches.Insert(PatchKey(patchPX, patchPZ));
         }
     }
 
     if (modified == 0)
         return;
 
-    // Broadcast the edit to all other authenticated clients
-    VectorBuffer broadcast;
-    broadcast.WriteFloat(worldX);
-    broadcast.WriteFloat(worldZ);
-    broadcast.WriteFloat(radius);
-    broadcast.WriteFloat(strength);
-    broadcast.WriteBool(raise);
-
-    for (auto sit = sessions_.Begin(); sit != sessions_.End(); ++sit)
+    // Broadcast affected patches to all clients who can see them
+    for (auto pit = touchedPatches.Begin(); pit != touchedPatches.End(); ++pit)
     {
-        if (!sit->second_.authenticated || sit->first_ == connection)
-            continue;
-        sit->first_->SendMessage(MSG_WATER_EDIT, true, true, broadcast);
+        int tpx = (int)(*pit >> 32);
+        int tpz = (int)(*pit & 0xFFFFFFFF);
+        BroadcastAffectedPatch(tpx, tpz, "water_heightmap", waterHeightMap_);
     }
 }

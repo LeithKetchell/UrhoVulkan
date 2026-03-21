@@ -22,6 +22,12 @@ const float BRAKE_FORCE = 0.2f;
 const float JUMP_FORCE = 7.0f;
 const float INAIR_THRESHOLD_TIME = 0.1f;
 
+// Swimming tuning
+const float SWIM_FORCE = 0.4f;
+const float SWIM_BRAKE_FORCE = 0.15f;
+const float BUOYANCY_FORCE = 0.3f;
+const float WATER_LEVEL = 5.0f;
+
 /// Player character component. Drives physics-based movement from Controls input.
 /// Designed as a capsule placeholder — add AnimationController calls when swapping to a rigged model.
 class PlayerCharacter : public LogicComponent
@@ -44,5 +50,6 @@ private:
 
     bool onGround_;
     bool okToJump_;
+    bool inWater_;
     float inAirTimer_;
 };

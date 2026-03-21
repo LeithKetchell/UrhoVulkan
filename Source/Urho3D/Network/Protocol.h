@@ -48,6 +48,11 @@ static const int MSG_PACKAGEINFO = 0x98;
 /// Packet that includes all the above messages
 static const int MSG_PACKED_MESSAGE = 0x99;
 
+// ─── ENGINE SERVICES (0x9A–0xBF) ──────────────────────────────────────────────
+// Core engine protocol: auth, terrain sync, water streaming, peer management.
+// MSG_USER (0x200+) is reserved for game developers — engine never touches it.
+// ──────────────────────────────────────────────────────────────────────────────
+
 /// Client->server: send client public key for key exchange.
 static const int MSG_KEY_EXCHANGE = 0x9A;
 /// Server->client: send server public key for key exchange.
@@ -79,6 +84,17 @@ static const int MSG_EDIT_BROADCAST = 0xA5;
 static const int MSG_WATER_MAP = 0xB0;
 /// Client->server or server->client(s): incremental water edit (brush stroke).
 static const int MSG_WATER_EDIT = 0xB1;
+/// Server->client: resource data for one terrain patch region.
+static const int MSG_RESOURCE_PATCH = 0xB2;
+/// Client->server: player's current patch position (triggers streaming).
+static const int MSG_PATCH_POSITION = 0xB3;
+
+/// Client->server: terrain sync request (version + hash for journal replay).
+static const int MSG_TERRAIN_SYNC = 0xB4;
+/// Server->client: journal of terrain edits to replay (incremental sync).
+static const int MSG_TERRAIN_JOURNAL = 0xB5;
+/// Server->client: full heightmap transfer (hash mismatch or journal gap).
+static const int MSG_TERRAIN_FULLSYNC = 0xB6;
 
 /// Used to define custom messages, usually of the form MSG_USER + x, where x is an integer value.
 static const int MSG_USER = 0x200;

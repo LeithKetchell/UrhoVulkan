@@ -293,6 +293,7 @@ static int GetSamplerBinding(const String& name)
     if (name == "sDetailMap1")          return 102;  // TU_NORMAL
     if (name == "sDetailMap2")          return 103;  // TU_SPECULAR
     if (name == "sDetailMap3")          return 104;  // TU_EMISSIVE
+    if (name == "sWaterMap4")           return 105;  // TU_ENVIRONMENT
     return -1;  // Unknown sampler — will use sequential fallback
 }
 

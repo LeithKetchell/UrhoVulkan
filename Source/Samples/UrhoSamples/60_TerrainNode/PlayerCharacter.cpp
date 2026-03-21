@@ -13,6 +13,7 @@ PlayerCharacter::PlayerCharacter(Context* context) :
     LogicComponent(context),
     onGround_(false),
     okToJump_(true),
+    inWater_(false),
     inAirTimer_(0.0f)
 {
     SetUpdateEventMask(LogicComponentEvents::FixedUpdate);
@@ -28,6 +29,7 @@ void PlayerCharacter::RegisterObject(Context* context)
     URHO3D_ATTRIBUTE("On Ground", onGround_, false, AM_DEFAULT);
     URHO3D_ATTRIBUTE("OK To Jump", okToJump_, true, AM_DEFAULT);
     URHO3D_ATTRIBUTE("In Air Timer", inAirTimer_, 0.0f, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("In Water", inWater_, false, AM_DEFAULT);
 }
 
 void PlayerCharacter::Start()
@@ -41,19 +43,18 @@ void PlayerCharacter::FixedUpdate(float timeStep)
     if (!body)
         return;
 
+    // Detect water
+    inWater_ = (node_->GetWorldPosition().y_ < WATER_LEVEL);
+
     // Update in-air timer
     if (!onGround_)
         inAirTimer_ += timeStep;
     else
         inAirTimer_ = 0.0f;
 
-    bool softGrounded = inAirTimer_ < INAIR_THRESHOLD_TIME;
-
     // Build movement direction from controls
-    const Quaternion& rot = node_->GetRotation();
     Vector3 moveDir = Vector3::ZERO;
     const Vector3& velocity = body->GetLinearVelocity();
-    Vector3 planeVelocity(velocity.x_, 0.0f, velocity.z_);
 
     if (controls_.IsDown(CTRL_FORWARD))
         moveDir += Vector3::FORWARD;
@@ -67,26 +68,51 @@ void PlayerCharacter::FixedUpdate(float timeStep)
     if (moveDir.LengthSquared() > 0.0f)
         moveDir.Normalize();
 
-    // Apply movement impulse (reduced force in air)
-    body->ApplyImpulse(rot * moveDir * (softGrounded ? MOVE_FORCE : INAIR_MOVE_FORCE));
-
-    if (softGrounded)
+    if (inWater_)
     {
-        // Brake to limit ground velocity
-        Vector3 brakeForce = -planeVelocity * BRAKE_FORCE;
-        body->ApplyImpulse(brakeForce);
+        // --- Swimming ---
+        // Buoyancy counters gravity (mass * g * factor)
+        float mass = body->GetMass();
+        body->ApplyForce(Vector3::UP * mass * 9.81f * BUOYANCY_FORCE);
 
-        // Jump
+        // Swim direction uses pitch + yaw so looking down + W = dive
+        Quaternion swimRot(controls_.pitch_, controls_.yaw_, 0.0f);
+        body->ApplyImpulse(swimRot * moveDir * SWIM_FORCE);
+
+        // 3D water drag on all axes
+        body->ApplyImpulse(-velocity * SWIM_BRAKE_FORCE);
+
+        // Space = gentle upward push
         if (controls_.IsDown(CTRL_JUMP))
+            body->ApplyImpulse(Vector3::UP * SWIM_FORCE);
+    }
+    else
+    {
+        // --- Land movement (unchanged) ---
+        bool softGrounded = inAirTimer_ < INAIR_THRESHOLD_TIME;
+        const Quaternion& rot = node_->GetRotation();
+        Vector3 planeVelocity(velocity.x_, 0.0f, velocity.z_);
+
+        body->ApplyImpulse(rot * moveDir * (softGrounded ? MOVE_FORCE : INAIR_MOVE_FORCE));
+
+        if (softGrounded)
         {
-            if (okToJump_)
+            // Brake to limit ground velocity
+            Vector3 brakeForce = -planeVelocity * BRAKE_FORCE;
+            body->ApplyImpulse(brakeForce);
+
+            // Jump — require actual ground contact, not just the soft-grounded grace period
+            if (controls_.IsDown(CTRL_JUMP))
             {
-                body->ApplyImpulse(Vector3::UP * JUMP_FORCE);
-                okToJump_ = false;
+                if (okToJump_ && onGround_)
+                {
+                    body->ApplyImpulse(Vector3::UP * JUMP_FORCE);
+                    okToJump_ = false;
+                }
             }
+            else
+                okToJump_ = true;
         }
-        else
-            okToJump_ = true;
     }
 
     // Reset grounded flag for next frame

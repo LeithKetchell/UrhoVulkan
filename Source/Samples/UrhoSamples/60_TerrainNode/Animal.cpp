@@ -28,7 +28,7 @@ void Animal::Start()
     terrain_ = GetScene()->GetComponent<Terrain>(true);
 
     // Normalize model to real-world size: crush to unit space, then scale to GetDesiredSize()
-    auto* mdl = node_->GetComponent<AnimatedModel>();
+    auto* mdl = node_->GetComponent<AnimatedModel>(true);
     if (mdl)
     {
         BoundingBox bb = mdl->GetBoundingBox();
@@ -89,7 +89,7 @@ void Animal::FixedUpdate(float timeStep)
 
     SnapToTerrain();
 
-    // Drowning: if submerged and not aquatic, accumulate timer → die
+    // Water avoidance: if in water and not dying, flee toward home (dry land)
     float drownTime = GetDrownTime();
     if (drownTime >= 0.0f && state_ != ANIMAL_DIE)
     {
@@ -97,6 +97,27 @@ void Animal::FixedUpdate(float timeStep)
         if (pos.y_ < waterLevel_)
         {
             drownTimer_ += timeStep;
+            // Flee toward nearest dry land
+            if (state_ != ANIMAL_FLEE && terrain_)
+            {
+                // Sample 12 directions, pick the one with highest ground
+                float bestY = -M_INFINITY;
+                Vector3 bestTarget = pos;
+                for (int i = 0; i < 12; ++i)
+                {
+                    float angle = (float)i * 30.0f;
+                    float x = pos.x_ + 10.0f * Cos(angle);
+                    float z = pos.z_ + 10.0f * Sin(angle);
+                    float y = terrain_->GetHeight(Vector3(x, 0.0f, z));
+                    if (y > bestY)
+                    {
+                        bestY = y;
+                        bestTarget = Vector3(x, y, z);
+                    }
+                }
+                wanderTarget_ = bestTarget;
+                SetState(ANIMAL_FLEE);
+            }
             if (drownTimer_ >= drownTime)
                 SetState(ANIMAL_DIE);
         }

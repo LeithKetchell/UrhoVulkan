@@ -27,6 +27,9 @@ void Fish::Start()
     // Cache terrain — same as Animal base
     terrain_ = GetScene()->GetComponent<Terrain>(true);
 
+    if (!cameraNode_)
+        URHO3D_LOGWARNING("Fish: no camera node set!");
+
     // Randomize per-fish schedule so they don't all behave identically
     feedPhaseOffset_ = Random(0.0f, 0.4f);       // shifts when this fish considers it "dawn/dusk"
     restingDepthFrac_ = Random(0.1f, 0.4f);      // how deep they rest (0=floor, 1=surface)
@@ -53,8 +56,8 @@ void Fish::Update(float timeStep)
 
 void Fish::Swim(float timeStep)
 {
-    Vector3 pos = node_->GetPosition();
-    Quaternion rot = node_->GetRotation();
+    Vector3 pos = node_->GetWorldPosition();
+    Quaternion rot = node_->GetWorldRotation();
     // Fish model faces -Z, so forward is BACK
     Vector3 forward = rot * Vector3::BACK;
 
@@ -70,7 +73,7 @@ void Fish::Swim(float timeStep)
         Node* other = children[i];
         if (other == node_ || other->GetName() != "Fish")
             continue;
-        Vector3 diff = other->GetPosition() - pos;
+        Vector3 diff = other->GetWorldPosition() - pos;
         float dist = diff.Length();
         if (dist < nearestDist)
         {
@@ -213,7 +216,7 @@ void Fish::Swim(float timeStep)
 
 void Fish::ClampToWaterColumn()
 {
-    Vector3 pos = node_->GetPosition();
+    Vector3 pos = node_->GetWorldPosition();
     float terrainH = terrain_ ? terrain_->GetHeight(pos) : 0.0f;
     float floorY = terrainH + minDepth_;
     float ceilY = waterLevel_ - minDepth_;

@@ -44,6 +44,10 @@ uniform sampler2D sWeightMap0;
 uniform sampler2D sDetailMap1;
 uniform sampler2D sDetailMap2;
 uniform sampler2D sDetailMap3;
+uniform sampler2D sWaterMap4;
+
+uniform float cWaterLevel;
+uniform float cTerrainSpacingY;
 
 // cDetailTiling hardcoded — CUSTOM_MATERIAL_CBUFFER upload broken on Vulkan
 const vec2 cDetailTiling = vec2(32.0, 32.0);
@@ -119,6 +123,24 @@ void PS()
 
     // Get material specular albedo
     vec3 specColor = cMatSpecColor.rgb;
+
+    // Water map tint — painted water visible where waterHeight > terrainHeight
+    float waterVal = texture2D(sWaterMap4, vTexCoord).r;
+    if (waterVal > 0.0)
+    {
+        float waterWorldY = waterVal * 255.0 * cTerrainSpacingY;
+        float waterDepth = waterWorldY - vWorldPos.y;
+        if (waterDepth > 0.0)
+        {
+            vec3 shallowColor = vec3(0.15, 0.45, 0.35);
+            vec3 deepColor = vec3(0.02, 0.08, 0.15);
+            float depthFactor = clamp(waterDepth / 5.0, 0.0, 1.0);
+            vec3 waterColor = mix(shallowColor, deepColor, depthFactor);
+            float waterAlpha = mix(0.4, 0.95, depthFactor);
+            diffColor.rgb = mix(diffColor.rgb, waterColor, waterAlpha);
+            specColor *= (1.0 - waterAlpha * 0.8);
+        }
+    }
 
     // Get normal
     vec3 normal = normalize(vNormal);

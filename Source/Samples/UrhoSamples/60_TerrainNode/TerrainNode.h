@@ -29,7 +29,9 @@
 #include "PlayerCharacter.h"
 #include "Rabbit.h"
 #include "Deer.h"
+#include "Fox.h"
 #include "Fish.h"
+#include "SchoolFish.h"
 #include <Urho3D/Graphics/TerrainBrush.h>
 #include <Urho3D/Graphics/ProfilerUI.h>
 
@@ -190,6 +192,7 @@ private:
     SharedPtr<TerrainBrush> brush_;
     SharedPtr<Image> editableHeightMap_;
     SharedPtr<Image> waterMap_;
+    SharedPtr<Texture2D> waterMapTex_;
     int brushMode_{0};         // 0=off, 1=raise, 2=lower, 3=smooth, 4=flatten, 5=erosion, 6=river
     int brushShape_{0};        // 0=circle, 1=square, 2=triangle, 3=star, 4=pentagon, 5=hexagon, 6=octagon
     float brushRotation_{0.0f}; // degrees
@@ -346,9 +349,21 @@ private:
     ListView* debugLogList_{};
     static const unsigned MAX_DEBUG_LOG_LINES = 500;
 
+    // --- Font / Theme ---
+    void LoadThemePrefs();
+    void SaveThemePrefs();
+    void ApplyFont(const String& fontName, int fontSize);
+    void HandleSettingsMenu(StringHash eventType, VariantMap& eventData);
+    SharedPtr<Font> font_;
+    String currentFontName_{"Anonymous Pro"};
+    int currentFontSize_{11};
+    Vector<String> availableFonts_;
+    SharedPtr<DropDownList> settingsMenu_;
+
     // --- State ---
     Text* instructionText_{};
     Text* cameraCoordsText_{};
+    Text* clockText_{};
     bool menuOpen_{false};
     int heightFogOverride_{0};  // 0=auto (time-based), 1=forced on, -1=forced off
     bool godRaysEnabled_{true};
@@ -440,8 +455,18 @@ private:
     ParticleEmitter* rainEmitter_{};
     SharedPtr<ParticleEffect> rainEffect_;
 
+    // --- Grass ---
+    void CreateGrass();
+    void UpdateGrassPositions();
+    SharedPtr<Material> grassMat_;
+    SharedPtr<Model> grassModel_;
+    Node* grassRoot_{};
+    Vector3 lastGrassCenter_{M_INFINITY, M_INFINITY, M_INFINITY};
+    static const int MAX_GRASS_CLUMPS = 400;
+
     // --- Fish ---
     void CreateFish();
+    void CreateSchoolFish();
 
     // --- Campfire ---
     void CreateCampfire();
@@ -456,8 +481,10 @@ private:
     float oofoSpawnTimers_[3]{};  // countdown per OOFO before spawning
     int oofosSpawned_{0};
     bool oofoRayVisible_{false};
-    bool animalRayVisible_{false};
+    bool landAnimalRayVisible_{false};
+    bool waterAnimalRayVisible_{false};
     bool fireRayVisible_{false};
+    bool grassRayVisible_{false};
 
     // --- AuthServer discovery & connection ---
     void DiscoverAuthServer();
@@ -505,6 +532,10 @@ private:
     void SendEditMessage(int msgID, const VectorBuffer& payload);
     void HandleEditReject(MemoryBuffer& msg);
     void HandleEditBroadcast(MemoryBuffer& msg);
+    void HandleResourcePatch(MemoryBuffer& msg);
+    void SendPatchPosition(int patchX, int patchZ);
+    int lastReportedPatchX_{0x7FFFFFFF};
+    int lastReportedPatchZ_{0x7FFFFFFF};
 
     /// Terrain edit snapshot for rollback — stores small heightmap region keyed by editID
     struct TerrainEditSnapshot
@@ -556,4 +587,10 @@ private:
     Color origFogColor_;
     float origFogStart_{};
     float origFogEnd_{};
+
+    // --- Water droplets post-process ---
+    bool wasUnderwater_{false};
+    float breachTime_{-100.0f};
+    float splashTimer_{0.0f};       // countdown to next splash burst
+    float splashInterval_{1.2f};    // seconds between splash bursts
 };

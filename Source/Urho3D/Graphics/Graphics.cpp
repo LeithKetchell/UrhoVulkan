@@ -1985,8 +1985,17 @@ void Graphics::SetScissorTest(bool enable, const Rect& rect, bool borderInclusiv
 #ifdef URHO3D_VULKAN
     if (gapi == GAPI_VULKAN)
     {
+        scissorTest_ = enable;
         if (enable)
-            return SetScissor_Vulkan((int)rect.min_.x_, (int)rect.min_.y_, (int)(rect.max_.x_ - rect.min_.x_), (int)(rect.max_.y_ - rect.min_.y_));
+        {
+            scissorRect_ = IntRect((int)rect.min_.x_, (int)rect.min_.y_, (int)rect.max_.x_, (int)rect.max_.y_);
+            return SetScissor_Vulkan(scissorRect_.left_, scissorRect_.top_, scissorRect_.Width(), scissorRect_.Height());
+        }
+        else
+        {
+            scissorRect_ = IntRect::ZERO;
+            return SetScissor_Vulkan(0, 0, width_, height_);
+        }
     }
 #endif
 }
@@ -2008,8 +2017,17 @@ void Graphics::SetScissorTest(bool enable, const IntRect& rect)
 #ifdef URHO3D_VULKAN
     if (gapi == GAPI_VULKAN)
     {
+        scissorTest_ = enable;
         if (enable)
+        {
+            scissorRect_ = rect;
             return SetScissor_Vulkan(rect.left_, rect.top_, rect.Width(), rect.Height());
+        }
+        else
+        {
+            scissorRect_ = IntRect::ZERO;
+            return SetScissor_Vulkan(0, 0, width_, height_);
+        }
     }
 #endif
 }

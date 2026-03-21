@@ -24,6 +24,17 @@ URHO3D_EVENT(E_ANIMATIONTRIGGER, AnimationTrigger)
     URHO3D_PARAM(P_DATA, Data);                    // User-defined data type
 }
 
+/// Animation text key fired during playback (footsteps, weapon attach/detach, etc).
+URHO3D_EVENT(E_ANIMATIONTEXTKEY, AnimationTextKeyEvent)
+{
+    URHO3D_PARAM(P_NODE, Node);                    // Node pointer
+    URHO3D_PARAM(P_ANIMATION, Animation);          // Animation pointer
+    URHO3D_PARAM(P_NAME, Name);                    // String (key name, for debugging/display)
+    URHO3D_PARAM(P_NAMEHASH, NameHash);            // StringHash (key name hash, for fast matching)
+    URHO3D_PARAM(P_TIME, Time);                    // Float (key time)
+    URHO3D_PARAM(P_DATA, Data);                    // User-defined data type
+}
+
 /// AnimatedModel animation finished or looped.
 URHO3D_EVENT(E_ANIMATIONFINISHED, AnimationFinished)
 {

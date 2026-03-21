@@ -1,0 +1,5 @@
+Models/Animals/Materials/Main.xml
+Models/Animals/Materials/Main_Light.xml
+Models/Animals/Materials/Grey.xml
+Models/Animals/Materials/Black.xml
+Models/Animals/Materials/Black.xml

@@ -34,6 +34,7 @@
 #include <Urho3D/Physics/PhysicsEvents.h>
 #include <Urho3D/Scene/Node.h>
 #include <Urho3D/Graphics/Terrain.h>
+#include <Urho3D/Graphics/TerrainBrush.h>
 #include <Urho3D/Resource/Image.h>
 #include <Urho3D/Resource/JSONFile.h>
 #include <Urho3D/Resource/JSONValue.h>
@@ -41,7 +42,9 @@
 #include <Urho3D/Graphics/Camera.h>
 #include <Urho3D/Graphics/Viewport.h>
 #include <Urho3D/Input/Input.h>
+#include <Urho3D/UI/MelbourneClock.h>
 #include "TerrainGenerator.h"
+#include "TerrainJournal.h"
 
 using namespace Urho3D;
 
@@ -99,6 +102,8 @@ private:
         bool authenticated{false};
         int adminLevel{0};
         String guid;                           // client's NAT GUID (sent after auth)
+        IntVector2 lastPatchPos{0x7FFFFFFF, 0x7FFFFFFF};  // last known patch position
+        HashSet<unsigned long long> sentPatches;           // patchKey(x,z) already sent
     };
     HashMap<Connection*, ClientSession> sessions_;
 
@@ -138,6 +143,7 @@ private:
     void CreateNetworkingPanel(BorderImage* bg, Font* font);
     void CreateDatabasePanel(BorderImage* bg, Font* font);
     void CreateWeatherPanel(BorderImage* bg, Font* font);
+    void CreateSceneViewPanel(BorderImage* bg, Font* font);
     void RefreshWeatherPanel();
     void SwitchTab(int tab);
     void HandleTabClicked(StringHash eventType, VariantMap& eventData);
@@ -149,12 +155,21 @@ private:
     Button* networkingTab_{};
     Button* databaseTab_{};
     Button* weatherTab_{};
+    Button* sceneViewTab_{};
     int activeTab_{0};
 
     // Panels
     BorderImage* networkingPanel_{};
     BorderImage* databasePanel_{};
     BorderImage* weatherPanel_{};
+    BorderImage* sceneViewPanel_{};
+    Text* sceneStatsText_{};
+
+    // Water brush (server-side painting in Scene View)
+    void PaintWater(float worldX, float worldZ, bool raise);
+    void UpdateSceneView(float timeStep);
+    float waterBrushRadius_{8.0f};
+    float waterBrushStrength_{0.02f};
     Text* weatherConditionText_{};
     Text* weatherTempText_{};
     Text* weatherHumidityText_{};
@@ -199,6 +214,9 @@ private:
     float uptime_{};
     static const unsigned MAX_LOG_LINES = 200;
 
+    // Melbourne clock display
+    SharedPtr<MelbourneClock> melbourneClock_;
+
     // BOM Weather
     void FetchBOMWeather();
     void ProcessBOMResponse();
@@ -231,10 +249,27 @@ private:
     void SendWaterMapToClient(Connection* connection);
     void HandleWaterEdit(Connection* connection, MemoryBuffer& msg);
 
+    // Per-patch resource streaming
+    void SendResourcePatch(Connection* connection, const String& resourceID, Image* resourceMap, int patchX, int patchZ);
+    void SendPatchNeighbourhood(Connection* connection, int centerX, int centerZ);
+    void HandlePatchPosition(Connection* connection, MemoryBuffer& msg);
+    void BroadcastAffectedPatch(int patchX, int patchZ, const String& resourceID, Image* resourceMap);
+    static unsigned long long PatchKey(int x, int z) { return ((unsigned long long)(unsigned)x << 32) | (unsigned)z; }
+
+    // Server-authoritative terrain brush
+    SharedPtr<TerrainBrush> terrainBrush_;
+    void InitTerrainBrush();
+
     // Terrain generation
     TerrainGenerator terrainGen_;
     HashMap<IntVector2, WeakPtr<Terrain>> terrainGrid_;  // grid coords → terrain
     unsigned worldSeed_{42};  // base seed for all terrain generation
     SharedPtr<Image> GenerateTerrainHeightmap(int gridX, int gridZ);
     void RegisterExistingTerrain();  // register the original TestScene terrain as grid (0,0)
+
+    // Terrain edit journal (versioned sync for reconnecting clients)
+    TerrainJournalManager journalManager_;
+    void HandleTerrainSync(Connection* connection, MemoryBuffer& msg);
+    float journalTrimTimer_{0.0f};
+    static constexpr float JOURNAL_TRIM_INTERVAL = 3600.0f;  // trim journals every hour
 };

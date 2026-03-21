@@ -1018,7 +1018,7 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
 
         if (!texture)
         {
-            URHO3D_LOGERROR("No texture available for binding " + String(binding) + " and no default texture!");
+            // Silently skip — UI and simple shaders don't use all declared bindings
             continue;
         }
 
@@ -1620,34 +1620,30 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
 
     vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
 
+    // Respect UI/external scissor if set, otherwise use viewport
     VkRect2D scissor{};
-    scissor.offset.x = viewport_.left_;
-    scissor.offset.y = viewport_.top_;
-    scissor.extent.width = viewport_.Width();
-    scissor.extent.height = viewport_.Height();
-
-    // Vulkan requires non-negative scissor offsets (unlike OpenGL which clamps)
-    if (scissor.offset.x < 0)
+    if (scissorTest_ && scissorRect_ != IntRect::ZERO)
     {
-        scissor.extent.width = (scissor.extent.width > (uint32_t)(-scissor.offset.x))
-            ? scissor.extent.width - (uint32_t)(-scissor.offset.x) : 0;
-        scissor.offset.x = 0;
+        scissor.offset.x = Max(scissorRect_.left_, 0);
+        scissor.offset.y = Max(scissorRect_.top_, 0);
+        scissor.extent.width = (uint32_t)Max(scissorRect_.Width(), 1);
+        scissor.extent.height = (uint32_t)Max(scissorRect_.Height(), 1);
     }
-    if (scissor.offset.y < 0)
+    else
     {
-        scissor.extent.height = (scissor.extent.height > (uint32_t)(-scissor.offset.y))
-            ? scissor.extent.height - (uint32_t)(-scissor.offset.y) : 0;
-        scissor.offset.y = 0;
-    }
+        scissor.offset.x = Max(viewport_.left_, 0);
+        scissor.offset.y = Max(viewport_.top_, 0);
+        scissor.extent.width = viewport_.Width() > 0 ? (uint32_t)viewport_.Width() : 1;
+        scissor.extent.height = viewport_.Height() > 0 ? (uint32_t)viewport_.Height() : 1;
 
-    // Use render target dimensions (RTT-aware) for scissor fallback
-    if (scissor.extent.width == 0 || scissor.extent.height == 0)
-    {
-        IntVector2 rtSize = GetRenderTargetDimensions();
-        scissor.extent.width = rtSize.x_;
-        scissor.extent.height = rtSize.y_;
-        scissor.offset.x = 0;
-        scissor.offset.y = 0;
+        if (scissor.extent.width <= 1 && scissor.extent.height <= 1)
+        {
+            IntVector2 rtSize = GetRenderTargetDimensions();
+            scissor.extent.width = rtSize.x_;
+            scissor.extent.height = rtSize.y_;
+            scissor.offset.x = 0;
+            scissor.offset.y = 0;
+        }
     }
 
     vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
@@ -1795,34 +1791,30 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
 
     vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
 
+    // Respect UI/external scissor if set, otherwise use viewport
     VkRect2D scissor{};
-    scissor.offset.x = viewport_.left_;
-    scissor.offset.y = viewport_.top_;
-    scissor.extent.width = viewport_.Width();
-    scissor.extent.height = viewport_.Height();
-
-    // Vulkan requires non-negative scissor offsets (unlike OpenGL which clamps)
-    if (scissor.offset.x < 0)
+    if (scissorTest_ && scissorRect_ != IntRect::ZERO)
     {
-        scissor.extent.width = (scissor.extent.width > (uint32_t)(-scissor.offset.x))
-            ? scissor.extent.width - (uint32_t)(-scissor.offset.x) : 0;
-        scissor.offset.x = 0;
+        scissor.offset.x = Max(scissorRect_.left_, 0);
+        scissor.offset.y = Max(scissorRect_.top_, 0);
+        scissor.extent.width = (uint32_t)Max(scissorRect_.Width(), 1);
+        scissor.extent.height = (uint32_t)Max(scissorRect_.Height(), 1);
     }
-    if (scissor.offset.y < 0)
+    else
     {
-        scissor.extent.height = (scissor.extent.height > (uint32_t)(-scissor.offset.y))
-            ? scissor.extent.height - (uint32_t)(-scissor.offset.y) : 0;
-        scissor.offset.y = 0;
-    }
+        scissor.offset.x = Max(viewport_.left_, 0);
+        scissor.offset.y = Max(viewport_.top_, 0);
+        scissor.extent.width = viewport_.Width() > 0 ? (uint32_t)viewport_.Width() : 1;
+        scissor.extent.height = viewport_.Height() > 0 ? (uint32_t)viewport_.Height() : 1;
 
-    // Use render target dimensions (RTT-aware) for scissor fallback
-    if (scissor.extent.width == 0 || scissor.extent.height == 0)
-    {
-        IntVector2 rtSize = GetRenderTargetDimensions();
-        scissor.extent.width = rtSize.x_;
-        scissor.extent.height = rtSize.y_;
-        scissor.offset.x = 0;
-        scissor.offset.y = 0;
+        if (scissor.extent.width <= 1 && scissor.extent.height <= 1)
+        {
+            IntVector2 rtSize = GetRenderTargetDimensions();
+            scissor.extent.width = rtSize.x_;
+            scissor.extent.height = rtSize.y_;
+            scissor.offset.x = 0;
+            scissor.offset.y = 0;
+        }
     }
 
     vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);

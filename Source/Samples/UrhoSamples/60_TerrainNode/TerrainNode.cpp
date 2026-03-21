@@ -55,6 +55,8 @@
 #include <Urho3D/GraphicsAPI/Shader.h>
 #include <Urho3D/GraphicsAPI/ShaderVariation.h>
 #include <Urho3D/GraphicsAPI/VertexBuffer.h>
+#include <Urho3D/GraphicsAPI/IndexBuffer.h>
+#include <Urho3D/Graphics/Geometry.h>
 #ifdef URHO3D_VULKAN
 #include <Urho3D/GraphicsAPI/Vulkan/VulkanGraphicsImpl.h>
 #endif
@@ -240,7 +242,9 @@ void TerrainNode::Start()
     // Register animal types
     Rabbit::RegisterObject(context_);
     Deer::RegisterObject(context_);
+    Fox::RegisterObject(context_);
     Fish::RegisterObject(context_);
+    SchoolFish::RegisterObject(context_);
 
     // Fallback RNG seed — local time + favourite prime.
     SetRandomSeed((unsigned)time(nullptr) + 25773u);
@@ -248,6 +252,12 @@ void TerrainNode::Start()
     auto* cache = GetSubsystem<ResourceCache>();
     auto* uiStyle = cache->GetResource<XMLFile>("UI/WarmStyle.xml");
     GetSubsystem<UI>()->GetRoot()->SetDefaultStyle(uiStyle);
+
+    // Load font from shared theme prefs
+    LoadThemePrefs();
+    font_ = cache->GetResource<Font>("Fonts/" + currentFontName_ + ".ttf");
+    if (!font_)
+        font_ = font_;
 
     // Login scene — animated sky backdrop
     CreateLoginScene();
@@ -370,7 +380,7 @@ void TerrainNode::CreateLoginUI()
     auto* cache = GetSubsystem<ResourceCache>();
     auto* ui = GetSubsystem<UI>();
     auto* root = ui->GetRoot();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     // Centered login window
     loginWindow_ = root->CreateChild<Window>();
@@ -626,7 +636,7 @@ void TerrainNode::FinishEnterWorld()
     {
         auto* cache = GetSubsystem<ResourceCache>();
         auto* ui = GetSubsystem<UI>();
-        auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+        Font* font = font_;
 
         auto* panel = ui->GetRoot()->CreateChild<Window>();
         panel->SetStyle("Window");
@@ -676,6 +686,7 @@ void TerrainNode::FinishEnterWorld()
     }
 
     // Position camera at owned patch center before spawning avatar
+    // If initial position is underwater, search nearby for dry land
     if (cameraNode_)
     {
         const float patchWorldSize = 128.0f;
@@ -685,6 +696,29 @@ void TerrainNode::FinishEnterWorld()
         if (terrain_)
         {
             float terrH = terrain_->GetHeight(Vector3(camX, 0.0f, camZ));
+            if (terrH < 7.0f)  // Below or near water level
+            {
+                float bestH = terrH;
+                for (float r = 16.0f; r <= 128.0f; r += 16.0f)
+                {
+                    for (int angle = 0; angle < 8; ++angle)
+                    {
+                        float a = angle * (M_PI / 4.0f);
+                        float px = camX + r * cosf(a);
+                        float pz = camZ + r * sinf(a);
+                        float h = terrain_->GetHeight(Vector3(px, 0.0f, pz));
+                        if (h > bestH)
+                        {
+                            bestH = h;
+                            camX = px;
+                            camZ = pz;
+                        }
+                    }
+                    if (bestH > 12.0f)
+                        break;
+                }
+                terrH = bestH;
+            }
             camY = Max(terrH, 5.0f) + 10.0f;
         }
         cameraNode_->SetPosition(Vector3(camX, camY, camZ));
@@ -948,6 +982,20 @@ void TerrainNode::CreateScene()
         memset(waterMap_->GetData(), 0, w * h);
     }
 
+    // Create GPU texture from water map and bind to terrain material unit 4
+    waterMapTex_ = new Texture2D(context_);
+    waterMapTex_->SetFilterMode(FILTER_BILINEAR);
+    waterMapTex_->SetAddressMode(COORD_U, ADDRESS_CLAMP);
+    waterMapTex_->SetAddressMode(COORD_V, ADDRESS_CLAMP);
+    waterMapTex_->SetData(waterMap_);
+    auto* terrainMat = terrain->GetMaterial();
+    if (terrainMat)
+    {
+        terrainMat->SetTexture(TU_ENVIRONMENT, waterMapTex_);
+        terrainMat->SetShaderParameter("WaterLevel", 5.0f);
+        terrainMat->SetShaderParameter("TerrainSpacingY", terrain->GetSpacing().y_);
+    }
+
     // Initialize shared brush
     brush_ = new TerrainBrush(context_);
     brush_->SetTerrain(terrain, editableHeightMap_);
@@ -1028,13 +1076,15 @@ void TerrainNode::CreateScene()
     cameraNode_ = new Node(context_);
     auto* camera = cameraNode_->CreateComponent<Camera>();
     camera->SetFarClip(750.0f);
-    cameraNode_->SetPosition(Vector3(0.0f, 7.0f, -20.0f));
+    cameraNode_->SetPosition(Vector3(64.0f, 60.0f, 64.0f));
 
     // Create entities
     CreateCelestialBodies();
     CreateOOFOs();
     CreateFish();
+    CreateSchoolFish();
     CreateAnimals();
+    CreateGrass();
     CreateRain();
     CreateCampfire();
 }
@@ -1058,7 +1108,7 @@ void TerrainNode::CreateInstructions()
         "LMB raise, RMB lower, Scroll brush size\n"
         "F5 debug, F fill, H fog, F11 fullscreen\n"
         "NumPad Enter hide UI, 1 sun, 2 moon");
-    instructionText_->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 15);
+    instructionText_->SetFont(font_, 15);
     instructionText_->SetTextAlignment(HA_CENTER);
     instructionText_->SetHorizontalAlignment(HA_CENTER);
     instructionText_->SetVerticalAlignment(VA_CENTER);
@@ -1066,11 +1116,19 @@ void TerrainNode::CreateInstructions()
 
     // Camera coordinates — lower left
     cameraCoordsText_ = ui->GetRoot()->CreateChild<Text>();
-    cameraCoordsText_->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 13);
+    cameraCoordsText_->SetFont(font_, 13);
     cameraCoordsText_->SetColor(Color(0.8f, 0.8f, 0.6f));
     cameraCoordsText_->SetHorizontalAlignment(HA_LEFT);
     cameraCoordsText_->SetVerticalAlignment(VA_BOTTOM);
     cameraCoordsText_->SetPosition(8, -8);
+
+    // Melbourne clock — lower right
+    clockText_ = ui->GetRoot()->CreateChild<Text>();
+    clockText_->SetFont(font_, 13);
+    clockText_->SetColor(Color(0.9f, 0.9f, 0.8f));
+    clockText_->SetHorizontalAlignment(HA_RIGHT);
+    clockText_->SetVerticalAlignment(VA_BOTTOM);
+    clockText_->SetPosition(-8, -8);
 }
 
 // ============================================================================
@@ -1108,6 +1166,9 @@ void TerrainNode::SetupViewport()
         rp->SetShaderParameter("MainCameraY", cameraNode_->GetWorldPosition().y_);
         rp->SetEnabled("Underwater", true);
 
+        rp->Append(cache->GetResource<XMLFile>("PostProcess/WaterDroplets.xml"));
+        rp->SetEnabled("WaterDroplets", false);
+
         waterPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
         waterClipPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
 
@@ -1135,6 +1196,8 @@ void TerrainNode::SetupViewport()
     }
 
     rp->Append(cache->GetResource<XMLFile>("PostProcess/GodRays.xml"));
+    rp->Append(cache->GetResource<XMLFile>("PostProcess/MoonRays.xml"));
+    rp->SetEnabled("MoonRays", false);
     renderPath_ = rp;
 }
 
@@ -1176,7 +1239,7 @@ void TerrainNode::SubscribeToEvents()
 DropDownList* TerrainNode::CreateMenuDropdown(const String& label, const Vector<String>& items)
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     auto* dd = menuBar_->CreateChild<DropDownList>();
     dd->SetStyleAuto();
@@ -1264,22 +1327,41 @@ void TerrainNode::CreateMenuBar()
         items.Push("Toggle Height Fog  (H)");           // 6
         items.Push("Toggle Profiler");                  // 7
         items.Push("Toggle OOFO Detector");             // 8
-        // Count fish in scene
-        int fishCount = 0;
-        const Vector<SharedPtr<Node>>& sceneChildren = scene_->GetChildren();
-        for (unsigned ci = 0; ci < sceneChildren.Size(); ++ci)
-            if (sceneChildren[ci]->GetName() == "Fish") ++fishCount;
-        items.Push("Toggle Fish Detector (" + String(fishCount) + " fish)");  // 9
-        items.Push("Toggle God Rays");                  // 10
-        items.Push("Toggle Animal Rays");               // 11
+        items.Push("Toggle Land Animal Rays");           // 9
+        items.Push("Toggle Water Animal Rays");          // 10
+        items.Push("Toggle God Rays");                   // 11
+        items.Push("Toggle Grass Rays");                 // 12
         viewMenu_ = CreateMenuDropdown("View", items);
         SubscribeToEvent(viewMenu_, E_ITEMSELECTED, URHO3D_HANDLER(TerrainNode, HandleViewMenu));
+    }
+
+    // Settings (font + size selection)
+    {
+        Vector<String> items;
+        // Scan available fonts
+        auto* fs = GetSubsystem<FileSystem>();
+        String fontDir = fs->GetProgramDir() + "Data/Fonts/";
+        Vector<String> fontFiles;
+        fs->ScanDir(fontFiles, fontDir, "*.ttf", SCAN_FILES, false);
+        availableFonts_.Clear();
+        for (unsigned i = 0; i < fontFiles.Size(); ++i)
+        {
+            String name = fontFiles[i].Substring(0, fontFiles[i].FindLast('.'));
+            availableFonts_.Push(name);
+            items.Push("Font: " + name);
+        }
+        int sizes[] = {9, 10, 11, 12, 13, 14, 16, 18};
+        for (int i = 0; i < 8; ++i)
+            items.Push("Size: " + String(sizes[i]));
+
+        settingsMenu_ = CreateMenuDropdown("Settings", items);
+        SubscribeToEvent(settingsMenu_, E_ITEMSELECTED, URHO3D_HANDLER(TerrainNode, HandleSettingsMenu));
     }
 
     // Environment (custom popup with collapsible sections)
     {
         auto* cache = GetSubsystem<ResourceCache>();
-        auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+        Font* font = font_;
 
         environmentMenu_ = menuBar_->CreateChild<Menu>();
         environmentMenu_->SetStyle("DropDownList");
@@ -1646,14 +1728,20 @@ void TerrainNode::HandleViewMenu(StringHash eventType, VariantMap& eventData)
     case 8: // Toggle OOFO Detector
         oofoRayVisible_ = !oofoRayVisible_;
         break;
-    case 9: // Toggle Animal Rays (fish included in animal rays)
-        animalRayVisible_ = !animalRayVisible_;
+    case 9: // Toggle Land Animal Rays
+        landAnimalRayVisible_ = !landAnimalRayVisible_;
+        URHO3D_LOGINFOF("Land animal rays: %s", landAnimalRayVisible_ ? "ON" : "OFF");
         break;
-    case 10: // Toggle God Rays
+    case 10: // Toggle Water Animal Rays
+        waterAnimalRayVisible_ = !waterAnimalRayVisible_;
+        URHO3D_LOGINFOF("Water animal rays: %s", waterAnimalRayVisible_ ? "ON" : "OFF");
+        break;
+    case 11: // Toggle God Rays
         godRaysEnabled_ = !godRaysEnabled_;
         break;
-    case 11: // Toggle Animal Rays
-        animalRayVisible_ = !animalRayVisible_;
+    case 12: // Toggle Grass Rays
+        grassRayVisible_ = !grassRayVisible_;
+        URHO3D_LOGINFOF("Grass rays: %s", grassRayVisible_ ? "ON" : "OFF");
         break;
     }
 }
@@ -1661,7 +1749,7 @@ void TerrainNode::HandleViewMenu(StringHash eventType, VariantMap& eventData)
 Menu* TerrainNode::CreateMenuItem(UIElement* parent, const String& text, int actionId)
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     auto* item = parent->CreateChild<Menu>();
     item->SetStyleAuto();
@@ -2048,7 +2136,7 @@ static UIElement* CreateCollapsibleSection(UIElement* parent, Font* font, const 
 void TerrainNode::CreateTerrainPanel()
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
     auto* ui = GetSubsystem<UI>();
     auto* uiRoot = ui->GetRoot();
 
@@ -2840,6 +2928,20 @@ void TerrainNode::HandleSceneLoadChosen(StringHash eventType, VariantMap& eventD
                 memset(waterMap_->GetData(), 0, w * h);
             }
 
+            // Create GPU texture from water map and bind to terrain material unit 4
+            waterMapTex_ = new Texture2D(context_);
+            waterMapTex_->SetFilterMode(FILTER_BILINEAR);
+            waterMapTex_->SetAddressMode(COORD_U, ADDRESS_CLAMP);
+            waterMapTex_->SetAddressMode(COORD_V, ADDRESS_CLAMP);
+            waterMapTex_->SetData(waterMap_);
+            auto* tMat = terrain_->GetMaterial();
+            if (tMat)
+            {
+                tMat->SetTexture(TU_ENVIRONMENT, waterMapTex_);
+                tMat->SetShaderParameter("WaterLevel", 5.0f);
+                tMat->SetShaderParameter("TerrainSpacingY", terrain_->GetSpacing().y_);
+            }
+
             // Initialize shared brush
             brush_ = new TerrainBrush(context_);
             brush_->SetTerrain(terrain_, editableHeightMap_);
@@ -3345,7 +3447,7 @@ void TerrainNode::ShowGenerateMeshPanel()
     auto* ui = GetSubsystem<UI>();
     auto* cache = GetSubsystem<ResourceCache>();
     auto* style = ui->GetRoot()->GetDefaultStyle();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     generateMeshPanel_ = new Window(context_);
     generateMeshPanel_->SetStyleAuto();
@@ -4506,6 +4608,38 @@ void TerrainNode::MoveCamera(float timeStep)
         snprintf(buf, sizeof(buf), "X:%.1f  Y:%.1f  Z:%.1f", p.x_, p.y_, p.z_);
         cameraCoordsText_->SetText(buf);
     }
+
+    // Update Melbourne clock display
+    if (clockText_)
+    {
+        static const int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+        static const char* monthNames[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        int hour = (int)timeOfDay_;
+        int minute = (int)((timeOfDay_ - hour) * 60.0f);
+        if (hour < 0) hour = 0;
+        if (hour > 23) hour = 23;
+        if (minute < 0) minute = 0;
+        if (minute > 59) minute = 59;
+
+        // Convert dayOfYear_ (1-365) to day + month
+        int remaining = Clamp(dayOfYear_, 1, 365) - 1;
+        int month = 0;
+        for (int m = 0; m < 12; ++m)
+        {
+            if (remaining < daysInMonth[m])
+            {
+                month = m;
+                break;
+            }
+            remaining -= daysInMonth[m];
+        }
+        int day = remaining + 1;
+
+        char clockBuf[32];
+        snprintf(clockBuf, sizeof(clockBuf), "%02d:%02d  %d %s", hour, minute, day, monthNames[month]);
+        clockText_->SetText(clockBuf);
+    }
 }
 
 // ============================================================================
@@ -4552,6 +4686,10 @@ void TerrainNode::ApplyBrush(const Vector3& worldPos, float timeStep)
 
     if (!modified)
         return;
+
+    // Re-upload water map to GPU after river brush edits
+    if (brushMode_ == 6 && waterMapTex_ && waterMap_)
+        waterMapTex_->SetData(waterMap_);
 
     // Send terrain edit to server (rate-limited)
     SendTerrainEdit(worldPos, timeStep);
@@ -4851,6 +4989,10 @@ void TerrainNode::UpdateCurrentPatchBoundary()
 
     currentPatchX_ = px;
     currentPatchZ_ = pz;
+
+    // Notify server of patch change for resource streaming
+    if (loggedIn_ && (px != lastReportedPatchX_ || pz != lastReportedPatchZ_))
+        SendPatchPosition(px, pz);
 
     // Don't draw current-patch boundary if it's an owned patch (already shown in green)
     if (OwnsThisPatch(px, pz))
@@ -5187,6 +5329,8 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
         float halfFov = cam->GetFov() * 0.5f * M_DEGTORAD;
         float tanHalf = tanf(halfFov);
 
+        // Sun god rays — uses "GodRays" pass
+        bool sunRayActive = false;
         if (godRaysEnabled_ && sunNode_ && cachedSunAlt_ > -5.0f)
         {
             Vector3 toSun = (sunNode_->GetWorldPosition() - camPos);
@@ -5241,10 +5385,14 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                 renderPath_->SetShaderParameter("GodRayWeight", 0.4f);
                 renderPath_->SetShaderParameter("GodRayExposure", exposure);
                 renderPath_->SetShaderParameter("GodRayIntensity", intensity);
-                rayActive = true;
+                sunRayActive = true;
             }
         }
-        if (!rayActive && godRaysEnabled_ && moonNode_ && cachedMoonAlt_ > -5.0f)
+        renderPath_->SetEnabled("GodRays", sunRayActive);
+
+        // Moon god rays — uses separate "MoonRays" pass (can be active alongside sun)
+        bool moonRayActive = false;
+        if (godRaysEnabled_ && moonNode_ && cachedMoonAlt_ > -5.0f)
         {
             Vector3 toMoon = (moonNode_->GetWorldPosition() - camPos);
             float moonDist = toMoon.Length();
@@ -5258,18 +5406,27 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                 // Full intensity above 5 deg, fades to zero at -5 deg
                 float moonFade = Clamp((cachedMoonAlt_ + 5.0f) / 10.0f, 0.0f, 1.0f);
 
-                renderPath_->SetShaderParameter("LightScreenPos", screenPos);
-                renderPath_->SetShaderParameter("LightRadius", screenRadius);
-                renderPath_->SetShaderParameter("GodRayColor", Vector3(0.6f, 0.7f, 0.9f));
-                renderPath_->SetShaderParameter("GodRayDensity", 0.5f);
-                renderPath_->SetShaderParameter("GodRayDecay", 0.97f);
-                renderPath_->SetShaderParameter("GodRayWeight", 0.4f);
-                renderPath_->SetShaderParameter("GodRayExposure", 0.4f);
-                renderPath_->SetShaderParameter("GodRayIntensity", 0.8f * moonFade);
-                rayActive = true;
+                // Set parameters directly on the MoonRays command (not shared with GodRays)
+                for (int ci = 0; ci < renderPath_->GetNumCommands(); ++ci)
+                {
+                    RenderPathCommand* cmd = renderPath_->GetCommand(ci);
+                    if (cmd && cmd->tag_ == "MoonRays")
+                    {
+                        cmd->SetShaderParameter("LightScreenPos", screenPos);
+                        cmd->SetShaderParameter("LightRadius", screenRadius);
+                        cmd->SetShaderParameter("GodRayColor", Vector3(0.6f, 0.7f, 0.9f));
+                        cmd->SetShaderParameter("GodRayDensity", 0.5f);
+                        cmd->SetShaderParameter("GodRayDecay", 0.97f);
+                        cmd->SetShaderParameter("GodRayWeight", 0.4f);
+                        cmd->SetShaderParameter("GodRayExposure", 0.4f);
+                        cmd->SetShaderParameter("GodRayIntensity", 0.8f * moonFade);
+                        break;
+                    }
+                }
+                moonRayActive = true;
             }
         }
-        renderPath_->SetEnabled("GodRays", rayActive);
+        renderPath_->SetEnabled("MoonRays", moonRayActive);
 
     }
 }
@@ -5546,6 +5703,67 @@ void TerrainNode::CreateFish()
     URHO3D_LOGINFOF("Spawned %d fish", NUM_FISH);
 }
 
+void TerrainNode::CreateSchoolFish()
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* fishModel = cache->GetResource<Model>("Models/UrhoFish.mdl");
+    auto* fishMat = cache->GetResource<Material>("Materials/UrhoFish.xml");
+
+    if (!fishModel || !fishMat)
+        return;
+
+    // Tiny fish material — faster wiggle for smaller bodies
+    SharedPtr<Material> schoolMat(fishMat->Clone());
+    schoolMat->SetShaderParameter("WiggleAmplitude", 0.03f);
+    schoolMat->SetShaderParameter("WiggleFrequency", 8.0f);
+
+    const float waterY = 5.0f;
+    const float TINY_SCALE = 0.0003f;  // ~1/3 of regular fish scale (0.001)
+    const int NUM_SCHOOLS = 3;
+    const int FISH_PER_SCHOOL = 15;
+    Terrain* t = terrain_;
+
+    for (int school = 0; school < NUM_SCHOOLS; ++school)
+    {
+        // Pick a school center — random deep-water location
+        Vector3 schoolCenter;
+        for (int tries = 0; tries < 50; ++tries)
+        {
+            float x = Random(-60.0f, 60.0f);
+            float z = Random(-60.0f, 60.0f);
+            float terrainH = t ? t->GetHeight(Vector3(x, 0.0f, z)) : 0.0f;
+            if (waterY - terrainH >= 2.0f)
+            {
+                schoolCenter = Vector3(x, Lerp(terrainH + 0.5f, waterY - 0.5f, 0.5f), z);
+                break;
+            }
+            if (tries == 49)
+                schoolCenter = Vector3(0.0f, waterY - 2.0f, 0.0f);
+        }
+
+        // Spawn fish in a tight cluster around school center
+        for (int i = 0; i < FISH_PER_SCHOOL; ++i)
+        {
+            Node* fishNode = scene_->CreateChild("SchoolFish", LOCAL);
+            Vector3 offset(Random(-2.0f, 2.0f), Random(-0.3f, 0.3f), Random(-2.0f, 2.0f));
+            fishNode->SetPosition(schoolCenter + offset);
+            fishNode->SetRotation(Quaternion(0.0f, Random(0.0f, 360.0f), 0.0f));
+            fishNode->SetScale(TINY_SCALE);
+
+            auto* sm = fishNode->CreateComponent<StaticModel>();
+            sm->SetModel(fishModel, true);
+            sm->SetMaterial(schoolMat);
+            sm->SetCastShadows(false);
+
+            auto* fish = fishNode->CreateComponent<SchoolFish>();
+            fish->SetSchoolID(school);
+            fish->SetCameraNode(cameraNode_);
+        }
+    }
+
+    URHO3D_LOGINFOF("Spawned %d schools of %d tiny fish each", NUM_SCHOOLS, FISH_PER_SCHOOL);
+}
+
 // ============================================================================
 // Animals
 // ============================================================================
@@ -5586,12 +5804,16 @@ void TerrainNode::CreateAnimals()
         Node* node = scene_->CreateChild("Rabbit", LOCAL);
         node->SetPosition(pos);
 
-        auto* model = node->CreateComponent<AnimatedModel>();
+        // Model on child node with 180° Y flip — mesh faces -Z, Urho3D forward is +Z
+        Node* modelNode = node->CreateChild("RabbitModel");
+        modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
+
+        auto* model = modelNode->CreateComponent<AnimatedModel>();
         model->SetModel(cache->GetResource<Model>("Models/Animals/Rabbit.mdl"), true, true);
         model->ApplyMaterialList("Models/Animals/Rabbit.txt");
         model->SetCastShadows(true);
 
-        node->CreateComponent<AnimationController>();
+        modelNode->CreateComponent<AnimationController>();
         node->CreateComponent<Rabbit>();
 
         animalNodes_.Push(WeakPtr<Node>(node));
@@ -5622,18 +5844,58 @@ void TerrainNode::CreateAnimals()
         Node* node = scene_->CreateChild("Deer", LOCAL);
         node->SetPosition(pos);
 
-        auto* model = node->CreateComponent<AnimatedModel>();
+        // Model on child node with 180° Y flip — deer mesh faces -Z, Urho3D forward is +Z
+        Node* modelNode = node->CreateChild("DeerModel");
+        modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
+
+        auto* model = modelNode->CreateComponent<AnimatedModel>();
         model->SetModel(cache->GetResource<Model>("Models/Animals/Deer.mdl"), true, true);
         model->ApplyMaterialList("Models/Animals/Deer.txt");
         model->SetCastShadows(true);
 
-        node->CreateComponent<AnimationController>();
+        modelNode->CreateComponent<AnimationController>();
         node->CreateComponent<Deer>();
 
         animalNodes_.Push(WeakPtr<Node>(node));
     }
 
-    URHO3D_LOGINFOF("Created %u animals (5 rabbits, 8 deer)", animalNodes_.Size());
+    // ── Foxes ──
+    for (int i = 0; i < 3; ++i)
+    {
+        Vector3 pos;
+        for (int attempt = 0; attempt < 20; ++attempt)
+        {
+            float centerX = Random(-80.0f, 80.0f);
+            float centerZ = Random(-80.0f, 80.0f);
+            float groundY = terrain_->GetHeight(Vector3(centerX, 0.0f, centerZ));
+            if (groundY > 5.5f)  // above water
+            {
+                pos = Vector3(centerX, groundY, centerZ);
+                break;
+            }
+            if (attempt == 19)
+                pos = Vector3(centerX, terrain_->GetHeight(Vector3(centerX, 0.0f, centerZ)), centerZ);
+        }
+
+        Node* node = scene_->CreateChild("Fox", LOCAL);
+        node->SetPosition(pos);
+
+        // Model on child node with 180° Y flip — mesh faces -Z, Urho3D forward is +Z
+        Node* modelNode = node->CreateChild("FoxModel");
+        modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
+
+        auto* model = modelNode->CreateComponent<AnimatedModel>();
+        model->SetModel(cache->GetResource<Model>("Models/Animals/Fox.mdl"), true, true);
+        model->ApplyMaterialList("Models/Animals/Fox.txt");
+        model->SetCastShadows(true);
+
+        modelNode->CreateComponent<AnimationController>();
+        node->CreateComponent<Fox>();
+
+        animalNodes_.Push(WeakPtr<Node>(node));
+    }
+
+    URHO3D_LOGINFOF("Created %u animals (5 rabbits, 8 deer, 3 foxes)", animalNodes_.Size());
 }
 
 // ============================================================================
@@ -5730,6 +5992,25 @@ void TerrainNode::UpdateSeasonalEffects()
         auto* terrainMat = terrain_->GetMaterial();
         if (terrainMat)
             terrainMat->SetShaderParameter("MatDiffColor", cachedTerrainTint_);
+
+        // Grass seasonal tint
+        if (grassMat_)
+        {
+            Color grassSpring(0.5f, 0.85f, 0.35f, 1.0f);
+            Color grassSummer(0.75f, 0.8f, 0.3f, 1.0f);
+            Color grassAutumn(0.7f, 0.55f, 0.2f, 1.0f);
+            Color grassWinter(0.5f, 0.45f, 0.3f, 1.0f);
+            Color grassTint;
+            if (seasonAngle < 0.25f)
+                grassTint = grassSpring.Lerp(grassSummer, seasonAngle / 0.25f);
+            else if (seasonAngle < 0.5f)
+                grassTint = grassSummer.Lerp(grassAutumn, (seasonAngle - 0.25f) / 0.25f);
+            else if (seasonAngle < 0.75f)
+                grassTint = grassAutumn.Lerp(grassWinter, (seasonAngle - 0.5f) / 0.25f);
+            else
+                grassTint = grassWinter.Lerp(grassSpring, (seasonAngle - 0.75f) / 0.25f);
+            grassMat_->SetShaderParameter("MatDiffColor", grassTint);
+        }
     }
 
     // Water color
@@ -6177,15 +6458,60 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         UpdateCurrentPatchBoundary();
         if (!oofos_.Empty()) UpdateOOFOs(timeStep);
         if (minimapCameraNode_) UpdateMinimapCamera();
+        if (grassRoot_) UpdateGrassPositions();
 
         if (renderPath_)
         {
-            renderPath_->SetShaderParameter("MainCameraY", cameraNode_->GetWorldPosition().y_);
+            float camY = cameraNode_->GetWorldPosition().y_;
+            renderPath_->SetShaderParameter("MainCameraY", camY);
             if (zone_)
             {
                 Color fog = zone_->GetFogColor();
                 renderPath_->SetShaderParameter("UnderwaterColor", Vector3(fog.r_ * 0.3f, fog.g_ * 0.3f, fog.b_ * 0.3f));
             }
+
+            // Water droplets — two triggers:
+            // 1) Camera emerges from water → full drench
+            // 2) Character splashing in water (chase/FP cam) → periodic light bursts
+            float waterY = waterNode_ ? waterNode_->GetWorldPosition().y_ : 5.0f;
+            bool isUnderwater = (camY < waterY);
+            float now = GetSubsystem<Time>()->GetElapsedTime();
+            bool triggerDroplets = false;
+
+            // Trigger 1: camera emerges from water
+            if (wasUnderwater_ && !isUnderwater)
+                triggerDroplets = true;
+
+            // Trigger 2: character is in water, camera is above water in chase/FP
+            if (!isUnderwater && characterNode_ && (cameraMode_ == CAM_CHASE || cameraMode_ == CAM_FIRSTPERSON))
+            {
+                Node* charNode = characterNode_;
+                if (charNode && charNode->GetWorldPosition().y_ < waterY)
+                {
+                    splashTimer_ -= timeStep;
+                    if (splashTimer_ <= 0.0f)
+                    {
+                        triggerDroplets = true;
+                        // Vary interval — faster when character is moving
+                        auto* body = charNode->GetComponent<RigidBody>();
+                        float speed = body ? body->GetLinearVelocity().Length() : 0.0f;
+                        splashInterval_ = Lerp(2.0f, 0.6f, Clamp(speed / 5.0f, 0.0f, 1.0f));
+                        splashTimer_ = splashInterval_;
+                    }
+                }
+                else
+                    splashTimer_ = 0.0f;  // reset when character leaves water
+            }
+
+            if (triggerDroplets)
+            {
+                breachTime_ = now;
+                renderPath_->SetShaderParameter("BreachTime", breachTime_);
+                renderPath_->SetEnabled("WaterDroplets", true);
+            }
+            if (!isUnderwater && (now - breachTime_) > 6.5f)
+                renderPath_->SetEnabled("WaterDroplets", false);
+            wasUnderwater_ = isUnderwater;
         }
     }
 
@@ -6240,25 +6566,63 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
             if (moonNode_)
                 debug->AddLine(moonNode_->GetWorldPosition(), cursorNear, Color(0.0f, 0.8f, 1.0f), true);
 
-            // Animal rays — from player cursor near plane to each animal, color coded by type
-            if (animalRayVisible_)
+            // Animal rays — lines from camera to each animal, color coded by species
+            if (landAnimalRayVisible_ || waterAnimalRayVisible_)
             {
+                Vector3 camPos = cameraNode_->GetWorldPosition();
                 const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
                 for (unsigned i = 0; i < children.Size(); ++i)
                 {
                     const String& name = children[i]->GetName();
                     Color color;
+                    bool isWater = false;
+
                     if (name == "Rabbit")
-                        color = Color::YELLOW;
+                        color = Color(0.2f, 1.0f, 0.2f);   // green
                     else if (name == "Deer")
-                        color = Color::MAGENTA;
+                        color = Color(0.8f, 0.4f, 1.0f);   // purple
+                    else if (name == "Fox")
+                        color = Color(1.0f, 0.4f, 0.1f);   // orange-red
                     else if (name == "Fish")
-                        color = Color::CYAN;
+                    {
+                        color = Color(0.2f, 0.7f, 1.0f);   // sky blue
+                        isWater = true;
+                    }
                     else
                         continue;
-                    debug->AddLine(cursorNear, children[i]->GetWorldPosition(), color, false);
+
+                    if (isWater && !waterAnimalRayVisible_)
+                        continue;
+                    if (!isWater && !landAnimalRayVisible_)
+                        continue;
+
+                    Vector3 animalPos = children[i]->GetWorldPosition();
+                    debug->AddLine(camPos, animalPos, color, false);
                 }
             }
+        }
+    }
+
+    // Grass clump rays — yellow vertical beacons
+    if (grassRayVisible_ && grassRoot_ && debug)
+    {
+        const Vector<SharedPtr<Node>>& clumps = grassRoot_->GetChildren();
+        unsigned visCount = 0;
+        for (unsigned i = 0; i < clumps.Size(); ++i)
+        {
+            if (!clumps[i]->IsEnabled())
+                continue;
+            Vector3 base = clumps[i]->GetWorldPosition();
+            Vector3 top = base + Vector3::UP * 2.0f;
+            debug->AddLine(base, top, Color::YELLOW, false);
+            ++visCount;
+        }
+        // Log once when toggled on
+        static unsigned lastLoggedCount = 0;
+        if (visCount != lastLoggedCount)
+        {
+            URHO3D_LOGINFOF("Grass rays: %u visible clumps", visCount);
+            lastLoggedCount = visCount;
         }
     }
 
@@ -6613,7 +6977,7 @@ void TerrainNode::ToggleHierarchyWindow()
     }
 
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
     auto* uiRoot = GetSubsystem<UI>()->GetRoot();
 
     hierarchyWindow_ = new Window(context_);
@@ -6651,7 +7015,7 @@ void TerrainNode::BuildHierarchyTree()
     hierarchyList_->RemoveAllItems();
 
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     // Root scene item
     auto* rootItem = new Text(context_);
@@ -6680,7 +7044,7 @@ void TerrainNode::PopulateHierarchy(Node* node, Text* parentItem, unsigned& inde
         return;
 
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     String name = node->GetName().Empty() ? String("Node ") + String(node->GetID()) : node->GetName();
 
@@ -6808,7 +7172,7 @@ void TerrainNode::ToggleInspectorWindow()
     }
 
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
     auto* uiRoot = GetSubsystem<UI>()->GetRoot();
     auto* graphics = GetSubsystem<Graphics>();
 
@@ -6862,7 +7226,7 @@ void TerrainNode::RebuildInspector()
 void TerrainNode::CreateNodeSection(Node* node)
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     // Header
     auto* header = inspectorContent_->CreateChild<Text>();
@@ -6903,7 +7267,7 @@ void TerrainNode::CreateNodeSection(Node* node)
 LineEdit* TerrainNode::CreateVec3Row(UIElement* parent, const String& label, const Vector3& value, const String& tag)
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     auto* row = parent->CreateChild<UIElement>();
     row->SetLayout(LM_HORIZONTAL, 2, IntRect(2, 1, 2, 1));
@@ -6994,7 +7358,7 @@ void TerrainNode::CreateComponentSection(Component* component, unsigned compInde
         return;
 
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     // Component header
     auto* header = inspectorContent_->CreateChild<Text>();
@@ -7278,7 +7642,7 @@ void TerrainNode::HandleInspectorEnumSelect(StringHash eventType, VariantMap& ev
 void TerrainNode::CreateDebugLogWindow()
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
     auto* uiRoot = GetSubsystem<UI>()->GetRoot();
     auto* graphics = GetSubsystem<Graphics>();
 
@@ -7323,7 +7687,7 @@ void TerrainNode::HandleLogMessage(StringHash eventType, VariantMap& eventData)
     String message = eventData[P_MESSAGE].GetString();
 
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    Font* font = font_;
 
     auto* line = new Text(context_);
     line->SetFont(font, 11);
@@ -7577,6 +7941,13 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
         URHO3D_LOGINFOF("Weather from server: %s, cloud=%d%%, precip=%d%%, wind=%.0f, temp=%.1fC",
             condition.CString(), (int)(forecast.cloudCover * 100), (int)(forecast.precipitation * 100),
             forecast.windSpeed, temperature);
+        return;
+    }
+
+    if (msgID == MSG_RESOURCE_PATCH)
+    {
+        MemoryBuffer msg(data);
+        HandleResourcePatch(msg);
         return;
     }
 
@@ -8166,6 +8537,75 @@ void TerrainNode::HandleEditBroadcast(MemoryBuffer& msg)
     }
 }
 
+void TerrainNode::HandleResourcePatch(MemoryBuffer& msg)
+{
+    String resourceID = msg.ReadString();
+    int patchX = msg.ReadI32();
+    int patchZ = msg.ReadI32();
+    int pixelX = msg.ReadI32();
+    int pixelZ = msg.ReadI32();
+    int pixelW = msg.ReadI32();
+    int pixelH = msg.ReadI32();
+    int components = msg.ReadI32();
+    unsigned dataSize = msg.ReadU32();
+
+    if (resourceID == "water_heightmap" && waterMap_)
+    {
+        // Blit raw pixels into waterMap_ at (pixelX, pixelZ)
+        int mapComponents = waterMap_->GetComponents();
+        unsigned char* dest = waterMap_->GetData();
+        int destStride = waterMap_->GetWidth() * mapComponents;
+        int srcStride = pixelW * components;
+
+        for (int row = 0; row < pixelH; ++row)
+        {
+            int destRow = pixelZ + row;
+            if (destRow < 0 || destRow >= waterMap_->GetHeight())
+            {
+                msg.Seek(msg.GetPosition() + srcStride);  // skip row
+                continue;
+            }
+            int destCol = pixelX;
+            if (destCol < 0 || destCol + pixelW > waterMap_->GetWidth())
+            {
+                msg.Seek(msg.GetPosition() + srcStride);  // skip row
+                continue;
+            }
+            const unsigned char* srcRow = reinterpret_cast<const unsigned char*>(msg.GetData()) + msg.GetPosition();
+            memcpy(dest + destRow * destStride + destCol * mapComponents, srcRow, pixelW * Min(components, mapComponents));
+            msg.Seek(msg.GetPosition() + srcStride);
+        }
+
+        // Re-upload water map to GPU
+        if (waterMapTex_)
+            waterMapTex_->SetData(waterMap_);
+
+        URHO3D_LOGINFOF("Resource patch '%s' (%d,%d) → pixels (%d,%d) %dx%d",
+            resourceID.CString(), patchX, patchZ, pixelX, pixelZ, pixelW, pixelH);
+    }
+    else
+    {
+        // Skip unknown resource data
+        msg.Seek(msg.GetPosition() + dataSize);
+        URHO3D_LOGWARNINGF("Unknown resource patch: %s", resourceID.CString());
+    }
+}
+
+void TerrainNode::SendPatchPosition(int patchX, int patchZ)
+{
+    auto* network = GetSubsystem<Network>();
+    Connection* conn = network->GetServerConnection();
+    if (!conn)
+        return;
+
+    VectorBuffer msg;
+    msg.WriteI32(patchX);
+    msg.WriteI32(patchZ);
+    conn->SendMessage(MSG_PATCH_POSITION, true, true, msg);
+    lastReportedPatchX_ = patchX;
+    lastReportedPatchZ_ = patchZ;
+}
+
 // ============================================================================
 // Player Avatar & Camera Modes
 // ============================================================================
@@ -8186,7 +8626,35 @@ Node* TerrainNode::CreatePlayerAvatar()
     if (terrain_)
     {
         float terrainH = terrain_->GetHeight(spawnPos);
-        spawnPos.y_ = Max(terrainH, waterLevel) + 1.0f;
+
+        // If initial position is underwater, scan nearby for dry land
+        if (terrainH < waterLevel + 2.0f)
+        {
+            float bestH = terrainH;
+            Vector3 bestPos = spawnPos;
+            // Search in expanding rings around spawn center
+            for (float r = 16.0f; r <= 128.0f; r += 16.0f)
+            {
+                for (int angle = 0; angle < 8; ++angle)
+                {
+                    float a = angle * (M_PI / 4.0f);
+                    Vector3 probe(spawnX + r * cosf(a), 0.0f, spawnZ + r * sinf(a));
+                    float h = terrain_->GetHeight(probe);
+                    if (h > bestH)
+                    {
+                        bestH = h;
+                        bestPos = probe;
+                    }
+                }
+                if (bestH > waterLevel + 5.0f)
+                    break;  // Found good high ground
+            }
+            spawnPos.x_ = bestPos.x_;
+            spawnPos.z_ = bestPos.z_;
+            terrainH = bestH;
+        }
+
+        spawnPos.y_ = Max(terrainH, waterLevel) + 2.0f;
     }
 
     // Root character node (replicated for network)
@@ -8287,6 +8755,7 @@ void TerrainNode::HandlePhysicsPreStep(StringHash eventType, VariantMap& eventDa
         Controls controls;
 
         controls.yaw_ = yaw_;
+        controls.pitch_ = pitch_;
 
         if (!ui->GetFocusElement() && cameraMode_ != CAM_GOD)
         {
@@ -8339,6 +8808,7 @@ void TerrainNode::HandlePhysicsPreStep(StringHash eventType, VariantMap& eventDa
                 character->controls_.Set(CTRL_RIGHT, input->GetKeyDown(KEY_D));
                 character->controls_.Set(CTRL_JUMP, input->GetKeyDown(KEY_SPACE));
                 character->controls_.yaw_ = yaw_;
+                character->controls_.pitch_ = pitch_;
                 // Rotate character to face yaw
                 charNode->SetRotation(Quaternion(0.0f, yaw_, 0.0f));
             }
@@ -8393,4 +8863,381 @@ void TerrainNode::HandleClientObjectID(StringHash eventType, VariantMap& eventDa
         URHO3D_LOGINFO("Switched to chase camera — WASD drives avatar");
     }
     // Node may not exist yet if replication hasn't delivered it — HandleUpdate will retry
+}
+
+// ============================================================================
+// Grass — cross-billboard clumps written as UMDL .mdl, loaded via cache
+// ============================================================================
+
+static bool WriteGrassClumpMDL(const String& path, Context* context)
+{
+    // 3 cross quads at 0°, 60°, 120° — classic grass clump
+    const float halfW = 0.5f;
+    const float height = 1.0f;
+    const int NUM_QUADS = 3;
+
+    struct GrassVert { Vector3 pos; Vector3 norm; Vector2 uv; };
+    Vector<GrassVert> verts;
+    Vector<unsigned short> indices;
+
+    for (int q = 0; q < NUM_QUADS; ++q)
+    {
+        float angle = q * 60.0f * 3.14159265f / 180.0f;
+        float cx = cosf(angle) * halfW;
+        float cz = sinf(angle) * halfW;
+        unsigned short base = (unsigned short)verts.Size();
+
+        // 4 vertices per quad: BL, BR, TR, TL
+        verts.Push({ Vector3(-cx, 0.0f, -cz), Vector3::UP, Vector2(0.0f, 1.0f) });
+        verts.Push({ Vector3( cx, 0.0f,  cz), Vector3::UP, Vector2(1.0f, 1.0f) });
+        verts.Push({ Vector3( cx, height, cz), Vector3::UP, Vector2(1.0f, 0.0f) });
+        verts.Push({ Vector3(-cx, height,-cz), Vector3::UP, Vector2(0.0f, 0.0f) });
+
+        // 2 triangles
+        indices.Push(base + 0); indices.Push(base + 1); indices.Push(base + 2);
+        indices.Push(base + 0); indices.Push(base + 2); indices.Push(base + 3);
+    }
+
+    // Compute bounding box
+    BoundingBox bbox;
+    for (unsigned i = 0; i < verts.Size(); ++i)
+        bbox.Merge(verts[i].pos);
+
+    // Write UMDL format — same as MeshGenerator
+    File file(context, path, FILE_WRITE);
+    if (!file.IsOpen())
+        return false;
+
+    file.WriteFileID("UMDL");
+
+    // 1 vertex buffer
+    file.WriteU32(1);
+    file.WriteU32(verts.Size());
+    file.WriteU32(0x0B);  // Position(1) | Normal(2) | TexCoord1(8)
+    file.WriteU32(0);     // morph range start
+    file.WriteU32(0);     // morph range count
+    for (unsigned i = 0; i < verts.Size(); ++i)
+    {
+        file.WriteVector3(verts[i].pos);
+        file.WriteVector3(verts[i].norm);
+        file.WriteVector2(verts[i].uv);
+    }
+
+    // 1 index buffer
+    file.WriteU32(1);
+    file.WriteU32(indices.Size());
+    file.WriteU32(2);  // 16-bit indices
+    for (unsigned i = 0; i < indices.Size(); ++i)
+        file.WriteU16(indices[i]);
+
+    // 1 geometry, 1 LOD
+    file.WriteU32(1);
+    file.WriteU32(0);              // bone mappings: none
+    file.WriteU32(1);              // LOD levels
+    file.WriteFloat(0.0f);         // LOD distance
+    file.WriteU32(0);              // primitive type: TRIANGLE_LIST
+    file.WriteU32(0);              // vertex buffer index
+    file.WriteU32(0);              // index buffer index
+    file.WriteU32(0);              // index start
+    file.WriteU32(indices.Size()); // index count
+
+    // No morphs, no skeleton
+    file.WriteU32(0);
+    file.WriteU32(0);
+
+    // Bounding box + geometry center
+    file.WriteVector3(bbox.min_);
+    file.WriteVector3(bbox.max_);
+    file.WriteVector3(bbox.Center());
+
+    return true;
+}
+
+void TerrainNode::CreateGrass()
+{
+    if (!terrain_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    // ── 1. Write grass clump model to disk as UMDL ──
+    String mdlPath = GetSubsystem<FileSystem>()->GetProgramDir() + "Data/Models/GrassClump.mdl";
+    if (!WriteGrassClumpMDL(mdlPath, context_))
+    {
+        URHO3D_LOGERROR("Failed to write GrassClump.mdl");
+        return;
+    }
+
+    grassModel_ = cache->GetResource<Model>("Models/GrassClump.mdl");
+    if (!grassModel_)
+    {
+        URHO3D_LOGERROR("Failed to load GrassClump.mdl");
+        return;
+    }
+
+    // ── 2. Generate grass blade texture (64x128 RGBA) ──
+    const int texW = 64;
+    const int texH = 128;
+    SharedPtr<Image> grassImg(new Image(context_));
+    grassImg->SetSize(texW, texH, 4);
+
+    // Clear to transparent
+    for (int y = 0; y < texH; ++y)
+        for (int x = 0; x < texW; ++x)
+            grassImg->SetPixel(x, y, Color(0.0f, 0.0f, 0.0f, 0.0f));
+
+    // Draw grass blade silhouettes — side view, 5 blades with taper
+    struct Blade { float cx; float w; float r; float g; float b; };
+    Blade blades[] = {
+        { 0.12f, 0.08f, 0.30f, 0.65f, 0.12f },
+        { 0.30f, 0.10f, 0.35f, 0.70f, 0.15f },
+        { 0.50f, 0.12f, 0.28f, 0.60f, 0.10f },
+        { 0.68f, 0.09f, 0.38f, 0.68f, 0.18f },
+        { 0.88f, 0.10f, 0.32f, 0.72f, 0.14f },
+    };
+
+    for (int b = 0; b < 5; ++b)
+    {
+        float centerPx = blades[b].cx * texW;
+        float widthPx = blades[b].w * texW;
+
+        for (int y = 0; y < texH; ++y)
+        {
+            float t = (float)y / (float)texH;  // 0=top, 1=bottom
+            float taper = 0.2f + 0.8f * t;     // narrow at top, wide at base
+            float curHalf = widthPx * taper * 0.5f;
+            float sway = sinf(t * 6.28f + b * 1.7f) * 1.5f;
+            float center = centerPx + sway;
+
+            for (int x = (int)(center - curHalf); x <= (int)(center + curHalf); ++x)
+            {
+                if (x < 0 || x >= texW) continue;
+                float shade = 0.6f + 0.4f * (1.0f - t);
+                grassImg->SetPixel(x, y, Color(
+                    blades[b].r * shade, blades[b].g * shade, blades[b].b * shade, 1.0f));
+            }
+        }
+    }
+
+    SharedPtr<Texture2D> grassTex(new Texture2D(context_));
+    grassTex->SetData(grassImg);
+    grassTex->SetFilterMode(FILTER_BILINEAR);
+
+    // ── 3. Create material — GrassDiffUnlitAlpha with wind ──
+    grassMat_ = new Material(context_);
+    grassMat_->SetTechnique(0, cache->GetResource<Technique>("Techniques/GrassDiffUnlitAlpha.xml"));
+    grassMat_->SetTexture(TU_DIFFUSE, grassTex);
+    grassMat_->SetShaderParameter("MatDiffColor", Color(0.5f, 0.85f, 0.35f, 1.0f));
+    grassMat_->SetShaderParameter("WindHeightFactor", 0.08f);
+    grassMat_->SetShaderParameter("WindHeightPivot", 0.0f);
+    grassMat_->SetShaderParameter("WindPeriod", 1.5f);
+    grassMat_->SetShaderParameter("WindWorldSpacing", Vector2(0.15f, 0.15f));
+    grassMat_->SetCullMode(CULL_NONE);
+
+    // ── 4. Spawn clump nodes ──
+    grassRoot_ = scene_->CreateChild("GrassRoot", LOCAL);
+
+    for (int i = 0; i < MAX_GRASS_CLUMPS; ++i)
+    {
+        Node* clump = grassRoot_->CreateChild("G");
+        clump->SetEnabled(false);
+        auto* sm = clump->CreateComponent<StaticModel>();
+        sm->SetModel(grassModel_);
+        sm->SetMaterial(grassMat_);
+        sm->SetCastShadows(false);
+        sm->SetOccludee(false);
+    }
+
+    lastGrassCenter_ = Vector3(M_INFINITY, M_INFINITY, M_INFINITY);
+    URHO3D_LOGINFOF("Created grass: %d clumps with UMDL model", MAX_GRASS_CLUMPS);
+}
+
+void TerrainNode::UpdateGrassPositions()
+{
+    if (!grassRoot_ || !terrain_ || !cameraNode_)
+        return;
+
+    Vector3 camPos = cameraNode_->GetWorldPosition();
+    Vector3 center(camPos.x_, 0.0f, camPos.z_);
+
+    // Hysteresis: only reposition when camera moves >3m
+    Vector3 diff = center - lastGrassCenter_;
+    diff.y_ = 0.0f;
+    if (diff.LengthSquared() < 9.0f)
+        return;
+    lastGrassCenter_ = center;
+
+    const float RADIUS = 35.0f;
+    const float CELL_SIZE = 2.0f;
+    const float waterLevel = 5.5f;
+    const Vector<SharedPtr<Node>>& clumps = grassRoot_->GetChildren();
+    unsigned idx = 0;
+    int halfCells = (int)(RADIUS / CELL_SIZE);
+
+    for (int cz = -halfCells; cz <= halfCells && idx < (unsigned)MAX_GRASS_CLUMPS; ++cz)
+    {
+        for (int cx = -halfCells; cx <= halfCells && idx < (unsigned)MAX_GRASS_CLUMPS; ++cx)
+        {
+            float wx = center.x_ + cx * CELL_SIZE;
+            float wz = center.z_ + cz * CELL_SIZE;
+
+            if ((float)(cx * cx + cz * cz) * CELL_SIZE * CELL_SIZE > RADIUS * RADIUS)
+                continue;
+
+            // Deterministic offset within cell
+            unsigned h = (unsigned)(wx * 73856093.0f) ^ (unsigned)(wz * 19349663.0f);
+            float px = wx + ((h & 0xFF) / 255.0f - 0.5f) * CELL_SIZE * 0.8f;
+            float pz = wz + (((h >> 8) & 0xFF) / 255.0f - 0.5f) * CELL_SIZE * 0.8f;
+            float gy = terrain_->GetHeight(Vector3(px, 0, pz));
+
+            if (gy < waterLevel + 0.3f) continue;
+            if (terrain_->GetNormal(Vector3(px, 0, pz)).y_ < 0.8f) continue;
+
+            Node* c = clumps[idx];
+            c->SetEnabled(true);
+            c->SetPosition(Vector3(px, gy, pz));
+            c->SetRotation(Quaternion(((h >> 16) & 0xFF) / 255.0f * 360.0f, Vector3::UP));
+            c->SetScale(0.7f + ((h >> 24) & 0xFF) / 255.0f * 0.6f);
+            ++idx;
+        }
+    }
+
+    for (unsigned i = idx; i < clumps.Size(); ++i)
+        clumps[i]->SetEnabled(false);
+}
+
+// --- Font / Theme ---
+
+void TerrainNode::LoadThemePrefs()
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* fs = GetSubsystem<FileSystem>();
+    String path = fs->GetProgramDir() + "Data/UI/theme.json";
+    if (!fs->FileExists(path))
+        return;
+
+    File file(context_, path, FILE_READ);
+    if (!file.IsOpen())
+        return;
+
+    unsigned size = file.GetSize();
+    String content;
+    content.Resize(size);
+    file.Read(&content[0], size);
+    file.Close();
+
+    Vector<String> lines = content.Split('\n');
+    for (unsigned i = 0; i < lines.Size(); ++i)
+    {
+        String line = lines[i].Trimmed();
+        if (line.StartsWith("\"font\""))
+        {
+            unsigned colon = line.Find(':');
+            if (colon != String::NPOS)
+            {
+                String val = line.Substring(colon + 1).Trimmed();
+                val.Replace("\"", "");
+                val.Replace(",", "");
+                val = val.Trimmed();
+                if (!val.Empty())
+                    currentFontName_ = val;
+            }
+        }
+        else if (line.StartsWith("\"fontSize\""))
+        {
+            unsigned colon = line.Find(':');
+            if (colon != String::NPOS)
+            {
+                String val = line.Substring(colon + 1).Trimmed();
+                val.Replace(",", "");
+                int sz = atoi(val.Trimmed().CString());
+                if (sz >= 8 && sz <= 24)
+                    currentFontSize_ = sz;
+            }
+        }
+    }
+}
+
+void TerrainNode::SaveThemePrefs()
+{
+    auto* fs = GetSubsystem<FileSystem>();
+    String path = fs->GetProgramDir() + "Data/UI/theme.json";
+
+    String dir = path.Substring(0, path.FindLast('/'));
+    if (!fs->DirExists(dir))
+        fs->CreateDir(dir);
+
+    File file(context_, path, FILE_WRITE);
+    if (!file.IsOpen())
+        return;
+
+    String json = "{\n";
+    json += "  \"font\": \"" + currentFontName_ + "\",\n";
+    json += "  \"fontSize\": " + String(currentFontSize_) + "\n";
+    json += "}\n";
+
+    file.Write(json.CString(), json.Length());
+    file.Close();
+}
+
+static void UpdateFontsRecursive(UIElement* element, Font* font, int baseSize)
+{
+    auto* text = dynamic_cast<Text*>(element);
+    if (text && text->GetFont())
+    {
+        int oldSize = text->GetFontSize();
+        int offset = oldSize - 11;
+        text->SetFont(font, baseSize + offset);
+    }
+    for (unsigned i = 0; i < element->GetNumChildren(); ++i)
+        UpdateFontsRecursive(element->GetChild(i), font, baseSize);
+}
+
+void TerrainNode::ApplyFont(const String& fontName, int fontSize)
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* newFont = cache->GetResource<Font>("Fonts/" + fontName + ".ttf");
+    if (!newFont)
+        return;
+    font_ = newFont;
+    currentFontName_ = fontName;
+    currentFontSize_ = fontSize;
+
+    auto* ui = GetSubsystem<UI>();
+    UpdateFontsRecursive(ui->GetRoot(), font_, currentFontSize_);
+}
+
+void TerrainNode::HandleSettingsMenu(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace ItemSelected;
+    auto* list = static_cast<DropDownList*>(eventData[P_ELEMENT].GetPtr());
+    unsigned sel = eventData[P_SELECTION].GetU32();
+    if (sel == M_MAX_UNSIGNED || !list)
+        return;
+
+    auto* item = list->GetItem(sel);
+    if (!item)
+        return;
+
+    String text = static_cast<Text*>(item)->GetText();
+
+    // Font items are prefixed "Font: "
+    if (text.StartsWith("Font: "))
+    {
+        String fontName = text.Substring(6);
+        ApplyFont(fontName, currentFontSize_);
+        SaveThemePrefs();
+    }
+    // Size items are prefixed "Size: "
+    else if (text.StartsWith("Size: "))
+    {
+        int sz = atoi(text.Substring(6).CString());
+        if (sz >= 8 && sz <= 24)
+        {
+            ApplyFont(currentFontName_, sz);
+            SaveThemePrefs();
+        }
+    }
+
+    list->SetSelection(M_MAX_UNSIGNED);
 }

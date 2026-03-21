@@ -290,8 +290,8 @@ void AnimationState::AddTime(float delta)
             return;
     }
 
-    // Process animation triggers
-    if (animation_->GetNumTriggers())
+    // Process animation triggers and text keys
+    if (animation_->GetNumTriggers() || animation_->GetNumTextKeys())
     {
         bool wrap = false;
 
@@ -314,6 +314,7 @@ void AnimationState::AddTime(float delta)
         if (oldTime > time)
             Swap(oldTime, time);
 
+        // Fire trigger events
         const Vector<AnimationTriggerPoint>& triggers = animation_->GetTriggers();
         for (Vector<AnimationTriggerPoint>::ConstIterator i = triggers.Begin(); i != triggers.End(); ++i)
         {
@@ -335,8 +336,36 @@ void AnimationState::AddTime(float delta)
                 eventData[P_TIME] = i->time_;
                 eventData[P_DATA] = i->data_;
 
-                // Note: this may cause arbitrary deletion of animation states, including the one we are currently processing
                 senderNode->SendEvent(E_ANIMATIONTRIGGER, eventData);
+                if (senderNode.Expired() || self.Expired())
+                    return;
+            }
+        }
+
+        // Fire text key events
+        const Vector<AnimationTextKey>& textKeys = animation_->GetTextKeys();
+        for (Vector<AnimationTextKey>::ConstIterator i = textKeys.Begin(); i != textKeys.End(); ++i)
+        {
+            float frameTime = i->time_;
+            if (looped_ && wrap)
+                frameTime = fmodf(frameTime, length);
+
+            if (oldTime <= frameTime && time > frameTime)
+            {
+                using namespace AnimationTextKeyEvent;
+
+                WeakPtr<AnimationState> self(this);
+                WeakPtr<Node> senderNode(model_ ? model_->GetNode() : node_);
+
+                VariantMap& eventData = senderNode->GetEventDataMap();
+                eventData[P_NODE] = senderNode;
+                eventData[P_ANIMATION] = animation_;
+                eventData[P_NAME] = i->name_;
+                eventData[P_NAMEHASH] = i->nameHash_;
+                eventData[P_TIME] = i->time_;
+                eventData[P_DATA] = i->data_;
+
+                senderNode->SendEvent(E_ANIMATIONTEXTKEY, eventData);
                 if (senderNode.Expired() || self.Expired())
                     return;
             }

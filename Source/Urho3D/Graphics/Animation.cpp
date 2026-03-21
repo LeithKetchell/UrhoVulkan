@@ -31,6 +31,11 @@ inline bool CompareKeyFrames(AnimationKeyFrame& lhs, AnimationKeyFrame& rhs)
     return lhs.time_ < rhs.time_;
 }
 
+inline bool CompareTextKeys(AnimationTextKey& lhs, AnimationTextKey& rhs)
+{
+    return lhs.time_ < rhs.time_;
+}
+
 void AnimationTrack::SetKeyFrame(i32 index, const AnimationKeyFrame& keyFrame)
 {
     assert(index >= 0);
@@ -171,9 +176,26 @@ bool Animation::BeginLoad(Deserializer& source)
                 AddTrigger(triggerElem.GetFloat("time"), false, triggerElem.GetVariant());
         }
 
+        // Read text keys
+        for (XMLElement keyElem = rootElem.GetChild("textkey"); keyElem; keyElem = keyElem.GetNext("textkey"))
+        {
+            float time;
+            if (keyElem.HasAttribute("normalizedtime"))
+                time = keyElem.GetFloat("normalizedtime") * length_;
+            else if (keyElem.HasAttribute("time"))
+                time = keyElem.GetFloat("time");
+            else
+                continue;
+
+            String name = keyElem.GetAttribute("name");
+            Variant data = keyElem.HasAttribute("type") ? keyElem.GetVariant() : Variant::EMPTY;
+            AddTextKey(time, false, name, data);
+        }
+
         LoadMetadataFromXML(rootElem);
 
         memoryUse += triggers_.Size() * sizeof(AnimationTriggerPoint);
+        memoryUse += textKeys_.Size() * sizeof(AnimationTextKey);
         SetMemoryUse(memoryUse);
         return true;
     }
@@ -200,10 +222,36 @@ bool Animation::BeginLoad(Deserializer& source)
             }
         }
 
+        // Read text keys from JSON
+        JSONValue textKeysVal = rootVal.Get("textkeys");
+        if (!textKeysVal.IsNull())
+        {
+            const JSONArray& textKeyArray = textKeysVal.GetArray();
+            for (const JSONValue& keyValue : textKeyArray)
+            {
+                String name = keyValue.Get("name").GetString();
+                Variant data;
+                JSONValue dataVal = keyValue.Get("data");
+                if (!dataVal.IsNull())
+                    data = dataVal.GetVariant();
+
+                JSONValue normalizedTimeValue = keyValue.Get("normalizedTime");
+                if (!normalizedTimeValue.IsNull())
+                    AddTextKey(normalizedTimeValue.GetFloat() * length_, false, name, data);
+                else
+                {
+                    JSONValue timeVal = keyValue.Get("time");
+                    if (!timeVal.IsNull())
+                        AddTextKey(timeVal.GetFloat(), false, name, data);
+                }
+            }
+        }
+
         const JSONArray& metadataArray = rootVal.Get("metadata").GetArray();
         LoadMetadataFromJSON(metadataArray);
 
         memoryUse += triggers_.Size() * sizeof(AnimationTriggerPoint);
+        memoryUse += textKeys_.Size() * sizeof(AnimationTextKey);
         SetMemoryUse(memoryUse);
         return true;
     }
@@ -241,8 +289,8 @@ bool Animation::Save(Serializer& dest) const
         }
     }
 
-    // If triggers have been defined, write an XML file for them
-    if (!triggers_.Empty() || HasMetadata())
+    // If triggers or text keys have been defined, write an XML file for them
+    if (!triggers_.Empty() || !textKeys_.Empty() || HasMetadata())
     {
         File* destFile = dynamic_cast<File*>(&dest);
         if (destFile)
@@ -257,6 +305,15 @@ bool Animation::Save(Serializer& dest) const
                 XMLElement triggerElem = rootElem.CreateChild("trigger");
                 triggerElem.SetFloat("time", trigger.time_);
                 triggerElem.SetVariant(trigger.data_);
+            }
+
+            for (const AnimationTextKey& key : textKeys_)
+            {
+                XMLElement keyElem = rootElem.CreateChild("textkey");
+                keyElem.SetFloat("time", key.time_);
+                keyElem.SetAttribute("name", key.name_);
+                if (!key.data_.IsEmpty())
+                    keyElem.SetVariant(key.data_);
             }
 
             SaveMetadataToXML(rootElem);
@@ -370,6 +427,7 @@ SharedPtr<Animation> Animation::Clone(const String& cloneName) const
     ret->length_ = length_;
     ret->tracks_ = tracks_;
     ret->triggers_ = triggers_;
+    ret->textKeys_ = textKeys_;
     ret->CopyMetadata(*this);
     ret->SetMemoryUse(GetMemoryUse());
 
@@ -411,6 +469,48 @@ AnimationTriggerPoint* Animation::GetTrigger(i32 index)
 {
     assert(index >= 0);
     return index < triggers_.Size() ? &triggers_[index] : nullptr;
+}
+
+void Animation::AddTextKey(float time, bool timeIsNormalized, const String& name, const Variant& data)
+{
+    AnimationTextKey newKey;
+    newKey.time_ = timeIsNormalized ? time * length_ : time;
+    newKey.name_ = name;
+    newKey.nameHash_ = StringHash(name);
+    newKey.data_ = data;
+    textKeys_.Push(newKey);
+
+    Sort(textKeys_.Begin(), textKeys_.End(), CompareTextKeys);
+}
+
+void Animation::RemoveTextKey(i32 index)
+{
+    assert(index >= 0);
+
+    if (index < textKeys_.Size())
+        textKeys_.Erase(index);
+}
+
+void Animation::RemoveAllTextKeys()
+{
+    textKeys_.Clear();
+}
+
+AnimationTextKey* Animation::GetTextKey(i32 index)
+{
+    assert(index >= 0);
+    return index < textKeys_.Size() ? &textKeys_[index] : nullptr;
+}
+
+bool Animation::HasTextKey(const String& name) const
+{
+    StringHash nameHash(name);
+    for (const AnimationTextKey& key : textKeys_)
+    {
+        if (key.nameHash_ == nameHash)
+            return true;
+    }
+    return false;
 }
 
 }

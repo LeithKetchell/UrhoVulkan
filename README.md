@@ -76,6 +76,13 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - **LAN discovery** — broadcast beacon for auto-discovery on local network
 - Build with `-DURHO3D_NETWORK=1 -DURHO3D_DATABASE_SQLITE=1`
 
+### WorkboardManager
+- **GUI dashboard** for team coordination — workboard display, plan browser, instance status, message composer
+- Bidirectional messaging between the Manager and Claude Code instances
+- Automatic liveness detection — crashed instances are culled from the status display
+- LAN discovery beacon for multi-tool coordination
+- Build with `-DURHO3D_TOOLS=1`
+
 ### Editor Sample (23_Water / 60_TerrainNode)
 
 A lightweight scene editor built into Sample 23 (standalone) and forked as Sample 60 (networked). Sample 60 adds multiplayer connectivity via AuthServer — LAN discovery, encrypted login, collaborative terrain/object editing with server-authoritative validation.

@@ -97,6 +97,25 @@ struct AnimationTriggerPoint
     Variant data_;
 };
 
+/// %Animation text key — named event at a specific time, for footsteps, weapon attach/detach, etc.
+struct AnimationTextKey
+{
+    /// Construct.
+    AnimationTextKey() :
+        time_(0.0f)
+    {
+    }
+
+    /// Key time.
+    float time_;
+    /// Key name (e.g. "FootDown", "AttachSwordHand").
+    String name_;
+    /// Key name hash for fast runtime matching.
+    StringHash nameHash_;
+    /// Optional extra data (e.g. bone name, sound cue).
+    Variant data_;
+};
+
 /// Skeletal animation resource.
 class URHO3D_API Animation : public ResourceWithMetadata
 {
@@ -142,6 +161,12 @@ public:
     /// Resize trigger point vector.
     /// @property
     void SetNumTriggers(i32 num);
+    /// Add a text key.
+    void AddTextKey(float time, bool timeIsNormalized, const String& name, const Variant& data = Variant::EMPTY);
+    /// Remove a text key by index.
+    void RemoveTextKey(i32 index);
+    /// Remove all text keys.
+    void RemoveAllTextKeys();
     /// Clone the animation.
     SharedPtr<Animation> Clone(const String& cloneName = String::EMPTY) const;
 
@@ -182,6 +207,18 @@ public:
     /// Return a trigger point by index.
     AnimationTriggerPoint* GetTrigger(i32 index);
 
+    /// Return animation text keys.
+    const Vector<AnimationTextKey>& GetTextKeys() const { return textKeys_; }
+
+    /// Return number of text keys.
+    i32 GetNumTextKeys() const { return textKeys_.Size(); }
+
+    /// Return a text key by index.
+    AnimationTextKey* GetTextKey(i32 index);
+
+    /// Return whether a text key with the given name exists.
+    bool HasTextKey(const String& name) const;
+
 private:
     /// Animation name.
     String animationName_;
@@ -193,6 +230,8 @@ private:
     HashMap<StringHash, AnimationTrack> tracks_;
     /// Animation trigger points.
     Vector<AnimationTriggerPoint> triggers_;
+    /// Animation text keys.
+    Vector<AnimationTextKey> textKeys_;
 };
 
 }
