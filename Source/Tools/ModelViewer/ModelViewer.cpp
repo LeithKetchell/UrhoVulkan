@@ -69,14 +69,17 @@ void ModelViewer::Start()
     SubscribeToEvent(E_MOUSEMOVE, URHO3D_HANDLER(ModelViewer, HandleMouseMove));
     SubscribeToEvent(E_MOUSEWHEEL, URHO3D_HANDLER(ModelViewer, HandleMouseWheel));
 
-    // Command-line model
+    // Command-line arguments
     const Vector<String>& args = GetArguments();
     for (unsigned i = 0; i < args.Size(); ++i)
     {
         if ((args[i] == "-model" || args[i] == "model") && i + 1 < args.Size())
         {
             LoadModel(args[i + 1]);
-            break;
+        }
+        else if ((args[i] == "-folder" || args[i] == "folder") && i + 1 < args.Size())
+        {
+            ScanFolder(args[i + 1]);
         }
     }
 
@@ -180,11 +183,6 @@ void ModelViewer::LoadModel(const String& path)
         animatedModelComp_->SetCastShadows(true);
         staticModelComp_ = animatedModelComp_;
         animController_ = modelNode_->CreateComponent<AnimationController>();
-
-        String matListPath = ReplaceExtension(path, ".txt");
-        if (cache->Exists(matListPath))
-            animatedModelComp_->ApplyMaterialList(matListPath);
-
         ScanAnimations();
     }
     else
@@ -192,10 +190,86 @@ void ModelViewer::LoadModel(const String& path)
         staticModelComp_ = modelNode_->CreateComponent<StaticModel>();
         staticModelComp_->SetModel(model, true);
         staticModelComp_->SetCastShadows(true);
+    }
 
-        String matListPath = ReplaceExtension(path, ".txt");
-        if (cache->Exists(matListPath))
-            staticModelComp_->ApplyMaterialList(matListPath);
+    // --- Material resolution ---
+    // Try: 1) material list .txt, 2) per-geometry Materials/Name_N.xml,
+    // 3) single Materials/Name.xml for all, 4) fallback default lit material
+    bool materialsApplied = false;
+    String matListPath = ReplaceExtension(path, ".txt");
+    if (cache->Exists(matListPath))
+    {
+        staticModelComp_->ApplyMaterialList(matListPath);
+        materialsApplied = true;
+    }
+
+    if (!materialsApplied)
+    {
+        // Try Materials/ directory relative to model path, and also root Materials/
+        String modelDir = GetPath(path);       // e.g. "Models/"
+        String baseName = GetFileName(path);   // e.g. "Jack"
+        unsigned numGeoms = model->GetNumGeometries();
+
+        // Try per-geometry: Materials/Name_0.xml, Materials/Name_1.xml, ...
+        bool allFound = true;
+        for (unsigned i = 0; i < numGeoms; ++i)
+        {
+            String matPath = modelDir + "Materials/" + baseName + "_" + String(i) + ".xml";
+            if (!cache->Exists(matPath))
+                matPath = "Materials/" + baseName + "_" + String(i) + ".xml";
+            if (cache->Exists(matPath))
+            {
+                auto* mat = cache->GetResource<Material>(matPath);
+                if (mat) staticModelComp_->SetMaterial(i, mat);
+            }
+            else
+            {
+                allFound = false;
+                break;
+            }
+        }
+
+        if (allFound && numGeoms > 0)
+            materialsApplied = true;
+    }
+
+    if (!materialsApplied)
+    {
+        // Try single material: Materials/Name.xml
+        String modelDir = GetPath(path);
+        String baseName = GetFileName(path);
+        unsigned numGeoms = model->GetNumGeometries();
+
+        String matPath = modelDir + "Materials/" + baseName + ".xml";
+        if (!cache->Exists(matPath))
+            matPath = "Materials/" + baseName + ".xml";
+        if (cache->Exists(matPath))
+        {
+            auto* mat = cache->GetResource<Material>(matPath);
+            if (mat)
+            {
+                for (unsigned i = 0; i < numGeoms; ++i)
+                    staticModelComp_->SetMaterial(i, mat);
+                materialsApplied = true;
+            }
+        }
+    }
+
+    if (!materialsApplied)
+    {
+        // Fallback: apply a default lit material so the model isn't invisible
+        auto* defaultMat = cache->GetResource<Material>("Materials/DefaultGrey.xml");
+        if (!defaultMat)
+        {
+            // Create a basic grey lit material on the fly
+            defaultMat = new Material(context_);
+            defaultMat->SetTechnique(0, cache->GetResource<Technique>("Techniques/DiffUnlit.xml"));
+            defaultMat->SetShaderParameter("MatDiffColor", Color(0.6f, 0.6f, 0.6f, 1.0f));
+        }
+        unsigned numGeoms = model->GetNumGeometries();
+        for (unsigned i = 0; i < numGeoms; ++i)
+            staticModelComp_->SetMaterial(i, defaultMat);
+        URHO3D_LOGWARNINGF("No materials found for %s — using default grey", path.CString());
     }
 
     // Auto-scale oversized models (e.g. FBX exported in centimeters)
@@ -590,8 +664,10 @@ void ModelViewer::CreateMenuBar()
     auto* fileMenu = makeDropDown(120);
     fileMenu->AddItem(makePlaceholder("File"));       // 0
     fileMenu->AddItem(makeItem("Open Model"));        // 1
-    fileMenu->AddItem(makeItem("Save Model"));        // 2
-    fileMenu->AddItem(makeItem("Quit"));              // 3
+    fileMenu->AddItem(makeItem("Open Folder"));       // 2
+    fileMenu->AddItem(makeItem("Save Model"));        // 3
+    fileMenu->AddItem(makeItem("Export FBX"));        // 4
+    fileMenu->AddItem(makeItem("Quit"));              // 5
     fileMenu->SetSelection(0);
 
     SubscribeToEvent(fileMenu, E_ITEMSELECTED, [this, fileMenu](StringHash, VariantMap& eventData)
@@ -634,8 +710,46 @@ void ModelViewer::CreateMenuBar()
             SubscribeToEvent(fileSelector_, E_FILESELECTED, URHO3D_HANDLER(ModelViewer, HandleFileOpen));
         }
         else if (sel == 2)
-            SaveModel();
+        {
+            // Open Folder — use file selector to pick any .mdl, then scan its parent directory
+            auto* ui = GetSubsystem<UI>();
+            auto* style = ui->GetRoot()->GetDefaultStyle();
+            auto* fs = GetSubsystem<FileSystem>();
+
+            fileSelector_ = new FileSelector(context_);
+            fileSelector_->SetDefaultStyle(style);
+            fileSelector_->SetTitle("Open Folder (pick any .mdl in target folder)");
+            fileSelector_->SetButtonTexts("Open", "Cancel");
+
+            Vector<String> filters;
+            filters.Push("*.mdl");
+            fileSelector_->SetFilters(filters, 0);
+
+            auto* cache = GetSubsystem<ResourceCache>();
+            const Vector<String>& dirs = cache->GetResourceDirs();
+            for (unsigned i = 0; i < dirs.Size(); ++i)
+            {
+                if (fs->DirExists(dirs[i] + "Models/"))
+                {
+                    fileSelector_->SetPath(dirs[i] + "Models/");
+                    break;
+                }
+            }
+
+            SubscribeToEvent(fileSelector_, E_FILESELECTED, [this](StringHash, VariantMap& ed)
+            {
+                String path = ed[FileSelected::P_FILENAME].GetString();
+                bool ok = ed[FileSelected::P_OK].GetBool();
+                fileSelector_.Reset();
+                if (!ok || path.Empty()) return;
+                ScanFolder(GetPath(path));
+            });
+        }
         else if (sel == 3)
+            SaveModel();
+        else if (sel == 4)
+            ExportFBX();
+        else if (sel == 5)
             engine_->Exit();
         fileMenu->SetSelection(0);
     });
@@ -696,6 +810,13 @@ void ModelViewer::CreateMenuBar()
             ShowHelpWindow();
         helpMenu->SetSelection(0);
     });
+
+    // ---- Browse status text (right side of menu bar) ----
+    browseStatusText_ = bar->CreateChild<Text>("BrowseStatus");
+    browseStatusText_->SetFont(font_, 12);
+    browseStatusText_->SetColor(Color(0.7f, 0.85f, 0.7f));
+    browseStatusText_->SetText("");
+    browseStatusText_->SetHorizontalAlignment(HA_RIGHT);
 
 }
 
@@ -1328,6 +1449,52 @@ void ModelViewer::RebuildInfoText()
         }
     }
 
+    // ---- Animation Catalogue (collapsed) ----
+    if (availableAnims_.Size() > 1) // >1 because [Bind Pose] is always there
+    {
+        CreateCollapsibleSection("Animation Catalogue (" + String(availableAnims_.Size() - 1) + " anims)", false);
+
+        // Check for essential animation types
+        const char* essentials[] = {"idle", "walk", "run", "eat", "die", "attack"};
+        bool found[6] = {};
+        for (unsigned i = 1; i < availableAnims_.Size(); ++i) // skip bind pose
+        {
+            String lower = GetFileName(availableAnims_[i]).ToLower();
+            for (int e = 0; e < 6; ++e)
+                if (lower.Contains(essentials[e])) found[e] = true;
+        }
+
+        String missing;
+        for (int e = 0; e < 6; ++e)
+            if (!found[e]) { if (!missing.Empty()) missing += ", "; missing += essentials[e]; }
+        if (!missing.Empty())
+            AddInfoLine("MISSING: " + missing, Color(1.0f, 0.4f, 0.4f));
+        else
+            AddInfoLine("All essentials present", Color(0.4f, 1.0f, 0.4f));
+
+        AddInfoSeparator();
+
+        // List each animation with details
+        for (unsigned i = 1; i < availableAnims_.Size(); ++i)
+        {
+            auto* anim = cache->GetResource<Animation>(availableAnims_[i]);
+            if (!anim) continue;
+
+            String name = GetFileName(availableAnims_[i]);
+            float duration = anim->GetLength();
+            unsigned numTracks = anim->GetNumTracks();
+
+            unsigned totalKeys = 0;
+            const HashMap<StringHash, AnimationTrack>& tracks = anim->GetTracks();
+            for (HashMap<StringHash, AnimationTrack>::ConstIterator it = tracks.Begin(); it != tracks.End(); ++it)
+                totalKeys += it->second_.GetNumKeyFrames();
+
+            String line = name + "  " + String((double)duration, 2) + "s  " +
+                String(numTracks) + "tr  " + String(totalKeys) + "kf";
+            AddInfoLine(line, Color(0.85f, 0.85f, 0.65f));
+        }
+    }
+
     // ---- Materials (collapsed) ----
     if (staticModelComp_)
     {
@@ -1385,11 +1552,18 @@ void ModelViewer::RebuildAnimList()
 
     animListView_->RemoveAllItems();
 
+    auto* cache = GetSubsystem<ResourceCache>();
     for (unsigned i = 0; i < availableAnims_.Size(); ++i)
     {
         auto* item = new Text(context_);
         item->SetFont(font_, 11);
-        item->SetText(GetFileName(availableAnims_[i]));
+
+        String label = GetFileName(availableAnims_[i]);
+        auto* anim = cache->GetResource<Animation>(availableAnims_[i]);
+        if (anim && anim->GetLength() > 0.0f)
+            label += "  (" + String((double)anim->GetLength(), 2) + "s)";
+
+        item->SetText(label);
         item->SetStyleAuto();
         animListView_->AddItem(item);
     }
@@ -1535,6 +1709,19 @@ void ModelViewer::HandleUpdate(StringHash, VariantMap& eventData)
             if (idx < 0) idx = (int)availableAnims_.Size() - 1;
             PlayAnimation(idx);
         }
+    }
+
+    // Folder browse: Left/Right to navigate, G = keep, X = reject
+    if (!folderModels_.Empty())
+    {
+        if (input->GetKeyPress(KEY_RIGHT))
+            BrowseNext();
+        if (input->GetKeyPress(KEY_LEFT))
+            BrowsePrev();
+        if (input->GetKeyPress(KEY_G))
+            BrowseFlagKeep();
+        if (input->GetKeyPress(KEY_X))
+            BrowseFlagReject();
     }
 
     // Update playback display
@@ -2427,6 +2614,113 @@ void ModelViewer::SaveModel()
     }
 }
 
+void ModelViewer::ExportFBX()
+{
+    if (currentModelPath_.Empty())
+    {
+        if (statusText_) statusText_->SetText("ERROR: No model loaded to export");
+        return;
+    }
+
+    auto* ui = GetSubsystem<UI>();
+    auto* style = ui->GetRoot()->GetDefaultStyle();
+    auto* fs = GetSubsystem<FileSystem>();
+
+    fileSelector_ = new FileSelector(context_);
+    fileSelector_->SetDefaultStyle(style);
+    fileSelector_->SetTitle("Export FBX");
+    fileSelector_->SetButtonTexts("Export", "Cancel");
+
+    Vector<String> filters;
+    filters.Push("*.fbx");
+    fileSelector_->SetFilters(filters, 0);
+
+    // Default to same directory as the model
+    auto* cache = GetSubsystem<ResourceCache>();
+    const Vector<String>& dirs = cache->GetResourceDirs();
+    for (unsigned i = 0; i < dirs.Size(); ++i)
+    {
+        String candidate = dirs[i] + currentModelPath_;
+        if (fs->FileExists(candidate))
+        {
+            fileSelector_->SetPath(GetPath(candidate));
+            // Pre-fill filename with model name but .fbx extension
+            String baseName = GetFileName(currentModelPath_);
+            fileSelector_->SetFileName(baseName + ".fbx");
+            break;
+        }
+    }
+
+    SubscribeToEvent(fileSelector_, E_FILESELECTED, URHO3D_HANDLER(ModelViewer, HandleExportFBXSelected));
+}
+
+void ModelViewer::HandleExportFBXSelected(StringHash, VariantMap& eventData)
+{
+    String fbxPath = eventData[FileSelected::P_FILENAME].GetString();
+    bool ok = eventData[FileSelected::P_OK].GetBool();
+    fileSelector_.Reset();
+    if (!ok || fbxPath.Empty()) return;
+
+    // Ensure .fbx extension
+    if (!fbxPath.EndsWith(".fbx", false))
+        fbxPath += ".fbx";
+
+    // Resolve the absolute path to the source .mdl
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* fs = GetSubsystem<FileSystem>();
+    const Vector<String>& dirs = cache->GetResourceDirs();
+    String mdlAbsPath;
+    for (unsigned i = 0; i < dirs.Size(); ++i)
+    {
+        String candidate = dirs[i] + currentModelPath_;
+        if (fs->FileExists(candidate))
+        {
+            mdlAbsPath = candidate;
+            break;
+        }
+    }
+
+    if (mdlAbsPath.Empty())
+    {
+        if (statusText_) statusText_->SetText("ERROR: Cannot resolve " + currentModelPath_);
+        return;
+    }
+
+    // Build AssetImporter command
+    String assetImporter = fs->GetProgramDir() + "AssetImporter";
+    String cmd = "\"" + assetImporter + "\" export \"" + mdlAbsPath + "\" \"" + fbxPath + "\"";
+
+    // Include loaded animations
+    for (unsigned i = 0; i < availableAnims_.Size(); ++i)
+    {
+        // Resolve animation path
+        for (unsigned d = 0; d < dirs.Size(); ++d)
+        {
+            String animCandidate = dirs[d] + availableAnims_[i];
+            if (fs->FileExists(animCandidate))
+            {
+                cmd += " -anim \"" + animCandidate + "\"";
+                break;
+            }
+        }
+    }
+
+    if (statusText_) statusText_->SetText("Exporting FBX...");
+    URHO3D_LOGINFOF("Export FBX: %s", cmd.CString());
+
+    int result = system(cmd.CString());
+    if (result == 0)
+    {
+        if (statusText_) statusText_->SetText("EXPORTED: " + fbxPath);
+        URHO3D_LOGINFOF("FBX export successful: %s", fbxPath.CString());
+    }
+    else
+    {
+        if (statusText_) statusText_->SetText("ERROR: FBX export failed (code " + String(result) + ")");
+        URHO3D_LOGERRORF("FBX export failed with code %d", result);
+    }
+}
+
 Vector3 ModelViewer::GetVertexWorldPosition(int geomIndex, int vertIndex)
 {
     if (!editModel_ || geomIndex < 0 || vertIndex < 0) return Vector3::ZERO;
@@ -2527,5 +2821,167 @@ String ModelViewer::TypeName(VertexElementType type)
     case TYPE_UBYTE4: return "UB4";
     case TYPE_UBYTE4_NORM: return "UB4N";
     default: return "?";
+    }
+}
+
+// ============================================================================
+// Folder Browse
+// ============================================================================
+
+void ModelViewer::ScanFolder(const String& folderPath)
+{
+    auto* fs = GetSubsystem<FileSystem>();
+
+    String absFolder = folderPath;
+    if (!absFolder.EndsWith("/"))
+        absFolder += "/";
+
+    // Resolve to absolute path if relative
+    if (!absFolder.StartsWith("/"))
+    {
+        auto* cache = GetSubsystem<ResourceCache>();
+        const Vector<String>& dirs = cache->GetResourceDirs();
+        for (unsigned i = 0; i < dirs.Size(); ++i)
+        {
+            if (fs->DirExists(dirs[i] + absFolder))
+            {
+                absFolder = dirs[i] + absFolder;
+                break;
+            }
+        }
+    }
+
+    if (!fs->DirExists(absFolder))
+    {
+        URHO3D_LOGERRORF("Folder does not exist: %s", absFolder.CString());
+        if (statusText_) statusText_->SetText("ERROR: Folder not found: " + absFolder);
+        return;
+    }
+
+    browseFolderPath_ = absFolder;
+    folderModels_.Clear();
+    folderReview_.Clear();
+
+    Vector<String> files;
+    fs->ScanDir(files, absFolder, "*.mdl", SCAN_FILES, false);
+    Sort(files.Begin(), files.End());
+
+    // Convert to resource-relative paths
+    auto* cache = GetSubsystem<ResourceCache>();
+    const Vector<String>& dirs = cache->GetResourceDirs();
+
+    for (unsigned i = 0; i < files.Size(); ++i)
+    {
+        String absPath = absFolder + files[i];
+        String resourcePath;
+
+        // Try to make resource-relative
+        char resolvedBuf[PATH_MAX];
+        String resolvedAbs = absPath;
+        if (realpath(absPath.CString(), resolvedBuf))
+            resolvedAbs = String(resolvedBuf);
+
+        for (unsigned d = 0; d < dirs.Size(); ++d)
+        {
+            String resolvedDir = dirs[d];
+            if (realpath(dirs[d].CString(), resolvedBuf))
+                resolvedDir = String(resolvedBuf) + "/";
+
+            if (resolvedAbs.StartsWith(resolvedDir))
+            {
+                resourcePath = resolvedAbs.Substring(resolvedDir.Length());
+                break;
+            }
+        }
+
+        if (!resourcePath.Empty())
+            folderModels_.Push(resourcePath);
+        else
+            URHO3D_LOGWARNINGF("Skipping %s — not in any resource directory", absPath.CString());
+    }
+
+    if (folderModels_.Empty())
+    {
+        if (statusText_) statusText_->SetText("No .mdl files found in " + absFolder);
+        return;
+    }
+
+    URHO3D_LOGINFOF("Folder browse: %d models in %s", folderModels_.Size(), absFolder.CString());
+    browseIndex_ = 0;
+    LoadModel(folderModels_[browseIndex_]);
+
+    if (browseStatusText_)
+        browseStatusText_->SetText(String(browseIndex_ + 1) + "/" + String(folderModels_.Size()) + ": " + GetFileName(folderModels_[browseIndex_]));
+}
+
+void ModelViewer::BrowseNext()
+{
+    if (folderModels_.Empty()) return;
+    browseIndex_ = (browseIndex_ + 1) % folderModels_.Size();
+    LoadModel(folderModels_[browseIndex_]);
+
+    String flag;
+    String fname = GetFileName(folderModels_[browseIndex_]);
+    if (folderReview_.Contains(fname))
+        flag = " [" + folderReview_[fname] + "]";
+
+    if (browseStatusText_)
+        browseStatusText_->SetText(String(browseIndex_ + 1) + "/" + String(folderModels_.Size()) + ": " + fname + flag);
+}
+
+void ModelViewer::BrowsePrev()
+{
+    if (folderModels_.Empty()) return;
+    browseIndex_ = (browseIndex_ == 0) ? folderModels_.Size() - 1 : browseIndex_ - 1;
+    LoadModel(folderModels_[browseIndex_]);
+
+    String flag;
+    String fname = GetFileName(folderModels_[browseIndex_]);
+    if (folderReview_.Contains(fname))
+        flag = " [" + folderReview_[fname] + "]";
+
+    if (browseStatusText_)
+        browseStatusText_->SetText(String(browseIndex_ + 1) + "/" + String(folderModels_.Size()) + ": " + fname + flag);
+}
+
+void ModelViewer::BrowseFlagKeep()
+{
+    if (folderModels_.Empty()) return;
+    String fname = GetFileName(folderModels_[browseIndex_]);
+    folderReview_[fname] = "keep";
+    WriteFolderReview();
+
+    if (browseStatusText_)
+        browseStatusText_->SetText(String(browseIndex_ + 1) + "/" + String(folderModels_.Size()) + ": " + fname + " [keep]");
+    if (statusText_) statusText_->SetText("Flagged KEEP: " + fname);
+}
+
+void ModelViewer::BrowseFlagReject()
+{
+    if (folderModels_.Empty()) return;
+    String fname = GetFileName(folderModels_[browseIndex_]);
+    folderReview_[fname] = "reject";
+    WriteFolderReview();
+
+    if (browseStatusText_)
+        browseStatusText_->SetText(String(browseIndex_ + 1) + "/" + String(folderModels_.Size()) + ": " + fname + " [reject]");
+    if (statusText_) statusText_->SetText("Flagged REJECT: " + fname);
+}
+
+void ModelViewer::WriteFolderReview()
+{
+    if (browseFolderPath_.Empty()) return;
+
+    String reviewPath = browseFolderPath_ + "folder_review.txt";
+    File file(context_, reviewPath, FILE_WRITE);
+    if (!file.IsOpen())
+    {
+        URHO3D_LOGERRORF("Cannot write review file: %s", reviewPath.CString());
+        return;
+    }
+
+    for (HashMap<String, String>::ConstIterator it = folderReview_.Begin(); it != folderReview_.End(); ++it)
+    {
+        file.WriteString(it->first_ + " | " + it->second_ + "\n");
     }
 }

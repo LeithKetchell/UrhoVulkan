@@ -31,6 +31,7 @@
 
 #include <assimp/config.h>
 #include <assimp/cimport.h>
+#include <assimp/cexport.h>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/DefaultLogger.hpp>
@@ -157,6 +158,8 @@ float importStartTime_ = 0.0f;
 float importEndTime_ = 0.0f;
 bool suppressFbxPivotNodes_ = true;
 float importScale_ = 1.0f;
+Vector<String> exportAnimPaths_;
+bool exportAllAnims_ = false;
 
 int main(int argc, char** argv);
 void Run(const Vector<String>& arguments);
@@ -222,6 +225,7 @@ String SanitateAssetName(const String& name);
 unsigned GetPivotlessBoneIndex(OutModel& model, const String& boneName);
 void ExtrapolatePivotlessAnimation(OutModel* model);
 void CollectSceneNodesAsBones(OutModel &model, aiNode* rootNode);
+void ExportMdlToFBX(const String& inFile, const String& outFile);
 
 int main(int argc, char** argv)
 {
@@ -251,6 +255,8 @@ void Run(const Vector<String>& arguments)
             "node        Output a node and its children (prefab)\n"
             "dump        Dump scene node structure. No output file is generated\n"
             "info        Show model/animation info. Supports native .mdl/.ani and all Assimp formats\n"
+            "export      Export native .mdl to FBX (with optional animations)\n"
+            "            Syntax: export <input.mdl> <output.fbx> [options]\n"
             "lod         Combine several Urho3D models as LOD levels of the output model\n"
             "            Syntax: lod <dist0> <mdl0> <dist1 <mdl1> ... <output file>\n"
             "\n"
@@ -290,6 +296,8 @@ void Run(const Vector<String>& arguments)
             "            Split animation, will only import from start frame to end frame\n"
             "-np         Do not suppress $fbx pivot nodes (FBX files only)\n"
             "-scale <x>  Scale model geometry and animation translations by the given factor\n"
+            "-anim <path.ani> Include animation file(s) in FBX export (repeatable)\n"
+            "-allanims    Auto-discover and include all matching .ani files (export only)\n"
         );
     }
 
@@ -445,6 +453,13 @@ void Run(const Vector<String>& arguments)
                 importScale_ = ToFloat(value);
                 ++i;
             }
+            else if (argument == "anim" && !value.Empty())
+            {
+                exportAnimPaths_.Push(value);
+                ++i;
+            }
+            else if (argument == "allanims")
+                exportAllAnims_ = true;
             else if (argument == "split")
             {
                 String value2 = i + 2 < arguments.Size() ? arguments[i + 2] : String::EMPTY;
@@ -455,6 +470,21 @@ void Run(const Vector<String>& arguments)
                 }
             }
         }
+    }
+
+    // Export command — native .mdl → FBX
+    if (command == "export")
+    {
+        if (arguments.Size() < 3)
+            ErrorExit("Usage: AssetImporter export <input.mdl> <output.fbx> [options]");
+
+        String inFile = arguments[1];
+        String outFile = arguments[2];
+        inFile.Replace("\r\n", ""); inFile.Replace("\r", ""); inFile.Replace("\n", "");
+        outFile.Replace("\r\n", ""); outFile.Replace("\r", ""); outFile.Replace("\n", "");
+
+        ExportMdlToFBX(inFile, outFile);
+        return;
     }
 
     // Native Urho3D format info — handle .ani and .mdl without Assimp
@@ -545,7 +575,7 @@ void Run(const Vector<String>& arguments)
             // Register a headless Graphics so buffers can be created without a window.
             if (!context_->GetSubsystem<Graphics>())
             {
-                auto* graphics = new Graphics(context_);
+                auto* graphics = new Graphics(context_, GAPI_OPENGL);
                 context_->RegisterSubsystem(graphics);
             }
 
@@ -3165,5 +3195,736 @@ void CollectSceneNodesAsBones(OutModel &model, aiNode* rootNode)
     {
         CollectSceneNodesAsBones(model, rootNode->mChildren[i]);
     }
+}
+
+// ============================================================================
+// MDL → FBX Export
+// Reads native Urho3D .mdl binary directly (no GPU required), builds an
+// aiScene, and calls Assimp's FBX exporter.
+// ============================================================================
+
+struct ExportBone
+{
+    String name;
+    int parentIndex;
+    Vector3 position;
+    Quaternion rotation;
+    Vector3 scale;
+    float offsetMatrix[12]; // Matrix3x4 raw data
+};
+
+struct ExportGeomRef
+{
+    unsigned vbIndex;
+    unsigned ibIndex;
+    unsigned indexStart;
+    unsigned indexCount;
+    unsigned primitiveType;
+    float lodDistance;
+    Vector<unsigned> boneMappings;
+};
+
+void ExportMdlToFBX(const String& inFile, const String& outFile)
+{
+    PrintLine("Exporting " + inFile + " -> " + outFile);
+
+    // --- Read MDL binary ---
+    SharedPtr<File> file(new File(context_, inFile));
+    if (!file->IsOpen())
+        ErrorExit("Could not open " + inFile);
+
+    String fileID = file->ReadFileID();
+    if (fileID != "UMDL" && fileID != "UMD2")
+        ErrorExit(inFile + " is not a valid Urho3D model file (got " + fileID + ")");
+
+    bool isUMD2 = (fileID == "UMD2");
+
+    // -- Vertex buffers --
+    unsigned numVBs = file->ReadU32();
+    struct VBData {
+        unsigned vertexCount;
+        unsigned vertexSize; // bytes per vertex
+        Vector<VertexElement> elements;
+        SharedArrayPtr<unsigned char> data;
+    };
+    Vector<VBData> vertexBuffers(numVBs);
+
+    for (unsigned i = 0; i < numVBs; ++i)
+    {
+        VBData& vb = vertexBuffers[i];
+        vb.vertexCount = file->ReadU32();
+
+        if (isUMD2)
+        {
+            unsigned numElements = file->ReadU32();
+            for (unsigned j = 0; j < numElements; ++j)
+            {
+                unsigned desc = file->ReadU32();
+                VertexElement elem;
+                elem.type_ = (VertexElementType)(desc & 0xFF);
+                elem.semantic_ = (VertexElementSemantic)((desc >> 8) & 0xFF);
+                elem.index_ = (i8)((desc >> 16) & 0xFF);
+                elem.perInstance_ = false;
+                elem.offset_ = 0;
+                vb.elements.Push(elem);
+            }
+            VertexBuffer::UpdateOffsets(vb.elements);
+            vb.vertexSize = VertexBuffer::GetVertexSize(vb.elements);
+        }
+        else
+        {
+            // UMDL uses element mask
+            unsigned elementMask = file->ReadU32();
+            vb.elements = VertexBuffer::GetElements(VertexElements(elementMask));
+            VertexBuffer::UpdateOffsets(vb.elements);
+            vb.vertexSize = VertexBuffer::GetVertexSize(vb.elements);
+        }
+
+        // Morph range (UMD2 only)
+        if (isUMD2)
+        {
+            file->ReadU32(); // morphRangeStart
+            file->ReadU32(); // morphRangeCount
+        }
+
+        unsigned dataSize = vb.vertexCount * vb.vertexSize;
+        vb.data = new unsigned char[dataSize];
+        file->Read(vb.data.Get(), dataSize);
+    }
+
+    // -- Index buffers --
+    unsigned numIBs = file->ReadU32();
+    struct IBData {
+        unsigned indexCount;
+        unsigned indexSize; // 2 or 4
+        SharedArrayPtr<unsigned char> data;
+    };
+    Vector<IBData> indexBuffers(numIBs);
+
+    for (unsigned i = 0; i < numIBs; ++i)
+    {
+        IBData& ib = indexBuffers[i];
+        ib.indexCount = file->ReadU32();
+        ib.indexSize = file->ReadU32();
+        unsigned dataSize = ib.indexCount * ib.indexSize;
+        ib.data = new unsigned char[dataSize];
+        file->Read(ib.data.Get(), dataSize);
+    }
+
+    // -- Geometries --
+    unsigned numGeometries = file->ReadU32();
+    Vector<ExportGeomRef> geometries;
+
+    for (unsigned i = 0; i < numGeometries; ++i)
+    {
+        // Bone mappings for this geometry
+        unsigned numBoneMappings = file->ReadU32();
+        Vector<unsigned> boneMappings(numBoneMappings);
+        for (unsigned j = 0; j < numBoneMappings; ++j)
+            boneMappings[j] = file->ReadU32();
+
+        // LOD levels
+        unsigned numLods = file->ReadU32();
+        for (unsigned j = 0; j < numLods; ++j)
+        {
+            ExportGeomRef geom;
+            geom.lodDistance = file->ReadFloat();
+            geom.primitiveType = file->ReadU32();
+            geom.vbIndex = file->ReadU32();
+            geom.ibIndex = file->ReadU32();
+            geom.indexStart = file->ReadU32();
+            geom.indexCount = file->ReadU32();
+            geom.boneMappings = boneMappings;
+
+            // Only export LOD 0
+            if (j == 0)
+                geometries.Push(geom);
+        }
+    }
+
+    // -- Morphs (skip for now) --
+    unsigned numMorphs = file->ReadU32();
+    for (unsigned i = 0; i < numMorphs; ++i)
+    {
+        file->ReadString(); // name
+        unsigned numMorphBuffers = file->ReadU32();
+        for (unsigned j = 0; j < numMorphBuffers; ++j)
+        {
+            file->ReadU32(); // buffer index
+            unsigned morphElementMask = file->ReadU32();
+            unsigned morphVertexCount = file->ReadU32();
+
+            // Calculate morph vertex size
+            unsigned morphVertexSize = sizeof(unsigned); // vertex index
+            if (morphElementMask & 1) morphVertexSize += sizeof(float) * 3; // position
+            if (morphElementMask & 2) morphVertexSize += sizeof(float) * 3; // normal
+            if (morphElementMask & 8) morphVertexSize += sizeof(float) * 3; // tangent
+
+            file->Seek(file->GetPosition() + morphVertexCount * morphVertexSize);
+        }
+    }
+
+    // -- Skeleton --
+    Vector<ExportBone> bones;
+    unsigned numBones = file->ReadI32();
+    bones.Resize(numBones);
+
+    for (unsigned i = 0; i < numBones; ++i)
+    {
+        ExportBone& bone = bones[i];
+        bone.name = file->ReadString();
+        bone.parentIndex = file->ReadI32();
+        bone.position = file->ReadVector3();
+        bone.rotation = file->ReadQuaternion();
+        bone.scale = file->ReadVector3();
+        file->Read(bone.offsetMatrix, sizeof(float) * 12);
+
+        // Collision info
+        unsigned char collisionMask = file->ReadU8();
+        if (collisionMask & 1) file->ReadFloat(); // sphere radius
+        if (collisionMask & 2)
+        {
+            file->ReadVector3(); // bbox min
+            file->ReadVector3(); // bbox max
+        }
+    }
+
+    PrintLine("  " + String(numVBs) + " vertex buffer(s), " + String(numIBs) + " index buffer(s)");
+    PrintLine("  " + String(geometries.Size()) + " geometries, " + String(numBones) + " bones");
+
+    // --- Build aiScene ---
+    aiScene* scene = new aiScene();
+    scene->mFlags = 0;
+    scene->mNumMeshes = geometries.Size();
+    scene->mMeshes = new aiMesh*[scene->mNumMeshes];
+
+    // Build node hierarchy from bones
+    // Create a map from bone index to aiNode
+    Vector<aiNode*> boneNodes(numBones);
+
+    // Root node
+    scene->mRootNode = new aiNode("RootNode");
+
+    if (numBones > 0)
+    {
+        // Create aiNode for each bone
+        for (unsigned i = 0; i < numBones; ++i)
+        {
+            boneNodes[i] = new aiNode(bones[i].name.CString());
+
+            // Set transform from bone's initial position/rotation/scale
+            aiMatrix4x4 mat;
+            // Compose TRS
+            Vector3& p = bones[i].position;
+            Quaternion& r = bones[i].rotation;
+            Vector3& s = bones[i].scale;
+            Matrix3x4 trs(p, r, s);
+            mat = aiMatrix4x4(
+                trs.m00_, trs.m01_, trs.m02_, trs.m03_,
+                trs.m10_, trs.m11_, trs.m12_, trs.m13_,
+                trs.m20_, trs.m21_, trs.m22_, trs.m23_,
+                0.0f, 0.0f, 0.0f, 1.0f
+            );
+            boneNodes[i]->mTransformation = mat;
+        }
+
+        // Build parent-child relationships
+        for (unsigned i = 0; i < numBones; ++i)
+        {
+            int parentIdx = bones[i].parentIndex;
+            if (parentIdx == (int)i || parentIdx < 0)
+            {
+                // Root bone — parent to scene root
+                boneNodes[i]->mParent = scene->mRootNode;
+            }
+            else
+            {
+                boneNodes[i]->mParent = boneNodes[parentIdx];
+            }
+        }
+
+        // Count children for each node
+        Vector<unsigned> childCounts(numBones + 1, 0); // +1 for root
+        for (unsigned i = 0; i < numBones; ++i)
+        {
+            int parentIdx = bones[i].parentIndex;
+            if (parentIdx == (int)i || parentIdx < 0)
+                childCounts[numBones]++; // root's children
+            else
+                childCounts[parentIdx]++;
+        }
+
+        // Allocate children arrays
+        scene->mRootNode->mNumChildren = childCounts[numBones];
+        scene->mRootNode->mChildren = new aiNode*[childCounts[numBones]];
+        for (unsigned i = 0; i < numBones; ++i)
+        {
+            boneNodes[i]->mNumChildren = childCounts[i];
+            if (childCounts[i] > 0)
+                boneNodes[i]->mChildren = new aiNode*[childCounts[i]];
+            else
+                boneNodes[i]->mChildren = nullptr;
+        }
+
+        // Fill children arrays
+        Vector<unsigned> childIndices(numBones + 1, 0);
+        for (unsigned i = 0; i < numBones; ++i)
+        {
+            int parentIdx = bones[i].parentIndex;
+            if (parentIdx == (int)i || parentIdx < 0)
+            {
+                scene->mRootNode->mChildren[childIndices[numBones]++] = boneNodes[i];
+            }
+            else
+            {
+                boneNodes[parentIdx]->mChildren[childIndices[parentIdx]++] = boneNodes[i];
+            }
+        }
+    }
+    else
+    {
+        scene->mRootNode->mNumChildren = 0;
+        scene->mRootNode->mChildren = nullptr;
+    }
+
+    // Attach mesh references to root node
+    scene->mRootNode->mNumMeshes = scene->mNumMeshes;
+    scene->mRootNode->mMeshes = new unsigned[scene->mNumMeshes];
+    for (unsigned i = 0; i < scene->mNumMeshes; ++i)
+        scene->mRootNode->mMeshes[i] = i;
+
+    // Build meshes
+    for (unsigned g = 0; g < geometries.Size(); ++g)
+    {
+        ExportGeomRef& geomRef = geometries[g];
+        VBData& vb = vertexBuffers[geomRef.vbIndex];
+        IBData& ib = indexBuffers[geomRef.ibIndex];
+
+        aiMesh* mesh = new aiMesh();
+        scene->mMeshes[g] = mesh;
+        mesh->mMaterialIndex = g; // one material per geometry
+        mesh->mPrimitiveTypes = aiPrimitiveType_TRIANGLE;
+
+        // Figure out which vertices are actually used by this geometry's indices
+        unsigned indexStart = geomRef.indexStart;
+        unsigned indexCount = geomRef.indexCount;
+
+        // Find min/max vertex index to determine vertex range
+        unsigned minVertex = UINT_MAX, maxVertex = 0;
+        for (unsigned i = 0; i < indexCount; ++i)
+        {
+            unsigned idx;
+            if (ib.indexSize == 2)
+                idx = ((unsigned short*)ib.data.Get())[indexStart + i];
+            else
+                idx = ((unsigned*)ib.data.Get())[indexStart + i];
+            if (idx < minVertex) minVertex = idx;
+            if (idx > maxVertex) maxVertex = idx;
+        }
+
+        unsigned vertexCount = maxVertex - minVertex + 1;
+        mesh->mNumVertices = vertexCount;
+
+        // Find element offsets
+        int posOffset = -1, normOffset = -1, uvOffset = -1, tangOffset = -1;
+        int blendWeightOffset = -1, blendIndexOffset = -1;
+        for (unsigned e = 0; e < vb.elements.Size(); ++e)
+        {
+            const VertexElement& elem = vb.elements[e];
+            switch (elem.semantic_)
+            {
+            case SEM_POSITION: posOffset = elem.offset_; break;
+            case SEM_NORMAL: normOffset = elem.offset_; break;
+            case SEM_TEXCOORD: if (elem.index_ == 0) uvOffset = elem.offset_; break;
+            case SEM_TANGENT: tangOffset = elem.offset_; break;
+            case SEM_BLENDWEIGHTS: blendWeightOffset = elem.offset_; break;
+            case SEM_BLENDINDICES: blendIndexOffset = elem.offset_; break;
+            default: break;
+            }
+        }
+
+        // Allocate and copy vertex attributes
+        if (posOffset >= 0)
+        {
+            mesh->mVertices = new aiVector3D[vertexCount];
+            for (unsigned v = 0; v < vertexCount; ++v)
+            {
+                float* src = (float*)(vb.data.Get() + (minVertex + v) * vb.vertexSize + posOffset);
+                mesh->mVertices[v] = aiVector3D(src[0] * importScale_, src[1] * importScale_, src[2] * importScale_);
+            }
+        }
+
+        if (normOffset >= 0)
+        {
+            mesh->mNormals = new aiVector3D[vertexCount];
+            for (unsigned v = 0; v < vertexCount; ++v)
+            {
+                float* src = (float*)(vb.data.Get() + (minVertex + v) * vb.vertexSize + normOffset);
+                mesh->mNormals[v] = aiVector3D(src[0], src[1], src[2]);
+            }
+        }
+
+        if (uvOffset >= 0)
+        {
+            mesh->mTextureCoords[0] = new aiVector3D[vertexCount];
+            mesh->mNumUVComponents[0] = 2;
+            for (unsigned v = 0; v < vertexCount; ++v)
+            {
+                float* src = (float*)(vb.data.Get() + (minVertex + v) * vb.vertexSize + uvOffset);
+                mesh->mTextureCoords[0][v] = aiVector3D(src[0], src[1], 0.0f);
+            }
+        }
+
+        if (tangOffset >= 0)
+        {
+            mesh->mTangents = new aiVector3D[vertexCount];
+            mesh->mBitangents = new aiVector3D[vertexCount];
+            for (unsigned v = 0; v < vertexCount; ++v)
+            {
+                float* src = (float*)(vb.data.Get() + (minVertex + v) * vb.vertexSize + tangOffset);
+                mesh->mTangents[v] = aiVector3D(src[0], src[1], src[2]);
+                // Compute bitangent from normal cross tangent
+                if (normOffset >= 0)
+                {
+                    float* nsrc = (float*)(vb.data.Get() + (minVertex + v) * vb.vertexSize + normOffset);
+                    aiVector3D n(nsrc[0], nsrc[1], nsrc[2]);
+                    aiVector3D t(src[0], src[1], src[2]);
+                    aiVector3D b = n ^ t; // cross product
+                    float w = src[3]; // tangent w component (handedness)
+                    mesh->mBitangents[v] = b * w;
+                }
+            }
+        }
+
+        // Copy faces (triangles)
+        mesh->mNumFaces = indexCount / 3;
+        mesh->mFaces = new aiFace[mesh->mNumFaces];
+        for (unsigned f = 0; f < mesh->mNumFaces; ++f)
+        {
+            mesh->mFaces[f].mNumIndices = 3;
+            mesh->mFaces[f].mIndices = new unsigned[3];
+            for (unsigned k = 0; k < 3; ++k)
+            {
+                unsigned idx;
+                if (ib.indexSize == 2)
+                    idx = ((unsigned short*)ib.data.Get())[indexStart + f * 3 + k];
+                else
+                    idx = ((unsigned*)ib.data.Get())[indexStart + f * 3 + k];
+                mesh->mFaces[f].mIndices[k] = idx - minVertex; // rebase to 0
+            }
+        }
+
+        // Skinning data — build aiBone array
+        if (blendWeightOffset >= 0 && blendIndexOffset >= 0 && numBones > 0)
+        {
+            // Collect per-bone vertex weights
+            // boneMappings maps local bone index → global bone index
+            unsigned numLocalBones = geomRef.boneMappings.Size();
+            if (numLocalBones == 0)
+                numLocalBones = numBones; // no mapping means direct indexing
+
+            // First pass: collect weights per bone
+            Vector<Vector<aiVertexWeight>> boneWeights(numBones);
+
+            for (unsigned v = 0; v < vertexCount; ++v)
+            {
+                unsigned char* indices = (unsigned char*)(vb.data.Get() + (minVertex + v) * vb.vertexSize + blendIndexOffset);
+                float* weights = (float*)(vb.data.Get() + (minVertex + v) * vb.vertexSize + blendWeightOffset);
+
+                for (unsigned w = 0; w < 4; ++w)
+                {
+                    if (weights[w] > 0.0f)
+                    {
+                        unsigned localBoneIdx = indices[w];
+                        unsigned globalBoneIdx;
+                        if (geomRef.boneMappings.Size() > 0 && localBoneIdx < geomRef.boneMappings.Size())
+                            globalBoneIdx = geomRef.boneMappings[localBoneIdx];
+                        else
+                            globalBoneIdx = localBoneIdx;
+
+                        if (globalBoneIdx < numBones)
+                        {
+                            aiVertexWeight vw;
+                            vw.mVertexId = v;
+                            vw.mWeight = weights[w];
+                            boneWeights[globalBoneIdx].Push(vw);
+                        }
+                    }
+                }
+            }
+
+            // Count how many bones actually have weights
+            unsigned numActiveBones = 0;
+            for (unsigned b = 0; b < numBones; ++b)
+            {
+                if (boneWeights[b].Size() > 0)
+                    numActiveBones++;
+            }
+
+            mesh->mNumBones = numActiveBones;
+            mesh->mBones = new aiBone*[numActiveBones];
+
+            unsigned boneIdx = 0;
+            for (unsigned b = 0; b < numBones; ++b)
+            {
+                if (boneWeights[b].Empty())
+                    continue;
+
+                aiBone* aiBonePtr = new aiBone();
+                mesh->mBones[boneIdx++] = aiBonePtr;
+                aiBonePtr->mName = aiString(bones[b].name.CString());
+
+                // Set offset matrix (inverse bind pose) from stored data
+                float* m = bones[b].offsetMatrix;
+                aiBonePtr->mOffsetMatrix = aiMatrix4x4(
+                    m[0], m[1], m[2], m[3],
+                    m[4], m[5], m[6], m[7],
+                    m[8], m[9], m[10], m[11],
+                    0.0f, 0.0f, 0.0f, 1.0f
+                );
+
+                // Apply scale to offset matrix translation
+                if (importScale_ != 1.0f)
+                {
+                    aiBonePtr->mOffsetMatrix.a4 *= importScale_;
+                    aiBonePtr->mOffsetMatrix.b4 *= importScale_;
+                    aiBonePtr->mOffsetMatrix.c4 *= importScale_;
+                }
+
+                aiBonePtr->mNumWeights = boneWeights[b].Size();
+                aiBonePtr->mWeights = new aiVertexWeight[aiBonePtr->mNumWeights];
+                for (unsigned w = 0; w < aiBonePtr->mNumWeights; ++w)
+                    aiBonePtr->mWeights[w] = boneWeights[b][w];
+            }
+        }
+    }
+
+    // Create a default material (Assimp requires at least one)
+    scene->mNumMaterials = Max((unsigned)geometries.Size(), 1u);
+    scene->mMaterials = new aiMaterial*[scene->mNumMaterials];
+    for (unsigned i = 0; i < scene->mNumMaterials; ++i)
+    {
+        scene->mMaterials[i] = new aiMaterial();
+        aiString matName(("Material_" + String(i)).CString());
+        scene->mMaterials[i]->AddProperty(&matName, AI_MATKEY_NAME);
+    }
+
+    // --- Load animations if requested ---
+    Vector<String> animPaths = exportAnimPaths_;
+
+    // Auto-discover animations if -allanims
+    if (exportAllAnims_)
+    {
+        String basePath = GetPath(inFile);
+        String baseName = GetFileName(inFile);
+        // Remove trailing _mesh, _Mesh, etc. from base name for matching
+        if (baseName.EndsWith("_mesh", false) || baseName.EndsWith("_Mesh", false))
+            baseName = baseName.Substring(0, baseName.Length() - 5);
+
+        auto* fs = context_->GetSubsystem<FileSystem>();
+        Vector<String> files;
+        fs->ScanDir(files, basePath, "*.ani", SCAN_FILES, false);
+        for (unsigned i = 0; i < files.Size(); ++i)
+        {
+            animPaths.Push(basePath + files[i]);
+        }
+        // Also scan the directory where the output model lives
+        String modelDir = GetPath(inFile);
+        if (modelDir != basePath)
+        {
+            fs->ScanDir(files, modelDir, "*.ani", SCAN_FILES, false);
+            for (unsigned i = 0; i < files.Size(); ++i)
+                animPaths.Push(modelDir + files[i]);
+        }
+    }
+
+    if (animPaths.Size() > 0)
+    {
+        // Count valid animations
+        Vector<SharedPtr<Animation>> animations;
+        for (unsigned i = 0; i < animPaths.Size(); ++i)
+        {
+            SharedPtr<File> aniFile(new File(context_, animPaths[i]));
+            if (!aniFile->IsOpen())
+            {
+                PrintLine("Warning: Could not open animation " + animPaths[i]);
+                continue;
+            }
+
+            // Check header
+            String aniID = aniFile->ReadFileID();
+            if (aniID != "UANI")
+            {
+                PrintLine("Warning: " + animPaths[i] + " is not a valid .ani file");
+                continue;
+            }
+
+            // Read animation data
+            String animName = aniFile->ReadString();
+            float animLength = aniFile->ReadFloat();
+            unsigned numTracks = aniFile->ReadU32();
+
+            if (numTracks == 0)
+                continue;
+
+            SharedPtr<Animation> anim(new Animation(context_));
+            anim->SetAnimationName(animName);
+            anim->SetLength(animLength);
+
+            for (unsigned t = 0; t < numTracks; ++t)
+            {
+                String trackName = aniFile->ReadString();
+                AnimationChannels channelMask = AnimationChannels(aniFile->ReadU8());
+                unsigned numKeyFrames = aniFile->ReadU32();
+
+                AnimationTrack* track = anim->CreateTrack(trackName);
+                track->channelMask_ = channelMask;
+
+                for (unsigned k = 0; k < numKeyFrames; ++k)
+                {
+                    AnimationKeyFrame kf;
+                    kf.time_ = aniFile->ReadFloat();
+                    if (!!(channelMask & AnimationChannels::Position))
+                        kf.position_ = aniFile->ReadVector3();
+                    if (!!(channelMask & AnimationChannels::Rotation))
+                        kf.rotation_ = aniFile->ReadQuaternion();
+                    if (!!(channelMask & AnimationChannels::Scale))
+                        kf.scale_ = aniFile->ReadVector3();
+                    track->keyFrames_.Push(kf);
+                }
+            }
+
+            animations.Push(anim);
+            PrintLine("  Loaded animation: " + animName + " (" + String(numTracks) + " tracks, " +
+                      String(animLength, 2) + "s)");
+        }
+
+        // Convert animations to aiAnimation
+        if (animations.Size() > 0)
+        {
+            scene->mNumAnimations = animations.Size();
+            scene->mAnimations = new aiAnimation*[animations.Size()];
+
+            for (unsigned a = 0; a < animations.Size(); ++a)
+            {
+                Animation* anim = animations[a];
+                aiAnimation* aiAnim = new aiAnimation();
+                scene->mAnimations[a] = aiAnim;
+
+                aiAnim->mName = aiString(anim->GetAnimationName().CString());
+                aiAnim->mDuration = anim->GetLength() * 30.0; // Convert to ticks (30 fps)
+                aiAnim->mTicksPerSecond = 30.0;
+
+                const HashMap<StringHash, AnimationTrack>& tracks = anim->GetTracks();
+                aiAnim->mNumChannels = tracks.Size();
+                aiAnim->mChannels = new aiNodeAnim*[tracks.Size()];
+
+                unsigned channelIdx = 0;
+                for (HashMap<StringHash, AnimationTrack>::ConstIterator it = tracks.Begin();
+                     it != tracks.End(); ++it)
+                {
+                    const AnimationTrack& track = it->second_;
+                    aiNodeAnim* channel = new aiNodeAnim();
+                    aiAnim->mChannels[channelIdx++] = channel;
+
+                    channel->mNodeName = aiString(track.name_.CString());
+
+                    // Position keys
+                    if (!!(track.channelMask_ & AnimationChannels::Position))
+                    {
+                        channel->mNumPositionKeys = track.keyFrames_.Size();
+                        channel->mPositionKeys = new aiVectorKey[track.keyFrames_.Size()];
+                        for (unsigned k = 0; k < track.keyFrames_.Size(); ++k)
+                        {
+                            const AnimationKeyFrame& kf = track.keyFrames_[k];
+                            channel->mPositionKeys[k].mTime = kf.time_ * 30.0;
+                            channel->mPositionKeys[k].mValue = aiVector3D(
+                                kf.position_.x_ * importScale_,
+                                kf.position_.y_ * importScale_,
+                                kf.position_.z_ * importScale_);
+                        }
+                    }
+                    else
+                    {
+                        channel->mNumPositionKeys = 1;
+                        channel->mPositionKeys = new aiVectorKey[1];
+                        channel->mPositionKeys[0].mTime = 0.0;
+                        channel->mPositionKeys[0].mValue = aiVector3D(0, 0, 0);
+                    }
+
+                    // Rotation keys
+                    if (!!(track.channelMask_ & AnimationChannels::Rotation))
+                    {
+                        channel->mNumRotationKeys = track.keyFrames_.Size();
+                        channel->mRotationKeys = new aiQuatKey[track.keyFrames_.Size()];
+                        for (unsigned k = 0; k < track.keyFrames_.Size(); ++k)
+                        {
+                            const AnimationKeyFrame& kf = track.keyFrames_[k];
+                            channel->mRotationKeys[k].mTime = kf.time_ * 30.0;
+                            channel->mRotationKeys[k].mValue = aiQuaternion(
+                                kf.rotation_.w_, kf.rotation_.x_,
+                                kf.rotation_.y_, kf.rotation_.z_);
+                        }
+                    }
+                    else
+                    {
+                        channel->mNumRotationKeys = 1;
+                        channel->mRotationKeys = new aiQuatKey[1];
+                        channel->mRotationKeys[0].mTime = 0.0;
+                        channel->mRotationKeys[0].mValue = aiQuaternion(1, 0, 0, 0);
+                    }
+
+                    // Scale keys
+                    if (!!(track.channelMask_ & AnimationChannels::Scale))
+                    {
+                        channel->mNumScalingKeys = track.keyFrames_.Size();
+                        channel->mScalingKeys = new aiVectorKey[track.keyFrames_.Size()];
+                        for (unsigned k = 0; k < track.keyFrames_.Size(); ++k)
+                        {
+                            const AnimationKeyFrame& kf = track.keyFrames_[k];
+                            channel->mScalingKeys[k].mTime = kf.time_ * 30.0;
+                            channel->mScalingKeys[k].mValue = aiVector3D(
+                                kf.scale_.x_, kf.scale_.y_, kf.scale_.z_);
+                        }
+                    }
+                    else
+                    {
+                        channel->mNumScalingKeys = 1;
+                        channel->mScalingKeys = new aiVectorKey[1];
+                        channel->mScalingKeys[0].mTime = 0.0;
+                        channel->mScalingKeys[0].mValue = aiVector3D(1, 1, 1);
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply scale to bone node translations too
+    if (importScale_ != 1.0f)
+    {
+        for (unsigned i = 0; i < numBones; ++i)
+        {
+            aiMatrix4x4& m = boneNodes[i]->mTransformation;
+            m.a4 *= importScale_;
+            m.b4 *= importScale_;
+            m.c4 *= importScale_;
+        }
+    }
+
+    // --- Export ---
+    PrintLine("  Writing FBX: " + outFile);
+    aiReturn result = aiExportScene(scene, "fbx", GetNativePath(outFile).CString(), 0);
+
+    if (result != aiReturn_SUCCESS)
+    {
+        PrintLine("ERROR: FBX export failed: " + String(aiGetErrorString()));
+    }
+    else
+    {
+        PrintLine("  Export successful!");
+    }
+
+    // Cleanup — aiScene destructor handles recursive deletion
+    delete scene;
 }
 

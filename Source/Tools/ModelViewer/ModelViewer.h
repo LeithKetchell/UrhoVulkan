@@ -41,6 +41,12 @@ private:
     void LoadModel(const String& path);
     void AutoFrameCamera();
     void ScanAnimations();
+    void ScanFolder(const String& folderPath);
+    void BrowseNext();
+    void BrowsePrev();
+    void BrowseFlagKeep();
+    void BrowseFlagReject();
+    void WriteFolderReview();
     void PlayAnimation(int index);
     void AddBlendAnimation(int index);
     void RemoveBlendAnimation(unsigned index);
@@ -121,6 +127,8 @@ private:
     void DeleteSelectedVertex();
     void MoveSelectedVertex(int screenX, int screenY);
     void SaveModel();
+    void ExportFBX();
+    void HandleExportFBXSelected(StringHash eventType, VariantMap& eventData);
     Vector3 GetVertexWorldPosition(int geomIndex, int vertIndex);
     Vector3 SkinVertex(const unsigned char* vertData, unsigned stride, unsigned posOffset,
         unsigned weightOffset, unsigned indexOffset, bool hasSkinning, unsigned vertIndex,
@@ -137,6 +145,13 @@ private:
     Vector3 dragPlaneNormal_;
     Node* vertexOverlayNode_{};
     BillboardSet* vertexBillboards_{};
+
+    // Folder browse
+    Vector<String> folderModels_;       // absolute paths of .mdl files in scanned folder
+    unsigned browseIndex_{};
+    String browseFolderPath_;           // absolute path to scanned folder
+    HashMap<String, String> folderReview_; // filename -> "keep" or "reject"
+    Text* browseStatusText_{};
 
     // UI
     SharedPtr<Font> font_;
