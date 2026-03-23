@@ -319,6 +319,17 @@ void TerrainNode::CreateLoginScene()
     seasonSkyboxes_[2] = cache->GetResource<TextureCube>("Textures/SkyboxAutumn.xml");
     seasonSkyboxes_[3] = cache->GetResource<TextureCube>("Textures/SkyboxWinter.xml");
 
+    // Load cloud map faces for CPU-side weather sampling (BrightDay1 has alpha channel)
+    {
+        const char* cloudFaceNames[] = {
+            "Textures/BrightDay1_PosX.png", "Textures/BrightDay1_NegX.png",
+            "Textures/BrightDay1_PosY.png", "Textures/BrightDay1_NegY.png",
+            "Textures/BrightDay1_PosZ.png", "Textures/BrightDay1_NegZ.png"
+        };
+        for (int i = 0; i < 6; ++i)
+            cloudFaces_[i] = cache->GetResource<Image>(cloudFaceNames[i]);
+    }
+
     // Initialize time from system clock (Melbourne AEDT = UTC+11)
     {
         time_t now = time(nullptr);
@@ -938,6 +949,17 @@ void TerrainNode::CreateScene()
     seasonSkyboxes_[2] = cache->GetResource<TextureCube>("Textures/SkyboxAutumn.xml");
     seasonSkyboxes_[3] = cache->GetResource<TextureCube>("Textures/SkyboxWinter.xml");
 
+    // Load cloud map faces for CPU-side weather sampling (BrightDay1 has alpha channel)
+    {
+        const char* cloudFaceNames[] = {
+            "Textures/BrightDay1_PosX.png", "Textures/BrightDay1_NegX.png",
+            "Textures/BrightDay1_PosY.png", "Textures/BrightDay1_NegY.png",
+            "Textures/BrightDay1_PosZ.png", "Textures/BrightDay1_NegZ.png"
+        };
+        for (int i = 0; i < 6; ++i)
+            cloudFaces_[i] = cache->GetResource<Image>(cloudFaceNames[i]);
+    }
+
     // Terrain
     Node* terrainNode = scene_->CreateChild("Terrain");
     terrainNode->SetPosition(Vector3(0.0f, -20.0f, 0.0f));
@@ -1475,33 +1497,7 @@ void TerrainNode::CreateMenuBar()
             cloudCoverLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
             cloudCoverLabel_->SetMinWidth(50);
 
-            // Precipitation slider
-            auto* precipRow = weatherSection->CreateChild<UIElement>();
-            precipRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
-            precipRow->SetMinHeight(22);
-
-            auto* precipText = precipRow->CreateChild<Text>();
-            precipText->SetFont(font, 12);
-            precipText->SetText("Precip:");
-            precipText->SetColor(Color(0.9f, 0.9f, 0.9f));
-            precipText->SetMinWidth(55);
-
-            auto* precipSlider = precipRow->CreateChild<Slider>();
-            precipSlider->SetStyleAuto();
-            precipSlider->SetFixedHeight(16);
-            precipSlider->SetMinWidth(200);
-            precipSlider->SetRange(1.0f);
-            precipSlider->SetValue(0.0f);
-            precipSlider->SetVar("SliderID", 31);
-            SubscribeToEvent(precipSlider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleWeatherSlider));
-
-            precipLabel_ = precipRow->CreateChild<Text>();
-            precipLabel_->SetFont(font, 12);
-            precipLabel_->SetText("Auto");
-            precipLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
-            precipLabel_->SetMinWidth(50);
-
-            // Rain intensity slider (override)
+            // Rain slider (drives precipitation + rain particles together)
             auto* rainRow = weatherSection->CreateChild<UIElement>();
             rainRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
             rainRow->SetMinHeight(22);
@@ -1518,7 +1514,7 @@ void TerrainNode::CreateMenuBar()
             rainSlider->SetMinWidth(200);
             rainSlider->SetRange(1.0f);
             rainSlider->SetValue(0.0f);
-            rainSlider->SetVar("SliderID", 32);
+            rainSlider->SetVar("SliderID", 31);
             SubscribeToEvent(rainSlider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleWeatherSlider));
 
             rainLabel_ = rainRow->CreateChild<Text>();
@@ -1985,18 +1981,22 @@ void TerrainNode::HandleWeatherSlider(StringHash eventType, VariantMap& eventDat
         snprintf(buf, sizeof(buf), "%d%%", (int)(val * 100.0f));
         if (cloudCoverLabel_) cloudCoverLabel_->SetText(buf);
     }
-    else if (id == 31) // precipitation
+    else if (id == 31) // rain (drives precipitation, clouds, rain particles)
     {
         weather_.precipitation = val;
         weatherTarget_.precipitation = val;
-        weather_.fogDensity = 1.0f - weather_.cloudCover * 0.3f - val * 0.3f;
-        weather_.windSpeed = Clamp(0.1f + val * 0.4f, 0.0f, 1.0f);
-        snprintf(buf, sizeof(buf), "%d%%", (int)(val * 100.0f));
-        if (precipLabel_) precipLabel_->SetText(buf);
-    }
-    else if (id == 32) // rain override
-    {
         rainOverride_ = val;
+        // Rain forces cloud cover up — can't rain from clear sky
+        // Clouds lead rain: light rain = moderate clouds, heavy rain = overcast
+        float minCloud = val * 0.85f + 0.15f * val * val; // ramps faster than rain
+        if (weather_.cloudCover < minCloud)
+        {
+            weather_.cloudCover = minCloud;
+            weatherTarget_.cloudCover = minCloud;
+        }
+        weather_.fogDensity = 1.0f - weather_.cloudCover * 0.3f - val * 0.3f;
+        weather_.ambientDim = 1.0f - weather_.cloudCover * 0.4f;
+        weather_.windSpeed = Clamp(0.1f + val * 0.4f, 0.0f, 1.0f);
         snprintf(buf, sizeof(buf), "%d%%", (int)(val * 100.0f));
         if (rainLabel_) rainLabel_->SetText(buf);
     }
@@ -6217,12 +6217,21 @@ WeatherState TerrainNode::CalculateSeasonalWeather()
     if (effectiveTime > 5.0f && effectiveTime < 9.0f)
         diurnalMod += 0.1f * sinf((effectiveTime - 5.0f) * 3.14159f / 4.0f);
 
-    target.cloudCover = Clamp(baseCloud + lunarCloudMod + diurnalMod, 0.0f, 1.0f);
+    float computedCloud = Clamp(baseCloud + lunarCloudMod + diurnalMod, 0.0f, 1.0f);
+
+    // Modulate with actual skybox cloud alpha overhead — the skybox IS the weather
+    Vector3 camPos = cameraNode_ ? cameraNode_->GetWorldPosition() : Vector3::ZERO;
+    localCloudDensity_ = SampleCloudDensity(camPos);
+    // Blend: 50% seasonal computation + 50% skybox alpha (spatial variation)
+    target.cloudCover = Clamp(computedCloud * 0.5f + localCloudDensity_ * 0.5f, 0.0f, 1.0f);
 
     // Precipitation: only when cloud cover > 0.5
     if (target.cloudCover > 0.5f)
     {
         float precipChance = (target.cloudCover - 0.5f) * 2.0f; // 0..1
+        // Thick skybox cloud overhead boosts rainfall directly
+        if (localCloudDensity_ > 0.6f)
+            precipChance += (localCloudDensity_ - 0.6f) * 0.5f;
         // Summer thunderstorms are intense but brief
         if (seasonAngle >= 0.25f && seasonAngle < 0.5f)
             precipChance *= 1.3f;
@@ -6273,6 +6282,75 @@ void TerrainNode::UpdateWeather(float timeStep)
     }
 
     ApplyWeatherToScene();
+}
+
+// ============================================================================
+// Weather System Phase 1: Cloud Density from Skybox Alpha
+// ============================================================================
+
+float TerrainNode::SampleCloudDensity(const Vector3& worldPos)
+{
+    // No cloud faces loaded — return zero (clear sky)
+    if (!cloudFaces_[0])
+        return 0.0f;
+
+    // The "up" direction from this position (straight up for flat terrain)
+    Vector3 dir(0.0f, 1.0f, 0.0f);
+
+    // Apply inverse cloud rotation to get the unrotated skybox lookup
+    // Cloud rotation axis matches SkyboxBlend.glsl: normalize(0.12, 1.0, 0.07)
+    const Vector3 axis = Vector3(0.12f, 1.0f, 0.07f).Normalized();
+    float cloudTotal = cloudAngle_ + timeOfDayOffset_ * 6.2831853f / 18.0f;
+    float angle = -cloudTotal;  // inverse rotation
+
+    // Rodrigues rotation: dir * cos(a) + cross(axis, dir) * sin(a) + axis * dot(axis, dir) * (1 - cos(a))
+    float c = cosf(angle);
+    float s = sinf(angle);
+    Vector3 rotated = dir * c + axis.CrossProduct(dir) * s + axis * axis.DotProduct(dir) * (1.0f - c);
+
+    // Determine which cubemap face and UV coords
+    float absX = fabsf(rotated.x_);
+    float absY = fabsf(rotated.y_);
+    float absZ = fabsf(rotated.z_);
+
+    int face;
+    float u, v;
+
+    if (absX >= absY && absX >= absZ)
+    {
+        if (rotated.x_ > 0) { face = 0; u = -rotated.z_; v = -rotated.y_; } // +X
+        else                 { face = 1; u =  rotated.z_; v = -rotated.y_; } // -X
+        float ma = absX;
+        u = (u / ma + 1.0f) * 0.5f;
+        v = (v / ma + 1.0f) * 0.5f;
+    }
+    else if (absY >= absX && absY >= absZ)
+    {
+        if (rotated.y_ > 0) { face = 2; u =  rotated.x_; v =  rotated.z_; } // +Y
+        else                 { face = 3; u =  rotated.x_; v = -rotated.z_; } // -Y
+        float ma = absY;
+        u = (u / ma + 1.0f) * 0.5f;
+        v = (v / ma + 1.0f) * 0.5f;
+    }
+    else
+    {
+        if (rotated.z_ > 0) { face = 4; u =  rotated.x_; v = -rotated.y_; } // +Z
+        else                 { face = 5; u = -rotated.x_; v = -rotated.y_; } // -Z
+        float ma = absZ;
+        u = (u / ma + 1.0f) * 0.5f;
+        v = (v / ma + 1.0f) * 0.5f;
+    }
+
+    if (!cloudFaces_[face])
+        return 0.0f;
+
+    int w = cloudFaces_[face]->GetWidth();
+    int h = cloudFaces_[face]->GetHeight();
+    int px = Clamp((int)(u * w), 0, w - 1);
+    int py = Clamp((int)(v * h), 0, h - 1);
+
+    Color pixel = cloudFaces_[face]->GetPixel(px, py);
+    return pixel.a_;  // alpha = cloud density
 }
 
 void TerrainNode::ApplyWeatherToScene()
@@ -6332,6 +6410,140 @@ void TerrainNode::ApplyWeatherToScene()
         float baseIntensity = 0.6f;  // default god ray intensity
         float weatherIntensity = baseIntensity * (1.0f - weather_.cloudCover * 0.7f);
         renderPath_->SetShaderParameter("GodRayIntensity", weatherIntensity);
+    }
+}
+
+// ============================================================================
+// Lightning
+// ============================================================================
+
+void TerrainNode::UpdateLightning(float timeStep)
+{
+    // Only strike during heavy precipitation with high cloud cover
+    float stormIntensity = Min(weather_.precipitation, weather_.cloudCover);
+
+    // Decay after-dark (pupil contraction) smoothly back to zero
+    if (lightningAfterDark_ > 0.0f)
+    {
+        lightningAfterDark_ -= timeStep * 0.3f; // ~0.5s recovery
+        if (lightningAfterDark_ < 0.0f) lightningAfterDark_ = 0.0f;
+    }
+
+    if (stormIntensity < 0.6f)
+    {
+        lightningIntensity_ = 0.0f;
+        lightningTimer_ = 0.0f;
+        lightningFlickerCount_ = 0;
+        lightningFadeTimer_ = 0.0f;
+        // Still apply after-dark if fading out
+        if (lightningAfterDark_ > 0.0f)
+            goto apply;
+        return;
+    }
+
+    // Active flicker sequence
+    if (lightningFlickerCount_ > 0)
+    {
+        lightningFlickerPhase_ -= timeStep;
+        if (lightningFlickerPhase_ <= 0.0f)
+        {
+            lightningFlickerOn_ = !lightningFlickerOn_;
+            if (lightningFlickerOn_)
+            {
+                lightningIntensity_ = 0.7f + Random(0.3f);
+                lightningFlickerPhase_ = 0.03f + Random(0.05f);
+            }
+            else
+            {
+                lightningIntensity_ = 0.0f;
+                lightningFlickerCount_--;
+                if (lightningFlickerCount_ > 0)
+                    lightningFlickerPhase_ = 0.05f + Random(0.1f);
+                else
+                {
+                    // Flickers done — start fade and after-dark
+                    lightningFadeTimer_ = 0.4f;
+                    lightningAfterDark_ = 0.15f;
+                }
+            }
+        }
+        goto apply;
+    }
+
+    // Fade-out after flicker sequence
+    if (lightningFadeTimer_ > 0.0f)
+    {
+        lightningFadeTimer_ -= timeStep;
+        lightningIntensity_ = Clamp(lightningFadeTimer_ / 0.4f, 0.0f, 1.0f) * 0.35f;
+        if (lightningFadeTimer_ <= 0.0f)
+        {
+            lightningIntensity_ = 0.0f;
+            lightningFadeTimer_ = 0.0f;
+        }
+        goto apply;
+    }
+
+    // Roll for a new strike
+    lightningTimer_ -= timeStep;
+    if (lightningTimer_ <= 0.0f)
+    {
+        float interval = 8.0f + (1.0f - stormIntensity) * 25.0f;
+        lightningTimer_ = interval;
+
+        float chance = (stormIntensity - 0.5f) * 0.4f;
+        if (Random(1.0f) < chance)
+        {
+            lightningFlickerCount_ = 2 + Random(3);
+            lightningFlickerOn_ = true;
+            lightningFlickerPhase_ = 0.04f + Random(0.04f);
+            lightningIntensity_ = 0.8f + Random(0.2f);
+        }
+    }
+
+apply:
+    // Apply lightning to scene lighting — boost on top of what ApplyWeatherToScene set
+    float li = lightningIntensity_;
+    float dark = lightningAfterDark_;
+
+    if (li <= 0.0f && dark <= 0.0f)
+        return;
+
+    if (zone_)
+    {
+        // Ambient: spike toward near-daylight white-blue, then dip below normal
+        Color ambient = zone_->GetAmbientColor();
+        Color flashAmbient(0.8f, 0.82f, 0.9f); // cold white-blue
+        Color boosted = ambient.Lerp(flashAmbient, li);
+        // After-dark: dim below current ambient
+        boosted = Color(boosted.r_ * (1.0f - dark), boosted.g_ * (1.0f - dark), boosted.b_ * (1.0f - dark));
+        zone_->SetAmbientColor(boosted);
+
+        // Fog color: flash brightens fog so distant terrain lights up
+        Color fog = zone_->GetFogColor();
+        Color brightFog(0.75f, 0.78f, 0.85f);
+        Color flashFog = fog.Lerp(brightFog, li * 0.6f);
+        flashFog = Color(flashFog.r_ * (1.0f - dark * 0.5f), flashFog.g_ * (1.0f - dark * 0.5f), flashFog.b_ * (1.0f - dark * 0.5f));
+        zone_->SetFogColor(flashFog);
+    }
+
+    // Sun/directional light pulse
+    if (sunLight_)
+    {
+        Color sunColor = sunLight_->GetColor();
+        Color flashSun(1.0f, 0.98f, 0.95f);
+        sunLight_->SetColor(sunColor.Lerp(flashSun, li * 0.7f));
+    }
+
+    // Skybox brightens during flash
+    if (skyboxMat_)
+    {
+        Variant currentTint = skyboxMat_->GetShaderParameter("MatDiffColor");
+        if (currentTint.GetType() == VAR_COLOR)
+        {
+            Color tint = currentTint.GetColor();
+            Color flashTint(1.0f, 1.0f, 1.0f);
+            skyboxMat_->SetShaderParameter("MatDiffColor", tint.Lerp(flashTint, li * 0.5f));
+        }
     }
 }
 
@@ -6522,6 +6734,7 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         UpdateCelestialBodies(timeStep);
         UpdateWeather(timeStep);
         if (rainEmitter_) UpdateRain(timeStep);
+        UpdateLightning(timeStep);
     }
 
     if (profilerUI_)

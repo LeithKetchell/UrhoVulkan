@@ -1,5 +1,5 @@
 // WorkboardManager — GUI dashboard for workboard viewing, plan browsing,
-// and bidirectional IPC with Claude Code instances via Unix FIFOs + drop-files.
+// and bidirectional IPC with Claude Code instances via message spool directories.
 
 #pragma once
 
@@ -79,10 +79,10 @@ private:
 
     // ── IPC ──
     void CreateIPCPaths();
-    void OpenFIFOs();
-    void CloseFIFOs();
-    void PollFIFOs();
+    void PollSpool();
+    void PollSpoolDir(const String& dirName, const String& sourceName, float& activityTimer);
     void SendMessage(const String& target, const String& message);
+    void SendToSpool(const String& targetRole, const String& from, const String& type, const String& body);
     void WakeInstance(const String& role);
     int ReadInstancePID(const String& role);
     bool IsInstanceAlive(const String& role);
@@ -180,13 +180,7 @@ private:
 
     // ── IPC state ──
     static constexpr const char* IPC_DIR = "/tmp/urho_claude";
-    int fdFromCoderRead_{-1};
-    int fdFromPlannerRead_{-1};
-    int fdFromUnassignedRead_{-1};
-    String fromCoderBuffer_;
-    String fromPlannerBuffer_;
-    String fromUnassignedBuffer_;
-    static constexpr const char* MSG_DELIMITER = "---END---";
+    static constexpr const char* SPOOL_DIR = "/tmp/urho_claude/spool";
 
     // ── Beacon liveness ──
     float lastCoderActivity_{999.0f};

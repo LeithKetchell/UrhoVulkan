@@ -394,6 +394,22 @@ private:
     SharedPtr<TextureCube> seasonSkyboxes_[4];
     int lastSeasonIndex_{-1};
 
+    // --- Weather system (Phase 1: cloud density sampling) ---
+    float SampleCloudDensity(const Vector3& worldPos);
+    void UpdateLocalWeather(float timeStep);
+    SharedPtr<Image> cloudFaces_[6];   // BrightDay1 cubemap faces for CPU sampling
+    float localCloudDensity_{};        // 0.0 = clear, 1.0 = thick cloud
+
+    // --- Lightning ---
+    void UpdateLightning(float timeStep);
+    float lightningTimer_{};           // countdown to next strike chance
+    float lightningIntensity_{};       // current flash brightness (0=off, 1=peak)
+    int lightningFlickerCount_{};      // remaining flickers in current strike
+    float lightningFlickerPhase_{};    // time within current flicker on/off cycle
+    bool lightningFlickerOn_{};        // current flicker state
+    float lightningFadeTimer_{};       // post-flash fade duration
+    float lightningAfterDark_{};       // pupil contraction darkening (0=none, peaks ~0.15)
+
     // --- Heightmap I/O ---
     void ShowExportPrefabDialog();
     void HandlePrefabExportChosen(StringHash eventType, VariantMap& eventData);

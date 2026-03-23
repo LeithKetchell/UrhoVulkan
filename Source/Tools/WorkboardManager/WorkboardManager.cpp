@@ -108,7 +108,6 @@ void WorkboardManager::Start()
     LoadWorkboard();
     ScanPlanFiles();
     CreateIPCPaths();
-    OpenFIFOs();
     RefreshInstanceStatus();
 
     // Start beacon server on UDP 31337
@@ -135,7 +134,6 @@ void WorkboardManager::Stop()
     if (network)
         network->StopServer();
 
-    CloseFIFOs();
     // Only remove PID file if we own it (a rejected duplicate must not delete the real instance's file)
     if (exitCode_ == EXIT_SUCCESS)
         unlink("/tmp/urho_claude/manager.pid");
@@ -222,22 +220,22 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, int w, int h)
     bar->SetLayout(LM_HORIZONTAL, 12, IntRect(8, 2, 8, 2));
 
     auto* label = bar->CreateChild<Text>();
-    label->SetFont(font_, 11);
+    label->SetFont(font_, currentFontSize_);
     label->SetText("Instances:");
     label->SetColor(Color(0.6f, 0.6f, 0.6f));
 
     coderStatusText_ = bar->CreateChild<Text>("CoderStatus");
-    coderStatusText_->SetFont(font_, 11);
+    coderStatusText_->SetFont(font_, currentFontSize_);
     coderStatusText_->SetText("Coder: OFFLINE");
     coderStatusText_->SetColor(Color(0.5f, 0.5f, 0.5f));
 
     plannerStatusText_ = bar->CreateChild<Text>("PlannerStatus");
-    plannerStatusText_->SetFont(font_, 11);
+    plannerStatusText_->SetFont(font_, currentFontSize_);
     plannerStatusText_->SetText("Planner: OFFLINE");
     plannerStatusText_->SetColor(Color(0.5f, 0.5f, 0.5f));
 
     unassignedStatusText_ = bar->CreateChild<Text>("UnassignedStatus");
-    unassignedStatusText_->SetFont(font_, 11);
+    unassignedStatusText_->SetFont(font_, currentFontSize_);
     unassignedStatusText_->SetText("Unassigned: OFFLINE");
     unassignedStatusText_->SetColor(Color(0.5f, 0.5f, 0.5f));
 }
@@ -304,7 +302,7 @@ void WorkboardManager::CreatePlanPanel(UIElement* parent, int x, int y, int w, i
         hBar->SetVisible(false);
 
     planContentText_ = new Text(context_);
-    planContentText_->SetFont(font_, 11);
+    planContentText_->SetFont(font_, currentFontSize_);
     planContentText_->SetColor(Color(0.85f, 0.85f, 0.85f));
     planContentText_->SetWordwrap(true);
     planContentText_->SetFixedWidth(w - 20);
@@ -328,7 +326,7 @@ void WorkboardManager::CreateComposer(UIElement* parent, int x, int y, int w, in
     sendCoderBtn_->SetStyleAuto();
     sendCoderBtn_->SetFixedSize(80, 28);
     auto* cl = sendCoderBtn_->CreateChild<Text>();
-    cl->SetFont(font_, 11);
+    cl->SetFont(font_, currentFontSize_);
     cl->SetText("Coder");
     cl->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(sendCoderBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSendCoder));
@@ -337,7 +335,7 @@ void WorkboardManager::CreateComposer(UIElement* parent, int x, int y, int w, in
     sendPlannerBtn_->SetStyleAuto();
     sendPlannerBtn_->SetFixedSize(80, 28);
     auto* pl = sendPlannerBtn_->CreateChild<Text>();
-    pl->SetFont(font_, 11);
+    pl->SetFont(font_, currentFontSize_);
     pl->SetText("Planner");
     pl->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(sendPlannerBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSendPlanner));
@@ -346,7 +344,7 @@ void WorkboardManager::CreateComposer(UIElement* parent, int x, int y, int w, in
     sendUnassignedBtn_->SetStyleAuto();
     sendUnassignedBtn_->SetFixedSize(90, 28);
     auto* ul = sendUnassignedBtn_->CreateChild<Text>();
-    ul->SetFont(font_, 11);
+    ul->SetFont(font_, currentFontSize_);
     ul->SetText("Unassigned");
     ul->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(sendUnassignedBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSendUnassigned));
@@ -355,7 +353,7 @@ void WorkboardManager::CreateComposer(UIElement* parent, int x, int y, int w, in
     sendBroadcastBtn_->SetStyleAuto();
     sendBroadcastBtn_->SetFixedSize(80, 28);
     auto* bl = sendBroadcastBtn_->CreateChild<Text>();
-    bl->SetFont(font_, 11);
+    bl->SetFont(font_, currentFontSize_);
     bl->SetText("Bcast");
     bl->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(sendBroadcastBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSendBroadcast));
@@ -370,7 +368,7 @@ void WorkboardManager::CreateDownloadBar(UIElement* parent, int x, int y, int w,
     bar->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
 
     auto* label = bar->CreateChild<Text>("DLLabel");
-    label->SetFont(font_, 11);
+    label->SetFont(font_, currentFontSize_);
     label->SetText("curl:");
     label->SetColor(Color(0.7f, 0.7f, 0.7f));
     label->SetAlignment(HA_LEFT, VA_CENTER);
@@ -383,13 +381,13 @@ void WorkboardManager::CreateDownloadBar(UIElement* parent, int x, int y, int w,
     downloadBtn_->SetStyleAuto();
     downloadBtn_->SetFixedSize(80, 28);
     auto* btnText = downloadBtn_->CreateChild<Text>();
-    btnText->SetFont(font_, 11);
+    btnText->SetFont(font_, currentFontSize_);
     btnText->SetText("Download");
     btnText->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(downloadBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleDownload));
 
     downloadStatusText_ = bar->CreateChild<Text>("DLStatus");
-    downloadStatusText_->SetFont(font_, 10);
+    downloadStatusText_->SetFont(font_, currentFontSize_ - 1);
     downloadStatusText_->SetText("Ready");
     downloadStatusText_->SetColor(Color(0.5f, 0.8f, 0.5f));
     downloadStatusText_->SetAlignment(HA_LEFT, VA_CENTER);
@@ -582,6 +580,8 @@ void WorkboardManager::HandleFontSizeChanged(StringHash /*eventType*/, VariantMa
     }
 }
 
+static void UpdateFontsRecursive(UIElement* element, Font* font, int oldBase, int newBase);
+
 void WorkboardManager::ApplyFont(const String& fontName, int fontSize)
 {
     auto* cache = GetSubsystem<ResourceCache>();
@@ -591,32 +591,58 @@ void WorkboardManager::ApplyFont(const String& fontName, int fontSize)
         AppendLog("System", "Font not found: " + fontName);
         return;
     }
+    int oldBase = currentFontSize_;
     font_ = newFont;
     currentFontName_ = fontName;
     currentFontSize_ = fontSize;
 
-    RebuildAllUI();
+    auto* uiRoot = GetSubsystem<UI>()->GetRoot();
+    UpdateFontsRecursive(uiRoot, font_, oldBase, currentFontSize_);
+    // Update ListView items explicitly (they may not be in direct child tree)
+    if (logListView_)
+    {
+        for (unsigned i = 0; i < logListView_->GetNumItems(); ++i)
+        {
+            auto* item = dynamic_cast<Text*>(logListView_->GetItem(i));
+            if (item)
+                item->SetFont(font_, currentFontSize_ - 1);
+        }
+    }
+    if (planListView_)
+    {
+        for (unsigned i = 0; i < planListView_->GetNumItems(); ++i)
+        {
+            auto* item = dynamic_cast<Text*>(planListView_->GetItem(i));
+            if (item)
+                item->SetFont(font_, currentFontSize_);
+        }
+    }
+
+    SaveThemePrefs();
+    // Force workboard rebuild with new font
+    RenderWorkboardUI();
     AppendLog("System", "Font changed to " + fontName + " " + String(fontSize) + "pt");
 }
 
-static void UpdateFontsRecursive(UIElement* element, Font* font, int baseSize)
+static void UpdateFontsRecursive(UIElement* element, Font* font, int oldBase, int newBase)
 {
     auto* text = dynamic_cast<Text*>(element);
     if (text && text->GetFont())
     {
-        // Preserve relative sizing: measure old size offset from 11 (old default)
         int oldSize = text->GetFontSize();
-        int offset = oldSize - 11;
-        text->SetFont(font, baseSize + offset);
+        int offset = oldSize - oldBase;
+        int newSize = newBase + offset;
+        if (newSize < 7) newSize = 7;
+        text->SetFont(font, newSize);
     }
     for (unsigned i = 0; i < element->GetNumChildren(); ++i)
-        UpdateFontsRecursive(element->GetChild(i), font, baseSize);
+        UpdateFontsRecursive(element->GetChild(i), font, oldBase, newBase);
 }
 
 void WorkboardManager::RebuildAllUI()
 {
     auto* uiRoot = GetSubsystem<UI>()->GetRoot();
-    UpdateFontsRecursive(uiRoot, font_, currentFontSize_);
+    UpdateFontsRecursive(uiRoot, font_, currentFontSize_, currentFontSize_);
 }
 
 void WorkboardManager::LoadThemePrefs()
@@ -893,7 +919,7 @@ void WorkboardManager::AddSectionToUI(const WorkboardSection& section)
                 rowLine += row.cells[c];
             }
             auto* rowText = content->CreateChild<Text>();
-            rowText->SetFont(font_, 10);
+            rowText->SetFont(font_, currentFontSize_ - 1);
             rowText->SetText(rowLine);
             rowText->SetColor(Color(0.8f, 0.8f, 0.8f));
             rowText->SetWordwrap(true);
@@ -938,12 +964,12 @@ void WorkboardManager::AddSectionToUI(const WorkboardSection& section)
     // Column header row
     auto* headerRow = content->CreateChild<UIElement>("HeaderRow");
     headerRow->SetLayout(LM_HORIZONTAL, 2);
-    headerRow->SetFixedHeight(16);
+    headerRow->SetFixedHeight(currentFontSize_ + 6);
     Color headerColor = titleColor * 0.7f + Color(0.3f, 0.3f, 0.3f);
     for (unsigned h = 0; h < numCols; ++h)
     {
         auto* cell = headerRow->CreateChild<Text>();
-        cell->SetFont(font_, 9);
+        cell->SetFont(font_, currentFontSize_ - 2);
         cell->SetText(section.headers[h]);
         cell->SetColor(headerColor);
         cell->SetFixedWidth(colWidths[h]);
@@ -959,7 +985,7 @@ void WorkboardManager::AddSectionToUI(const WorkboardSection& section)
         for (unsigned c = 0; c < row.cells.Size() && c < numCols; ++c)
         {
             auto* cell = rowElem->CreateChild<Text>();
-            cell->SetFont(font_, 10);
+            cell->SetFont(font_, currentFontSize_ - 1);
             cell->SetText(row.cells[c].Trimmed());
             cell->SetFixedWidth(colWidths[c]);
             cell->SetWordwrap(true);
@@ -1357,7 +1383,7 @@ void WorkboardManager::ScanPlanFiles()
         for (unsigned i = 0; i < planFiles_.Size(); ++i)
         {
             auto* item = new Text(context_);
-            item->SetFont(font_, 11);
+            item->SetFont(font_, currentFontSize_);
             item->SetText(planFiles_[i]);
             item->SetColor(Color(0.7f, 0.85f, 1.0f));
             planListView_->AddItem(item);
@@ -1420,119 +1446,157 @@ void WorkboardManager::CreateIPCPaths()
     snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
     mkdir(instDir, 0777);
 
-    // Create FIFOs for incoming messages (from_*) and wake signals (wake_*)
-    const char* fifos[] = {
-        "/tmp/urho_claude/from_coder",
-        "/tmp/urho_claude/from_planner",
-        "/tmp/urho_claude/from_unassigned",
+    // Create spool directories
+    mkdir(SPOOL_DIR, 0777);
+    const char* roles[] = {"coder", "planner", "unassigned", "manager"};
+    for (int i = 0; i < 4; ++i)
+    {
+        char spoolPath[256];
+        snprintf(spoolPath, sizeof(spoolPath), "%s/to_%s", SPOOL_DIR, roles[i]);
+        mkdir(spoolPath, 0777);
+    }
+
+    // Create wake FIFOs (kept for instant notification — lightweight nudge)
+    const char* wakeFifos[] = {
         "/tmp/urho_claude/wake_coder",
         "/tmp/urho_claude/wake_planner",
         "/tmp/urho_claude/wake_unassigned"
     };
-
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < 3; ++i)
     {
         struct stat st;
-        if (stat(fifos[i], &st) != 0)
+        if (stat(wakeFifos[i], &st) != 0)
         {
-            if (mkfifo(fifos[i], 0666) != 0)
-                URHO3D_LOGERRORF("Failed to create FIFO %s: %s", fifos[i], strerror(errno));
+            if (mkfifo(wakeFifos[i], 0666) != 0)
+                URHO3D_LOGERRORF("Failed to create FIFO %s: %s", wakeFifos[i], strerror(errno));
         }
     }
 }
 
-void WorkboardManager::OpenFIFOs()
+// Helper: update the correct liveness timer based on role name from message
+static void UpdateActivityTimerForRole(const String& from,
+    float& coderTimer, float& plannerTimer, float& unassignedTimer)
 {
-    // O_RDWR prevents EOF when no writers are connected — keeps the fd stable.
-    // Without this, O_RDONLY returns EOF every frame, causing constant close/reopen
-    // that races with incoming writes and loses messages.
-    fdFromCoderRead_ = open("/tmp/urho_claude/from_coder", O_RDWR | O_NONBLOCK);
-    fdFromPlannerRead_ = open("/tmp/urho_claude/from_planner", O_RDWR | O_NONBLOCK);
-    fdFromUnassignedRead_ = open("/tmp/urho_claude/from_unassigned", O_RDWR | O_NONBLOCK);
-
-    URHO3D_LOGINFOF("OpenFIFOs: coder=%d, planner=%d, unassigned=%d",
-        fdFromCoderRead_, fdFromPlannerRead_, fdFromUnassignedRead_);
-    if (fdFromCoderRead_ >= 0)
-        AppendLog("System", "Listening on from_coder FIFO (fd=" + String(fdFromCoderRead_) + ")");
-    if (fdFromPlannerRead_ >= 0)
-        AppendLog("System", "Listening on from_planner FIFO (fd=" + String(fdFromPlannerRead_) + ")");
-    if (fdFromUnassignedRead_ >= 0)
-        AppendLog("System", "Listening on from_unassigned FIFO (fd=" + String(fdFromUnassignedRead_) + ")");
+    if (from == "coder")
+        coderTimer = 0.0f;
+    else if (from == "planner")
+        plannerTimer = 0.0f;
+    else if (from == "unassigned")
+        unassignedTimer = 0.0f;
 }
 
-void WorkboardManager::CloseFIFOs()
+void WorkboardManager::PollSpoolDir(const String& dirName, const String& sourceName, float& activityTimer)
 {
-    if (fdFromCoderRead_ >= 0) { close(fdFromCoderRead_); fdFromCoderRead_ = -1; }
-    if (fdFromPlannerRead_ >= 0) { close(fdFromPlannerRead_); fdFromPlannerRead_ = -1; }
-    if (fdFromUnassignedRead_ >= 0) { close(fdFromUnassignedRead_); fdFromUnassignedRead_ = -1; }
-}
+    char spoolPath[256];
+    snprintf(spoolPath, sizeof(spoolPath), "%s/%s", SPOOL_DIR, dirName.CString());
 
-void WorkboardManager::PollFIFOs()
-{
-    char buf[4096];
+    DIR* dir = opendir(spoolPath);
+    if (!dir)
+        return;
 
-    auto pollOne = [&](int& fd, String& buffer, const char* sourceName, const char* fifoPath, float& activityTimer)
+    // Collect .msg filenames first, then sort for sequence order
+    Vector<String> msgFiles;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr)
     {
-        if (fd < 0)
-            return;
+        const char* dot = strrchr(entry->d_name, '.');
+        if (dot && strcmp(dot, ".msg") == 0)
+            msgFiles.Push(String(entry->d_name));
+    }
+    closedir(dir);
 
-        ssize_t n = read(fd, buf, sizeof(buf) - 1);
-        if (n > 0)
+    if (msgFiles.Empty())
+        return;
+
+    Sort(msgFiles.Begin(), msgFiles.End());
+
+    for (const String& filename : msgFiles)
+    {
+        char filePath[512];
+        snprintf(filePath, sizeof(filePath), "%s/%s", spoolPath, filename.CString());
+
+        // Read the entire file
+        FILE* f = fopen(filePath, "r");
+        if (!f)
+            continue;
+
+        // Parse headers and body
+        String from, type, body;
+        char line[4096];
+        bool inBody = false;
+
+        while (fgets(line, sizeof(line), f))
         {
-            buf[n] = '\0';
-            URHO3D_LOGINFOF("PollFIFOs: read %d bytes from %s", (int)n, sourceName);
-            buffer += String(buf);
+            String sline(line);
+            sline = sline.Trimmed();
 
-            while (true)
+            if (!inBody)
             {
-                unsigned delimPos = buffer.Find(MSG_DELIMITER);
-                if (delimPos == String::NPOS)
-                    break;
-
-                String message = buffer.Substring(0, delimPos).Trimmed();
-                buffer = buffer.Substring(delimPos + strlen(MSG_DELIMITER));
-                if (buffer.Length() > 0 && buffer[0] == '\n')
-                    buffer = buffer.Substring(1);
-
-                if (!message.Empty())
+                if (sline == "---")
                 {
-                    activityTimer = 0.0f;  // Reset liveness timer
-
-                    URHO3D_LOGINFOF("PollFIFOs: message from %s: [%s] (len=%d)", sourceName, message.CString(), (int)message.Length());
-
-                    // MSG: prefix — direct message to Manager log
-                    if (message.StartsWith("MSG:"))
-                    {
-                        AppendLog(String(sourceName) + " \xe2\x86\x92 Manager", message.Substring(4).Trimmed());
-                    }
-                    // RELAY: prefix — relay message to another role
-                    else if (message.StartsWith("RELAY:"))
-                    {
-                        String relayPayload = message.Substring(6);
-                        unsigned pipePos = relayPayload.Find('|');
-                        URHO3D_LOGINFOF("PollFIFOs: RELAY payload=[%s] pipePos=%u", relayPayload.CString(), pipePos);
-                        if (pipePos != String::NPOS)
-                        {
-                            String target = relayPayload.Substring(0, pipePos).Trimmed();
-                            String relayMsg = relayPayload.Substring(pipePos + 1).Trimmed();
-                            URHO3D_LOGINFOF("PollFIFOs: RELAY target=[%s] msg=[%s]", target.CString(), relayMsg.CString());
-                            AppendLog(String(sourceName) + " \xe2\x86\x92 " + target, relayMsg);
-                            SendMessage(target, "[" + String(sourceName) + "] " + relayMsg);
-                        }
-                    }
-                    else if (!HandleWorkboardCommand(message))
-                        AppendLog(String(sourceName) + " \xe2\x86\x92 Manager", message);
+                    inBody = true;
+                    continue;
                 }
+                if (sline.StartsWith("From:"))
+                    from = sline.Substring(5).Trimmed();
+                else if (sline.StartsWith("Type:"))
+                    type = sline.Substring(5).Trimmed();
+            }
+            else
+            {
+                if (!body.Empty())
+                    body += "\n";
+                body += sline;
             }
         }
-        // n == 0 or n == -1 (EAGAIN): no data available, nothing to do.
-        // With O_RDWR, EOF is never delivered so no reopen needed.
-    };
+        fclose(f);
 
-    pollOne(fdFromCoderRead_, fromCoderBuffer_, "Coder", "/tmp/urho_claude/from_coder", lastCoderActivity_);
-    pollOne(fdFromPlannerRead_, fromPlannerBuffer_, "Planner", "/tmp/urho_claude/from_planner", lastPlannerActivity_);
-    pollOne(fdFromUnassignedRead_, fromUnassignedBuffer_, "Unassigned", "/tmp/urho_claude/from_unassigned", lastUnassignedActivity_);
+        // Delete the message file (consumed)
+        remove(filePath);
+
+        if (body.Empty())
+            continue;
+
+        // Reset the correct role's liveness timer based on From: header
+        UpdateActivityTimerForRole(from, lastCoderActivity_, lastPlannerActivity_, lastUnassignedActivity_);
+
+        // Capitalize source name from header for display
+        String displayFrom = from.Empty() ? sourceName : from;
+        if (!displayFrom.Empty())
+            displayFrom[0] = (char)toupper((unsigned char)displayFrom[0]);
+
+        URHO3D_LOGINFOF("PollSpool: %s [%s] from %s: %s",
+            dirName.CString(), type.CString(), displayFrom.CString(), body.CString());
+
+        // Route by message type
+        if (type == "command")
+        {
+            if (!HandleWorkboardCommand(body))
+                AppendLog(displayFrom + " \xe2\x86\x92 Manager", body);
+        }
+        else if (type == "status")
+        {
+            // Status messages are heartbeats — activity timer already reset above.
+            // Optionally log them (currently filtered by AppendLog).
+            AppendLog(displayFrom, body);
+        }
+        else
+        {
+            // chat, relay, or unknown — display in log
+            AppendLog(displayFrom + " \xe2\x86\x92 Manager", body);
+        }
+    }
 }
+
+void WorkboardManager::PollSpool()
+{
+    // All Claude messages go to to_manager spool.
+    // We pass a dummy timer here — real timer update happens inside PollSpoolDir
+    // by matching the From: header to the correct role timer.
+    float dummyTimer = 0.0f;
+    PollSpoolDir("to_manager", "Manager", dummyTimer);
+}
+
 
 // ============================================================================
 // Instance discovery & wake-up
@@ -1690,31 +1754,64 @@ void WorkboardManager::WakeInstance(const String& role)
     }
 }
 
+void WorkboardManager::SendToSpool(const String& targetRole, const String& from, const String& type, const String& body)
+{
+    char spoolPath[256];
+    snprintf(spoolPath, sizeof(spoolPath), "%s/to_%s", SPOOL_DIR, targetRole.CString());
+    mkdir(spoolPath, 0777);
+
+    // Read sequence number
+    char seqPath[256];
+    snprintf(seqPath, sizeof(seqPath), "%s/.seq", spoolPath);
+
+    int seq = 1;
+    FILE* sf = fopen(seqPath, "r");
+    if (sf)
+    {
+        fscanf(sf, "%d", &seq);
+        fclose(sf);
+    }
+
+    // Write message atomically: .tmp → .msg
+    char tmpPath[512], msgPath[512];
+    snprintf(tmpPath, sizeof(tmpPath), "%s/%03d_%s.tmp", spoolPath, seq, from.CString());
+    snprintf(msgPath, sizeof(msgPath), "%s/%03d_%s.msg", spoolPath, seq, from.CString());
+
+    FILE* f = fopen(tmpPath, "w");
+    if (!f)
+    {
+        URHO3D_LOGERRORF("SendToSpool: failed to create %s: %s", tmpPath, strerror(errno));
+        return;
+    }
+
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    char timeStr[64];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%dT%H:%M:%S", t);
+
+    fprintf(f, "From: %s\nTime: %s\nType: %s\n---\n%s\n", from.CString(), timeStr, type.CString(), body.CString());
+    fclose(f);
+    rename(tmpPath, msgPath);
+
+    // Increment sequence
+    sf = fopen(seqPath, "w");
+    if (sf)
+    {
+        fprintf(sf, "%d\n", seq + 1);
+        fclose(sf);
+    }
+}
+
 void WorkboardManager::SendMessage(const String& target, const String& message)
 {
     URHO3D_LOGINFOF("SendMessage: target=[%s] message=[%s]", target.CString(), message.CString());
     if (message.Empty())
         return;
 
-    // Atomic write: .tmp → rename to .msg
-    char tmpPath[128], msgPath[128];
-    snprintf(tmpPath, sizeof(tmpPath), "%s/to_%s.tmp", IPC_DIR, target.CString());
-    snprintf(msgPath, sizeof(msgPath), "%s/to_%s.msg", IPC_DIR, target.CString());
-    URHO3D_LOGINFOF("SendMessage: writing to [%s] -> [%s]", tmpPath, msgPath);
-
-    FILE* f = fopen(tmpPath, "w");
-    if (!f)
-    {
-        AppendLog("System", "Failed to write message for " + target);
-        return;
-    }
-    fprintf(f, "%s\n", message.CString());
-    fclose(f);
-    rename(tmpPath, msgPath);
-
+    SendToSpool(target, "manager", "chat", message);
     AppendLog("Manager \xe2\x86\x92 " + target, message);
 
-    // Wake the instance
+    // Wake the instance via FIFO for instant notification
     WakeInstance(target);
 }
 
@@ -1793,7 +1890,7 @@ void WorkboardManager::AppendLog(const String& source, const String& message)
     prefix += "[" + source + "] ";
 
     auto* item = new Text(context_);
-    item->SetFont(font_, 10);
+    item->SetFont(font_, currentFontSize_ - 1);
     item->SetText(prefix + message);
     item->SetColor(LogColorForSource(source));
     item->SetWordwrap(true);
@@ -1991,7 +2088,7 @@ void WorkboardManager::HandleUpdate(StringHash /*eventType*/, VariantMap& eventD
     lastPlannerActivity_ += timeStep;
     lastUnassignedActivity_ += timeStep;
 
-    PollFIFOs();
+    PollSpool();
     CheckDownloadProgress();
 
     refreshAccumulator_ += timeStep;

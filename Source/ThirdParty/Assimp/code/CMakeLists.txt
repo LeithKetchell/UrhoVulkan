@@ -528,6 +528,13 @@ ADD_ASSIMP_IMPORTER( FBX
   FBXDeformer.cpp
   FBXBinaryTokenizer.cpp
   FBXDocumentUtil.cpp
+  FBXCommon.h
+  FBXExporter.cpp
+  FBXExporter.h
+  FBXExportNode.cpp
+  FBXExportNode.h
+  FBXExportProperty.cpp
+  FBXExportProperty.h
 )
 
 SET( PostProcessing_SRCS

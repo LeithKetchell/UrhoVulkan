@@ -17,6 +17,8 @@
 #include <Urho3D/Graphics/Technique.h>
 #include <Urho3D/Graphics/Viewport.h>
 #include <Urho3D/Graphics/Zone.h>
+#include <Urho3D/GraphicsAPI/Texture2D.h>
+#include <Urho3D/Resource/Image.h>
 #include <Urho3D/GraphicsAPI/IndexBuffer.h>
 #include <Urho3D/GraphicsAPI/VertexBuffer.h>
 #include <Urho3D/Input/Input.h>
@@ -30,6 +32,7 @@
 #include <Urho3D/UI/DropDownList.h>
 #include <Urho3D/UI/ScrollView.h>
 #include <Urho3D/UI/UI.h>
+#include <Urho3D/UI/LineEdit.h>
 #include <Urho3D/UI/UIEvents.h>
 
 #include <climits>
@@ -275,11 +278,43 @@ void ModelViewer::ScanAnimations()
 
     Sort(availableAnims_.Begin(), availableAnims_.End());
 
-    if (!availableAnims_.Empty())
+    // Generate a real bind pose animation from skeleton initial transforms
+    if (isAnimated_ && animatedModelComp_)
+    {
+        const Skeleton& skel = animatedModelComp_->GetSkeleton();
+        const Vector<Bone>& bones = skel.GetBones();
+        if (bones.Size() > 0)
+        {
+            SharedPtr<Animation> bindPoseAnim(new Animation(context_));
+            bindPoseAnim->SetName("[Bind Pose]");
+            bindPoseAnim->SetAnimationName("[Bind Pose]");
+            bindPoseAnim->SetLength(0.0f);
+
+            for (unsigned i = 0; i < bones.Size(); ++i)
+            {
+                const Bone& bone = bones[i];
+                AnimationTrack* track = bindPoseAnim->CreateTrack(bone.name_);
+                track->channelMask_ = AnimationChannels::Position | AnimationChannels::Rotation | AnimationChannels::Scale;
+
+                AnimationKeyFrame kf;
+                kf.time_ = 0.0f;
+                kf.position_ = bone.initialPosition_;
+                kf.rotation_ = bone.initialRotation_;
+                kf.scale_ = bone.initialScale_;
+                track->AddKeyFrame(kf);
+            }
+
+            auto* cache = GetSubsystem<ResourceCache>();
+            cache->AddManualResource(bindPoseAnim);
+        }
+    }
+    availableAnims_.Insert(0, "[Bind Pose]");
+
+    if (availableAnims_.Size() > 1)
     {
         // Prefer Idle/Sitting animation over alphabetical first (which is often Die)
-        int bestIndex = 0;
-        for (unsigned i = 0; i < availableAnims_.Size(); ++i)
+        int bestIndex = 1; // skip bind pose
+        for (unsigned i = 1; i < availableAnims_.Size(); ++i)
         {
             String name = GetFileName(availableAnims_[i]).ToLower();
             if (name.Contains("idle") || name.Contains("sitting"))
@@ -297,6 +332,7 @@ void ModelViewer::PlayAnimation(int index)
     if (index < 0 || index >= (int)availableAnims_.Size()) return;
 
     currentAnimIndex_ = index;
+
     if (animController_)
     {
         animController_->PlayExclusive(availableAnims_[index], 0, animLooped_, 0.2f);
@@ -574,7 +610,6 @@ void ModelViewer::CreateMenuBar()
 
             Vector<String> filters;
             filters.Push("*.mdl");
-            filters.Push("*.*");
             fileSelector_->SetFilters(filters, 0);
 
             auto* cache = GetSubsystem<ResourceCache>();
@@ -661,6 +696,7 @@ void ModelViewer::CreateMenuBar()
             ShowHelpWindow();
         helpMenu->SetSelection(0);
     });
+
 }
 
 void ModelViewer::CreateInfoPanel()
@@ -1210,7 +1246,8 @@ void ModelViewer::RebuildInfoText()
         }
     }
 
-    // ---- Skeleton (collapsed) ----
+    // ---- Skeleton (collapsed) — clickable bone buttons ----
+    boneButtons_.Clear();
     if (skel.GetNumBones() > 1)
     {
         CreateCollapsibleSection("Skeleton (" + String(skel.GetNumBones()) + " bones)", false);
@@ -1225,7 +1262,24 @@ void ModelViewer::RebuildInfoText()
             String indent;
             for (int d = 0; d < depth; ++d) indent += "  ";
 
-            AddInfoLine(indent + bone.name_ + "  r=" + String((double)bone.radius_, 3));
+            UIElement* target = currentSection_ ? currentSection_ : infoContent_;
+            if (!target) continue;
+
+            auto* btn = target->CreateChild<Button>();
+            btn->SetStyleAuto();
+            btn->SetFixedHeight(18);
+            btn->SetLayout(LM_HORIZONTAL, 0, IntRect(2, 0, 2, 0));
+            btn->SetColor(Color(0.18f, 0.18f, 0.22f, 0.6f));
+            btn->SetVar("BoneIndex", (int)i);
+
+            auto* label = btn->CreateChild<Text>();
+            label->SetFont(font_, 11);
+            label->SetText(indent + bone.name_ + "  r=" + String((double)bone.radius_, 3));
+            label->SetColor(Color(0.85f, 0.85f, 0.85f));
+            label->SetAlignment(HA_LEFT, VA_CENTER);
+
+            SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(ModelViewer, HandleBoneListClick));
+            boneButtons_.Push(btn);
         }
     }
 
@@ -1511,22 +1565,46 @@ void ModelViewer::HandlePostRenderUpdate(StringHash, VariantMap&)
         debug->AddBoundingBox(bbox, modelNode_->GetWorldTransform(), Color::YELLOW, false);
     }
 
-    if (showSkeleton_ && isAnimated_ && animatedModelComp_)
+    if ((showSkeleton_ || selectedBone_ >= 0) && isAnimated_ && animatedModelComp_)
     {
-        Skeleton& skeleton = animatedModelComp_->GetSkeleton();
-        debug->AddSkeleton(skeleton, Color::CYAN, false);
+        const Vector<Bone>& bones = animatedModelComp_->GetSkeleton().GetBones();
+
+        // Build selected subtree mask — mark selected, propagate to children
+        // Bones are stored parent-before-child, so one forward pass is enough
+        Vector<bool> inSubtree(bones.Size(), false);
+        if (selectedBone_ >= 0 && selectedBone_ < (int)bones.Size())
+        {
+            inSubtree[selectedBone_] = true;
+            for (unsigned i = (unsigned)selectedBone_ + 1; i < bones.Size(); ++i)
+            {
+                int p = bones[i].parentIndex_;
+                if (p >= 0 && p < (int)bones.Size() && inSubtree[p])
+                    inSubtree[i] = true;
+            }
+        }
+
+        for (unsigned i = 0; i < bones.Size(); ++i)
+        {
+            Node* boneNode = bones[i].node_;
+            if (!boneNode) continue;
+
+            Vector3 pos = boneNode->GetWorldPosition();
+            if (bones[i].parentIndex_ >= 0 && bones[i].parentIndex_ < (int)bones.Size())
+            {
+                Node* parentNode = bones[bones[i].parentIndex_].node_;
+                if (parentNode)
+                {
+                    Color lineColor = inSubtree[i] ? Color::YELLOW : Color::CYAN;
+                    if (showSkeleton_ || inSubtree[i])
+                        debug->AddLine(parentNode->GetWorldPosition(), pos, lineColor, false);
+                }
+            }
+        }
     }
 
     // Draw vertex overlay
     if (vertexEditMode_ && editModel_)
         DrawVertexOverlay(debug);
-
-    // Draw selected bone subtree
-    if (selectedBone_ >= 0 && isAnimated_ && animatedModelComp_ && !vertexEditMode_)
-    {
-        Skeleton& skeleton = animatedModelComp_->GetSkeleton();
-        DrawBoneSubtree(debug, skeleton, (unsigned)selectedBone_, Color::YELLOW);
-    }
 }
 
 void ModelViewer::HandleMouseMove(StringHash, VariantMap& eventData)
@@ -1554,6 +1632,12 @@ void ModelViewer::HandleMouseMove(StringHash, VariantMap& eventData)
 
 void ModelViewer::HandleMouseWheel(StringHash, VariantMap& eventData)
 {
+    // Don't zoom camera when mouse is over a UI element that handles scroll
+    auto* ui = GetSubsystem<UI>();
+    UIElement* hover = ui->GetElementAt(ui->GetCursorPosition());
+    if (hover && hover != ui->GetRoot())
+        return;
+
     int wheel = eventData[MouseWheel::P_WHEEL].GetI32();
     cameraDistance_ *= (wheel > 0) ? 0.9f : 1.1f;
     cameraDistance_ = Max(cameraDistance_, 0.1f);
@@ -1590,6 +1674,14 @@ void ModelViewer::HandleFileOpen(StringHash, VariantMap& eventData)
             path = path.Substring(dirs[i].Length());
             break;
         }
+    }
+
+    if (!path.EndsWith(".mdl", false))
+    {
+        URHO3D_LOGERRORF("FileOpen: not a model file: %s", path.CString());
+        if (statusText_)
+            statusText_->SetText("Error: only .mdl files supported");
+        return;
     }
 
     URHO3D_LOGINFOF("FileOpen: resolved path = %s", path.CString());
@@ -1674,18 +1766,7 @@ void ModelViewer::PickBone(int screenX, int screenY)
         }
     }
 
-    selectedBone_ = bestBone;
-
-    if (bestBone >= 0)
-    {
-        if (statusText_)
-            statusText_->SetText("Bone: " + bones[bestBone].name_);
-    }
-    else
-    {
-        if (statusText_ && currentModelPath_.Length())
-            statusText_->SetText(currentModelPath_);
-    }
+    SelectBone(bestBone);
 }
 
 void ModelViewer::DrawBoneSubtree(DebugRenderer* debug, const Skeleton& skel, unsigned boneIndex, const Color& color)
@@ -1715,6 +1796,162 @@ void ModelViewer::DrawBoneSubtree(DebugRenderer* debug, const Skeleton& skel, un
     }
 }
 
+void ModelViewer::SelectBone(int boneIndex)
+{
+    selectedBone_ = boneIndex;
+
+    // Highlight the selected button in the bone list, dehighlight others
+    for (unsigned i = 0; i < boneButtons_.Size(); ++i)
+    {
+        Button* btn = boneButtons_[i];
+        bool selected = (btn->GetVar("BoneIndex").GetI32() == boneIndex);
+        btn->SetColor(selected ? Color(0.35f, 0.35f, 0.15f, 0.9f) : Color(0.18f, 0.18f, 0.22f, 0.6f));
+        auto* label = btn->GetChildStaticCast<Text>(0);
+        if (label)
+            label->SetColor(selected ? Color(1.0f, 1.0f, 0.4f) : Color(0.85f, 0.85f, 0.85f));
+    }
+
+    // Update status text
+    if (boneIndex >= 0 && isAnimated_ && animatedModelComp_)
+    {
+        Skeleton& skeleton = animatedModelComp_->GetSkeleton();
+        const Vector<Bone>& bones = skeleton.GetBones();
+        if (boneIndex < (int)bones.Size() && statusText_)
+            statusText_->SetText("Bone: " + bones[boneIndex].name_);
+    }
+    else if (statusText_ && currentModelPath_.Length())
+    {
+        statusText_->SetText(currentModelPath_);
+    }
+
+    UpdateBonePopover();
+}
+
+void ModelViewer::HandleBoneListClick(StringHash, VariantMap& eventData)
+{
+    auto* btn = static_cast<Button*>(eventData[Released::P_ELEMENT].GetPtr());
+    if (!btn) return;
+    int boneIndex = btn->GetVar("BoneIndex").GetI32();
+    SelectBone(boneIndex);
+}
+
+void ModelViewer::UpdateBonePopover()
+{
+    if (selectedBone_ < 0 || !isAnimated_ || !animatedModelComp_)
+    {
+        if (bonePopover_) bonePopover_->SetVisible(false);
+        return;
+    }
+
+    Skeleton& skeleton = animatedModelComp_->GetSkeleton();
+    const Vector<Bone>& bones = skeleton.GetBones();
+    if (selectedBone_ >= (int)bones.Size())
+    {
+        if (bonePopover_) bonePopover_->SetVisible(false);
+        return;
+    }
+
+    auto* ui = GetSubsystem<UI>();
+
+    // Create side panel once — anchored to the left edge
+    if (!bonePopover_)
+    {
+        bonePopover_ = ui->GetRoot()->CreateChild<Window>("BonePanel");
+        bonePopover_->SetStyleAuto();
+        bonePopover_->SetLayout(LM_VERTICAL, 2, IntRect(8, 6, 8, 6));
+        bonePopover_->SetFixedWidth(250);
+        bonePopover_->SetPosition(10, 36);
+        bonePopover_->SetMovable(true);
+        bonePopover_->SetOpacity(0.93f);
+        bonePopover_->SetColor(Color(0.18f, 0.18f, 0.24f));
+
+        // Title bar
+        auto* titleBar = bonePopover_->CreateChild<BorderImage>();
+        titleBar->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+        titleBar->SetFixedHeight(22);
+        titleBar->SetColor(Color(0.14f, 0.14f, 0.18f));
+
+        auto* title = titleBar->CreateChild<Text>();
+        title->SetFont(font_, 12);
+        title->SetText("Bone");
+        title->SetColor(Color(0.9f, 0.9f, 0.4f));
+    }
+
+    // Remove old content lines (keep title bar at index 0)
+    while (bonePopover_->GetNumChildren() > 1)
+        bonePopover_->RemoveChildAtIndex(1);
+
+    const Bone& bone = bones[selectedBone_];
+
+    auto addField = [this](const String& text, const Color& color = Color(0.85f, 0.85f, 0.85f))
+    {
+        auto* line = bonePopover_->CreateChild<Text>();
+        line->SetFont(font_, 10);
+        line->SetText(text);
+        line->SetColor(color);
+    };
+
+    // Title
+    addField(bone.name_ + "  [" + String(selectedBone_) + "]", Color(0.95f, 0.9f, 0.4f));
+
+    // Parent
+    String parentName = "ROOT";
+    if (bone.parentIndex_ >= 0 && bone.parentIndex_ < (int)bones.Size())
+        parentName = bones[bone.parentIndex_].name_ + " [" + String(bone.parentIndex_) + "]";
+    addField("Parent: " + parentName);
+
+    // Depth
+    int depth = 0;
+    int p = bone.parentIndex_;
+    while (p > 0 && depth < 20) { p = bones[p].parentIndex_; depth++; }
+    addField("Depth: " + String(depth));
+
+    // Initial position
+    const Vector3& pos = bone.initialPosition_;
+    addField("Position: " + String((double)pos.x_, 3) + ", " + String((double)pos.y_, 3) + ", " + String((double)pos.z_, 3));
+
+    // Initial rotation (as Euler)
+    Vector3 euler = bone.initialRotation_.EulerAngles();
+    addField("Rotation: " + String((double)euler.x_, 1) + ", " + String((double)euler.y_, 1) + ", " + String((double)euler.z_, 1));
+
+    // Initial scale
+    const Vector3& scl = bone.initialScale_;
+    addField("Scale: " + String((double)scl.x_, 3) + ", " + String((double)scl.y_, 3) + ", " + String((double)scl.z_, 3));
+
+    // Radius
+    addField("Radius: " + String((double)bone.radius_, 4));
+
+    // Bounding box
+    const BoundingBox& bb = bone.boundingBox_;
+    if (bb.Defined())
+    {
+        addField("BBox min: " + String((double)bb.min_.x_, 2) + ", " + String((double)bb.min_.y_, 2) + ", " + String((double)bb.min_.z_, 2));
+        addField("BBox max: " + String((double)bb.max_.x_, 2) + ", " + String((double)bb.max_.y_, 2) + ", " + String((double)bb.max_.z_, 2));
+    }
+    else
+        addField("BBox: undefined");
+
+    // Collision type
+    String collStr = "None";
+    if (bone.collisionMask_ & BONECOLLISION_SPHERE) collStr = "Sphere";
+    if (bone.collisionMask_ & BONECOLLISION_BOX) collStr = "Box";
+    if ((bone.collisionMask_ & BONECOLLISION_SPHERE) && (bone.collisionMask_ & BONECOLLISION_BOX)) collStr = "Sphere+Box";
+    addField("Collision: " + collStr);
+
+    // Animated flag
+    addField(String("Animated: ") + (bone.animated_ ? "Yes" : "No"));
+
+    // World position (runtime, from node)
+    if (bone.node_)
+    {
+        Vector3 wp = bone.node_->GetWorldPosition();
+        addField("World pos: " + String((double)wp.x_, 3) + ", " + String((double)wp.y_, 3) + ", " + String((double)wp.z_, 3),
+                 Color(0.6f, 0.85f, 0.6f));
+    }
+
+    bonePopover_->SetVisible(true);
+}
+
 // ============================================================================
 // Vertex Editor
 // ============================================================================
@@ -1729,9 +1966,6 @@ void ModelViewer::EnterVertexEditMode()
     // Swap cloned model onto the component
     if (animatedModelComp_)
     {
-        // Stop animations for bind-pose editing
-        if (animController_)
-            animController_->StopAll(0.0f);
         animatedModelComp_->SetModel(editModel_);
     }
     else if (staticModelComp_)
@@ -1744,6 +1978,36 @@ void ModelViewer::EnterVertexEditMode()
     selectedGeometry_ = -1;
     vertexDirty_ = false;
     vertexDragging_ = false;
+
+    // Create billboard overlay for vertex dots
+    vertexOverlayNode_ = scene_->CreateChild("VertexOverlay");
+    vertexBillboards_ = vertexOverlayNode_->CreateComponent<BillboardSet>();
+    vertexBillboards_->SetFixedScreenSize(true);
+    vertexBillboards_->SetFaceCameraMode(FC_ROTATE_XYZ);
+    vertexBillboards_->SetSorted(false);
+
+    // Create a small white circle texture (8x8) for the dot sprite
+    SharedPtr<Image> dotImage(new Image(context_));
+    dotImage->SetSize(8, 8, 4);
+    for (int y = 0; y < 8; ++y)
+    {
+        for (int x = 0; x < 8; ++x)
+        {
+            float dx = x - 3.5f, dy = y - 3.5f;
+            float dist = sqrtf(dx * dx + dy * dy);
+            unsigned char a = dist < 3.0f ? 255 : (dist < 3.5f ? (unsigned char)(255.0f * (3.5f - dist) / 0.5f) : 0);
+            dotImage->SetPixel(x, y, Color(1.0f, 1.0f, 1.0f, a / 255.0f));
+        }
+    }
+    SharedPtr<Texture2D> dotTex(new Texture2D(context_));
+    dotTex->SetData(dotImage);
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    SharedPtr<Material> dotMat(new Material(context_));
+    dotMat->SetTechnique(0, cache->GetResource<Technique>("Techniques/DiffUnlitParticleAlpha.xml"));
+    dotMat->SetTexture(TU_DIFFUSE, dotTex);
+    dotMat->SetCullMode(CULL_NONE);
+    vertexBillboards_->SetMaterial(dotMat);
 
     if (statusText_)
         statusText_->SetText("VERTEX EDIT — Click=select, DEL=delete, Ctrl+S=save, V=exit");
@@ -1777,20 +2041,72 @@ void ModelViewer::ExitVertexEditMode()
     vertexDirty_ = false;
     vertexDragging_ = false;
 
+    // Remove billboard overlay
+    if (vertexOverlayNode_)
+    {
+        vertexOverlayNode_->Remove();
+        vertexOverlayNode_ = nullptr;
+        vertexBillboards_ = nullptr;
+    }
+
     if (statusText_)
         statusText_->SetText(currentModelPath_);
 
     URHO3D_LOGINFO("Exited vertex edit mode");
 }
 
+Vector3 ModelViewer::SkinVertex(const unsigned char* vertData, unsigned stride, unsigned posOffset,
+    unsigned weightOffset, unsigned indexOffset, bool hasSkinning, unsigned vertIndex,
+    const Vector<Bone>& bones, const Matrix3x4& worldTransform)
+{
+    Vector3 localPos = *reinterpret_cast<const Vector3*>(vertData + vertIndex * stride + posOffset);
+
+    if (!hasSkinning)
+        return worldTransform * localPos;
+
+    const float* weights = reinterpret_cast<const float*>(vertData + vertIndex * stride + weightOffset);
+    const unsigned char* indices = vertData + vertIndex * stride + indexOffset;
+
+    Vector3 skinnedPos = Vector3::ZERO;
+    for (int b = 0; b < 4; ++b)
+    {
+        float w = weights[b];
+        if (w < 0.001f) continue;
+
+        unsigned boneIdx = indices[b];
+        if (boneIdx >= bones.Size() || !bones[boneIdx].node_) continue;
+
+        Matrix3x4 skinMatrix = bones[boneIdx].node_->GetWorldTransform() * bones[boneIdx].offsetMatrix_;
+        skinnedPos += (skinMatrix * localPos) * w;
+    }
+    return skinnedPos;
+}
+
 void ModelViewer::DrawVertexOverlay(DebugRenderer* debug)
 {
-    if (!editModel_ || !modelNode_) return;
+    if (!editModel_ || !modelNode_ || !vertexBillboards_) return;
 
     Matrix3x4 worldTransform = modelNode_->GetWorldTransform();
-    float crossSize = 0.005f * cameraDistance_;
-    float selectedSize = 0.015f * cameraDistance_;
 
+    // Get skeleton for CPU skinning
+    const Vector<Bone>* bonesPtr = nullptr;
+    if (isAnimated_ && animatedModelComp_)
+        bonesPtr = &animatedModelComp_->GetSkeleton().GetBones();
+
+    // Count total vertices across all geometries
+    unsigned totalVerts = 0;
+    for (unsigned g = 0; g < editModel_->GetNumGeometries(); ++g)
+    {
+        Geometry* geom = editModel_->GetGeometry(g, 0);
+        if (!geom) continue;
+        VertexBuffer* vb = geom->GetVertexBuffer(0);
+        if (vb && vb->GetShadowData())
+            totalVerts += vb->GetVertexCount();
+    }
+
+    vertexBillboards_->SetNumBillboards(totalVerts);
+
+    unsigned bbIndex = 0;
     for (unsigned g = 0; g < editModel_->GetNumGeometries(); ++g)
     {
         Geometry* geom = editModel_->GetGeometry(g, 0);
@@ -1806,17 +2122,37 @@ void ModelViewer::DrawVertexOverlay(DebugRenderer* debug)
         unsigned posOffset = vb->GetElementOffset(SEM_POSITION);
         unsigned vertCount = vb->GetVertexCount();
 
+        bool hasSkinning = vb->HasElement(SEM_BLENDWEIGHTS) && vb->HasElement(SEM_BLENDINDICES);
+        unsigned weightOffset = hasSkinning ? vb->GetElementOffset(SEM_BLENDWEIGHTS) : 0;
+        unsigned indexOffset = hasSkinning ? vb->GetElementOffset(SEM_BLENDINDICES) : 0;
+
+        const Vector<Bone> emptyBones;
+        const Vector<Bone>& bones = bonesPtr ? *bonesPtr : emptyBones;
+
         for (unsigned i = 0; i < vertCount; ++i)
         {
-            Vector3 localPos = *reinterpret_cast<const Vector3*>(data + i * stride + posOffset);
-            Vector3 worldPos = worldTransform * localPos;
+            Vector3 worldPos = SkinVertex(reinterpret_cast<const unsigned char*>(data), stride, posOffset, weightOffset, indexOffset,
+                hasSkinning && bonesPtr, i, bones, worldTransform);
+
+            Billboard* bb = vertexBillboards_->GetBillboard(bbIndex);
+            bb->position_ = worldPos;
+            bb->enabled_ = true;
 
             if ((int)g == selectedGeometry_ && (int)i == selectedVertex_)
-                debug->AddCross(worldPos, selectedSize, Color::YELLOW, false);
+            {
+                bb->size_ = Vector2(8.0f, 8.0f);
+                bb->color_ = Color::YELLOW;
+            }
             else
-                debug->AddCross(worldPos, crossSize, Color(0.8f, 0.2f, 0.2f), false);
+            {
+                bb->size_ = Vector2(4.0f, 4.0f);
+                bb->color_ = Color(0.9f, 0.2f, 0.2f);
+            }
+            ++bbIndex;
         }
     }
+
+    vertexBillboards_->Commit();
 }
 
 void ModelViewer::PickVertex(int screenX, int screenY)
@@ -1832,6 +2168,11 @@ void ModelViewer::PickVertex(int screenX, int screenY)
     Ray ray = camera->GetScreenRay(nx, ny);
 
     Matrix3x4 worldTransform = modelNode_->GetWorldTransform();
+
+    // Get skeleton for CPU skinning (same as DrawVertexOverlay)
+    const Vector<Bone>* bonesPtr = nullptr;
+    if (isAnimated_ && animatedModelComp_)
+        bonesPtr = &animatedModelComp_->GetSkeleton().GetBones();
 
     float bestDist = M_INFINITY;
     int bestGeom = -1, bestVert = -1;
@@ -1851,10 +2192,17 @@ void ModelViewer::PickVertex(int screenX, int screenY)
         unsigned posOffset = vb->GetElementOffset(SEM_POSITION);
         unsigned vertCount = vb->GetVertexCount();
 
+        bool hasSkinning = vb->HasElement(SEM_BLENDWEIGHTS) && vb->HasElement(SEM_BLENDINDICES);
+        unsigned weightOffset = hasSkinning ? vb->GetElementOffset(SEM_BLENDWEIGHTS) : 0;
+        unsigned indexOffset = hasSkinning ? vb->GetElementOffset(SEM_BLENDINDICES) : 0;
+
+        const Vector<Bone> emptyBones;
+        const Vector<Bone>& bones = bonesPtr ? *bonesPtr : emptyBones;
+
         for (unsigned i = 0; i < vertCount; ++i)
         {
-            Vector3 localPos = *reinterpret_cast<const Vector3*>(data + i * stride + posOffset);
-            Vector3 worldPos = worldTransform * localPos;
+            Vector3 worldPos = SkinVertex(reinterpret_cast<const unsigned char*>(data), stride, posOffset, weightOffset, indexOffset,
+                hasSkinning && bonesPtr, i, bones, worldTransform);
 
             Vector3 toPoint = worldPos - ray.origin_;
             float along = toPoint.DotProduct(ray.direction_);
@@ -2094,8 +2442,20 @@ Vector3 ModelViewer::GetVertexWorldPosition(int geomIndex, int vertIndex)
 
     unsigned stride = vb->GetVertexSize();
     unsigned posOffset = vb->GetElementOffset(SEM_POSITION);
-    Vector3 localPos = *reinterpret_cast<const Vector3*>(data + (unsigned)vertIndex * stride + posOffset);
-    return modelNode_->GetWorldTransform() * localPos;
+
+    bool hasSkinning = vb->HasElement(SEM_BLENDWEIGHTS) && vb->HasElement(SEM_BLENDINDICES);
+    unsigned weightOffset = hasSkinning ? vb->GetElementOffset(SEM_BLENDWEIGHTS) : 0;
+    unsigned indexOffset = hasSkinning ? vb->GetElementOffset(SEM_BLENDINDICES) : 0;
+
+    const Vector<Bone>* bonesPtr = nullptr;
+    if (isAnimated_ && animatedModelComp_)
+        bonesPtr = &animatedModelComp_->GetSkeleton().GetBones();
+
+    const Vector<Bone> emptyBones;
+    const Vector<Bone>& bones = bonesPtr ? *bonesPtr : emptyBones;
+
+    return SkinVertex(reinterpret_cast<const unsigned char*>(data), stride, posOffset, weightOffset, indexOffset,
+        hasSkinning && bonesPtr, (unsigned)vertIndex, bones, modelNode_->GetWorldTransform());
 }
 
 void ModelViewer::UpdateVertexStatusText()

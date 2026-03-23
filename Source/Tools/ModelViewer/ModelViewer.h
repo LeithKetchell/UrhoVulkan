@@ -2,6 +2,7 @@
 
 #include <Urho3D/Engine/Application.h>
 #include <Urho3D/Graphics/AnimatedModel.h>
+#include <Urho3D/Graphics/BillboardSet.h>
 #include <Urho3D/Graphics/AnimationController.h>
 #include <Urho3D/Graphics/AnimationState.h>
 #include <Urho3D/Graphics/DebugRenderer.h>
@@ -102,10 +103,15 @@ private:
     bool showSkeleton_{};
     bool showBoundingBox_{};
 
-    // Bone picking
+    // Bone picking & inspector
     int selectedBone_{-1};
     void PickBone(int screenX, int screenY);
     void DrawBoneSubtree(DebugRenderer* debug, const Skeleton& skel, unsigned boneIndex, const Color& color);
+    void SelectBone(int boneIndex);
+    void UpdateBonePopover();
+    void HandleBoneListClick(StringHash eventType, VariantMap& eventData);
+    Window* bonePopover_{};
+    Vector<Button*> boneButtons_;
 
     // Vertex editor
     void EnterVertexEditMode();
@@ -116,6 +122,9 @@ private:
     void MoveSelectedVertex(int screenX, int screenY);
     void SaveModel();
     Vector3 GetVertexWorldPosition(int geomIndex, int vertIndex);
+    Vector3 SkinVertex(const unsigned char* vertData, unsigned stride, unsigned posOffset,
+        unsigned weightOffset, unsigned indexOffset, bool hasSkinning, unsigned vertIndex,
+        const Vector<Bone>& bones, const Matrix3x4& worldTransform);
     void UpdateVertexStatusText();
 
     bool vertexEditMode_{};
@@ -126,6 +135,8 @@ private:
     bool vertexDragging_{};
     Vector3 dragStartPos_;
     Vector3 dragPlaneNormal_;
+    Node* vertexOverlayNode_{};
+    BillboardSet* vertexBillboards_{};
 
     // UI
     SharedPtr<Font> font_;

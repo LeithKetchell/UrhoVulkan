@@ -170,6 +170,24 @@ public:
         Put(n);
     }
 
+    // ---------------------------------------------------------------------
+    /** Write a single character to the stream */
+    void PutChar(char c)    {
+        Put(c);
+    }
+
+    // ---------------------------------------------------------------------
+    /** Write a std::string to the stream */
+    void PutString(const std::string& s)
+    {
+        if (cursor + s.size() >= buffer.size()) {
+            buffer.resize(cursor + s.size());
+        }
+        void* dest = &buffer[cursor];
+        ::memcpy(dest, s.c_str(), s.size());
+        cursor += s.size();
+    }
+
 public:
 
     // ---------------------------------------------------------------------
@@ -189,6 +207,10 @@ public:
     void SetCurrentPos(std::size_t new_cursor) {
         cursor = new_cursor;
     }
+
+    // Aliases used by FBX exporter (Assimp 5.0+ API)
+    std::size_t Tell() const { return GetCurrentPos(); }
+    void Seek(std::size_t pos) { SetCurrentPos(pos); }
 
 private:
 
