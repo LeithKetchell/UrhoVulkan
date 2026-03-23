@@ -129,13 +129,31 @@ AssetImporter model input.fbx output.mdl [-scale 0.01]
 - Produces `.mdl` (model) and `.ani` (animation) files
 - **Cannot** import FBX 7500 files
 
-### Export: Urho to Blender
+### Export: Urho to FBX (NEW — First External Format Export)
 ```
-AssetImporter export input.mdl output.fbx [input.ani ...]
+AssetImporter export input.mdl output.fbx [-anim path.ani ...] [-allanims] [-scale N]
 ```
-- Writes **FBX 7500** — the format Blender reads best
-- For editing, re-rigging, or adding animations in Blender
-- **Cannot** export old FBX format
+This is the first time Urho3D can write its native data to any external file format. The engine has always been a one-way street — assets go in, nothing comes out. This changes that.
+
+The exporter reads `.mdl` binary directly (no GPU required), reconstructs a full scene graph with geometry, skeleton, skin weights, and bone hierarchy, then writes FBX 7500 via Assimp's exporter. Optionally includes `.ani` animation files converted to FBX animation channels.
+
+**What works:**
+- Mesh geometry (vertices, normals, UVs, tangents, bitangents)
+- Full skeleton hierarchy with bone transforms
+- Skin weights and bone mappings (4 weights per vertex)
+- Inverse bind pose matrices
+- Animation tracks (position, rotation, scale keyframes) from `.ani` files
+- Auto-discovery of matching `.ani` files with `-allanims`
+- Scale correction for round-trip workflows
+
+**What's not yet implemented:**
+- Materials (exports placeholder names — models arrive grey in Blender)
+- Textures (no texture path or embedded data in FBX output)
+- PBR material properties (roughness, metallic)
+- Morph targets / blend shapes
+- LOD levels beyond LOD 0
+
+**Status:** Underway. The hard part — skinned mesh with animation in a standard interchange format — is done. Material and texture export is next.
 
 ### Round-Trip Workflow
 ```
