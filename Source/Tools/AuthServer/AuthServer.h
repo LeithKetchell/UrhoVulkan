@@ -43,6 +43,7 @@
 #include <Urho3D/Graphics/Viewport.h>
 #include <Urho3D/Input/Input.h>
 #include <Urho3D/UI/MelbourneClock.h>
+#include <Urho3D/Game/GameDB.h>
 #include "TerrainGenerator.h"
 #include "TerrainJournal.h"
 
@@ -104,8 +105,49 @@ private:
         String guid;                           // client's NAT GUID (sent after auth)
         IntVector2 lastPatchPos{0x7FFFFFFF, 0x7FFFFFFF};  // last known patch position
         HashSet<unsigned long long> sentPatches;           // patchKey(x,z) already sent
+
+        // Survival state (server-authoritative)
+        int hp{20}, maxHp{20};
+        float hunger{100.0f};
+        float thirst{100.0f};
+        float stamina{100.0f};
+        float warmth{15.0f};
+        bool alive{true};
+        float speedMult{1.0f};
+
+        // Last-sent vitals for delta detection (send-on-change)
+        int sentHp{-1};
+        int sentHunger{-1};
+        int sentThirst{-1};
+        int sentStamina{-1};
     };
     HashMap<Connection*, ClientSession> sessions_;
+
+    // Survival system
+    void InitGameDB();
+    void SurvivalTick(float dt);
+    void SendVitalUpdate(Connection* connection, ClientSession& session, bool force = false);
+    void HandleEat(Connection* connection, MemoryBuffer& msg);
+    void HandleDrink(Connection* connection, MemoryBuffer& msg);
+
+    // Inventory system
+    void HandlePickup(Connection* connection, MemoryBuffer& msg);
+    void HandleDrop(Connection* connection, MemoryBuffer& msg);
+    void SendInventoryUpdate(Connection* connection, int playerId);
+    void SendInventoryDelta(Connection* connection, int itemId, int quantity, bool added);
+    int GetPlayerId(const String& username);
+
+#ifdef URHO3D_DATABASE_SQLITE
+    SharedPtr<GameDB> gameDB_;
+    HungerRules hungerRules_{};
+    ThirstRules thirstRules_{};
+    InventoryRules inventoryRules_{};
+    bool survivalRulesLoaded_{false};
+    bool inventoryRulesLoaded_{false};
+    float survivalTickTimer_{0.0f};
+    static constexpr float SURVIVAL_TICK_INTERVAL = 1.0f;  // check every second, drain is rate-based
+    float gameTimeScale_{24.0f};  // 1 real hour = 1 game day (24 game-hours)
+#endif
 
     // Peer brokering
     void HandleRelayToAuth(Connection* connection, MemoryBuffer& msg);

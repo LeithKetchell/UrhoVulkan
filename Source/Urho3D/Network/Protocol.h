@@ -96,6 +96,22 @@ static const int MSG_TERRAIN_JOURNAL = 0xB5;
 /// Server->client: full heightmap transfer (hash mismatch or journal gap).
 static const int MSG_TERRAIN_FULLSYNC = 0xB6;
 
+/// Client->server: eat item from inventory (item_id).
+static const int MSG_EAT = 0xC0;
+/// Client->server: drink from water source (source type).
+static const int MSG_DRINK = 0xC1;
+/// Server->client: vital stats update (hp, hunger, thirst, stamina, warmth).
+static const int MSG_VITAL_UPDATE = 0xC2;
+
+/// Client->server: pick up world item (node_id).
+static const int MSG_PICKUP = 0xD0;
+/// Client->server: drop item from inventory (item_id, quantity).
+static const int MSG_DROP = 0xD1;
+/// Server->client: full inventory snapshot on connect.
+static const int MSG_INVENTORY_UPDATE = 0xD2;
+/// Server->client: single item add/remove delta.
+static const int MSG_INVENTORY_DELTA = 0xD3;
+
 /// Used to define custom messages, usually of the form MSG_USER + x, where x is an integer value.
 static const int MSG_USER = 0x200;
 

@@ -28,17 +28,21 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Render-to-texture infrastructure
 - Per-frame profiler UI overlay (ProfilerUI) on all samples
 
-### Rendering
+### Rendering & Lighting
+- **Hemisphere lighting** — two-color ambient (sky + ground) via Zone. One dot product, one mix. Defaults to existing flat ambient when ground color is zero
 - FXAA anti-aliasing post-process
 - Bloom post-process
 - Motion blur post-process with camera-based reprojection (Sample 58)
 - God rays post-process with 3-phase sun glow (pale white, vivid red at sunset, fade below horizon) and cool blue moon glow
+- **Water droplets post-process** — 20 procedural droplets with gravity slide, teardrop shape, 6s dry time
 - Custom shader uniform support (bare GLSL uniforms wrapped into constant buffer blocks)
 - Selection outline system (silhouette mask + Sobel edge detection)
 - Height fog with min/max height range, underwater inverse fog, and atmospheric time-of-day cycling
-- Underwater color dynamically tracks zone fog color per frame instead of hardcoded values
+- Underwater color dynamically tracks zone fog color per frame
+- Underwater sky darkens toward black with depth
 - 4-layer terrain texture blending (4 detail layers from 3 texture fetches via alpha channel packing) with division-by-zero guard on empty weight maps
 - Celestial body depth — sun and moon write depth (0.9999) so terrain occludes them correctly
+- **GPU grass system** (in progress) — single-mesh, single draw call, 100K+ blades, VTF heightmap sampling, wind animation, distance fade
 
 ### Physics Enhancements
 - Collision shapes integrated directly into RigidBody — no separate CollisionShape component required for common shapes (box, sphere, capsule, cylinder, cone, plane, trimesh, convex hull)
@@ -57,12 +61,24 @@ Main website: [https://urho3d.io/](https://urho3d.io/)
 - Full XML serialization — collision settings saved/loaded with particle effect files
 - Zero cost when disabled, backward compatible
 
+### Weather System
+- **Cloud density sampling** from skybox alpha channel at camera position — cubemap face UV mapping with inverse cloud rotation
+- **Lightning** — 2-5 flicker strikes with fade and pupil contraction effect
+- Rain slider with density control
+- Day/night cycle with seasonal variation (date/month/year sliders)
+
 ### Animal System
 - **Animal base class** — LogicComponent with state machine (IDLE / WANDER / FLEE / DIE)
 - Auto-scales model to target size using bounding box
 - Terrain following, water avoidance, respawn, animation crossfade
 - **Species**: Deer (3 anims), Fox (12 anims — attack, eating, death, gallop, walk, idle variants, hit reactions, jumps), Rabbit (11 anims)
-- **SchoolFish** — flocking behaviour (cohesion, alignment, separation), 3 schools of 15
+- **SchoolFish** — flocking behaviour (cohesion, alignment, separation), 3 schools of 15, depth-dependent behaviour with dawn/dusk rising
+- **Player swimming** — buoyancy, 3D swim with pitch+yaw, water drag, Space=up
+
+### Survival Elements
+- **Game database** — SQL-driven game rules: 16 tables, 85+ items, 50+ recipes, 9 creatures. Change the game with UPDATE, not recompilation
+- Hunger, thirst, and survival pressure systems (in progress)
+- Resource gathering and crafting pipeline designed around scarcity — extraction exceeds regeneration
 
 ### Networking & AuthServer
 - **AuthServer** — central authority server for multiplayer terrain editing (port 9090, UDP via SLikeNet)
@@ -97,19 +113,27 @@ Standalone model inspection and repair tool (`build/bin/ModelViewer`).
 - **Morph target display** with current weights
 - **Multi-animation blending**: per-layer weight sliders, Lerp/Add toggle, loop/reverse controls
 - **Vertex Editor** (V key): select/move/delete vertices with ray-based picking, save edited model back to disk (Ctrl+S)
+- **Bind pose display** from skeleton data, clickable bone list with detail popover
+- **Animation text key authoring** — timeline markers, add/delete/retime keys (T/Del/Ctrl+S), JSON sidecar save, playback flash
+- **Folder browse mode** — scan directories for batch asset triage, Prev/Next through .mdl files, Flag/Reject hotkeys
+- **Animation catalogue** — essential animation checker, duration/track/keyframe display
 - Collapsible info panel sections, help overlay (H key) with full keybinding reference
 
 ### AssetImporter
 - **`info` command** — inspect native .mdl and .ani files without Assimp: geometry counts, bounding box dimensions, skeleton hierarchy, animation tracks with channel masks and keyframe ranges. Diagnoses scale problems — shows the bounding box diagonal and warns when a model is oversized, suggesting the correct `-scale` factor
+- **`-normalize` flag** — auto-scale models to unit size by bounding box. Mutual exclusion with `-scale`
+- **Assimp 6.0.4 upgrade** — embedded textures, PBR materials, multilayer texture support
 - Bone scaling bug fixed — initialPosition, offsetMatrix, radius, and boundingBox now scale correctly
 - Auto material list generation — multi-material models automatically get a .txt material list
 - Strips CR/LF/CRLF from filenames and asset names
 
 ### WorkboardManager
-GUI dashboard for team coordination (`build/bin/WorkboardManager`).
+GUI dashboard for coordinating multiple Claude Code instances (`build/bin/WorkboardManager`).
 
-- Workboard display, plan browser, instance status, message composer
-- Bidirectional messaging with Claude Code instances via message spool directories
+- Workboard display with Planned / In Progress / Done tables, plan browser with full markdown rendering
+- **Multi-instance status dropdowns** — separate dropdowns for Coders (auto-numbered: coder, coder2, ...) and Unassigned instances, Planner singleton
+- Bidirectional messaging with Claude Code instances via atomic message spool directories
+- Message composer with per-role send buttons and broadcast
 - Automatic liveness detection — crashed instances culled from status display
 - LAN discovery beacon for multi-tool coordination
 - Font/theme customization with persistent preferences
@@ -248,6 +272,20 @@ Bottom-right corner, GPU-rendered orthographic RTT camera. Rotates with camera y
 
 ---
 
+## Claude Code Multi-Instance Hooks
+
+A complete IPC system for running multiple Claude Code instances on the same project as a coordinated team. Included as `ClaudeCodeTeamHooks.zip` in the project root.
+
+- **Role-based coordination**: Planner (architecture/docs) + multiple Coders (implementation). First instance becomes Planner, subsequent instances become Coders
+- **spawn-coder**: Launch new Coder instances from Planner — opens a real terminal, registers via SessionStart hook, receives initial prompt automatically
+- **Build safety**: Per-target `flock` wrapper prevents concurrent `make` corruption when multiple Coders build simultaneously
+- **File locking**: Atomic `mkdir`-based locks on Read/Write/Edit operations via PreToolUse/PostToolUse hooks
+- **Dead instance culling**: Stale PIDs detected and cleaned on startup and at runtime
+
+See `.claude/INSTALL.md` inside the zip for setup instructions across Linux, macOS, and Windows (WSL).
+
+---
+
 ## IPC System (Message Spool V2)
 
 Claude Code instances and the WorkboardManager communicate via atomic message files in spool directories. Messages cannot be lost — files persist until consumed.
@@ -348,6 +386,9 @@ script/cmake_mingw.sh build
 - Clear command: force EnsureRenderPassStarted when targets are dirty
 - OnDeviceReset: proper reload for Texture2D, TextureCube, VertexBuffer, IndexBuffer
 - Release null-safety for device/allocator teardown ordering
+- **Pipeline cache validation** — vendor/device/UUID check, discards mismatched cache on load
+- **Cubemap binding fallback** — separate 2D/Cube default textures prevent binding errors
+- **Water surface depth bias** — eliminates white Z-fight line at terrain/water intersection
 
 ## Engine Changes
 - AngelScript bindings for new RigidBody shape API and MultiBody
@@ -355,7 +396,8 @@ script/cmake_mingw.sh build
 - Vulkan screenshot capture (swapchain -> staging buffer -> BGRA->RGB -> PNG)
 - Format string parsing fix in Str.cpp (flags, width, precision, length modifiers)
 - Fixed upstream 1.9 bug in binding generator (`RemoveRefs` in `XmlAnalyzer.cpp`) — Doxygen XML nodes concatenated without whitespace, producing broken type declarations (~188 registrations affected)
-- Animation text key infrastructure — AnimationTextKey, E_ANIMATIONTEXTKEY event, JSON sidecar loading. Fully wired, ready for tooling.
+- Animation text key infrastructure — AnimationTextKey, E_ANIMATIONTEXTKEY event, JSON sidecar loading. Fully wired, ready for tooling
+- **Assimp 4.1.0 to 6.0.4 upgrade** — FBX 7500 export support, embedded textures, PBR material import
 
 ## Model Format
 - UMD3 format support — reverse-engineered (bounding box at header, otherwise identical to UMD2)

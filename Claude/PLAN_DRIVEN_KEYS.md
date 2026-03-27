@@ -1,9 +1,11 @@
 # PLAN: Driven Keys — Universal Parameter-to-Parameter Curves
 
-**Status:** DRAFT
+**Status:** CODER-READY — v3 (Phase 1 spec sharpened for cold handoff)
 **Owner:** Planner
 **Priority:** 0 — foundational system, every other plan benefits
 **Hardware target:** CPU-side evaluation, negligible cost
+**Catalog:** See `Planner_NOTE_PARAMETER_CATALOG.md` for TerrainNode.cpp hardcoded relationships
+**Wiring Diagram:** See `Planner_DRIVEN_KEYS_WIRING_DIAGRAM.md` — complete cross-system interconnect map (32 drivers, ~140 driven params, 58 JSON files, all 20+ plans)
 
 ---
 
@@ -112,41 +114,134 @@ Sets are the unit of authoring, saving, and loading. One JSON file per set.
 
 ### DrivenKeySystem — The Evaluator
 
-A subsystem (or component) that holds all active DrivenKeySets and evaluates them each frame:
+A subsystem that holds all active DrivenKeySets, evaluates curves, and **broadcasts results as Urho3D events**.
 
 ```cpp
 class DrivenKeySystem : public Object
 {
+    URHO3D_OBJECT(DrivenKeySystem, Object);
+
     // Registration
     void AddSet(const DrivenKeySet& set);
     void RemoveSet(StringHash name);
 
-    // Per-frame
+    // Driver input — game code pushes values in
+    void SetDriver(StringHash param, float value);
+    float GetDriver(StringHash param) const;
+
+    // Per-frame evaluation
     void Update(float timeStep);
     // For each enabled key in each set:
-    //   1. Read driver value (from parameter source)
+    //   1. Read driver value from internal map
     //   2. Evaluate curve
-    //   3. Write driven value (to parameter target)
-
-    // Parameter sources/targets
-    void RegisterSource(StringHash param, std::function<float()> getter);
-    void RegisterTarget(StringHash param, std::function<void(float)> setter);
+    //   3. SendEvent(E_DRIVENKEY_OUTPUT, param, value)
+    //   Only fires event if value actually changed (dead-band threshold)
 };
 ```
 
-Parameter sources and targets are registered by the systems that own them:
+### Output Via Urho3D Events (The Key Insight)
+
+Driven keys can output their values to **almost any interested party**. A fog system, a material, a sound emitter, a particle effect, a UI widget — any of them might care about a driven value. The system can't and shouldn't know who's listening.
+
+**Solution: Urho3D's native event system.**
 
 ```cpp
-// Weather registers cloud density as a readable parameter
-drivenKeys->RegisterSource("CloudDensity"_hash, [this]() { return localCloudDensity_; });
+// DrivenKeyEvents.h
+URHO3D_EVENT(E_DRIVENKEY_OUTPUT, DrivenKeyOutput)
+{
+    URHO3D_PARAM(P_PARAM, Param);       // StringHash — which parameter changed
+    URHO3D_PARAM(P_VALUE, Value);       // float — new value
+    URHO3D_PARAM(P_DRIVER, Driver);     // StringHash — what drove it
+    URHO3D_PARAM(P_DRIVERVALUE, DriverValue); // float — driver's current value
+}
 
-// Fog registers fog end as a writable parameter
-drivenKeys->RegisterTarget("FogEnd"_hash, [this](float v) { zone_->SetFogEnd(v); });
-
-// Now anyone can create a driven key: CloudDensity → FogEnd with any curve shape
+// Fired once per changed output per frame. Not fired if value didn't change.
 ```
 
-This decouples everything. Weather doesn't know about fog. Fog doesn't know about weather. The driven key connects them through data.
+**Any system subscribes to the event and filters by parameter name:**
+
+```cpp
+// Zone atmosphere handler — subscribes once at setup
+SubscribeToEvent(E_DRIVENKEY_OUTPUT, URHO3D_HANDLER(TerrainNode, HandleDrivenKeyOutput));
+
+void TerrainNode::HandleDrivenKeyOutput(StringHash eventType, VariantMap& eventData)
+{
+    StringHash param = eventData[DrivenKeyOutput::P_PARAM].GetStringHash();
+    float value = eventData[DrivenKeyOutput::P_VALUE].GetFloat();
+
+    if (param == "zone.fogStart"_hash)
+        zone_->SetFogStart(value);
+    else if (param == "zone.fogEnd"_hash)
+        zone_->SetFogEnd(value);
+    else if (param == "godray.intensity"_hash)
+        renderPath_->SetShaderParameter("GodRayIntensity", value);
+    // ...
+}
+```
+
+**Or a material handler — completely independent, doesn't know TerrainNode exists:**
+
+```cpp
+// GrassBehavior component — subscribes to grass-related driven values
+void GrassBehavior::HandleDrivenKeyOutput(StringHash eventType, VariantMap& eventData)
+{
+    StringHash param = eventData[DrivenKeyOutput::P_PARAM].GetStringHash();
+    float value = eventData[DrivenKeyOutput::P_VALUE].GetFloat();
+
+    if (param == "grass.tint.r"_hash)
+    { Color c = grassMat_->GetShaderParameter("MatDiffColor").GetColor(); c.r_ = value; grassMat_->SetShaderParameter("MatDiffColor", c); }
+}
+```
+
+**Or a future sound system:**
+
+```cpp
+void AmbientSound::HandleDrivenKeyOutput(StringHash eventType, VariantMap& eventData)
+{
+    if (eventData[P_PARAM].GetStringHash() == "wind.intensity"_hash)
+        windLoop_->SetGain(eventData[P_VALUE].GetFloat());
+}
+```
+
+### Why Events, Not Callbacks
+
+| Approach | Coupling | Runtime Cost | New Subscriber |
+|----------|----------|-------------|----------------|
+| Direct function call | Tight — system must know targets | Fastest | Modify system code |
+| Callback/lambda registration | Medium — system stores closures | Fast | Register at setup |
+| **Urho3D events** | **Zero — publisher doesn't know subscribers** | Slightly more (hash dispatch) | **Subscribe anywhere, no system changes** |
+
+Events win because:
+1. **Open/closed principle** — new consumers don't modify the driven key system
+2. **Standard Urho3D pattern** — every component already knows `SubscribeToEvent`
+3. **Network-ready** — events can be forwarded over the network (AuthServer broadcasts driven key changes to clients)
+4. **Debuggable** — event flow is visible in profiler, can be logged
+5. **Composable** — a handler can subscribe to multiple driven outputs and combine them (e.g. ambient = base_ambient * weather_dim * lightning_flash)
+
+### Driver Input
+
+Game code pushes driver values each frame. The system evaluates and broadcasts:
+
+```cpp
+// In TerrainNode::UpdateWeather():
+auto* dk = GetSubsystem<DrivenKeySystem>();
+dk->SetDriver("weather.cloudCover"_hash, weather_.cloudCover);
+dk->SetDriver("weather.precipitation"_hash, weather_.precipitation);
+dk->SetDriver("sun.altitude"_hash, cachedSunAlt_);
+dk->SetDriver("season.angle"_hash, cachedSeasonAngle_);
+// ... etc
+
+// DrivenKeySystem::Update() evaluates all curves and fires events
+// Subscribers react — zone, materials, render path, sound, particles
+```
+
+### Chaining
+
+Driven outputs can themselves be drivers. Cloud cover (driver) → fog density (driven+driver) → visibility distance (driven). The system handles this by evaluating in declared order. If chain order matters, the JSON file controls it. Phase 2 adds topological sort if artists find manual ordering confusing.
+
+### Dead-Band Filtering
+
+Events only fire when the output actually changes beyond a threshold (default 0.001). This prevents flooding the event bus with identical values every frame when a driver is stable. The threshold is configurable per curve.
 
 ---
 
@@ -336,33 +431,325 @@ This doesn't need to be in ModelViewer exclusively — it could be a standalone 
 
 ## Implementation Phases
 
-### Phase 1: Core Evaluation Engine
+### Phase 1: Core Evaluation Engine — CODER SPEC
 
-1. `DrivenKey` struct with CurvePoint, interpolation modes
-2. `Evaluate(float)` — binary search + interpolation
-3. `DrivenKeySet` — collection with JSON load/save
-4. `DrivenKeySystem` — RegisterSource, RegisterTarget, Update loop
-5. Unit test: create curve, evaluate at known points, verify output
+**Deliverable:** Three source files, one event header, one test JSON. System registers as subsystem, evaluates curves, fires events. No UI, no integration with TerrainNode yet.
 
-**Scope:** ~300 lines of code. Pure data structures + math. No UI, no integration.
+#### File 1: `Source/Urho3D/Scene/DrivenKeyEvents.h`
+
+```cpp
+#pragma once
+#include "../Core/Object.h"
+
+namespace Urho3D
+{
+
+URHO3D_EVENT(E_DRIVENKEY_OUTPUT, DrivenKeyOutput)
+{
+    URHO3D_PARAM(P_PARAM, Param);           // StringHash — which driven parameter changed
+    URHO3D_PARAM(P_VALUE, Value);           // float — new driven value
+    URHO3D_PARAM(P_DRIVER, Driver);         // StringHash — which driver caused this
+    URHO3D_PARAM(P_DRIVERVALUE, DriverValue); // float — driver's current value
+}
+
+}
+```
+
+#### File 2: `Source/Urho3D/Scene/DrivenKey.h`
+
+```cpp
+#pragma once
+#include "../Container/Str.h"
+#include "../Container/Vector.h"
+#include "../Math/StringHash.h"
+
+namespace Urho3D
+{
+
+class JSONValue;
+
+struct CurvePoint
+{
+    float in;
+    float out;
+    float tangentIn;    // for INTERP_SMOOTH (Hermite)
+    float tangentOut;
+};
+
+enum InterpolationMode
+{
+    INTERP_LINEAR = 0,
+    INTERP_SMOOTH,      // Catmull-Rom
+    INTERP_STEP,        // hold previous until next
+    INTERP_CONSTANT     // always returns first point's out
+};
+
+enum InfinityMode
+{
+    INFINITY_CLAMP = 0,
+    INFINITY_EXTRAPOLATE
+};
+
+struct DrivenKey
+{
+    String name;
+    StringHash driverParam;
+    StringHash drivenParam;
+    InterpolationMode mode{INTERP_LINEAR};
+    InfinityMode preInfinity{INFINITY_CLAMP};
+    InfinityMode postInfinity{INFINITY_CLAMP};
+    Vector<CurvePoint> points;      // sorted by in
+    float deadBand{0.001f};         // event only fires if |newVal - lastVal| > this
+    bool enabled{true};
+
+    /// Evaluate the curve at the given driver value.
+    float Evaluate(float driverValue) const;
+    /// Load from a JSON object (one key entry).
+    void LoadJSON(const JSONValue& value);
+    /// Save to a JSON object.
+    JSONValue SaveJSON() const;
+
+    // Runtime — not serialized
+    float lastOutput{0.0f};
+};
+
+struct DrivenKeySet
+{
+    String name;
+    Vector<DrivenKey> keys;
+
+    /// Load from a JSON file root object.
+    bool LoadJSON(const JSONValue& root);
+    /// Save to a JSON object.
+    JSONValue SaveJSON() const;
+};
+
+}
+```
+
+#### File 3: `Source/Urho3D/Scene/DrivenKey.cpp`
+
+Key implementation details:
+
+```cpp
+float DrivenKey::Evaluate(float driverValue) const
+{
+    if (points.Empty()) return 0.0f;
+    if (points.Size() == 1) return points[0].out;
+
+    // Pre-infinity
+    if (driverValue <= points[0].in)
+    {
+        if (preInfinity == INFINITY_EXTRAPOLATE && points.Size() >= 2)
+        {
+            float slope = (points[1].out - points[0].out) / (points[1].in - points[0].in);
+            return points[0].out + slope * (driverValue - points[0].in);
+        }
+        return points[0].out;
+    }
+
+    // Post-infinity
+    if (driverValue >= points.Back().in)
+    {
+        if (postInfinity == INFINITY_EXTRAPOLATE && points.Size() >= 2)
+        {
+            unsigned n = points.Size();
+            float slope = (points[n-1].out - points[n-2].out) / (points[n-1].in - points[n-2].in);
+            return points[n-1].out + slope * (driverValue - points[n-1].in);
+        }
+        return points.Back().out;
+    }
+
+    // Binary search for segment
+    unsigned lo = 0, hi = points.Size() - 1;
+    while (hi - lo > 1)
+    {
+        unsigned mid = (lo + hi) / 2;
+        if (points[mid].in <= driverValue) lo = mid; else hi = mid;
+    }
+
+    float t = (driverValue - points[lo].in) / (points[hi].in - points[lo].in);
+
+    switch (mode)
+    {
+    case INTERP_STEP:
+        return points[lo].out;
+    case INTERP_CONSTANT:
+        return points[0].out;
+    case INTERP_SMOOTH:
+    {
+        // Catmull-Rom or Hermite — use tangents if nonzero, else auto-compute
+        float p0 = points[lo].out, p1 = points[hi].out;
+        float m0 = points[lo].tangentOut, m1 = points[hi].tangentIn;
+        // Hermite basis
+        float t2 = t * t, t3 = t2 * t;
+        return (2*t3 - 3*t2 + 1)*p0 + (t3 - 2*t2 + t)*m0
+             + (-2*t3 + 3*t2)*p1 + (t3 - t2)*m1;
+    }
+    case INTERP_LINEAR:
+    default:
+        return Lerp(points[lo].out, points[hi].out, t);
+    }
+}
+```
+
+JSON load/save: Use `#include "../Resource/JSONValue.h"`. Read `"mode"` as string → enum map. Points array: `[{"in": 0.0, "out": 300.0}, ...]`. See existing pattern in `Animation.cpp:203-247`.
+
+#### File 4: `Source/Urho3D/Scene/DrivenKeySystem.h`
+
+```cpp
+#pragma once
+#include "../Core/Object.h"
+#include "DrivenKey.h"
+
+namespace Urho3D
+{
+
+class URHO3D_API DrivenKeySystem : public Object
+{
+    URHO3D_OBJECT(DrivenKeySystem, Object);
+
+public:
+    explicit DrivenKeySystem(Context* context);
+
+    /// Add a set of driven keys. Replaces if name matches.
+    void AddSet(const DrivenKeySet& set);
+    /// Remove a set by name.
+    void RemoveSet(const StringHash& name);
+    /// Load a set from a JSON resource path (e.g. "DrivenKeys/weather_atmosphere.json").
+    bool LoadSet(const String& resourcePath);
+
+    /// Push a driver value. Call each frame for active drivers.
+    void SetDriver(const StringHash& param, float value);
+    /// Read current driver value.
+    float GetDriver(const StringHash& param) const;
+
+    /// Evaluate all curves and fire E_DRIVENKEY_OUTPUT for changed values.
+    /// Call once per frame after all drivers are set.
+    void Update();
+
+private:
+    HashMap<StringHash, DrivenKeySet> sets_;
+    HashMap<StringHash, float> drivers_;
+};
+
+}
+```
+
+#### File 5: `Source/Urho3D/Scene/DrivenKeySystem.cpp`
+
+Registration pattern (in Engine.cpp or Sample 60's Start()):
+```cpp
+context_->RegisterSubsystem(new DrivenKeySystem(context_));
+```
+
+Update loop:
+```cpp
+void DrivenKeySystem::Update()
+{
+    for (auto& setPair : sets_)
+    {
+        DrivenKeySet& set = setPair.second_;
+        for (DrivenKey& key : set.keys)
+        {
+            if (!key.enabled) continue;
+
+            auto it = drivers_.Find(key.driverParam);
+            if (it == drivers_.End()) continue;
+
+            float driverVal = it->second_;
+            float newVal = key.Evaluate(driverVal);
+
+            if (Abs(newVal - key.lastOutput) > key.deadBand)
+            {
+                key.lastOutput = newVal;
+
+                using namespace DrivenKeyOutput;
+                VariantMap& eventData = GetEventDataMap();
+                eventData[P_PARAM] = key.drivenParam;
+                eventData[P_VALUE] = newVal;
+                eventData[P_DRIVER] = key.driverParam;
+                eventData[P_DRIVERVALUE] = driverVal;
+                SendEvent(E_DRIVENKEY_OUTPUT, eventData);
+            }
+        }
+    }
+}
+```
+
+#### Test JSON: `bin/Data/DrivenKeys/test_curves.json`
+
+```json
+{
+    "name": "Test Curves",
+    "keys": [
+        {
+            "name": "Linear_0_to_1",
+            "driver": "TestDriver",
+            "driven": "TestLinear",
+            "mode": "linear",
+            "points": [
+                {"in": 0.0, "out": 0.0},
+                {"in": 1.0, "out": 100.0}
+            ]
+        },
+        {
+            "name": "Step_Trigger",
+            "driver": "TestDriver",
+            "driven": "TestStep",
+            "mode": "step",
+            "points": [
+                {"in": 0.0, "out": 0.0},
+                {"in": 0.5, "out": 1.0},
+                {"in": 0.51, "out": 0.0}
+            ]
+        }
+    ]
+}
+```
+
+#### Phase 1 Acceptance Criteria
+
+1. `DrivenKeySystem` registers as subsystem
+2. `LoadSet("DrivenKeys/test_curves.json")` succeeds
+3. `SetDriver("TestDriver", 0.5f)` + `Update()` fires `E_DRIVENKEY_OUTPUT` with `TestLinear=50.0`
+4. Step curve fires output=1.0 at driver=0.5, output=0.0 at driver=0.6
+5. Dead-band works: setting same driver value twice fires event only once
+6. All 55+ samples still compile (no header pollution)
+
+**Scope:** ~500 lines across 5 files. Pure data + math + events. No UI, no integration.
 
 ### Phase 2: Wire to Existing Systems
 
-1. Register weather parameters as sources (CloudDensity, Temperature, WindSpeed, etc.)
-2. Register atmosphere parameters as targets (FogEnd, GodRayIntensity, AmbientMultiplier, etc.)
-3. Create `weather_atmosphere.json` curve set replacing hardcoded multipliers
-4. Load curve set in TerrainNode, evaluate per frame
-5. Delete the hardcoded lines. Verify identical behavior from curves.
+1. Push driver values from TerrainNode each frame (weather, sun, season, etc.)
+2. Subscribe handlers in TerrainNode for zone/material/renderpath outputs
+3. Create JSON curve files from catalog (`Planner_NOTE_PARAMETER_CATALOG.md`):
+   - `weather_atmosphere.json` — rain/cloud → fog, ambient, sun, god rays
+   - `time_of_day.json` — sun altitude → colors, skybox tint, night factor, height fog
+   - `seasons.json` — season angle → terrain/grass/water tints, fog distance, skybox blend
+   - `moon.json` — moon altitude → moon rays
+   - `underwater.json` — camera depth → underwater tint
+4. A/B test: `useDrivenKeys_` flag, compare visual output with hardcoded logic
+5. Once curves match, delete the hardcoded lines (~600 lines of C++)
 6. **Tweak curves without recompiling** — edit JSON, restart, see results
 
-### Phase 3: Animation Integration
+### Phase 3: Decoupled Subscribers
 
-1. Register AnimationState time as a source
+1. Move subscriber handlers OUT of TerrainNode into dedicated components
+2. `AtmosphereController` — subscribes to zone-related driven outputs
+3. `WeatherEffects` — subscribes to particle/wind/lightning outputs
+4. `SeasonalTinter` — subscribes to material tint outputs
+5. Each component is self-contained — knows only about its own targets
+6. TerrainNode becomes a pure driver-pusher, not an output-applier
+
+### Phase 4: Animation Integration
+
+1. Register AnimationState time as a driver
 2. Text keys evaluate as step-function driven keys
 3. Extend ModelViewer text key editor to show curve view
 4. Verify: existing text key behavior preserved, new curve keys work alongside
 
-### Phase 4: Curve Editor UI
+### Phase 5: Curve Editor UI
 
 1. Canvas widget in ModelViewer — draw curve from points
 2. Click/drag point manipulation
@@ -370,12 +757,13 @@ This doesn't need to be in ModelViewer exclusively — it could be a standalone 
 4. JSON save/load
 5. Live preview: scrub driver value, see driven value update in real time
 
-### Phase 5: Generalization
+### Phase 6: Generalization
 
 1. Any LogicComponent can own a DrivenKeySet
-2. Components register their own sources/targets on creation
-3. Driven keys become part of the scene serialization (node attribute or resource)
-4. Multiple objects can share the same curve data (resource, not per-instance)
+2. Components subscribe to E_DRIVENKEY_OUTPUT and filter by parameter name
+3. Driven keys become part of scene serialization (node attribute or resource)
+4. Multiple objects share same curve data (resource, not per-instance)
+5. Network forwarding: AuthServer can broadcast driven key events to clients
 
 ---
 
@@ -385,8 +773,9 @@ This doesn't need to be in ModelViewer exclusively — it could be a standalone 
 |------|---------|
 | `Source/Urho3D/Scene/DrivenKey.h` | DrivenKey, CurvePoint, DrivenKeySet structs |
 | `Source/Urho3D/Scene/DrivenKey.cpp` | Evaluate, JSON load/save, interpolation |
-| `Source/Urho3D/Scene/DrivenKeySystem.h` | System header — registration, update |
+| `Source/Urho3D/Scene/DrivenKeySystem.h` | System header — SetDriver, Update, event dispatch |
 | `Source/Urho3D/Scene/DrivenKeySystem.cpp` | System implementation |
+| `Source/Urho3D/Scene/DrivenKeyEvents.h` | E_DRIVENKEY_OUTPUT event definition |
 
 Or for prototype scope (Sample 60 only):
 

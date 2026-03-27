@@ -245,6 +245,7 @@ void TerrainNode::Start()
     Fox::RegisterObject(context_);
     Fish::RegisterObject(context_);
     SchoolFish::RegisterObject(context_);
+    GrassSystem::RegisterObject(context_);
 
     // Fallback RNG seed — local time + favourite prime.
     SetRandomSeed((unsigned)time(nullptr) + 25773u);
@@ -1108,6 +1109,7 @@ void TerrainNode::CreateScene()
     CreateAnimals();
     CreateGrass();
     CreateRain();
+    CreateSnow();
     CreateCampfire();
 }
 
@@ -1151,6 +1153,55 @@ void TerrainNode::CreateInstructions()
     clockText_->SetHorizontalAlignment(HA_RIGHT);
     clockText_->SetVerticalAlignment(VA_BOTTOM);
     clockText_->SetPosition(-8, -8);
+
+    // --- Survival HUD bars (bottom center, hidden until hunger/thirst < 75%) ---
+    const int barW = 120, barH = 10, barGap = 6, barYOff = -30;
+
+    // Hunger bar background
+    hungerBarBg_ = ui->GetRoot()->CreateChild<BorderImage>();
+    hungerBarBg_->SetColor(Color(0.15f, 0.15f, 0.15f, 0.6f));
+    hungerBarBg_->SetSize(barW, barH);
+    hungerBarBg_->SetHorizontalAlignment(HA_CENTER);
+    hungerBarBg_->SetVerticalAlignment(VA_BOTTOM);
+    hungerBarBg_->SetPosition(-(barW / 2 + barGap / 2), barYOff);
+    hungerBarBg_->SetVisible(false);
+
+    // Hunger bar fill
+    hungerBar_ = hungerBarBg_->CreateChild<BorderImage>();
+    hungerBar_->SetColor(Color(0.8f, 0.6f, 0.1f));  // amber
+    hungerBar_->SetSize(barW, barH);
+    hungerBar_->SetPosition(0, 0);
+
+    // Hunger label
+    hungerLabel_ = hungerBarBg_->CreateChild<Text>();
+    hungerLabel_->SetFont(font_, 9);
+    hungerLabel_->SetColor(Color::WHITE);
+    hungerLabel_->SetText("Hunger");
+    hungerLabel_->SetHorizontalAlignment(HA_CENTER);
+    hungerLabel_->SetPosition(0, -12);
+
+    // Thirst bar background
+    thirstBarBg_ = ui->GetRoot()->CreateChild<BorderImage>();
+    thirstBarBg_->SetColor(Color(0.15f, 0.15f, 0.15f, 0.6f));
+    thirstBarBg_->SetSize(barW, barH);
+    thirstBarBg_->SetHorizontalAlignment(HA_CENTER);
+    thirstBarBg_->SetVerticalAlignment(VA_BOTTOM);
+    thirstBarBg_->SetPosition(barW / 2 + barGap / 2, barYOff);
+    thirstBarBg_->SetVisible(false);
+
+    // Thirst bar fill
+    thirstBar_ = thirstBarBg_->CreateChild<BorderImage>();
+    thirstBar_->SetColor(Color(0.2f, 0.5f, 0.9f));  // blue
+    thirstBar_->SetSize(barW, barH);
+    thirstBar_->SetPosition(0, 0);
+
+    // Thirst label
+    thirstLabel_ = thirstBarBg_->CreateChild<Text>();
+    thirstLabel_->SetFont(font_, 9);
+    thirstLabel_->SetColor(Color::WHITE);
+    thirstLabel_->SetText("Thirst");
+    thirstLabel_->SetHorizontalAlignment(HA_CENTER);
+    thirstLabel_->SetPosition(0, -12);
 }
 
 // ============================================================================
@@ -4065,6 +4116,10 @@ void TerrainNode::MoveCamera(float timeStep)
         }
     }
 
+    // I = toggle inventory panel
+    if (input->GetKeyPress(KEY_I))
+        ToggleInventory();
+
     // [ and ] = cycle brush shape (before focus guard so it works with terrain panel open)
     {
         static const char* shapeNames[] = {"Circle", "Square", "Triangle", "Star", "Pentagon", "Hexagon", "Octagon"};
@@ -5517,8 +5572,11 @@ void TerrainNode::UpdateRain(float timeStep)
     // Rain intensity: use override slider if set, otherwise follow precipitation
     float rainIntensity = (rainOverride_ >= 0.0f) ? rainOverride_ : weather_.precipitation;
 
+    // Rain only above freezing — snow takes over below 0C
+    float temp = CalculateTemperature();
+
     // Emission rate driven by rain intensity
-    if (rainIntensity < 0.1f)
+    if (rainIntensity < 0.1f || temp < 0.0f)
     {
         if (rainEmitter_->IsEmitting())
             rainEmitter_->SetEmitting(false);
@@ -5551,6 +5609,144 @@ void TerrainNode::UpdateRain(float timeStep)
             bbs[i].enabled_ = false;
     }
     rainEmitter_->Commit();
+}
+
+// ============================================================================
+// Snow Particles
+// ============================================================================
+
+void TerrainNode::CreateSnow()
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    snowNode_ = scene_->CreateChild("Snow");
+
+    snowEffect_ = new ParticleEffect(context_);
+
+    // Material — reuse particle material (white flake)
+    auto* snowMat = cache->GetResource<Material>("Materials/Particle.xml");
+    snowEffect_->SetMaterial(snowMat);
+
+    // Emitter shape — wide box above camera
+    snowEffect_->SetEmitterType(EMITTER_BOX);
+    snowEffect_->SetEmitterSize(Vector3(40.0f, 2.0f, 40.0f));
+
+    // Slow downward drift with lateral wander
+    snowEffect_->SetMinDirection(Vector3(-0.3f, -1.0f, -0.3f));
+    snowEffect_->SetMaxDirection(Vector3(0.3f, -1.0f, 0.3f));
+
+    // Slow fall speed
+    snowEffect_->SetMinVelocity(1.5f);
+    snowEffect_->SetMaxVelocity(3.0f);
+
+    // Light gravity, some damping for floaty feel
+    snowEffect_->SetConstantForce(Vector3(0.0f, -1.5f, 0.0f));
+    snowEffect_->SetDampingForce(0.5f);
+
+    // Flake appearance — small, roughly square
+    snowEffect_->SetMinParticleSize(Vector2(0.04f, 0.04f));
+    snowEffect_->SetMaxParticleSize(Vector2(0.07f, 0.07f));
+
+    // Long lifetime — slow fall
+    snowEffect_->SetMinTimeToLive(3.0f);
+    snowEffect_->SetMaxTimeToLive(5.0f);
+
+    // World-space particles
+    snowEffect_->SetRelative(false);
+    snowEffect_->SetUpdateInvisible(true);
+
+    // Tumbling rotation
+    snowEffect_->SetFaceCameraMode(FC_ROTATE_XYZ);
+    snowEffect_->SetMinRotationSpeed(-90.0f);
+    snowEffect_->SetMaxRotationSpeed(90.0f);
+
+    // Start with zero emission
+    snowEffect_->SetMinEmissionRate(0.0f);
+    snowEffect_->SetMaxEmissionRate(0.0f);
+
+    // Particle pool
+    snowEffect_->SetNumParticles(400);
+
+    // Color — white, slight blue tint, fading out
+    snowEffect_->SetNumColorFrames(2);
+    snowEffect_->SetColorFrame(0, ColorFrame(Color(0.9f, 0.92f, 1.0f, 0.6f), 0.0f));
+    snowEffect_->SetColorFrame(1, ColorFrame(Color(0.9f, 0.92f, 1.0f, 0.0f), 1.0f));
+
+    snowEmitter_ = snowNode_->CreateComponent<ParticleEmitter>();
+    snowEmitter_->SetEffect(snowEffect_);
+    snowEmitter_->SetEmitting(false);
+
+    URHO3D_LOGINFO("Snow particle system created");
+}
+
+float TerrainNode::CalculateTemperature() const
+{
+    // Base temp from season: summer ~25C, winter ~-5C
+    // seasonAngle: 0=spring equinox, 0.25=summer, 0.5=autumn, 0.75=winter
+    float seasonAngle = fmodf((dayOfYear_ - 81) / 365.0f + 1.0f, 1.0f);
+    float baseTemp;
+    if (seasonAngle < 0.25f)       // spring: 5..20
+        baseTemp = Lerp(5.0f, 20.0f, seasonAngle / 0.25f);
+    else if (seasonAngle < 0.5f)   // summer: 20..25..20
+        baseTemp = 20.0f + 5.0f * sinf((seasonAngle - 0.25f) / 0.25f * 3.14159f);
+    else if (seasonAngle < 0.75f)  // autumn: 20..0
+        baseTemp = Lerp(20.0f, 0.0f, (seasonAngle - 0.5f) / 0.25f);
+    else                            // winter: 0..-5..0
+        baseTemp = -5.0f * sinf((seasonAngle - 0.75f) / 0.25f * 3.14159f);
+
+    // Altitude effect: -6C per 100 units above water level (lapse rate)
+    float cameraY = cameraNode_ ? cameraNode_->GetWorldPosition().y_ : 5.0f;
+    float altAboveWater = Max(cameraY - 5.0f, 0.0f);
+    float altEffect = altAboveWater * 0.06f;  // 6C per 100 units
+
+    // Night cooling: -5C at midnight, 0 at noon
+    float effectiveTime = fmodf(timeOfDay_ + timeOfDayOffset_ + 24.0f, 24.0f);
+    float nightEffect = 0.0f;
+    if (effectiveTime < 6.0f)
+        nightEffect = 5.0f * (1.0f - effectiveTime / 6.0f);       // midnight→dawn: 5→0
+    else if (effectiveTime > 18.0f)
+        nightEffect = 5.0f * ((effectiveTime - 18.0f) / 6.0f);    // dusk→midnight: 0→5
+
+    return baseTemp - altEffect - nightEffect;
+}
+
+void TerrainNode::UpdateSnow(float timeStep)
+{
+    if (!snowNode_ || !snowEffect_ || !cameraNode_)
+        return;
+
+    // Move emitter above camera
+    Vector3 camPos = cameraNode_->GetWorldPosition();
+    snowNode_->SetWorldPosition(camPos + Vector3(0.0f, 12.0f, 0.0f));
+
+    // Snow intensity: use precipitation but only when cold
+    float temp = CalculateTemperature();
+    float snowIntensity = (rainOverride_ >= 0.0f) ? rainOverride_ : weather_.precipitation;
+
+    // Snow only below freezing
+    if (temp >= 0.0f || snowIntensity < 0.1f)
+    {
+        if (snowEmitter_->IsEmitting())
+            snowEmitter_->SetEmitting(false);
+        return;
+    }
+
+    if (!snowEmitter_->IsEmitting())
+        snowEmitter_->SetEmitting(true);
+
+    // Quadratic ramp: intensity 0.1..1.0 -> 0..400 particles/sec
+    float t = (snowIntensity - 0.1f) / 0.9f;
+    float rate = t * t * 400.0f;
+    snowEffect_->SetMinEmissionRate(rate * 0.8f);
+    snowEffect_->SetMaxEmissionRate(rate);
+
+    // Wind force — gentler than rain (flakes have more air resistance)
+    float windMag = weather_.windSpeed * 8.0f;
+    Vector3 force;
+    force.x_ = cosf(weather_.windAngle) * windMag;
+    force.y_ = -1.5f;
+    force.z_ = sinf(weather_.windAngle) * windMag;
+    snowEffect_->SetConstantForce(force);
 }
 
 // ============================================================================
@@ -5993,8 +6189,8 @@ void TerrainNode::UpdateSeasonalEffects()
         if (terrainMat)
             terrainMat->SetShaderParameter("MatDiffColor", cachedTerrainTint_);
 
-        // Grass seasonal tint
-        if (grassMat_)
+        // Grass seasonal tint — via GrassSystem
+        if (grassSystem_)
         {
             Color grassSpring(0.5f, 0.85f, 0.35f, 1.0f);
             Color grassSummer(0.75f, 0.8f, 0.3f, 1.0f);
@@ -6009,7 +6205,7 @@ void TerrainNode::UpdateSeasonalEffects()
                 grassTint = grassAutumn.Lerp(grassWinter, (seasonAngle - 0.5f) / 0.25f);
             else
                 grassTint = grassWinter.Lerp(grassSpring, (seasonAngle - 0.75f) / 0.25f);
-            grassMat_->SetShaderParameter("MatDiffColor", grassTint);
+            grassSystem_->SetSeasonalTint(grassTint);
         }
     }
 
@@ -6670,7 +6866,12 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         UpdateCurrentPatchBoundary();
         if (!oofos_.Empty()) UpdateOOFOs(timeStep);
         if (minimapCameraNode_) UpdateMinimapCamera();
-        if (grassRoot_) UpdateGrassPositions();
+        // GPU grass — feed player position as physics shape 0
+        if (grassSystem_ && characterNode_)
+        {
+            Vector3 charPos = characterNode_->GetWorldPosition();
+            grassSystem_->SetPhysicsShape(0, Vector4(charPos.x_, charPos.y_, charPos.z_, 1.5f));
+        }
 
         if (renderPath_)
         {
@@ -6734,6 +6935,7 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         UpdateCelestialBodies(timeStep);
         UpdateWeather(timeStep);
         if (rainEmitter_) UpdateRain(timeStep);
+        if (snowEmitter_) UpdateSnow(timeStep);
         UpdateLightning(timeStep);
     }
 
@@ -6816,27 +7018,11 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
         }
     }
 
-    // Grass clump rays — yellow vertical beacons
-    if (grassRayVisible_ && grassRoot_ && debug)
+    // GPU grass debug — just draw the grid origin marker
+    if (grassRayVisible_ && grassSystem_ && grassSystem_->GetGrassNode() && debug)
     {
-        const Vector<SharedPtr<Node>>& clumps = grassRoot_->GetChildren();
-        unsigned visCount = 0;
-        for (unsigned i = 0; i < clumps.Size(); ++i)
-        {
-            if (!clumps[i]->IsEnabled())
-                continue;
-            Vector3 base = clumps[i]->GetWorldPosition();
-            Vector3 top = base + Vector3::UP * 2.0f;
-            debug->AddLine(base, top, Color::YELLOW, false);
-            ++visCount;
-        }
-        // Log once when toggled on
-        static unsigned lastLoggedCount = 0;
-        if (visCount != lastLoggedCount)
-        {
-            URHO3D_LOGINFOF("Grass rays: %u visible clumps", visCount);
-            lastLoggedCount = visCount;
-        }
+        Vector3 origin = grassSystem_->GetGrassNode()->GetWorldPosition();
+        debug->AddLine(origin, origin + Vector3::UP * 5.0f, Color::YELLOW, false);
     }
 
     if (!drawDebug_)
@@ -8157,6 +8343,27 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
         return;
     }
 
+    if (msgID == MSG_VITAL_UPDATE)
+    {
+        MemoryBuffer msg(data);
+        HandleVitalUpdate(msg);
+        return;
+    }
+
+    if (msgID == MSG_INVENTORY_UPDATE)
+    {
+        MemoryBuffer msg(data);
+        HandleInventoryUpdate(msg);
+        return;
+    }
+
+    if (msgID == MSG_INVENTORY_DELTA)
+    {
+        MemoryBuffer msg(data);
+        HandleInventoryDelta(msg);
+        return;
+    }
+
     if (msgID == MSG_RESOURCE_PATCH)
     {
         MemoryBuffer msg(data);
@@ -9082,241 +9289,19 @@ void TerrainNode::HandleClientObjectID(StringHash eventType, VariantMap& eventDa
 // Grass — cross-billboard clumps written as UMDL .mdl, loaded via cache
 // ============================================================================
 
-static bool WriteGrassClumpMDL(const String& path, Context* context)
-{
-    // 3 cross quads at 0°, 60°, 120° — classic grass clump
-    const float halfW = 0.5f;
-    const float height = 1.0f;
-    const int NUM_QUADS = 3;
-
-    struct GrassVert { Vector3 pos; Vector3 norm; Vector2 uv; };
-    Vector<GrassVert> verts;
-    Vector<unsigned short> indices;
-
-    for (int q = 0; q < NUM_QUADS; ++q)
-    {
-        float angle = q * 60.0f * 3.14159265f / 180.0f;
-        float cx = cosf(angle) * halfW;
-        float cz = sinf(angle) * halfW;
-        unsigned short base = (unsigned short)verts.Size();
-
-        // 4 vertices per quad: BL, BR, TR, TL
-        verts.Push({ Vector3(-cx, 0.0f, -cz), Vector3::UP, Vector2(0.0f, 1.0f) });
-        verts.Push({ Vector3( cx, 0.0f,  cz), Vector3::UP, Vector2(1.0f, 1.0f) });
-        verts.Push({ Vector3( cx, height, cz), Vector3::UP, Vector2(1.0f, 0.0f) });
-        verts.Push({ Vector3(-cx, height,-cz), Vector3::UP, Vector2(0.0f, 0.0f) });
-
-        // 2 triangles
-        indices.Push(base + 0); indices.Push(base + 1); indices.Push(base + 2);
-        indices.Push(base + 0); indices.Push(base + 2); indices.Push(base + 3);
-    }
-
-    // Compute bounding box
-    BoundingBox bbox;
-    for (unsigned i = 0; i < verts.Size(); ++i)
-        bbox.Merge(verts[i].pos);
-
-    // Write UMDL format — same as MeshGenerator
-    File file(context, path, FILE_WRITE);
-    if (!file.IsOpen())
-        return false;
-
-    file.WriteFileID("UMDL");
-
-    // 1 vertex buffer
-    file.WriteU32(1);
-    file.WriteU32(verts.Size());
-    file.WriteU32(0x0B);  // Position(1) | Normal(2) | TexCoord1(8)
-    file.WriteU32(0);     // morph range start
-    file.WriteU32(0);     // morph range count
-    for (unsigned i = 0; i < verts.Size(); ++i)
-    {
-        file.WriteVector3(verts[i].pos);
-        file.WriteVector3(verts[i].norm);
-        file.WriteVector2(verts[i].uv);
-    }
-
-    // 1 index buffer
-    file.WriteU32(1);
-    file.WriteU32(indices.Size());
-    file.WriteU32(2);  // 16-bit indices
-    for (unsigned i = 0; i < indices.Size(); ++i)
-        file.WriteU16(indices[i]);
-
-    // 1 geometry, 1 LOD
-    file.WriteU32(1);
-    file.WriteU32(0);              // bone mappings: none
-    file.WriteU32(1);              // LOD levels
-    file.WriteFloat(0.0f);         // LOD distance
-    file.WriteU32(0);              // primitive type: TRIANGLE_LIST
-    file.WriteU32(0);              // vertex buffer index
-    file.WriteU32(0);              // index buffer index
-    file.WriteU32(0);              // index start
-    file.WriteU32(indices.Size()); // index count
-
-    // No morphs, no skeleton
-    file.WriteU32(0);
-    file.WriteU32(0);
-
-    // Bounding box + geometry center
-    file.WriteVector3(bbox.min_);
-    file.WriteVector3(bbox.max_);
-    file.WriteVector3(bbox.Center());
-
-    return true;
-}
-
 void TerrainNode::CreateGrass()
 {
     if (!terrain_)
         return;
 
-    auto* cache = GetSubsystem<ResourceCache>();
+    // Create a scene node to host the GrassSystem component
+    Node* grassHost = scene_->CreateChild("GrassHost", LOCAL);
+    grassSystem_ = grassHost->CreateComponent<GrassSystem>();
 
-    // ── 1. Write grass clump model to disk as UMDL ──
-    String mdlPath = GetSubsystem<FileSystem>()->GetProgramDir() + "Data/Models/GrassClump.mdl";
-    if (!WriteGrassClumpMDL(mdlPath, context_))
-    {
-        URHO3D_LOGERROR("Failed to write GrassClump.mdl");
-        return;
-    }
-
-    grassModel_ = cache->GetResource<Model>("Models/GrassClump.mdl");
-    if (!grassModel_)
-    {
-        URHO3D_LOGERROR("Failed to load GrassClump.mdl");
-        return;
-    }
-
-    // ── 2. Generate grass blade texture (64x128 RGBA) ──
-    const int texW = 64;
-    const int texH = 128;
-    SharedPtr<Image> grassImg(new Image(context_));
-    grassImg->SetSize(texW, texH, 4);
-
-    // Clear to transparent
-    for (int y = 0; y < texH; ++y)
-        for (int x = 0; x < texW; ++x)
-            grassImg->SetPixel(x, y, Color(0.0f, 0.0f, 0.0f, 0.0f));
-
-    // Draw grass blade silhouettes — side view, 5 blades with taper
-    struct Blade { float cx; float w; float r; float g; float b; };
-    Blade blades[] = {
-        { 0.12f, 0.08f, 0.30f, 0.65f, 0.12f },
-        { 0.30f, 0.10f, 0.35f, 0.70f, 0.15f },
-        { 0.50f, 0.12f, 0.28f, 0.60f, 0.10f },
-        { 0.68f, 0.09f, 0.38f, 0.68f, 0.18f },
-        { 0.88f, 0.10f, 0.32f, 0.72f, 0.14f },
-    };
-
-    for (int b = 0; b < 5; ++b)
-    {
-        float centerPx = blades[b].cx * texW;
-        float widthPx = blades[b].w * texW;
-
-        for (int y = 0; y < texH; ++y)
-        {
-            float t = (float)y / (float)texH;  // 0=top, 1=bottom
-            float taper = 0.2f + 0.8f * t;     // narrow at top, wide at base
-            float curHalf = widthPx * taper * 0.5f;
-            float sway = sinf(t * 6.28f + b * 1.7f) * 1.5f;
-            float center = centerPx + sway;
-
-            for (int x = (int)(center - curHalf); x <= (int)(center + curHalf); ++x)
-            {
-                if (x < 0 || x >= texW) continue;
-                float shade = 0.6f + 0.4f * (1.0f - t);
-                grassImg->SetPixel(x, y, Color(
-                    blades[b].r * shade, blades[b].g * shade, blades[b].b * shade, 1.0f));
-            }
-        }
-    }
-
-    SharedPtr<Texture2D> grassTex(new Texture2D(context_));
-    grassTex->SetData(grassImg);
-    grassTex->SetFilterMode(FILTER_BILINEAR);
-
-    // ── 3. Create material — GrassDiffUnlitAlpha with wind ──
-    grassMat_ = new Material(context_);
-    grassMat_->SetTechnique(0, cache->GetResource<Technique>("Techniques/GrassDiffUnlitAlpha.xml"));
-    grassMat_->SetTexture(TU_DIFFUSE, grassTex);
-    grassMat_->SetShaderParameter("MatDiffColor", Color(0.5f, 0.85f, 0.35f, 1.0f));
-    grassMat_->SetShaderParameter("WindHeightFactor", 0.08f);
-    grassMat_->SetShaderParameter("WindHeightPivot", 0.0f);
-    grassMat_->SetShaderParameter("WindPeriod", 1.5f);
-    grassMat_->SetShaderParameter("WindWorldSpacing", Vector2(0.15f, 0.15f));
-    grassMat_->SetCullMode(CULL_NONE);
-
-    // ── 4. Spawn clump nodes ──
-    grassRoot_ = scene_->CreateChild("GrassRoot", LOCAL);
-
-    for (int i = 0; i < MAX_GRASS_CLUMPS; ++i)
-    {
-        Node* clump = grassRoot_->CreateChild("G");
-        clump->SetEnabled(false);
-        auto* sm = clump->CreateComponent<StaticModel>();
-        sm->SetModel(grassModel_);
-        sm->SetMaterial(grassMat_);
-        sm->SetCastShadows(false);
-        sm->SetOccludee(false);
-    }
-
-    lastGrassCenter_ = Vector3(M_INFINITY, M_INFINITY, M_INFINITY);
-    URHO3D_LOGINFOF("Created grass: %d clumps with UMDL model", MAX_GRASS_CLUMPS);
-}
-
-void TerrainNode::UpdateGrassPositions()
-{
-    if (!grassRoot_ || !terrain_ || !cameraNode_)
-        return;
-
-    Vector3 camPos = cameraNode_->GetWorldPosition();
-    Vector3 center(camPos.x_, 0.0f, camPos.z_);
-
-    // Hysteresis: only reposition when camera moves >3m
-    Vector3 diff = center - lastGrassCenter_;
-    diff.y_ = 0.0f;
-    if (diff.LengthSquared() < 9.0f)
-        return;
-    lastGrassCenter_ = center;
-
-    const float RADIUS = 35.0f;
-    const float CELL_SIZE = 2.0f;
-    const float waterLevel = 5.5f;
-    const Vector<SharedPtr<Node>>& clumps = grassRoot_->GetChildren();
-    unsigned idx = 0;
-    int halfCells = (int)(RADIUS / CELL_SIZE);
-
-    for (int cz = -halfCells; cz <= halfCells && idx < (unsigned)MAX_GRASS_CLUMPS; ++cz)
-    {
-        for (int cx = -halfCells; cx <= halfCells && idx < (unsigned)MAX_GRASS_CLUMPS; ++cx)
-        {
-            float wx = center.x_ + cx * CELL_SIZE;
-            float wz = center.z_ + cz * CELL_SIZE;
-
-            if ((float)(cx * cx + cz * cz) * CELL_SIZE * CELL_SIZE > RADIUS * RADIUS)
-                continue;
-
-            // Deterministic offset within cell
-            unsigned h = (unsigned)(wx * 73856093.0f) ^ (unsigned)(wz * 19349663.0f);
-            float px = wx + ((h & 0xFF) / 255.0f - 0.5f) * CELL_SIZE * 0.8f;
-            float pz = wz + (((h >> 8) & 0xFF) / 255.0f - 0.5f) * CELL_SIZE * 0.8f;
-            float gy = terrain_->GetHeight(Vector3(px, 0, pz));
-
-            if (gy < waterLevel + 0.3f) continue;
-            if (terrain_->GetNormal(Vector3(px, 0, pz)).y_ < 0.8f) continue;
-
-            Node* c = clumps[idx];
-            c->SetEnabled(true);
-            c->SetPosition(Vector3(px, gy, pz));
-            c->SetRotation(Quaternion(((h >> 16) & 0xFF) / 255.0f * 360.0f, Vector3::UP));
-            c->SetScale(0.7f + ((h >> 24) & 0xFF) / 255.0f * 0.6f);
-            ++idx;
-        }
-    }
-
-    for (unsigned i = idx; i < clumps.Size(); ++i)
-        clumps[i]->SetEnabled(false);
+    // Initialize: 200m grid, 0.5m cell spacing (~160K blades), 100m visible radius
+    grassSystem_->Initialize(terrain_, 200.0f, 0.5f, 100.0f);
+    grassSystem_->SetWind(0.5f, Vector2(1.0f, 0.3f));
+    grassSystem_->SetSeasonalTint(Color(1.0f, 1.0f, 1.0f, 1.0f));
 }
 
 // --- Font / Theme ---
@@ -9453,4 +9438,368 @@ void TerrainNode::HandleSettingsMenu(StringHash /*eventType*/, VariantMap& event
     }
 
     list->SetSelection(M_MAX_UNSIGNED);
+}
+
+// ============================================================================
+// Survival HUD
+// ============================================================================
+
+void TerrainNode::HandleVitalUpdate(MemoryBuffer& msg)
+{
+    vitalHp_ = msg.ReadI32();
+    vitalMaxHp_ = msg.ReadI32();
+    vitalHunger_ = (float)msg.ReadI32();    // server sends as I32
+    vitalThirst_ = (float)msg.ReadI32();    // server sends as I32
+    vitalStamina_ = (float)msg.ReadI32();   // server sends as I32
+    vitalWarmth_ = msg.ReadFloat();
+    vitalAlive_ = msg.ReadBool();
+    vitalSpeedMult_ = msg.ReadFloat();
+
+    UpdateVitalBars();
+}
+
+void TerrainNode::UpdateVitalBars()
+{
+    const float showThreshold = 75.0f;  // bars appear below this %
+    const int barW = 120;
+
+    // Hunger bar — show when hunger drops below 75%
+    if (hungerBarBg_)
+    {
+        bool show = vitalHunger_ < showThreshold;
+        hungerBarBg_->SetVisible(show);
+        if (show && hungerBar_)
+        {
+            float frac = Clamp(vitalHunger_ / 100.0f, 0.0f, 1.0f);
+            hungerBar_->SetSize((int)(barW * frac), hungerBar_->GetHeight());
+
+            // Color shift: amber → orange → red
+            Color c;
+            if (vitalHunger_ > 40.0f)
+                c = Color(0.8f, 0.6f, 0.1f);       // amber
+            else if (vitalHunger_ > 15.0f)
+                c = Color(0.9f, 0.4f, 0.05f);       // orange
+            else
+                c = Color(0.9f, 0.15f, 0.1f);       // red
+            hungerBar_->SetColor(c);
+        }
+    }
+
+    // Thirst bar — show when thirst drops below 75%
+    if (thirstBarBg_)
+    {
+        bool show = vitalThirst_ < showThreshold;
+        thirstBarBg_->SetVisible(show);
+        if (show && thirstBar_)
+        {
+            float frac = Clamp(vitalThirst_ / 100.0f, 0.0f, 1.0f);
+            thirstBar_->SetSize((int)(barW * frac), thirstBar_->GetHeight());
+
+            // Color shift: blue → dark blue → red
+            Color c;
+            if (vitalThirst_ > 40.0f)
+                c = Color(0.2f, 0.5f, 0.9f);        // blue
+            else if (vitalThirst_ > 15.0f)
+                c = Color(0.15f, 0.3f, 0.7f);        // dark blue
+            else
+                c = Color(0.9f, 0.15f, 0.1f);        // red
+            thirstBar_->SetColor(c);
+        }
+    }
+}
+
+// ============================================================================
+// Inventory UI
+// ============================================================================
+
+void TerrainNode::HandleInventoryUpdate(MemoryBuffer& msg)
+{
+    int count = msg.ReadI32();
+    inventoryWeight_ = msg.ReadFloat();
+    inventoryMaxWeight_ = msg.ReadFloat();
+    inventoryAbsWeight_ = msg.ReadFloat();
+    inventoryMaxSlots_ = msg.ReadI32();
+
+    inventory_.Clear();
+    for (int i = 0; i < count; ++i)
+    {
+        ClientInventorySlot slot;
+        slot.itemId = msg.ReadI32();
+        slot.quantity = msg.ReadI32();
+        slot.durability = msg.ReadI32();
+        slot.slotType = msg.ReadString();
+        inventory_.Push(slot);
+    }
+
+    // Resolve item names from local knowledge (we'll just use IDs for now)
+    URHO3D_LOGINFOF("Inventory received: %d items, weight %.1f/%.1f kg", count, inventoryWeight_, inventoryMaxWeight_);
+
+    if (!inventoryWindow_)
+        CreateInventoryUI();
+    RefreshInventoryGrid();
+}
+
+void TerrainNode::HandleInventoryDelta(MemoryBuffer& msg)
+{
+    int itemId = msg.ReadI32();
+    int quantity = msg.ReadI32();
+    bool added = msg.ReadBool();
+    inventoryWeight_ = msg.ReadFloat();
+
+    if (added)
+    {
+        // Try to stack
+        bool stacked = false;
+        for (unsigned i = 0; i < inventory_.Size(); ++i)
+        {
+            if (inventory_[i].itemId == itemId && inventory_[i].slotType == "bag")
+            {
+                inventory_[i].quantity += quantity;
+                stacked = true;
+                break;
+            }
+        }
+        if (!stacked)
+        {
+            ClientInventorySlot slot;
+            slot.itemId = itemId;
+            slot.quantity = quantity;
+            slot.slotType = "bag";
+            inventory_.Push(slot);
+        }
+        URHO3D_LOGINFOF("Picked up item %d x%d", itemId, quantity);
+    }
+    else
+    {
+        // Remove quantity
+        for (unsigned i = 0; i < inventory_.Size(); ++i)
+        {
+            if (inventory_[i].itemId == itemId && inventory_[i].slotType == "bag")
+            {
+                inventory_[i].quantity -= quantity;
+                if (inventory_[i].quantity <= 0)
+                    inventory_.Erase(i);
+                break;
+            }
+        }
+        URHO3D_LOGINFOF("Removed item %d x%d", itemId, quantity);
+    }
+
+    RefreshInventoryGrid();
+}
+
+void TerrainNode::CreateInventoryUI()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+
+    inventoryWindow_ = new Window(context_);
+    ui->GetRoot()->AddChild(inventoryWindow_);
+    inventoryWindow_->SetStyleAuto(style);
+    inventoryWindow_->SetSize(280, 340);
+    inventoryWindow_->SetHorizontalAlignment(HA_CENTER);
+    inventoryWindow_->SetVerticalAlignment(VA_CENTER);
+    inventoryWindow_->SetMovable(true);
+    inventoryWindow_->SetOpacity(0.9f);
+    inventoryWindow_->SetVisible(false);
+    inventoryWindow_->SetLayout(LM_VERTICAL, 4, IntRect(6, 6, 6, 6));
+
+    // Title
+    auto* title = inventoryWindow_->CreateChild<Text>();
+    title->SetFont(font_, 13);
+    title->SetText("Inventory");
+    title->SetColor(Color(0.9f, 0.85f, 0.7f));
+    title->SetHorizontalAlignment(HA_CENTER);
+
+    // Grid area — 2 rows of 5 slots (10 default)
+    auto* gridContainer = inventoryWindow_->CreateChild<UIElement>();
+    gridContainer->SetLayout(LM_VERTICAL, 2);
+    gridContainer->SetMinHeight(200);
+
+    const int slotsPerRow = 5;
+    const int slotSize = 48;
+
+    inventorySlotButtons_.Clear();
+    for (int row = 0; row < 3; ++row)  // 3 rows = 15 max (with bag bonus)
+    {
+        auto* rowElem = gridContainer->CreateChild<UIElement>();
+        rowElem->SetLayout(LM_HORIZONTAL, 2);
+        rowElem->SetMinHeight(slotSize + 4);
+
+        for (int col = 0; col < slotsPerRow; ++col)
+        {
+            auto* btn = rowElem->CreateChild<Button>();
+            btn->SetStyleAuto(style);
+            btn->SetSize(slotSize, slotSize);
+            btn->SetColor(Color(0.2f, 0.2f, 0.25f, 0.8f));
+
+            auto* label = btn->CreateChild<Text>();
+            label->SetFont(font_, 9);
+            label->SetColor(Color::WHITE);
+            label->SetHorizontalAlignment(HA_CENTER);
+            label->SetVerticalAlignment(VA_CENTER);
+            label->SetText("");
+
+            inventorySlotButtons_.Push(btn);
+        }
+    }
+
+    // Weight display
+    auto* weightRow = inventoryWindow_->CreateChild<UIElement>();
+    weightRow->SetLayout(LM_HORIZONTAL, 4);
+    weightRow->SetMinHeight(20);
+
+    inventoryWeightText_ = weightRow->CreateChild<Text>();
+    inventoryWeightText_->SetFont(font_, 11);
+    inventoryWeightText_->SetColor(Color(0.7f, 0.7f, 0.7f));
+    inventoryWeightText_->SetText("0.0 / 30.0 kg");
+
+    // Weight bar
+    auto* weightBarBg = inventoryWindow_->CreateChild<BorderImage>();
+    weightBarBg->SetColor(Color(0.15f, 0.15f, 0.15f, 0.6f));
+    weightBarBg->SetMinHeight(8);
+    weightBarBg->SetMaxHeight(8);
+
+    inventoryWeightBar_ = weightBarBg->CreateChild<BorderImage>();
+    inventoryWeightBar_->SetColor(Color(0.3f, 0.7f, 0.3f));
+    inventoryWeightBar_->SetMinHeight(8);
+    inventoryWeightBar_->SetMaxHeight(8);
+
+    // Close button
+    auto* closeBtn = inventoryWindow_->CreateChild<Button>();
+    closeBtn->SetStyleAuto(style);
+    closeBtn->SetMinHeight(24);
+    auto* closeTxt = closeBtn->CreateChild<Text>();
+    closeTxt->SetFont(font_, 11);
+    closeTxt->SetText("Close");
+    closeTxt->SetHorizontalAlignment(HA_CENTER);
+    SubscribeToEvent(closeBtn, E_RELEASED, [this](StringHash, VariantMap&) { ToggleInventory(); });
+}
+
+void TerrainNode::RefreshInventoryGrid()
+{
+    if (!inventoryWindow_ || inventorySlotButtons_.Empty())
+        return;
+
+    // Clear all slots
+    for (unsigned i = 0; i < inventorySlotButtons_.Size(); ++i)
+    {
+        auto* label = inventorySlotButtons_[i]->GetChildStaticCast<Text>(0);
+        if (label)
+            label->SetText("");
+        inventorySlotButtons_[i]->SetColor(Color(0.2f, 0.2f, 0.25f, 0.8f));
+
+        // Gray out slots beyond max
+        bool available = (int)i < inventoryMaxSlots_;
+        inventorySlotButtons_[i]->SetVisible(available);
+    }
+
+    // Fill occupied slots (bag items only)
+    unsigned slotIdx = 0;
+    for (unsigned i = 0; i < inventory_.Size() && slotIdx < inventorySlotButtons_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+
+        auto* label = inventorySlotButtons_[slotIdx]->GetChildStaticCast<Text>(0);
+        if (label)
+        {
+            String text = String(inventory_[i].itemId);
+            if (inventory_[i].quantity > 1)
+                text += " x" + String(inventory_[i].quantity);
+            label->SetText(text);
+        }
+        inventorySlotButtons_[slotIdx]->SetColor(Color(0.3f, 0.35f, 0.4f, 0.9f));
+        ++slotIdx;
+    }
+
+    // Update weight display
+    if (inventoryWeightText_)
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.1f / %.1f kg", inventoryWeight_, inventoryMaxWeight_);
+        inventoryWeightText_->SetText(buf);
+
+        // Color based on weight
+        if (inventoryWeight_ > inventoryMaxWeight_)
+            inventoryWeightText_->SetColor(Color(0.9f, 0.2f, 0.2f));  // red — heavy
+        else if (inventoryWeight_ > inventoryMaxWeight_ * 0.7f)
+            inventoryWeightText_->SetColor(Color(0.9f, 0.7f, 0.2f));  // yellow — getting heavy
+        else
+            inventoryWeightText_->SetColor(Color(0.7f, 0.7f, 0.7f));  // normal
+    }
+
+    // Weight bar
+    if (inventoryWeightBar_)
+    {
+        float frac = Clamp(inventoryWeight_ / inventoryAbsWeight_, 0.0f, 1.0f);
+        int parentW = inventoryWeightBar_->GetParent() ? inventoryWeightBar_->GetParent()->GetWidth() : 260;
+        inventoryWeightBar_->SetWidth((int)(parentW * frac));
+
+        if (inventoryWeight_ > inventoryMaxWeight_)
+            inventoryWeightBar_->SetColor(Color(0.9f, 0.2f, 0.2f));
+        else if (inventoryWeight_ > inventoryMaxWeight_ * 0.7f)
+            inventoryWeightBar_->SetColor(Color(0.9f, 0.7f, 0.2f));
+        else
+            inventoryWeightBar_->SetColor(Color(0.3f, 0.7f, 0.3f));
+    }
+}
+
+void TerrainNode::ToggleInventory()
+{
+    inventoryOpen_ = !inventoryOpen_;
+
+    if (!inventoryWindow_)
+        CreateInventoryUI();
+
+    inventoryWindow_->SetVisible(inventoryOpen_);
+
+    if (inventoryOpen_)
+    {
+        RefreshInventoryGrid();
+        // Switch to free cursor mode if not already
+        auto* input = GetSubsystem<Input>();
+        if (!menuOpen_)
+        {
+            input->SetMouseMode(MM_FREE);
+            input->SetMouseVisible(true);
+        }
+    }
+    else
+    {
+        // Return to relative mode if menu is also closed
+        if (!menuOpen_)
+        {
+            auto* input = GetSubsystem<Input>();
+            GetSubsystem<UI>()->SetFocusElement(nullptr);
+            input->SetMouseMode(MM_RELATIVE);
+            input->SetMouseVisible(false);
+        }
+    }
+}
+
+void TerrainNode::SendPickup(unsigned nodeId)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network->GetServerConnection();
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    buf.WriteU32(nodeId);
+    serverConn->SendMessage(MSG_PICKUP, true, true, buf);
+}
+
+void TerrainNode::SendDrop(int itemId, int qty)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network->GetServerConnection();
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    buf.WriteI32(itemId);
+    buf.WriteI32(qty);
+    serverConn->SendMessage(MSG_DROP, true, true, buf);
 }

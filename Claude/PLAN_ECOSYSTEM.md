@@ -1,8 +1,8 @@
 # PLAN: Ecosystem — Texture-Based World Database
 
-**Status:** DRAFT
+**Status:** CODER-READY (Phase 1 spec sharpened for cold handoff)
 **Owner:** Planner
-**Priority:** High — backbone connecting weather, grass, animals, resources, economy
+**Priority:** 19 — backbone connecting weather, grass, animals, resources, economy
 **Hardware target:** Server-authoritative maps, client-side GPU sampling
 
 ---
@@ -313,17 +313,189 @@ Saved periodically and on server shutdown. Loaded on startup. World state persis
 
 ## Implementation Phases
 
-### Phase 1: Vegetation Map + Grass Integration
+### Phase 1: Vegetation Map + Grass Integration — CODER SPEC
 
-**Goal:** Replace procedural grass density with a real vegetation map.
-
-1. Create a vegetation texture (1024×1024 RGBA) at terrain resolution
-2. Seed it procedurally from heightmap (altitude/slope → biome → density)
-3. Bind to GPU Grass system as density source (vegetation.R)
-4. Verify: grass grows thick in valleys, thin on hills, absent on rock
-5. Add seasonal multiplier to vegetation.R sampling
+**Deliverable:** Create a 1024x1024 RGBA vegetation texture seeded from the heightmap. Bind as density source for GPU Grass (vegetation.R channel). Server-authoritative, client receives snapshot. No weather or soil input yet — Phase 1 is static generation from terrain shape.
 
 **Dependencies:** GPU Grass system (Phase 1 of that plan) must exist first.
+
+#### Header: `60_TerrainNode/EcosystemManager.h`
+
+```cpp
+#pragma once
+#include <Urho3D/Core/Object.h>
+#include <Urho3D/Graphics/Texture2D.h>
+#include <Urho3D/Resource/Image.h>
+
+using namespace Urho3D;
+
+class Terrain;
+
+/// Manages ecosystem texture layers. Phase 1: vegetation map only.
+class EcosystemManager : public Object
+{
+    URHO3D_OBJECT(EcosystemManager, Object);
+
+public:
+    explicit EcosystemManager(Context* context);
+
+    /// Generate vegetation map from terrain heightmap.
+    void Initialize(Terrain* terrain, float waterLevel);
+
+    /// Get vegetation texture for GPU binding.
+    Texture2D* GetVegetationTexture() const { return vegetationTex_; }
+
+    /// Sample grass density at a world position (0.0–1.0).
+    float SampleGrassDensity(float worldX, float worldZ) const;
+
+    /// Sample biome type at a world position.
+    unsigned char SampleBiome(float worldX, float worldZ) const;
+
+    /// Apply seasonal multiplier (0.0 winter → 1.5 spring).
+    void SetSeasonMultiplier(float mult);
+
+private:
+    void SeedFromHeightmap(Terrain* terrain, float waterLevel);
+    IntVector2 WorldToPixel(float worldX, float worldZ) const;
+
+    SharedPtr<Image> vegetationImage_;     // CPU-side RGBA data
+    SharedPtr<Texture2D> vegetationTex_;   // GPU texture for grass shader
+    float terrainOriginX_{0.0f};
+    float terrainOriginZ_{0.0f};
+    float terrainSizeX_{1.0f};
+    float terrainSizeZ_{1.0f};
+    float seasonMultiplier_{1.0f};
+    static constexpr int MAP_SIZE = 1024;
+};
+```
+
+#### Implementation: `60_TerrainNode/EcosystemManager.cpp` (key logic)
+
+```cpp
+void EcosystemManager::SeedFromHeightmap(Terrain* terrain, float waterLevel)
+{
+    vegetationImage_ = new Image(context_);
+    vegetationImage_->SetSize(MAP_SIZE, MAP_SIZE, 4);  // RGBA
+
+    Vector3 terrainPos = terrain->GetNode()->GetWorldPosition();
+    Vector3 terrainSize = terrain->GetBoundingBox().Size();
+    terrainOriginX_ = terrainPos.x_ - terrainSize.x_ * 0.5f;
+    terrainOriginZ_ = terrainPos.z_ - terrainSize.z_ * 0.5f;
+    terrainSizeX_ = terrainSize.x_;
+    terrainSizeZ_ = terrainSize.z_;
+
+    for (int y = 0; y < MAP_SIZE; ++y)
+    {
+        for (int x = 0; x < MAP_SIZE; ++x)
+        {
+            // Map pixel to world position
+            float wx = terrainOriginX_ + (float(x) / MAP_SIZE) * terrainSizeX_;
+            float wz = terrainOriginZ_ + (float(y) / MAP_SIZE) * terrainSizeZ_;
+            float height = terrain->GetHeight(Vector3(wx, 0.0f, wz));
+            Vector3 normal = terrain->GetNormal(Vector3(wx, 0.0f, wz));
+            float slope = 1.0f - normal.y_;  // 0=flat, 1=vertical
+
+            // Classify
+            unsigned char grassDensity = 0;   // R
+            unsigned char shrubDensity = 0;   // G
+            unsigned char treeMaturity = 0;   // B
+            unsigned char biomeType = 0;      // A: 0=barren,1=grassland,2=forest,3=wetland,4=alpine
+
+            if (height < waterLevel)
+            {
+                // Underwater — no land vegetation
+                biomeType = 0;
+            }
+            else if (slope > 0.6f)
+            {
+                // Steep cliff — barren
+                biomeType = 0;
+                grassDensity = (unsigned char)(30 * (1.0f - slope));
+            }
+            else if (height > waterLevel + 80.0f)
+            {
+                // High altitude — alpine
+                biomeType = 4;
+                grassDensity = (unsigned char)(80 * (1.0f - (height - waterLevel - 80.0f) / 40.0f));
+            }
+            else if (height < waterLevel + 5.0f && slope < 0.2f)
+            {
+                // Low flat near water — wetland
+                biomeType = 3;
+                grassDensity = 150;
+                shrubDensity = 60;
+            }
+            else if (height < waterLevel + 30.0f && slope < 0.3f)
+            {
+                // Low/mid altitude, gentle slope — forest
+                biomeType = 2;
+                grassDensity = 120;
+                shrubDensity = 80;
+                treeMaturity = 200;
+            }
+            else
+            {
+                // Mid altitude — grassland
+                biomeType = 1;
+                grassDensity = 200;
+                shrubDensity = 30;
+            }
+
+            vegetationImage_->SetPixel(x, y, Color(
+                grassDensity / 255.0f,
+                shrubDensity / 255.0f,
+                treeMaturity / 255.0f,
+                biomeType / 255.0f
+            ));
+        }
+    }
+
+    // Upload to GPU
+    vegetationTex_ = new Texture2D(context_);
+    vegetationTex_->SetFilterMode(FILTER_BILINEAR);
+    vegetationTex_->SetAddressMode(COORD_U, ADDRESS_CLAMP);
+    vegetationTex_->SetAddressMode(COORD_V, ADDRESS_CLAMP);
+    vegetationTex_->SetData(vegetationImage_);
+}
+
+float EcosystemManager::SampleGrassDensity(float worldX, float worldZ) const
+{
+    IntVector2 px = WorldToPixel(worldX, worldZ);
+    if (px.x_ < 0 || px.x_ >= MAP_SIZE || px.y_ < 0 || px.y_ >= MAP_SIZE)
+        return 0.0f;
+    Color c = vegetationImage_->GetPixel(px.x_, px.y_);
+    return c.r_ * seasonMultiplier_;
+}
+```
+
+#### Grass Shader Integration
+
+```glsl
+// In Grass.glsl vertex shader:
+uniform sampler2D sVegetationMap;  // bind vegetation texture to TU slot
+
+// Replace procedural density with:
+float density = texture2D(sVegetationMap, vTerrainUV).r;
+if (density < uDensityThreshold)
+{
+    // Collapse blade to degenerate triangle
+    gl_Position = vec4(0.0);
+    return;
+}
+```
+
+#### Phase 1 Acceptance Criteria
+
+1. 1024x1024 RGBA vegetation texture generated from terrain heightmap
+2. R channel = grass density (0–255), varies by altitude/slope/biome
+3. G channel = shrub density, B channel = tree maturity, A = biome type enum
+4. Underwater pixels have zero vegetation
+5. Steep slopes have reduced grass, high altitude has alpine thinning
+6. Low flat areas near water classified as wetland with moderate grass
+7. `SampleGrassDensity(x, z)` returns correct value for any world position
+8. `SampleBiome(x, z)` returns biome classification
+9. Vegetation texture bound to GPU Grass shader as density source
+10. Seasonal multiplier scales grass density (spring 1.5, winter 0.0)
 
 ### Phase 2: Moisture Map Integration
 
@@ -431,10 +603,14 @@ Or, for prototype scope:
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-1. **Resolution:** Should ecosystem maps match heightmap resolution exactly (1024×1024) or run at half-res (512×512) for performance? Vegetation doesn't need per-meter precision.
-2. **Biome boundaries:** Sharp or blended? Current plan uses per-pixel biome type (L3.A). Could use Voronoi noise for natural-looking boundaries.
-3. **Fire propagation:** Dry vegetation + lightning = fire. Fire burns vegetation.R/G/B to 0 in a spreading pattern. Design now or defer?
-4. **Underwater vegetation:** Seagrass, kelp? Different layer or same vegetation map with depth check?
-5. **Seed dispersal:** Do trees spread (maturity at pixel X seeds adjacent pixels)? Or only grow where procedurally seeded + player-planted?
+1. **Resolution: Match heightmap exactly (1024×1024).** The GPU already samples the heightmap at this resolution via VTF. Adding vegetation as a second VTF sample at the same resolution is trivial — same UV coordinates, same grid alignment, no interpolation mismatch. Half-res would save 12 MB total but introduce sampling artifacts at grid boundaries. Not worth the complexity.
+
+2. **Biome boundaries: Blended via vegetation channels, not sharp enum boundaries.** The biome type (L3.A) is a classification label, not a hard edge. At biome transitions, grass density (R) and tree maturity (B) blend naturally because they're computed from moisture + soil which are themselves continuous fields. Visual blending happens automatically — a forest edge is where tree maturity gradually drops below the sapling threshold. No Voronoi needed.
+
+3. **Fire propagation: Design now, implement in Phase 5.** Lightning (already implemented) + dry vegetation (low moisture.G + high vegetation.R) = ignition. Fire spreads to adjacent pixels per tick: `if neighbor.vegetation.R > 50 AND neighbor.moisture.G < 80 → ignite`. Burned pixels: vegetation.R/G/B → 0, soil.B (erosion) increases. Recovery follows Economic Doctrine degradation curve — burned forest recovers slower each time. Implementation is just another server-side update loop on the vegetation map. Design is clean; defer coding until the base ecosystem loop works.
+
+4. **Underwater vegetation: Same vegetation map, depth check.** If `heightmap(x,z) < waterLevel`, vegetation.R represents seagrass/kelp instead of land grass. The GPU Grass shader already knows water level (existing uniform). Below water: render as seagrass (different sway, shorter, blue-green tint). Above water: normal grass. One texture, one system, biome type (L3.A) can encode "submerged" to select the right visual. No separate layer needed.
+
+5. **Seed dispersal: Yes, but slow and bounded.** Trees spread to adjacent pixels where conditions permit: `if vegetation.B(x,z) > 200 (mature) AND neighbor.B == 0 AND neighbor.soil.R > 50 AND neighbor.moisture.G > 40 → set neighbor.B = 1 (seedling)`. Rate: one spread check per mature tree per game-month. Max spread distance: 1 pixel per check (trees spread ~1 meter per month). This means a pristine forest slowly colonizes adjacent grassland — realistic secondary succession. Deforested areas can regrow IF soil hasn't degraded too far. Player-planted seeds bypass the adjacency check (can plant anywhere soil permits).

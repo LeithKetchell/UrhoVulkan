@@ -293,6 +293,20 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
         graphics->SetShaderParameter(VSP_ZONE, zoneTransform);
 
         graphics->SetShaderParameter(PSP_AMBIENTCOLOR, zone_->GetAmbientColor());
+
+        // Hemisphere lighting: upload sky/ground ambient colors
+        if (zone_->HasHemisphereAmbient())
+        {
+            graphics->SetShaderParameter(PSP_SKYAMBIENT, zone_->GetSkyAmbientColor().ToVector3());
+            graphics->SetShaderParameter(PSP_GROUNDAMBIENT, zone_->GetGroundAmbientColor().ToVector3());
+        }
+        else
+        {
+            // Fallback: both equal flat ambient — hemisphere blend becomes a no-op
+            Vector3 amb = zone_->GetAmbientColor().ToVector3();
+            graphics->SetShaderParameter(PSP_SKYAMBIENT, amb);
+            graphics->SetShaderParameter(PSP_GROUNDAMBIENT, amb);
+        }
         graphics->SetShaderParameter(PSP_FOGCOLOR, overrideFogColorToBlack ? Color::BLACK : zone_->GetFogColor());
         graphics->SetShaderParameter(PSP_ZONEMIN, zone_->GetBoundingBox().min_);
         graphics->SetShaderParameter(PSP_ZONEMAX, zone_->GetBoundingBox().max_);

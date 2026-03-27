@@ -158,6 +158,7 @@ float importStartTime_ = 0.0f;
 float importEndTime_ = 0.0f;
 bool suppressFbxPivotNodes_ = true;
 float importScale_ = 1.0f;
+float normalizeHeight_ = 0.0f;  // 0 = disabled, >0 = target height in units
 Vector<String> exportAnimPaths_;
 bool exportAllAnims_ = false;
 
@@ -296,6 +297,7 @@ void Run(const Vector<String>& arguments)
             "            Split animation, will only import from start frame to end frame\n"
             "-np         Do not suppress $fbx pivot nodes (FBX files only)\n"
             "-scale <x>  Scale model geometry and animation translations by the given factor\n"
+            "-normalize <height>  Auto-scale so largest dimension equals <height> (e.g. 1.8 for human)\n"
             "-anim <path.ani> Include animation file(s) in FBX export (repeatable)\n"
             "-allanims    Auto-discover and include all matching .ani files (export only)\n"
         );
@@ -451,6 +453,11 @@ void Run(const Vector<String>& arguments)
             else if (argument == "scale" && !value.Empty())
             {
                 importScale_ = ToFloat(value);
+                ++i;
+            }
+            else if (argument == "normalize" && !value.Empty())
+            {
+                normalizeHeight_ = ToFloat(value);
                 ++i;
             }
             else if (argument == "anim" && !value.Empty())
@@ -806,8 +813,130 @@ void Run(const Vector<String>& arguments)
                 if (maxDim > 10.0f)
                     PrintLine("    -scale 0.010000  (centimeters to meters, common for Blender/Mixamo)");
             }
+
+            // Animation details
+            if (scene_->mNumAnimations > 0)
+            {
+                PrintLine("");
+                PrintLine("  Animations:");
+                for (unsigned a = 0; a < scene_->mNumAnimations; ++a)
+                {
+                    aiAnimation* anim = scene_->mAnimations[a];
+                    String name = FromAIString(anim->mName);
+                    if (name.Empty()) name = "(unnamed)";
+                    double duration = anim->mDuration;
+                    double tps = anim->mTicksPerSecond > 0.0 ? anim->mTicksPerSecond : 24.0;
+                    double seconds = duration / tps;
+                    sprintf(buf, "    [%u] %-30s  %.2fs  %u channels  %.0f tps",
+                        a, name.CString(), (float)seconds, anim->mNumChannels, tps);
+                    PrintLine(buf);
+                }
+            }
+
+            // Material details
+            if (scene_->mNumMaterials > 0)
+            {
+                PrintLine("");
+                PrintLine("  Materials:");
+                for (unsigned m = 0; m < scene_->mNumMaterials; ++m)
+                {
+                    aiMaterial* mat = scene_->mMaterials[m];
+                    aiString matName;
+                    mat->Get(AI_MATKEY_NAME, matName);
+                    String name = FromAIString(matName);
+                    if (name.Empty()) name = "(unnamed)";
+
+                    // Count textures across common types
+                    unsigned texCount = 0;
+                    String texTypes;
+                    const aiTextureType types[] = {
+                        aiTextureType_DIFFUSE, aiTextureType_SPECULAR, aiTextureType_NORMALS,
+                        aiTextureType_EMISSIVE, aiTextureType_METALNESS, aiTextureType_DIFFUSE_ROUGHNESS
+                    };
+                    const char* typeNames[] = {
+                        "diffuse", "specular", "normal", "emissive", "metalness", "roughness"
+                    };
+                    for (unsigned t = 0; t < 6; ++t)
+                    {
+                        unsigned count = mat->GetTextureCount(types[t]);
+                        if (count > 0)
+                        {
+                            texCount += count;
+                            if (!texTypes.Empty()) texTypes += ", ";
+                            texTypes += typeNames[t];
+                            aiString texPath;
+                            mat->GetTexture(types[t], 0, &texPath);
+                            texTypes += "=" + String(FromAIString(texPath));
+                        }
+                    }
+                    sprintf(buf, "    [%u] %-25s  %u textures", m, name.CString(), texCount);
+                    PrintLine(buf);
+                    if (!texTypes.Empty())
+                        PrintLine("         " + texTypes);
+                }
+            }
+
+            // Embedded textures
+            if (scene_->mNumTextures > 0)
+            {
+                PrintLine("");
+                PrintLine("  Embedded textures: " + String(scene_->mNumTextures));
+                for (unsigned t = 0; t < scene_->mNumTextures; ++t)
+                {
+                    aiTexture* tex = scene_->mTextures[t];
+                    String hint = tex->achFormatHint;
+                    if (tex->mHeight == 0)
+                        sprintf(buf, "    [%u] compressed (%s) %u bytes", t, hint.CString(), tex->mWidth);
+                    else
+                        sprintf(buf, "    [%u] raw %ux%u (%s)", t, tex->mWidth, tex->mHeight, hint.CString());
+                    PrintLine(buf);
+                }
+            }
+
+            // Per-mesh details
+            PrintLine("");
+            PrintLine("  Meshes:");
+            for (unsigned i = 0; i < totalMeshes; ++i)
+            {
+                aiMesh* mesh = scene_->mMeshes[i];
+                String meshName = FromAIString(mesh->mName);
+                if (meshName.Empty()) meshName = "(unnamed)";
+                sprintf(buf, "    [%u] %-25s  %u verts  %u faces  %u bones  mat:%u",
+                    i, meshName.CString(), mesh->mNumVertices, mesh->mNumFaces,
+                    mesh->mNumBones, mesh->mMaterialIndex);
+                PrintLine(buf);
+            }
+
             PrintLine("");
             return;
+        }
+
+        // Auto-normalize: compute scale from bounding box to reach target height
+        if (normalizeHeight_ > 0.0f && importScale_ == 1.0f)
+        {
+            BoundingBox box;
+            for (unsigned i = 0; i < scene_->mNumMeshes; ++i)
+            {
+                aiMesh* mesh = scene_->mMeshes[i];
+                for (unsigned v = 0; v < mesh->mNumVertices; ++v)
+                {
+                    Vector3 vertex(mesh->mVertices[v].x, mesh->mVertices[v].y, mesh->mVertices[v].z);
+                    box.Merge(vertex);
+                }
+            }
+            Vector3 size = box.Size();
+            float maxDim = Max(Max(size.x_, size.y_), size.z_);
+            if (maxDim > 0.0f)
+            {
+                importScale_ = normalizeHeight_ / maxDim;
+                PrintLine("Auto-normalize: original size " + String((double)maxDim, 3) +
+                    " -> target " + String((double)normalizeHeight_, 3) +
+                    " (scale " + String((double)importScale_, 3) + ")");
+            }
+        }
+        else if (normalizeHeight_ > 0.0f && importScale_ != 1.0f)
+        {
+            ErrorExit("Cannot use both -scale and -normalize");
         }
 
         if (command == "model")

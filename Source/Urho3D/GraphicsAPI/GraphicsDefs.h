@@ -385,6 +385,8 @@ inline const StringHash VSP_VIEWPROJ{"ViewProj"};
 inline const StringHash VSP_VOFFSET{"VOffset"};
 inline const StringHash VSP_ZONE{"Zone"};
 inline const StringHash PSP_AMBIENTCOLOR{"AmbientColor"};
+inline const StringHash PSP_SKYAMBIENT{"SkyAmbient"};
+inline const StringHash PSP_GROUNDAMBIENT{"GroundAmbient"};
 inline const StringHash PSP_DEPTHRECONSTRUCT{"DepthReconstruct"};
 inline const StringHash PSP_FOGCOLOR{"FogColor"};
 inline const StringHash PSP_FOGPARAMS{"FogParams"};

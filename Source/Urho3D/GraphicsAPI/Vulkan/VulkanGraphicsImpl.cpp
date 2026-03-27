@@ -2232,9 +2232,9 @@ bool VulkanGraphicsImpl::CreateSwapchain(int width, int height)
                        String((int)swapchainExtent_.width) + "x" + String((int)swapchainExtent_.height));
     }
 
-    // Final validation: reject degenerate swapchain extents (1x1 or 0x0)
+    // Final validation: reject degenerate swapchain extents
     // This can happen when the window is minimized, not yet realized, or during mode transitions
-    if (swapchainExtent_.width < 2 || swapchainExtent_.height < 2)
+    if (swapchainExtent_.width < 320 || swapchainExtent_.height < 200)
     {
         URHO3D_LOGWARNING("Swapchain extent too small (" + String((int)swapchainExtent_.width) + "x" +
                          String((int)swapchainExtent_.height) + "), aborting swapchain creation");

@@ -26,7 +26,10 @@
 #include <Urho3D/IO/File.h>
 #include <Urho3D/IO/FileSystem.h>
 #include <Urho3D/Resource/ResourceCache.h>
+#include <Urho3D/Resource/JSONFile.h>
+#include <Urho3D/Resource/JSONValue.h>
 #include <Urho3D/Resource/XMLFile.h>
+#include <Urho3D/Graphics/DrawableEvents.h>
 #include <Urho3D/UI/BorderImage.h>
 #include <Urho3D/UI/Button.h>
 #include <Urho3D/UI/DropDownList.h>
@@ -257,6 +260,62 @@ void ModelViewer::LoadModel(const String& path)
 
     if (!materialsApplied)
     {
+        // Scan Materials/ directory for any .xml files and apply them to geometries
+        auto* fs = GetSubsystem<FileSystem>();
+        String modelDir = GetPath(path);
+        unsigned numGeoms = model->GetNumGeometries();
+        const Vector<String>& resourceDirs = cache->GetResourceDirs();
+
+        // Check Materials/ subdirs relative to model dir and at root
+        Vector<String> matDirs;
+        matDirs.Push(modelDir + "Materials/");
+        matDirs.Push("Materials/");
+        // Also check sibling: if model is in Models/, check ../Materials/
+        if (modelDir.EndsWith("Models/") || modelDir.EndsWith("models/"))
+        {
+            String parent = GetParentPath(modelDir.Substring(0, modelDir.Length() - 1));
+            matDirs.Push(parent + "Materials/");
+        }
+
+        Vector<String> foundMats;
+        for (unsigned d = 0; d < matDirs.Size() && foundMats.Empty(); ++d)
+        {
+            for (unsigned r = 0; r < resourceDirs.Size() && foundMats.Empty(); ++r)
+            {
+                String absDir = resourceDirs[r] + matDirs[d];
+                if (fs->DirExists(absDir))
+                {
+                    Vector<String> xmlFiles;
+                    fs->ScanDir(xmlFiles, absDir, "*.xml", SCAN_FILES, false);
+                    for (unsigned f = 0; f < xmlFiles.Size(); ++f)
+                    {
+                        // Verify it's actually a material file by trying to load it
+                        String matResPath = matDirs[d] + xmlFiles[f];
+                        auto* mat = cache->GetResource<Material>(matResPath, false);
+                        if (mat)
+                            foundMats.Push(matResPath);
+                    }
+                }
+            }
+        }
+
+        if (!foundMats.Empty())
+        {
+            // Apply found materials: one per geometry, cycling if fewer materials than geometries
+            for (unsigned i = 0; i < numGeoms; ++i)
+            {
+                unsigned matIdx = i < foundMats.Size() ? i : foundMats.Size() - 1;
+                auto* mat = cache->GetResource<Material>(foundMats[matIdx]);
+                if (mat)
+                    staticModelComp_->SetMaterial(i, mat);
+            }
+            materialsApplied = true;
+            URHO3D_LOGINFOF("Applied %d scanned materials to %s", foundMats.Size(), path.CString());
+        }
+    }
+
+    if (!materialsApplied)
+    {
         // Fallback: apply a default lit material so the model isn't invisible
         auto* defaultMat = cache->GetResource<Material>("Materials/DefaultGrey.xml");
         if (!defaultMat)
@@ -437,6 +496,7 @@ void ModelViewer::PlayAnimation(int index)
     }
 
     RebuildInfoText();
+    RebuildTextKeyList();
 }
 
 void ModelViewer::AddBlendAnimation(int index)
@@ -594,6 +654,7 @@ void ModelViewer::CreateUI()
     CreateMenuBar();
     CreateInfoPanel();
     CreatePlaybackPanel();
+    CreateTextKeyPanel();
 
     auto* ui = GetSubsystem<UI>();
 
@@ -1253,6 +1314,323 @@ void ModelViewer::CreatePlaybackPanel()
 }
 
 // ============================================================================
+// Text Key Panel
+// ============================================================================
+
+void ModelViewer::CreateTextKeyPanel()
+{
+    auto* ui = GetSubsystem<UI>();
+
+    // Text key section sits inside the playback panel
+    auto* separator = playbackPanel_->CreateChild<UIElement>();
+    separator->SetFixedHeight(2);
+    separator->SetLayoutMode(LM_FREE);
+    auto* sepLine = separator->CreateChild<BorderImage>();
+    sepLine->SetColor(Color(0.5f, 0.5f, 0.5f, 0.4f));
+    sepLine->SetFixedHeight(1);
+    sepLine->SetFixedWidth(320);
+
+    textKeyTitle_ = playbackPanel_->CreateChild<Text>();
+    textKeyTitle_->SetFont(font_, 12);
+    textKeyTitle_->SetColor(Color(0.5f, 0.9f, 0.9f));
+    textKeyTitle_->SetText("Text Keys (0)");
+
+    // Flash text — shows key name when fired during playback
+    textKeyFlash_ = playbackPanel_->CreateChild<Text>();
+    textKeyFlash_->SetFont(font_, 14);
+    textKeyFlash_->SetColor(Color(1.0f, 1.0f, 0.3f));
+    textKeyFlash_->SetText("");
+
+    // Scrollable container for text key list
+    textKeyContainer_ = playbackPanel_->CreateChild<UIElement>();
+    textKeyContainer_->SetLayout(LM_VERTICAL, 2);
+    textKeyContainer_->SetMaxHeight(150);
+
+    // Add key controls: name + data line edits
+    auto* addRow = playbackPanel_->CreateChild<UIElement>();
+    addRow->SetLayout(LM_HORIZONTAL, 4);
+    addRow->SetFixedHeight(24);
+
+    auto* nameLbl = addRow->CreateChild<Text>();
+    nameLbl->SetFont(font_, 11);
+    nameLbl->SetText("Name:");
+    nameLbl->SetColor(Color(0.7f, 0.7f, 0.7f));
+    nameLbl->SetFixedWidth(40);
+
+    textKeyNameEdit_ = addRow->CreateChild<LineEdit>();
+    textKeyNameEdit_->SetStyleAuto();
+    textKeyNameEdit_->SetFixedHeight(22);
+    textKeyNameEdit_->SetMinWidth(120);
+    textKeyNameEdit_->SetText("FootDown");
+
+    auto* dataRow = playbackPanel_->CreateChild<UIElement>();
+    dataRow->SetLayout(LM_HORIZONTAL, 4);
+    dataRow->SetFixedHeight(24);
+
+    auto* dataLbl = dataRow->CreateChild<Text>();
+    dataLbl->SetFont(font_, 11);
+    dataLbl->SetText("Data:");
+    dataLbl->SetColor(Color(0.7f, 0.7f, 0.7f));
+    dataLbl->SetFixedWidth(40);
+
+    textKeyDataEdit_ = dataRow->CreateChild<LineEdit>();
+    textKeyDataEdit_->SetStyleAuto();
+    textKeyDataEdit_->SetFixedHeight(22);
+    textKeyDataEdit_->SetMinWidth(120);
+
+    // Button row: Add | Delete | Save
+    auto* keyBtnRow = playbackPanel_->CreateChild<UIElement>();
+    keyBtnRow->SetLayout(LM_HORIZONTAL, 4);
+    keyBtnRow->SetFixedHeight(26);
+
+    auto* addBtn = keyBtnRow->CreateChild<Button>();
+    addBtn->SetStyleAuto();
+    addBtn->SetFixedSize(70, 24);
+    auto* addLbl = addBtn->CreateChild<Text>();
+    addLbl->SetFont(font_, 11);
+    addLbl->SetText("+ Add");
+    addLbl->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(addBtn, E_RELEASED, [this](StringHash, VariantMap&) { AddTextKeyAtCurrentTime(); });
+
+    auto* delBtn = keyBtnRow->CreateChild<Button>();
+    delBtn->SetStyleAuto();
+    delBtn->SetFixedSize(70, 24);
+    auto* delLbl = delBtn->CreateChild<Text>();
+    delLbl->SetFont(font_, 11);
+    delLbl->SetText("Delete");
+    delLbl->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(delBtn, E_RELEASED, [this](StringHash, VariantMap&) { DeleteSelectedTextKey(); });
+
+    auto* saveBtn = keyBtnRow->CreateChild<Button>();
+    saveBtn->SetStyleAuto();
+    saveBtn->SetFixedSize(90, 24);
+    auto* saveLbl = saveBtn->CreateChild<Text>();
+    saveLbl->SetFont(font_, 11);
+    saveLbl->SetText("Save Keys");
+    saveLbl->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(saveBtn, E_RELEASED, [this](StringHash, VariantMap&) { SaveTextKeys(); });
+
+    // Subscribe to text key events from AnimationState
+    SubscribeToEvent(E_ANIMATIONTEXTKEY, URHO3D_HANDLER(ModelViewer, HandleTextKeyEvent));
+}
+
+void ModelViewer::RebuildTextKeyList()
+{
+    if (!textKeyContainer_) return;
+
+    textKeyContainer_->RemoveAllChildren();
+    textKeyButtons_.Clear();
+    selectedTextKey_ = -1;
+
+    // Find the current animation resource
+    Animation* anim = nullptr;
+    if (animController_ && currentAnimIndex_ >= 0 && currentAnimIndex_ < (int)availableAnims_.Size())
+    {
+        auto* cache = GetSubsystem<ResourceCache>();
+        anim = cache->GetResource<Animation>(availableAnims_[currentAnimIndex_], false);
+    }
+
+    if (!anim || anim->GetNumTextKeys() == 0)
+    {
+        if (textKeyTitle_)
+            textKeyTitle_->SetText("Text Keys (0)");
+        return;
+    }
+
+    if (textKeyTitle_)
+        textKeyTitle_->SetText("Text Keys (" + String(anim->GetNumTextKeys()) + ")");
+
+    const Vector<AnimationTextKey>& keys = anim->GetTextKeys();
+    for (int i = 0; i < (int)keys.Size(); ++i)
+    {
+        auto* btn = textKeyContainer_->CreateChild<Button>();
+        btn->SetStyleAuto();
+        btn->SetFixedHeight(20);
+        btn->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 1, 4, 1));
+
+        auto* timeText = btn->CreateChild<Text>();
+        timeText->SetFont(font_, 11);
+        timeText->SetText(String((double)keys[i].time_, 3) + "s");
+        timeText->SetColor(Color(0.9f, 0.9f, 0.5f));
+        timeText->SetFixedWidth(55);
+
+        auto* nameText = btn->CreateChild<Text>();
+        nameText->SetFont(font_, 11);
+        nameText->SetText(keys[i].name_);
+        nameText->SetColor(Color(0.5f, 0.9f, 0.9f));
+
+        if (!keys[i].data_.IsEmpty())
+        {
+            auto* dataText = btn->CreateChild<Text>();
+            dataText->SetFont(font_, 10);
+            dataText->SetText("(" + keys[i].data_.ToString() + ")");
+            dataText->SetColor(Color(0.7f, 0.7f, 0.7f));
+        }
+
+        int keyIndex = i;
+        SubscribeToEvent(btn, E_RELEASED, [this, keyIndex](StringHash, VariantMap&)
+        {
+            selectedTextKey_ = keyIndex;
+            // Highlight selected
+            for (int j = 0; j < (int)textKeyButtons_.Size(); ++j)
+            {
+                if (textKeyButtons_[j])
+                    textKeyButtons_[j]->SetColor(j == selectedTextKey_ ? Color(0.3f, 0.4f, 0.5f) : Color::WHITE);
+            }
+            // Scrub to key time
+            if (animController_ && currentAnimIndex_ >= 0)
+            {
+                auto* cache = GetSubsystem<ResourceCache>();
+                Animation* a = cache->GetResource<Animation>(availableAnims_[currentAnimIndex_], false);
+                if (a)
+                {
+                    AnimationTextKey* k = a->GetTextKey(keyIndex);
+                    if (k)
+                    {
+                        animController_->SetTime(availableAnims_[currentAnimIndex_], k->time_);
+                        // Populate edit fields
+                        if (textKeyNameEdit_) textKeyNameEdit_->SetText(k->name_);
+                        if (textKeyDataEdit_) textKeyDataEdit_->SetText(k->data_.IsEmpty() ? "" : k->data_.ToString());
+                    }
+                }
+            }
+        });
+
+        textKeyButtons_.Push(btn);
+    }
+}
+
+void ModelViewer::AddTextKeyAtCurrentTime()
+{
+    if (!animController_ || currentAnimIndex_ < 0) return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    Animation* anim = cache->GetResource<Animation>(availableAnims_[currentAnimIndex_], false);
+    if (!anim) return;
+
+    float t = animController_->GetTime(availableAnims_[currentAnimIndex_]);
+    String name = textKeyNameEdit_ ? textKeyNameEdit_->GetText().Trimmed() : "Key";
+    if (name.Empty()) name = "Key";
+
+    String dataStr = textKeyDataEdit_ ? textKeyDataEdit_->GetText().Trimmed() : "";
+    Variant data = dataStr.Empty() ? Variant::EMPTY : Variant(dataStr);
+
+    anim->AddTextKey(t, false, name, data);
+    URHO3D_LOGINFOF("Added text key '%s' at %.3fs", name.CString(), t);
+
+    RebuildTextKeyList();
+}
+
+void ModelViewer::DeleteSelectedTextKey()
+{
+    if (selectedTextKey_ < 0) return;
+    if (!animController_ || currentAnimIndex_ < 0) return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    Animation* anim = cache->GetResource<Animation>(availableAnims_[currentAnimIndex_], false);
+    if (!anim) return;
+
+    AnimationTextKey* key = anim->GetTextKey(selectedTextKey_);
+    if (key)
+        URHO3D_LOGINFOF("Deleted text key '%s' at %.3fs", key->name_.CString(), key->time_);
+
+    anim->RemoveTextKey(selectedTextKey_);
+    selectedTextKey_ = -1;
+    RebuildTextKeyList();
+}
+
+void ModelViewer::SaveTextKeys()
+{
+    if (!animController_ || currentAnimIndex_ < 0) return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    Animation* anim = cache->GetResource<Animation>(availableAnims_[currentAnimIndex_], false);
+    if (!anim) return;
+
+    const Vector<AnimationTextKey>& keys = anim->GetTextKeys();
+    if (keys.Empty())
+    {
+        URHO3D_LOGINFO("No text keys to save");
+        return;
+    }
+
+    // Build JSON sidecar path from the animation resource name
+    // Find the actual file path on disk
+    String animPath = availableAnims_[currentAnimIndex_];
+    String jsonPath = ReplaceExtension(animPath, ".json");
+
+    // Try to resolve to an absolute path
+    auto* fs = GetSubsystem<FileSystem>();
+    String absPath;
+
+    // Check if animPath is already absolute
+    if (fs->FileExists(animPath))
+        absPath = ReplaceExtension(animPath, ".json");
+    else
+    {
+        // Try resource dirs
+        const Vector<String>& resourceDirs = cache->GetResourceDirs();
+        for (const String& dir : resourceDirs)
+        {
+            if (fs->FileExists(dir + animPath))
+            {
+                absPath = dir + ReplaceExtension(animPath, ".json");
+                break;
+            }
+        }
+    }
+
+    if (absPath.Empty())
+    {
+        URHO3D_LOGERRORF("Cannot resolve path for: %s", animPath.CString());
+        return;
+    }
+
+    // Build JSON
+    JSONFile jsonFile(context_);
+    JSONValue& root = jsonFile.GetRoot();
+    JSONArray emptyArr;
+    JSONValue keyArray(emptyArr);
+
+    for (const AnimationTextKey& key : keys)
+    {
+        JSONValue entry;
+        entry.Set("name", JSONValue(key.name_));
+        entry.Set("time", JSONValue((double)key.time_));
+        if (!key.data_.IsEmpty())
+            entry.Set("data", JSONValue(key.data_.ToString()));
+        keyArray.Push(entry);
+    }
+
+    root.Set("textkeys", keyArray);
+
+    File outFile(context_, absPath, FILE_WRITE);
+    if (outFile.IsOpen())
+    {
+        jsonFile.Save(outFile, "  ");
+        URHO3D_LOGINFOF("Saved %d text keys to %s", keys.Size(), absPath.CString());
+    }
+    else
+    {
+        URHO3D_LOGERRORF("Failed to write: %s", absPath.CString());
+    }
+}
+
+void ModelViewer::HandleTextKeyEvent(StringHash, VariantMap& eventData)
+{
+    using namespace AnimationTextKeyEvent;
+    String name = eventData[P_NAME].GetString();
+    float time = eventData[P_TIME].GetFloat();
+
+    // Flash the key name on screen
+    if (textKeyFlash_)
+    {
+        textKeyFlash_->SetText(String((double)time, 3) + "s  " + name);
+        textKeyFlashTimer_ = 0.8f;
+    }
+}
+
+// ============================================================================
 // Info Text — rebuild as ListView items
 // ============================================================================
 
@@ -1722,6 +2100,43 @@ void ModelViewer::HandleUpdate(StringHash, VariantMap& eventData)
             BrowseFlagKeep();
         if (input->GetKeyPress(KEY_X))
             BrowseFlagReject();
+    }
+
+    // T key — add text key at current time (only when not editing a LineEdit)
+    if (input->GetKeyPress(KEY_T) && !vertexEditMode_)
+    {
+        auto* ui = GetSubsystem<UI>();
+        auto* focused = ui->GetFocusElement();
+        bool editingText = focused && (focused->GetType() == LineEdit::GetTypeStatic());
+        if (!editingText)
+            AddTextKeyAtCurrentTime();
+    }
+
+    // Delete key — remove selected text key (only when not in vertex edit and not editing text)
+    if (input->GetKeyPress(KEY_DELETE) && !vertexEditMode_ && selectedTextKey_ >= 0)
+    {
+        auto* ui = GetSubsystem<UI>();
+        auto* focused = ui->GetFocusElement();
+        bool editingText = focused && (focused->GetType() == LineEdit::GetTypeStatic());
+        if (!editingText)
+            DeleteSelectedTextKey();
+    }
+
+    // Ctrl+S — save text keys (when not in vertex edit mode)
+    if (input->GetKeyDown(KEY_CTRL) && input->GetKeyPress(KEY_S) && !vertexEditMode_ && currentAnimIndex_ >= 0)
+        SaveTextKeys();
+
+    // Text key flash fade
+    if (textKeyFlashTimer_ > 0.0f)
+    {
+        textKeyFlashTimer_ -= timeStep;
+        if (textKeyFlash_)
+        {
+            float alpha = Clamp(textKeyFlashTimer_ / 0.8f, 0.0f, 1.0f);
+            textKeyFlash_->SetColor(Color(1.0f, 1.0f, 0.3f, alpha));
+            if (textKeyFlashTimer_ <= 0.0f)
+                textKeyFlash_->SetText("");
+        }
     }
 
     // Update playback display

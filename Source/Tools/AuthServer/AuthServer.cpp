@@ -306,6 +306,9 @@ void AuthServer::Start()
     // Initialize database
     InitDatabase();
 
+    // Initialize game rules database
+    InitGameDB();
+
     // Register PlayerCharacter component for server-side avatar physics
     PlayerCharacter::RegisterObject(context_);
 
@@ -2143,6 +2146,30 @@ void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventDat
         break;
     }
 
+    case MSG_EAT:
+    {
+        HandleEat(connection, msg);
+        break;
+    }
+
+    case MSG_DRINK:
+    {
+        HandleDrink(connection, msg);
+        break;
+    }
+
+    case MSG_PICKUP:
+    {
+        HandlePickup(connection, msg);
+        break;
+    }
+
+    case MSG_DROP:
+    {
+        HandleDrop(connection, msg);
+        break;
+    }
+
     default:
         LogMessage("Unknown msg ID " + String(msgID) + " from " + connection->ToString());
         break;
@@ -2195,6 +2222,11 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
         journalTrimTimer_ = JOURNAL_TRIM_INTERVAL;
         journalManager_.TrimAll();
     }
+
+    // Survival pressure tick
+#ifdef URHO3D_DATABASE_SQLITE
+    SurvivalTick(dt);
+#endif
 }
 
 void AuthServer::HandleKeyExchangeAuth(StringHash eventType, VariantMap& eventData)
@@ -2335,6 +2367,15 @@ void AuthServer::HandleClientAuthenticated(StringHash eventType, VariantMap& eve
     sessions_[connection].lastPatchPos = IntVector2(homePatchX, homePatchZ);
     sessions_[connection].sentPatches.Clear();
     SendPatchNeighbourhood(connection, homePatchX, homePatchZ);
+
+    // Send inventory snapshot on connect
+#ifdef URHO3D_DATABASE_SQLITE
+    if (gameDB_)
+    {
+        int playerId = GetPlayerId(username);
+        SendInventoryUpdate(connection, playerId);
+    }
+#endif
 }
 
 // ============================================================
@@ -3545,3 +3586,399 @@ void AuthServer::HandleWaterEdit(Connection* connection, MemoryBuffer& msg)
         BroadcastAffectedPatch(tpx, tpz, "water_heightmap", waterHeightMap_);
     }
 }
+
+// ─── SURVIVAL PRESSURE ──────────────────────────────────────────────────────
+
+void AuthServer::InitGameDB()
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    gameDB_ = new GameDB(context_);
+
+    // Build path relative to executable
+    auto* fileSystem = GetSubsystem<FileSystem>();
+    String dbPath = fileSystem->GetProgramDir() + "Data/GameDB/game_rules.db";
+    String schemaPath = fileSystem->GetProgramDir() + "Data/GameDB/schema.sql";
+    String seedPath = fileSystem->GetProgramDir() + "Data/GameDB/seed_data.sql";
+    String survSchemaPath = fileSystem->GetProgramDir() + "Data/GameDB/survival_schema.sql";
+    String survSeedPath = fileSystem->GetProgramDir() + "Data/GameDB/survival_seed.sql";
+
+    if (!gameDB_->Open(dbPath))
+    {
+        LogMessage("[GameDB] FAILED to open " + dbPath);
+        return;
+    }
+
+    // Apply schemas and seed data (IF NOT EXISTS / INSERT OR IGNORE — safe to re-apply)
+    gameDB_->ExecuteFile(schemaPath);
+    gameDB_->ExecuteFile(seedPath);
+    gameDB_->ExecuteFile(survSchemaPath);
+    gameDB_->ExecuteFile(survSeedPath);
+
+    String invSchemaPath = fileSystem->GetProgramDir() + "Data/GameDB/inventory_schema.sql";
+    gameDB_->ExecuteFile(invSchemaPath);
+
+    // Cache survival rules
+    if (gameDB_->GetHungerRules(hungerRules_) && gameDB_->GetThirstRules(thirstRules_))
+    {
+        survivalRulesLoaded_ = true;
+        LogMessage("[GameDB] Survival rules loaded — hunger drain " +
+            String(hungerRules_.drainPerDay) + "/day, thirst drain " +
+            String(thirstRules_.drainPerDay) + "/day");
+    }
+    else
+        LogMessage("[GameDB] WARNING: survival rules not found in database");
+
+    // Cache inventory rules
+    if (gameDB_->GetInventoryRules(inventoryRules_))
+    {
+        inventoryRulesLoaded_ = true;
+        LogMessage("[GameDB] Inventory rules loaded — " + String(inventoryRules_.baseSlots) +
+            " slots, max weight " + String(inventoryRules_.maxWeight) + " kg");
+    }
+    else
+        LogMessage("[GameDB] WARNING: inventory rules not found in database");
+
+    LogMessage("[GameDB] Ready");
+#endif
+}
+
+#ifdef URHO3D_DATABASE_SQLITE
+
+void AuthServer::SurvivalTick(float dt)
+{
+    if (!survivalRulesLoaded_)
+        return;
+
+    survivalTickTimer_ -= dt;
+    if (survivalTickTimer_ > 0.0f)
+        return;
+    survivalTickTimer_ = SURVIVAL_TICK_INTERVAL;
+
+    // How much game-time passed this tick (fraction of a game-day)
+    float gameDayFraction = (SURVIVAL_TICK_INTERVAL * gameTimeScale_) / (24.0f * 3600.0f);
+
+    for (auto it = sessions_.Begin(); it != sessions_.End(); ++it)
+    {
+        ClientSession& s = it->second_;
+        if (!s.authenticated || !s.alive)
+            continue;
+
+        // Hunger drain
+        float hungerDrain = hungerRules_.drainPerDay * gameDayFraction;
+        s.hunger = Max(0.0f, s.hunger - hungerDrain);
+
+        // Starvation damage
+        if (s.hunger <= 0.0f)
+            s.hp = Max(0, s.hp - (int)(hungerRules_.starveHpDay * gameDayFraction + 0.5f));
+
+        // Thirst drain (faster than hunger)
+        float thirstDrain = thirstRules_.drainPerDay * gameDayFraction;
+        s.thirst = Max(0.0f, s.thirst - thirstDrain);
+
+        // Dehydration damage (faster than starvation)
+        if (s.thirst <= 0.0f)
+            s.hp = Max(0, s.hp - (int)(thirstRules_.dehydrateHpDay * gameDayFraction + 0.5f));
+
+        // Speed penalty
+        if (s.hunger < (float)hungerRules_.criticalThreshold || s.thirst < (float)thirstRules_.criticalThreshold)
+            s.speedMult = 0.75f;
+        else if (s.hunger < (float)hungerRules_.lowThreshold || s.thirst < (float)thirstRules_.lowThreshold)
+            s.speedMult = 0.9f;
+        else
+            s.speedMult = 1.0f;
+
+        // Death check
+        if (s.hp <= 0)
+        {
+            s.alive = false;
+            s.hp = 0;
+            SendVitalUpdate(it->first_, s, true);
+            LogMessage(s.username + " died");
+            continue;
+        }
+
+        // Send-on-change: only send if a value crossed a display threshold
+        SendVitalUpdate(it->first_, s);
+    }
+}
+
+void AuthServer::SendVitalUpdate(Connection* connection, ClientSession& s, bool force)
+{
+    // Quantize to integers for comparison (client displays integers anyway)
+    int hp = s.hp;
+    int hunger = (int)s.hunger;
+    int thirst = (int)s.thirst;
+    int stamina = (int)s.stamina;
+
+    if (!force)
+    {
+        // Only send if a value changed by at least 1 integer unit
+        if (hp == s.sentHp && hunger == s.sentHunger &&
+            thirst == s.sentThirst && stamina == s.sentStamina)
+            return;
+    }
+
+    s.sentHp = hp;
+    s.sentHunger = hunger;
+    s.sentThirst = thirst;
+    s.sentStamina = stamina;
+
+    VectorBuffer buf;
+    buf.WriteI32(hp);
+    buf.WriteI32(s.maxHp);
+    buf.WriteI32(hunger);
+    buf.WriteI32(thirst);
+    buf.WriteI32(stamina);
+    buf.WriteFloat(s.warmth);
+    buf.WriteBool(s.alive);
+    buf.WriteFloat(s.speedMult);
+    connection->SendMessage(MSG_VITAL_UPDATE, true, true, buf);
+}
+
+void AuthServer::HandleEat(Connection* connection, MemoryBuffer& msg)
+{
+    auto it = sessions_.Find(connection);
+    if (it == sessions_.End() || !it->second_.authenticated || !it->second_.alive)
+        return;
+
+    int itemId = msg.ReadI32();
+    ClientSession& s = it->second_;
+
+    if (!gameDB_)
+        return;
+
+    // Get food properties
+    FoodInfo food;
+    if (!gameDB_->GetFoodProperties(itemId, food))
+    {
+        LogMessage(s.username + " tried to eat non-food item " + String(itemId));
+        return;
+    }
+
+    // Validate and consume from inventory
+    int playerId = GetPlayerId(s.username);
+    if (playerId >= 0 && gameDB_->GetItemCount(playerId, itemId) < 1)
+    {
+        LogMessage(s.username + " tried to eat item " + String(itemId) + " but doesn't have it");
+        return;
+    }
+    if (playerId >= 0)
+        gameDB_->RemoveItemFromInventory(playerId, itemId, 1);
+
+    // Apply food effects
+    s.hunger = Min(100.0f, s.hunger + (float)food.hunger);
+    s.hp = Min(s.maxHp, s.hp + food.health);
+
+    // Poison roll
+    if (food.poisonChance > 0.0f)
+    {
+        float roll = (float)(rand() % 1000) / 1000.0f;
+        if (roll < food.poisonChance)
+        {
+            s.hp = Max(1, s.hp - 5);  // poison damage
+            LogMessage(s.username + " got food poisoning");
+        }
+    }
+
+    LogMessage(s.username + " ate item " + String(itemId) +
+        " (hunger +" + String(food.hunger) + ", hp +" + String(food.health) + ")");
+
+    // Force send updated vitals + inventory delta
+    SendVitalUpdate(connection, s, true);
+    SendInventoryDelta(connection, itemId, 1, false);
+}
+
+void AuthServer::HandleDrink(Connection* connection, MemoryBuffer& msg)
+{
+    auto it = sessions_.Find(connection);
+    if (it == sessions_.End() || !it->second_.authenticated || !it->second_.alive)
+        return;
+
+    String sourceType = msg.ReadString();
+    ClientSession& s = it->second_;
+
+    if (!gameDB_)
+        return;
+
+    // Get water source info
+    WaterSourceInfo source;
+    if (!gameDB_->GetWaterSource(sourceType, source))
+    {
+        LogMessage(s.username + " tried to drink from unknown source: " + sourceType);
+        return;
+    }
+
+    // TODO: check proximity to water source, check required item (clay pot)
+
+    // Apply thirst restoration
+    s.thirst = Min(100.0f, s.thirst + (float)source.thirstRestore);
+
+    // Disease roll
+    if (source.diseaseChance > 0.0f)
+    {
+        float roll = (float)(rand() % 1000) / 1000.0f;
+        if (roll < source.diseaseChance)
+        {
+            s.hp = Max(1, s.hp - 3);
+            LogMessage(s.username + " got waterborne illness from " + sourceType);
+        }
+    }
+
+    LogMessage(s.username + " drank from " + sourceType +
+        " (thirst +" + String(source.thirstRestore) + ")");
+
+    SendVitalUpdate(connection, s, true);
+}
+
+int AuthServer::GetPlayerId(const String& username)
+{
+    if (!gameDB_ || !gameDB_->IsOpen())
+        return -1;
+
+    // Use username hash as player_id (stable, deterministic)
+    return (int)(username.ToHash() & 0x7FFFFFFF);
+}
+
+void AuthServer::HandlePickup(Connection* connection, MemoryBuffer& msg)
+{
+    auto it = sessions_.Find(connection);
+    if (it == sessions_.End() || !it->second_.authenticated)
+        return;
+
+    unsigned nodeId = msg.ReadU32();
+    ClientSession& s = it->second_;
+
+    if (!gameDB_ || !scene_)
+        return;
+
+    // Find the world node
+    Node* itemNode = scene_->GetNode(nodeId);
+    if (!itemNode)
+    {
+        LogMessage(s.username + " tried to pick up non-existent node " + String(nodeId));
+        return;
+    }
+
+    // Get item_id from node variable (set when item was spawned)
+    int itemId = itemNode->GetVar("ItemID").GetI32();
+    int qty = itemNode->GetVar("ItemQty").GetI32();
+    if (itemId <= 0) itemId = 1;
+    if (qty <= 0) qty = 1;
+
+    int playerId = GetPlayerId(s.username);
+    if (playerId < 0)
+        return;
+
+    // Try to add to inventory (validates weight + slots)
+    if (!gameDB_->AddItemToInventory(playerId, itemId, qty))
+    {
+        LogMessage(s.username + " can't pick up item " + String(itemId) + " — inventory full or too heavy");
+        return;
+    }
+
+    // Remove world node
+    itemNode->Remove();
+
+    LogMessage(s.username + " picked up item " + String(itemId) + " x" + String(qty));
+
+    // Send inventory delta to this client
+    SendInventoryDelta(connection, itemId, qty, true);
+}
+
+void AuthServer::HandleDrop(Connection* connection, MemoryBuffer& msg)
+{
+    auto it = sessions_.Find(connection);
+    if (it == sessions_.End() || !it->second_.authenticated)
+        return;
+
+    int itemId = msg.ReadI32();
+    int qty = msg.ReadI32();
+    ClientSession& s = it->second_;
+
+    if (!gameDB_ || qty <= 0)
+        return;
+
+    int playerId = GetPlayerId(s.username);
+    if (playerId < 0)
+        return;
+
+    if (!gameDB_->RemoveItemFromInventory(playerId, itemId, qty))
+    {
+        LogMessage(s.username + " tried to drop item " + String(itemId) + " x" + String(qty) + " — insufficient");
+        return;
+    }
+
+    // Spawn world node at player position
+    auto nodeIt = serverObjects_.Find(connection);
+    Vector3 dropPos;
+    if (nodeIt != serverObjects_.End() && nodeIt->second_)
+        dropPos = nodeIt->second_->GetWorldPosition() + Vector3(0, 0.5f, 1.0f);
+
+    // Get item info for model
+    ItemInfo item;
+    if (gameDB_->GetItem(itemId, item) && scene_ && !item.model.Empty())
+    {
+        Node* dropNode = scene_->CreateChild("DroppedItem");
+        dropNode->SetPosition(dropPos);
+        dropNode->SetVar("ItemID", itemId);
+        dropNode->SetVar("ItemQty", qty);
+
+        auto* cache = GetSubsystem<ResourceCache>();
+        auto* staticModel = dropNode->CreateComponent<StaticModel>();
+        auto* model = cache->GetResource<Model>(item.model);
+        if (model)
+            staticModel->SetModel(model);
+    }
+
+    LogMessage(s.username + " dropped item " + String(itemId) + " x" + String(qty));
+    SendInventoryDelta(connection, itemId, qty, false);
+}
+
+void AuthServer::SendInventoryUpdate(Connection* connection, int playerId)
+{
+    if (!gameDB_)
+        return;
+
+    Vector<InventorySlot> inventory = gameDB_->GetPlayerInventory(playerId);
+    float weight = gameDB_->GetPlayerWeight(playerId);
+
+    VectorBuffer buf;
+    buf.WriteI32((int)inventory.Size());
+    buf.WriteFloat(weight);
+    buf.WriteFloat(inventoryRulesLoaded_ ? inventoryRules_.maxWeight : 30.0f);
+    buf.WriteFloat(inventoryRulesLoaded_ ? inventoryRules_.maxWeightAbsolute : 60.0f);
+    buf.WriteI32(inventoryRulesLoaded_ ? inventoryRules_.baseSlots : 10);
+
+    for (unsigned i = 0; i < inventory.Size(); ++i)
+    {
+        const InventorySlot& slot = inventory[i];
+        buf.WriteI32(slot.itemId);
+        buf.WriteI32(slot.quantity);
+        buf.WriteI32(slot.durability);
+        buf.WriteString(slot.slotType);
+    }
+
+    connection->SendMessage(MSG_INVENTORY_UPDATE, true, true, buf);
+}
+
+void AuthServer::SendInventoryDelta(Connection* connection, int itemId, int quantity, bool added)
+{
+    VectorBuffer buf;
+    buf.WriteI32(itemId);
+    buf.WriteI32(quantity);
+    buf.WriteBool(added);
+
+    // Also send updated weight
+    auto it = sessions_.Find(connection);
+    if (it != sessions_.End() && gameDB_)
+    {
+        int playerId = GetPlayerId(it->second_.username);
+        buf.WriteFloat(gameDB_->GetPlayerWeight(playerId));
+    }
+    else
+        buf.WriteFloat(0.0f);
+
+    connection->SendMessage(MSG_INVENTORY_DELTA, true, true, buf);
+}
+
+#endif // URHO3D_DATABASE_SQLITE

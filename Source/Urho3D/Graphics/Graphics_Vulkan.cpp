@@ -739,7 +739,17 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
 
     // Count expected texture bindings from reflected resources (may exceed MAX_TEXTURE_UNITS
     // when SPIR-V declares all samplers from Samplers.glsl)
+    // Must count BOTH VS and PS samplers — VS may have VTF samplers (e.g. grass heightmap)
     unsigned expectedTextureCount = 0;
+    if (vertexShader_)
+    {
+        const Vector<SPIRVResource>& vsRes = vertexShader_->GetReflectedResources();
+        for (const auto& res : vsRes)
+        {
+            if (res.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                ++expectedTextureCount;
+        }
+    }
     if (pixelShader_)
     {
         const Vector<SPIRVResource>& psRes = pixelShader_->GetReflectedResources();
@@ -834,7 +844,21 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
     // Otherwise uninitialized descriptor slots contain garbage from previous frames
 
     // Get reflected resources to know which texture bindings shader expects
+    // Must include BOTH VS and PS samplers — VS may use VTF (vertex texture fetch)
+    // e.g. grass heightmap sampling in vertex shader
     Vector<unsigned> expectedTextureBindings;
+    if (vertexShader_)
+    {
+        const Vector<SPIRVResource>& vsResources = vertexShader_->GetReflectedResources();
+        for (const auto& res : vsResources)
+        {
+            if (res.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            {
+                if (!expectedTextureBindings.Contains(res.binding))
+                    expectedTextureBindings.Push(res.binding);
+            }
+        }
+    }
     if (pixelShader_)
     {
         const Vector<SPIRVResource>& psResources = pixelShader_->GetReflectedResources();
@@ -842,36 +866,63 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
         {
             if (res.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
             {
-                expectedTextureBindings.Push(res.binding);
+                if (!expectedTextureBindings.Contains(res.binding))
+                    expectedTextureBindings.Push(res.binding);
             }
         }
     }
 
-    // Get a valid fallback texture to fill missing bindings
-    // Must have a valid VkImageView — use first available bound texture
+    // Get valid fallback textures to fill missing bindings
+    // Must have valid VkImageView — use first available bound texture
+    // Separate defaults for 2D and Cube samplers to avoid Vulkan validation errors
+    // (binding a Texture2D to a samplerCube descriptor is invalid)
     Texture* defaultTexture = nullptr;
+    Texture* defaultCubeTexture = nullptr;
     for (unsigned unit = 0; unit < MAX_TEXTURE_UNITS; ++unit)
     {
         if (textures_[unit] && textures_[unit]->GetVkImageView() &&
             textures_[unit]->GetSampler_Vulkan())
         {
-            defaultTexture = textures_[unit];
-            break;
+            if (textures_[unit]->GetType() == TextureCube::GetTypeStatic())
+            {
+                if (!defaultCubeTexture)
+                    defaultCubeTexture = textures_[unit];
+            }
+            else
+            {
+                if (!defaultTexture)
+                    defaultTexture = textures_[unit];
+            }
+            if (defaultTexture && defaultCubeTexture)
+                break;
         }
     }
     // Also check material textures — if no engine textures are set yet (e.g. first
     // draw call is postopaque with no prior base pass), the material itself provides
     // valid textures that can serve as fallback for unused descriptor bindings.
-    if (!defaultTexture && currentMaterial_)
+    if (!defaultTexture || !defaultCubeTexture)
     {
-        const HashMap<TextureUnit, SharedPtr<Texture>>& matTex = currentMaterial_->GetTextures();
-        for (auto it = matTex.Begin(); it != matTex.End(); ++it)
+        if (currentMaterial_)
         {
-            Texture* t = it->second_.Get();
-            if (t && t->GetVkImageView() && t->GetSampler_Vulkan())
+            const HashMap<TextureUnit, SharedPtr<Texture>>& matTex = currentMaterial_->GetTextures();
+            for (auto it = matTex.Begin(); it != matTex.End(); ++it)
             {
-                defaultTexture = t;
-                break;
+                Texture* t = it->second_.Get();
+                if (t && t->GetVkImageView() && t->GetSampler_Vulkan())
+                {
+                    if (t->GetType() == TextureCube::GetTypeStatic())
+                    {
+                        if (!defaultCubeTexture)
+                            defaultCubeTexture = t;
+                    }
+                    else
+                    {
+                        if (!defaultTexture)
+                            defaultTexture = t;
+                    }
+                    if (defaultTexture && defaultCubeTexture)
+                        break;
+                }
             }
         }
     }
@@ -1013,8 +1064,17 @@ VkDescriptorSet Graphics::CreateReflectionBasedDescriptorSet_Vulkan()
         }
 
         // Use default texture if no texture available
+        // Cube sampler bindings (101, 106, 109, 116, 117, 118) need a cubemap default;
+        // binding a Texture2D to a samplerCube is a Vulkan validation error
         if (!texture)
-            texture = defaultTexture;
+        {
+            bool isCubeBinding = (binding == 101 || binding == 106 || binding == 109 ||
+                                  binding == 116 || binding == 117 || binding == 118);
+            texture = isCubeBinding ? defaultCubeTexture : defaultTexture;
+            // Last resort: use whatever default we have (still better than skipping)
+            if (!texture)
+                texture = isCubeBinding ? defaultTexture : defaultCubeTexture;
+        }
 
         if (!texture)
         {

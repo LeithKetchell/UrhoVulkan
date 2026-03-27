@@ -33,6 +33,12 @@ public:
     /// Set ambient color.
     /// @property
     void SetAmbientColor(const Color& color);
+    /// Set sky ambient color for hemisphere lighting.
+    /// @property
+    void SetSkyAmbientColor(const Color& color);
+    /// Set ground ambient color for hemisphere lighting.
+    /// @property
+    void SetGroundAmbientColor(const Color& color);
     /// Set fog color.
     /// @property
     void SetFogColor(const Color& color);
@@ -71,6 +77,15 @@ public:
     /// Return zone's own ambient color, disregarding gradient mode.
     /// @property
     const Color& GetAmbientColor() const { return ambientColor_; }
+
+    /// Return sky ambient color.
+    /// @property
+    const Color& GetSkyAmbientColor() const { return skyAmbientColor_; }
+    /// Return ground ambient color.
+    /// @property
+    const Color& GetGroundAmbientColor() const { return groundAmbientColor_; }
+    /// Return whether hemisphere ambient is active.
+    bool HasHemisphereAmbient() const { return skyAmbientColor_ != Color::BLACK || groundAmbientColor_ != Color::BLACK; }
 
     /// Return ambient start color. Not safe to call from worker threads due to possible octree query.
     /// @property
@@ -154,6 +169,10 @@ protected:
     BoundingBox lastWorldBoundingBox_;
     /// Ambient color.
     Color ambientColor_;
+    /// Sky ambient color for hemisphere lighting.
+    Color skyAmbientColor_;
+    /// Ground ambient color for hemisphere lighting.
+    Color groundAmbientColor_;
     /// Cached ambient start color.
     Color ambientStartColor_;
     /// Cached ambient end color.

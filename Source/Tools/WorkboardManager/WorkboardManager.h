@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <sys/types.h>
+
 #include <Urho3D/Engine/Application.h>
 #include <Urho3D/Network/Network.h>
 #include <Urho3D/UI/BorderImage.h>
@@ -98,6 +100,14 @@ private:
     void HandleSendPlanner(StringHash eventType, VariantMap& eventData);
     void HandleSendUnassigned(StringHash eventType, VariantMap& eventData);
     void HandleSendBroadcast(StringHash eventType, VariantMap& eventData);
+    void HandleClearFileLocks(StringHash eventType, VariantMap& eventData);
+
+    // ── Multi-Coder discovery ──
+    /// Scan instances/ dir for all live roles starting with "coder".
+    Vector<String> DiscoverCoderRoles();
+    Vector<String> DiscoverUnassignedRoles();
+    /// Get the currently selected coder role from the dropdown.
+    String GetSelectedCoderRole();
 
     // ── Download ──
     void CreateDownloadBar(UIElement* parent, int x, int y, int w, int h);
@@ -155,16 +165,20 @@ private:
     String currentPlanFile_;
 
     // ── Instance status UI ──
-    Text* coderStatusText_{};
+    DropDownList* coderStatusDropdown_{}; // dropdown listing coder instances + PIDs
+    Vector<String> knownCoderRoles_;      // "coder", "coder1", "coder2", etc.
     Text* plannerStatusText_{};
-    Text* unassignedStatusText_{};
+    DropDownList* unassignedStatusDropdown_{}; // dropdown listing unassigned instances + PIDs
+    Vector<String> knownUnassignedRoles_;     // "unassigned", "unassigned2", etc.
 
     // ── Composer UI ──
     LineEdit* messageInput_{};
-    Button* sendCoderBtn_{};
+    DropDownList* coderDropdown_{};    // lists connected coder instances
+    Button* sendCoderBtn_{};          // sends to selected coder from dropdown
     Button* sendPlannerBtn_{};
     Button* sendUnassignedBtn_{};
     Button* sendBroadcastBtn_{};
+    Button* clearFileLocksBtn_{};
 
     // ── Download UI ──
     LineEdit* downloadUrlInput_{};
@@ -172,6 +186,8 @@ private:
     Text* downloadStatusText_{};
     bool downloadInProgress_{false};
     String downloadOutputPath_;
+    pid_t curlPid_{0};
+    float downloadCheckTimer_{0.0f};
 
     // ── Message log UI ──
     Window* logPanel_{};
@@ -183,7 +199,7 @@ private:
     static constexpr const char* SPOOL_DIR = "/tmp/urho_claude/spool";
 
     // ── Beacon liveness ──
-    float lastCoderActivity_{999.0f};
+    HashMap<String, float> coderActivityTimers_;  // role name → seconds since last activity
     float lastPlannerActivity_{999.0f};
     float lastUnassignedActivity_{999.0f};
     static constexpr float LIVENESS_TIMEOUT = 300.0f;  // 5 min — Claude sessions can idle

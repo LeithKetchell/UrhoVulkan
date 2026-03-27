@@ -213,31 +213,46 @@ void WorkboardManager::CreateUI()
 
 void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, int w, int h)
 {
-    auto* bar = parent->CreateChild<BorderImage>("StatusBar");
-    bar->SetStyle("Window");
+    auto* bar = parent->CreateChild<UIElement>("StatusBar");
     bar->SetPosition(0, 0);
     bar->SetFixedSize(w, h);
-    bar->SetLayout(LM_HORIZONTAL, 12, IntRect(8, 2, 8, 2));
+    bar->SetLayoutMode(LM_FREE);
+
+    // Distribute evenly across the bar width
+    int quarter = w / 4;
 
     auto* label = bar->CreateChild<Text>();
     label->SetFont(font_, currentFontSize_);
     label->SetText("Instances:");
     label->SetColor(Color(0.6f, 0.6f, 0.6f));
+    label->SetPosition(8, 6);
 
-    coderStatusText_ = bar->CreateChild<Text>("CoderStatus");
-    coderStatusText_->SetFont(font_, currentFontSize_);
-    coderStatusText_->SetText("Coder: OFFLINE");
-    coderStatusText_->SetColor(Color(0.5f, 0.5f, 0.5f));
+    // Dropdown listing coder instances with PIDs — centered in first quarter
+    coderStatusDropdown_ = bar->CreateChild<DropDownList>("CoderStatusDropdown");
+    coderStatusDropdown_->SetStyleAuto();
+    coderStatusDropdown_->SetFixedSize(quarter - 50, 22);
+    coderStatusDropdown_->SetResizePopup(true);
+    coderStatusDropdown_->SetPosition(quarter - 40, 3);
 
     plannerStatusText_ = bar->CreateChild<Text>("PlannerStatus");
     plannerStatusText_->SetFont(font_, currentFontSize_);
     plannerStatusText_->SetText("Planner: OFFLINE");
     plannerStatusText_->SetColor(Color(0.5f, 0.5f, 0.5f));
+    plannerStatusText_->SetPosition(quarter * 2, 6);
 
-    unassignedStatusText_ = bar->CreateChild<Text>("UnassignedStatus");
-    unassignedStatusText_->SetFont(font_, currentFontSize_);
-    unassignedStatusText_->SetText("Unassigned: OFFLINE");
-    unassignedStatusText_->SetColor(Color(0.5f, 0.5f, 0.5f));
+    unassignedStatusDropdown_ = bar->CreateChild<DropDownList>("UnassignedStatusDropdown");
+    unassignedStatusDropdown_->SetStyleAuto();
+    unassignedStatusDropdown_->SetFixedSize(quarter - 50, 22);
+    unassignedStatusDropdown_->SetResizePopup(true);
+    unassignedStatusDropdown_->SetPosition(quarter * 3, 3);
+    {
+        auto* item = new Text(context_);
+        item->SetFont(font_, currentFontSize_);
+        item->SetText("Unassigned: none");
+        item->SetColor(Color(0.5f, 0.5f, 0.5f));
+        item->SetMinSize(170, 20);
+        unassignedStatusDropdown_->AddItem(item);
+    }
 }
 
 void WorkboardManager::CreateWorkboardPanel(UIElement* parent, int x, int y, int w, int h)
@@ -322,12 +337,19 @@ void WorkboardManager::CreateComposer(UIElement* parent, int x, int y, int w, in
     messageInput_->SetStyleAuto();
     messageInput_->SetMinWidth(350);
 
+    // Coder dropdown — lists all connected coder instances
+    coderDropdown_ = bar->CreateChild<DropDownList>("CoderDropdown");
+    coderDropdown_->SetStyleAuto();
+    coderDropdown_->SetFixedSize(100, 28);
+    coderDropdown_->SetResizePopup(true);
+    // Populated dynamically in RefreshInstanceStatus
+
     sendCoderBtn_ = bar->CreateChild<Button>("SendCoder");
     sendCoderBtn_->SetStyleAuto();
-    sendCoderBtn_->SetFixedSize(80, 28);
+    sendCoderBtn_->SetFixedSize(50, 28);
     auto* cl = sendCoderBtn_->CreateChild<Text>();
     cl->SetFont(font_, currentFontSize_);
-    cl->SetText("Coder");
+    cl->SetText("Send");
     cl->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(sendCoderBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSendCoder));
 
@@ -357,6 +379,15 @@ void WorkboardManager::CreateComposer(UIElement* parent, int x, int y, int w, in
     bl->SetText("Bcast");
     bl->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(sendBroadcastBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSendBroadcast));
+
+    clearFileLocksBtn_ = bar->CreateChild<Button>("ClearLocks");
+    clearFileLocksBtn_->SetStyleAuto();
+    clearFileLocksBtn_->SetFixedSize(120, 28);
+    auto* cfl = clearFileLocksBtn_->CreateChild<Text>();
+    cfl->SetFont(font_, currentFontSize_);
+    cfl->SetText("Clear File Locks");
+    cfl->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(clearFileLocksBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleClearFileLocks));
 }
 
 void WorkboardManager::CreateDownloadBar(UIElement* parent, int x, int y, int w, int h)
@@ -428,11 +459,19 @@ void WorkboardManager::HandleDownload(StringHash /*eventType*/, VariantMap& /*ev
 
     downloadOutputPath_ = downloadDir + "/" + filename;
 
-    // Run curl in background
-    String cmd = "curl -L -o \"" + downloadOutputPath_ + "\" \"" + url + "\" > /tmp/urho_curl.log 2>&1 &";
-    system(cmd.CString());
+    // Run curl in background via fork — no blocking system() call
+    curlPid_ = fork();
+    if (curlPid_ == 0)
+    {
+        // Child process — redirect stdout/stderr to log, exec curl
+        int logFd = open("/tmp/urho_curl.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (logFd >= 0) { dup2(logFd, STDOUT_FILENO); dup2(logFd, STDERR_FILENO); close(logFd); }
+        execlp("curl", "curl", "-L", "-o", downloadOutputPath_.CString(), url.CString(), (char*)nullptr);
+        _exit(1);  // exec failed
+    }
 
-    downloadInProgress_ = true;
+    downloadInProgress_ = (curlPid_ > 0);
+    downloadCheckTimer_ = 0.0f;
     if (downloadStatusText_)
     {
         downloadStatusText_->SetText("Downloading...");
@@ -446,11 +485,23 @@ void WorkboardManager::CheckDownloadProgress()
     if (!downloadInProgress_)
         return;
 
+    // Throttle checks to once per second — no need to hammer the filesystem every frame
+    downloadCheckTimer_ += GetSubsystem<Engine>()->GetNextTimeStep();
+    if (downloadCheckTimer_ < 1.0f)
+        return;
+    downloadCheckTimer_ = 0.0f;
+
     auto* fs = GetSubsystem<FileSystem>();
 
-    // Check if curl is still running
-    int ret = system("pgrep -x curl > /dev/null 2>&1");
-    if (ret != 0)
+    // Non-blocking check: if curl PID is stored, check if it's still alive
+    if (curlPid_ > 0)
+    {
+        if (kill(curlPid_, 0) == 0)
+            return;  // still running
+        curlPid_ = 0;
+    }
+
+    // curl finished (or was never tracked) — check result
     {
         // curl finished
         downloadInProgress_ = false;
@@ -1323,10 +1374,19 @@ bool WorkboardManager::HandleWorkboardCommand(const String& message)
             fs->CreateDir(parentDir);
 
         downloadOutputPath_ = fullDest;
-        String cmd = "curl -L -o \"" + downloadOutputPath_ + "\" \"" + url + "\" > /tmp/urho_curl.log 2>&1 &";
-        system(cmd.CString());
 
-        downloadInProgress_ = true;
+        // Non-blocking fork+exec instead of system()
+        curlPid_ = fork();
+        if (curlPid_ == 0)
+        {
+            int logFd = open("/tmp/urho_curl.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (logFd >= 0) { dup2(logFd, STDOUT_FILENO); dup2(logFd, STDERR_FILENO); close(logFd); }
+            execlp("curl", "curl", "-L", "-o", downloadOutputPath_.CString(), url.CString(), (char*)nullptr);
+            _exit(1);
+        }
+
+        downloadInProgress_ = (curlPid_ > 0);
+        downloadCheckTimer_ = 0.0f;
         if (downloadStatusText_)
         {
             downloadStatusText_->SetText("Downloading...");
@@ -1367,7 +1427,6 @@ bool WorkboardManager::HandleWorkboardCommand(const String& message)
 
 void WorkboardManager::ScanPlanFiles()
 {
-    planFiles_.Clear();
     String claudeDir = GetClaudeDir();
     auto* fs = GetSubsystem<FileSystem>();
 
@@ -1375,10 +1434,17 @@ void WorkboardManager::ScanPlanFiles()
     fs->ScanDir(files, claudeDir, "PLAN_*.md", SCAN_FILES, false);
     Urho3D::Sort(files.Begin(), files.End());
 
+    // Skip rebuild if file list hasn't changed — avoids scroll reset
+    if (files == planFiles_)
+        return;
+
     planFiles_ = files;
 
     if (planListView_)
     {
+        // Preserve selection
+        unsigned prevSel = planListView_->GetSelection();
+
         planListView_->RemoveAllItems();
         for (unsigned i = 0; i < planFiles_.Size(); ++i)
         {
@@ -1388,6 +1454,10 @@ void WorkboardManager::ScanPlanFiles()
             item->SetColor(Color(0.7f, 0.85f, 1.0f));
             planListView_->AddItem(item);
         }
+
+        // Restore selection if still valid
+        if (prevSel < planListView_->GetNumItems())
+            planListView_->SetSelection(prevSel);
     }
 }
 
@@ -1473,17 +1543,7 @@ void WorkboardManager::CreateIPCPaths()
     }
 }
 
-// Helper: update the correct liveness timer based on role name from message
-static void UpdateActivityTimerForRole(const String& from,
-    float& coderTimer, float& plannerTimer, float& unassignedTimer)
-{
-    if (from == "coder")
-        coderTimer = 0.0f;
-    else if (from == "planner")
-        plannerTimer = 0.0f;
-    else if (from == "unassigned")
-        unassignedTimer = 0.0f;
-}
+// (Activity timer update moved inline — uses HashMap for multi-coder support)
 
 void WorkboardManager::PollSpoolDir(const String& dirName, const String& sourceName, float& activityTimer)
 {
@@ -1558,7 +1618,12 @@ void WorkboardManager::PollSpoolDir(const String& dirName, const String& sourceN
             continue;
 
         // Reset the correct role's liveness timer based on From: header
-        UpdateActivityTimerForRole(from, lastCoderActivity_, lastPlannerActivity_, lastUnassignedActivity_);
+        if (from == "planner")
+            lastPlannerActivity_ = 0.0f;
+        else if (from == "unassigned")
+            lastUnassignedActivity_ = 0.0f;
+        else if (from.StartsWith("coder"))
+            coderActivityTimers_[from] = 0.0f;
 
         // Capitalize source name from header for display
         String displayFrom = from.Empty() ? sourceName : from;
@@ -1689,34 +1754,165 @@ void WorkboardManager::RefreshInstanceStatus()
     // Sweep orphaned .role files from dead sessions before checking liveness
     SweepStaleRoleFiles();
 
-    const char* roles[] = {"coder", "planner", "unassigned"};
-    Text* texts[] = {coderStatusText_, plannerStatusText_, unassignedStatusText_};
-    const char* labels[] = {"Coder", "Planner", "Unassigned"};
     bool anyChanged = false;
 
-    for (int i = 0; i < 3; ++i)
+    // --- Planner (singleton) ---
+    if (plannerStatusText_)
     {
-        if (!texts[i])
-            continue;
-
-        bool alive = IsInstanceAlive(roles[i]);
-        int pid = ReadInstancePID(roles[i]);
-
-        // Detect change from previous UI state
-        bool wasOnline = texts[i]->GetText().Contains("ONLINE");
-        if (alive != wasOnline)
-            anyChanged = true;
+        bool alive = IsInstanceAlive("planner");
+        int pid = ReadInstancePID("planner");
+        bool wasOnline = plannerStatusText_->GetText().Contains("ONLINE");
+        if (alive != wasOnline) anyChanged = true;
 
         if (alive)
         {
-            texts[i]->SetText(String(labels[i]) + ": ONLINE " + String(pid));
-            texts[i]->SetColor(Color(0.3f, 1.0f, 0.5f));  // green
+            plannerStatusText_->SetText("Planner: ONLINE " + String(pid));
+            plannerStatusText_->SetColor(Color(0.3f, 1.0f, 0.5f));
         }
         else
         {
-            texts[i]->SetText(String(labels[i]) + ": OFFLINE");
-            texts[i]->SetColor(Color(0.5f, 0.5f, 0.5f));  // gray
+            plannerStatusText_->SetText("Planner: OFFLINE");
+            plannerStatusText_->SetColor(Color(0.5f, 0.5f, 0.5f));
         }
+    }
+
+    // --- Unassigned (dynamic, multiple) ---
+    Vector<String> liveUnassigned = DiscoverUnassignedRoles();
+
+    if (liveUnassigned != knownUnassignedRoles_)
+    {
+        anyChanged = true;
+        knownUnassignedRoles_ = liveUnassigned;
+    }
+
+    if (unassignedStatusDropdown_)
+    {
+        unsigned prevSel = unassignedStatusDropdown_->GetSelection();
+        unassignedStatusDropdown_->RemoveAllItems();
+
+        if (knownUnassignedRoles_.Empty())
+        {
+            auto* item = new Text(context_);
+            item->SetFont(font_, currentFontSize_);
+            item->SetText("Unassigned: none");
+            item->SetColor(Color(0.5f, 0.5f, 0.5f));
+            item->SetMinSize(170, 20);
+            unassignedStatusDropdown_->AddItem(item);
+        }
+        else
+        {
+            for (const String& role : knownUnassignedRoles_)
+            {
+                bool alive = IsInstanceAlive(role);
+                int pid = ReadInstancePID(role);
+
+                String label = role;
+                if (!label.Empty())
+                    label[0] = (char)toupper(label[0]);
+
+                auto* item = new Text(context_);
+                item->SetFont(font_, currentFontSize_);
+                item->SetMinSize(170, 20);
+
+                if (alive)
+                {
+                    item->SetText(label + "  PID " + String(pid) + "  ONLINE");
+                    item->SetColor(Color(0.3f, 1.0f, 0.5f));
+                }
+                else
+                {
+                    item->SetText(label + "  OFFLINE");
+                    item->SetColor(Color(0.5f, 0.5f, 0.5f));
+                }
+                unassignedStatusDropdown_->AddItem(item);
+            }
+        }
+
+        if (prevSel < unassignedStatusDropdown_->GetNumItems())
+            unassignedStatusDropdown_->SetSelection(prevSel);
+        else if (unassignedStatusDropdown_->GetNumItems() > 0)
+            unassignedStatusDropdown_->SetSelection(0);
+    }
+
+    // --- Coders (dynamic, multiple) ---
+    Vector<String> liveCoders = DiscoverCoderRoles();
+
+    // Check if the set of coder roles changed
+    if (liveCoders != knownCoderRoles_)
+    {
+        anyChanged = true;
+        knownCoderRoles_ = liveCoders;
+
+        // Rebuild composer dropdown
+        if (coderDropdown_)
+        {
+            unsigned prevSelection = coderDropdown_->GetSelection();
+            coderDropdown_->RemoveAllItems();
+
+            for (const String& role : knownCoderRoles_)
+            {
+                auto* item = new Text(context_);
+                item->SetFont(font_, currentFontSize_);
+                item->SetText(role);
+                item->SetStyleAuto();
+                coderDropdown_->AddItem(item);
+            }
+
+            if (prevSelection < coderDropdown_->GetNumItems())
+                coderDropdown_->SetSelection(prevSelection);
+            else if (coderDropdown_->GetNumItems() > 0)
+                coderDropdown_->SetSelection(0);
+        }
+    }
+
+    // Rebuild status bar dropdown with current PID info
+    if (coderStatusDropdown_)
+    {
+        unsigned prevSel = coderStatusDropdown_->GetSelection();
+        coderStatusDropdown_->RemoveAllItems();
+
+        if (knownCoderRoles_.Empty())
+        {
+            auto* item = new Text(context_);
+            item->SetFont(font_, currentFontSize_);
+            item->SetText("Coders: none");
+            item->SetColor(Color(0.5f, 0.5f, 0.5f));
+            item->SetMinSize(170, 20);
+            coderStatusDropdown_->AddItem(item);
+        }
+        else
+        {
+            for (const String& role : knownCoderRoles_)
+            {
+                bool alive = IsInstanceAlive(role);
+                int pid = ReadInstancePID(role);
+
+                String label = role;
+                if (!label.Empty())
+                    label[0] = (char)toupper(label[0]);
+
+                auto* item = new Text(context_);
+                item->SetFont(font_, currentFontSize_);
+                item->SetMinSize(170, 20);
+
+                if (alive)
+                {
+                    item->SetText(label + "  PID " + String(pid) + "  ONLINE");
+                    item->SetColor(Color(0.3f, 1.0f, 0.5f));
+                }
+                else
+                {
+                    item->SetText(label + "  OFFLINE");
+                    item->SetColor(Color(0.5f, 0.5f, 0.5f));
+                }
+                coderStatusDropdown_->AddItem(item);
+            }
+        }
+
+        if (prevSel < coderStatusDropdown_->GetNumItems())
+            coderStatusDropdown_->SetSelection(prevSel);
+        else if (coderStatusDropdown_->GetNumItems() > 0)
+            coderStatusDropdown_->SetSelection(0);
     }
 
     if (anyChanged)
@@ -1819,11 +2015,16 @@ void WorkboardManager::HandleSendCoder(StringHash /*eventType*/, VariantMap& /*e
 {
     if (!messageInput_) return;
     String text = messageInput_->GetText().Trimmed();
-    if (!text.Empty())
+    if (text.Empty()) return;
+
+    String target = GetSelectedCoderRole();
+    if (target.Empty())
     {
-        SendMessage("coder", text);
-        messageInput_->SetText("");
+        AppendLog("System", "No coder instance selected");
+        return;
     }
+    SendMessage(target, text);
+    messageInput_->SetText("");
 }
 
 void WorkboardManager::HandleSendPlanner(StringHash /*eventType*/, VariantMap& /*eventData*/)
@@ -1843,7 +2044,12 @@ void WorkboardManager::HandleSendUnassigned(StringHash /*eventType*/, VariantMap
     String text = messageInput_->GetText().Trimmed();
     if (!text.Empty())
     {
-        SendMessage("unassigned", text);
+        // Send to all live unassigned instances
+        for (const String& role : knownUnassignedRoles_)
+        {
+            if (IsInstanceAlive(role))
+                SendMessage(role, text);
+        }
         messageInput_->SetText("");
     }
 }
@@ -1854,15 +2060,66 @@ void WorkboardManager::HandleSendBroadcast(StringHash /*eventType*/, VariantMap&
     String text = messageInput_->GetText().Trimmed();
     if (!text.Empty())
     {
-        // Send to all roles that are alive
-        if (IsInstanceAlive("coder"))
-            SendMessage("coder", text);
+        // Send to all coder roles that are alive
+        for (const String& role : knownCoderRoles_)
+        {
+            if (IsInstanceAlive(role))
+                SendMessage(role, text);
+        }
         if (IsInstanceAlive("planner"))
             SendMessage("planner", text);
-        if (IsInstanceAlive("unassigned"))
-            SendMessage("unassigned", text);
+        // Send to all live unassigned instances
+        for (const String& role : knownUnassignedRoles_)
+        {
+            if (IsInstanceAlive(role))
+                SendMessage(role, text);
+        }
         messageInput_->SetText("");
     }
+}
+
+void WorkboardManager::HandleClearFileLocks(StringHash /*eventType*/, VariantMap& /*eventData*/)
+{
+    const char* lockDir = "/tmp/urho_claude/locks";
+    int cleared = 0;
+
+    // Remove all lock directories and files
+    Vector<String> entries;
+    auto* fs = GetSubsystem<FileSystem>();
+    if (fs)
+    {
+        fs->ScanDir(entries, lockDir, "*", SCAN_FILES | SCAN_DIRS, false);
+        for (const String& entry : entries)
+        {
+            if (entry == "." || entry == "..")
+                continue;
+            String fullPath = String(lockDir) + "/" + entry;
+            // Lock entries are directories (mkdir-based locks)
+            if (fs->DirExists(fullPath))
+            {
+                // Remove contents first
+                Vector<String> inner;
+                fs->ScanDir(inner, fullPath, "*", SCAN_FILES, false);
+                for (const String& f : inner)
+                {
+                    if (f != "." && f != "..")
+                        fs->Delete(fullPath + "/" + f);
+                }
+                rmdir(fullPath.CString());
+                cleared++;
+            }
+            else
+            {
+                // Stale flat files from old locking approach
+                fs->Delete(fullPath);
+                cleared++;
+            }
+        }
+    }
+
+    AppendLog("Manager", cleared > 0
+        ? String("Cleared ") + String(cleared) + " file lock(s)"
+        : "No file locks to clear");
 }
 
 // ============================================================================
@@ -1935,9 +2192,23 @@ void WorkboardManager::UpdateBeacon()
     VariantMap beacon;
     beacon["Service"]    = String("WorkboardManager");
     beacon["Version"]    = String("1.0");
-    beacon["Coder"]      = IsInstanceAlive("coder") ? String("ONLINE") : String("OFFLINE");
     beacon["Planner"]    = IsInstanceAlive("planner") ? String("ONLINE") : String("OFFLINE");
-    beacon["Unassigned"] = IsInstanceAlive("unassigned") ? String("ONLINE") : String("OFFLINE");
+    // Report all known unassigned roles
+    for (const String& role : knownUnassignedRoles_)
+    {
+        String key = role;
+        if (!key.Empty()) key[0] = (char)toupper(key[0]);
+        beacon[key] = IsInstanceAlive(role) ? String("ONLINE") : String("OFFLINE");
+    }
+    if (knownUnassignedRoles_.Empty())
+        beacon["Unassigned"] = String("OFFLINE");
+    // Report all known coder roles
+    for (const String& role : knownCoderRoles_)
+    {
+        String key = role;
+        if (!key.Empty()) key[0] = (char)toupper(key[0]);
+        beacon[key] = IsInstanceAlive(role) ? String("ONLINE") : String("OFFLINE");
+    }
     network->SetDiscoveryBeacon(beacon);
 }
 
@@ -1954,12 +2225,17 @@ void WorkboardManager::CleanupStalePID(const String& role, int pid)
 
 float WorkboardManager::GetLastActivity(const String& role)
 {
-    if (role == "coder")
-        return lastCoderActivity_;
     if (role == "planner")
         return lastPlannerActivity_;
     if (role == "unassigned")
         return lastUnassignedActivity_;
+    // Any coder role (coder, coder1, coder2, ...)
+    if (role.StartsWith("coder"))
+    {
+        auto it = coderActivityTimers_.Find(role);
+        if (it != coderActivityTimers_.End())
+            return it->second_;
+    }
     return 999.0f;
 }
 
@@ -2075,6 +2351,205 @@ void WorkboardManager::SweepStaleRoleFiles()
 }
 
 // ============================================================================
+// Multi-Coder Discovery
+// ============================================================================
+
+Vector<String> WorkboardManager::DiscoverCoderRoles()
+{
+    Vector<String> roles;
+    char instDir[128];
+    snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
+
+    DIR* dir = opendir(instDir);
+    if (!dir)
+        return roles;
+
+    // Scan .role files for any role starting with "coder"
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr)
+    {
+        const char* dot = strrchr(entry->d_name, '.');
+        if (!dot || strcmp(dot, ".role") != 0)
+            continue;
+
+        char rolePath[512];
+        snprintf(rolePath, sizeof(rolePath), "%s/%s", instDir, entry->d_name);
+
+        FILE* f = fopen(rolePath, "r");
+        if (!f)
+            continue;
+
+        char roleName[64] = {};
+        char pidStr[32] = {};
+        if (!fgets(roleName, sizeof(roleName), f)) roleName[0] = '\0';
+        if (!fgets(pidStr, sizeof(pidStr), f)) pidStr[0] = '\0';
+        fclose(f);
+
+        // Strip newlines
+        char* nl = strchr(roleName, '\n');
+        if (nl) *nl = '\0';
+        nl = strchr(pidStr, '\n');
+        if (nl) *nl = '\0';
+
+        String role(roleName);
+        if (!role.StartsWith("coder"))
+            continue;
+
+        // Only include if the PID is alive
+        int pid = atoi(pidStr);
+        if (pid > 0 && kill(pid, 0) == 0)
+        {
+            if (!roles.Contains(role))
+            {
+                roles.Push(role);
+                // Ensure activity timer exists for this role
+                if (coderActivityTimers_.Find(role) == coderActivityTimers_.End())
+                    coderActivityTimers_[role] = 0.0f;
+            }
+        }
+    }
+    closedir(dir);
+
+    // Also check .pid files (direct role-name format: coder.pid, coder1.pid, etc.)
+    dir = opendir(instDir);
+    if (dir)
+    {
+        while ((entry = readdir(dir)) != nullptr)
+        {
+            const char* dot = strrchr(entry->d_name, '.');
+            if (!dot || strcmp(dot, ".pid") != 0)
+                continue;
+
+            // Extract role name from filename (e.g., "coder1.pid" → "coder1")
+            String filename(entry->d_name);
+            String role = filename.Substring(0, filename.FindLast('.'));
+            if (!role.StartsWith("coder"))
+                continue;
+
+            // Check if PID is alive
+            char pidPath[512];
+            snprintf(pidPath, sizeof(pidPath), "%s/%s", instDir, entry->d_name);
+            FILE* f = fopen(pidPath, "r");
+            if (!f)
+                continue;
+            int pid = 0;
+            if (fscanf(f, "%d", &pid) != 1) pid = 0;
+            fclose(f);
+
+            if (pid > 0 && kill(pid, 0) == 0 && !roles.Contains(role))
+            {
+                roles.Push(role);
+                if (coderActivityTimers_.Find(role) == coderActivityTimers_.End())
+                    coderActivityTimers_[role] = 0.0f;
+            }
+        }
+        closedir(dir);
+    }
+
+    Sort(roles.Begin(), roles.End());
+    return roles;
+}
+
+// ============================================================================
+// Multi-Unassigned Discovery
+// ============================================================================
+
+Vector<String> WorkboardManager::DiscoverUnassignedRoles()
+{
+    Vector<String> roles;
+    char instDir[128];
+    snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
+
+    DIR* dir = opendir(instDir);
+    if (!dir)
+        return roles;
+
+    // Scan .role files for any role starting with "unassigned"
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr)
+    {
+        const char* dot = strrchr(entry->d_name, '.');
+        if (!dot || strcmp(dot, ".role") != 0)
+            continue;
+
+        char rolePath[512];
+        snprintf(rolePath, sizeof(rolePath), "%s/%s", instDir, entry->d_name);
+
+        FILE* f = fopen(rolePath, "r");
+        if (!f)
+            continue;
+
+        char roleName[64] = {};
+        char pidStr[32] = {};
+        if (!fgets(roleName, sizeof(roleName), f)) roleName[0] = '\0';
+        if (!fgets(pidStr, sizeof(pidStr), f)) pidStr[0] = '\0';
+        fclose(f);
+
+        char* nl = strchr(roleName, '\n');
+        if (nl) *nl = '\0';
+        nl = strchr(pidStr, '\n');
+        if (nl) *nl = '\0';
+
+        String role(roleName);
+        if (!role.StartsWith("unassigned"))
+            continue;
+
+        int pid = atoi(pidStr);
+        if (pid > 0 && kill(pid, 0) == 0)
+        {
+            if (!roles.Contains(role))
+                roles.Push(role);
+        }
+    }
+    closedir(dir);
+
+    // Also check .pid files (unassigned.pid, unassigned2.pid, etc.)
+    dir = opendir(instDir);
+    if (dir)
+    {
+        while ((entry = readdir(dir)) != nullptr)
+        {
+            const char* dot = strrchr(entry->d_name, '.');
+            if (!dot || strcmp(dot, ".pid") != 0)
+                continue;
+
+            String filename(entry->d_name);
+            String role = filename.Substring(0, filename.FindLast('.'));
+            if (!role.StartsWith("unassigned"))
+                continue;
+
+            char pidPath[512];
+            snprintf(pidPath, sizeof(pidPath), "%s/%s", instDir, entry->d_name);
+            FILE* f = fopen(pidPath, "r");
+            if (!f)
+                continue;
+            int pid = 0;
+            if (fscanf(f, "%d", &pid) != 1) pid = 0;
+            fclose(f);
+
+            if (pid > 0 && kill(pid, 0) == 0 && !roles.Contains(role))
+                roles.Push(role);
+        }
+        closedir(dir);
+    }
+
+    Sort(roles.Begin(), roles.End());
+    return roles;
+}
+
+String WorkboardManager::GetSelectedCoderRole()
+{
+    if (!coderDropdown_ || coderDropdown_->GetNumItems() == 0)
+        return String::EMPTY;
+
+    unsigned sel = coderDropdown_->GetSelection();
+    if (sel < knownCoderRoles_.Size())
+        return knownCoderRoles_[sel];
+
+    return String::EMPTY;
+}
+
+// ============================================================================
 // Event Handlers
 // ============================================================================
 
@@ -2084,9 +2559,10 @@ void WorkboardManager::HandleUpdate(StringHash /*eventType*/, VariantMap& eventD
     float timeStep = eventData[P_TIMESTEP].GetFloat();
 
     // Increment liveness timers
-    lastCoderActivity_ += timeStep;
     lastPlannerActivity_ += timeStep;
     lastUnassignedActivity_ += timeStep;
+    for (auto it = coderActivityTimers_.Begin(); it != coderActivityTimers_.End(); ++it)
+        it->second_ += timeStep;
 
     PollSpool();
     CheckDownloadProgress();

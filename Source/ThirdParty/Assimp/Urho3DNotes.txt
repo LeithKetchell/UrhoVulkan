@@ -1,26 +1,22 @@
-Original: https://github.com/assimp/assimp/releases/tag/v4.1.0
+Original: https://github.com/assimp/assimp/releases/tag/v6.0.4
+Upgraded from 4.1.0 to 6.0.4 on 2026-03-24
 
-Changes from the original
-=========================
+Changes from the original 6.0.4
+================================
 
 root:
 * removed dirs: doc, packaging, port, samples, scripts, test, tools
-* removed files: .editorconfig, all *.in files except revision.h.in
-* changed file: CMakeLists.txt
+* changed file: CMakeLists.txt (Urho3D static lib integration)
 
-cmake-modules: removed all files except Findrt.cmake
+CMakeLists.txt changes:
+* Version set to 6.0.4, SOVERSION 6
+* Disabled: Hunter, Draco, USD, VRML, X3D, M3D, C4D, install targets
+* Added TARGET_USE_COMMON_OUTPUT_DIRECTORY no-op macro
+* Hardcoded git info (no git commands at configure time)
+* System zlib with fallback to bundled contrib/zlib
+* Added code/ to include directories for internal headers
 
-code:
-* removed dir: res
-* removed files: .editorconfig, makefile.mingw
-* changed files: ImporterRegistry.cpp, CMakeLists.txt
+code/CMakeLists.txt: unmodified from 6.0.4
 
-contrib:
-* removed dirs: android-cmake, gtest, utf8cpp/doc, zip/test, zlib/win32
-* removed files: CMakeLists.txt, irrXML/CMakeLists.txt, openddlparser/CMakeLists.txt,
-                 zlib/CMakeLists.txt, zlib/zconf.h.in, zlib/zconf.h.included, zlib/zlib.pc.cmakein
-* added files: zip/.gitignore, zip/appveyor.yml
-
-include/assimp:
-* removed dir: port
-* removed file: .editorconfig
+AssetImporter CMakeLists.txt:
+* Changed library name from Assimp to assimp (6.0.4 uses lowercase target)

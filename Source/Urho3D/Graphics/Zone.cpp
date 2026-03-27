@@ -35,6 +35,8 @@ Zone::Zone(Context* context) :
     override_(false),
     ambientGradient_(false),
     ambientColor_(DEFAULT_AMBIENT_COLOR),
+    skyAmbientColor_(Color::BLACK),
+    groundAmbientColor_(Color::BLACK),
     fogColor_(DEFAULT_FOG_COLOR),
     fogStart_(DEFAULT_FOG_START),
     fogEnd_(DEFAULT_FOG_END),
@@ -55,6 +57,8 @@ void Zone::RegisterObject(Context* context)
     URHO3D_ATTRIBUTE_EX("Bounding Box Min", boundingBox_.min_, MarkNodeDirty, DEFAULT_BOUNDING_BOX_MIN, AM_DEFAULT);
     URHO3D_ATTRIBUTE_EX("Bounding Box Max", boundingBox_.max_, MarkNodeDirty, DEFAULT_BOUNDING_BOX_MAX, AM_DEFAULT);
     URHO3D_ATTRIBUTE("Ambient Color", ambientColor_, DEFAULT_AMBIENT_COLOR, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Sky Ambient Color", skyAmbientColor_, Color::BLACK, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Ground Ambient Color", groundAmbientColor_, Color::BLACK, AM_DEFAULT);
     URHO3D_ATTRIBUTE("Fog Color", fogColor_, DEFAULT_FOG_COLOR, AM_DEFAULT);
     URHO3D_ATTRIBUTE("Fog Start", fogStart_, DEFAULT_FOG_START, AM_DEFAULT);
     URHO3D_ATTRIBUTE("Fog End", fogEnd_, DEFAULT_FOG_END, AM_DEFAULT);
@@ -87,6 +91,18 @@ void Zone::SetBoundingBox(const BoundingBox& box)
 void Zone::SetAmbientColor(const Color& color)
 {
     ambientColor_ = color;
+    MarkNetworkUpdate();
+}
+
+void Zone::SetSkyAmbientColor(const Color& color)
+{
+    skyAmbientColor_ = color;
+    MarkNetworkUpdate();
+}
+
+void Zone::SetGroundAmbientColor(const Color& color)
+{
+    groundAmbientColor_ = color;
     MarkNetworkUpdate();
 }
 

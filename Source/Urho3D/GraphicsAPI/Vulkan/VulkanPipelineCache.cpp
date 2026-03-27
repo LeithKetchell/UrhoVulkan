@@ -198,6 +198,53 @@ Vector<uint8_t> VulkanPipelineCache::LoadCacheDataFromDisk()
     {
         URHO3D_LOGWARNING("VulkanPipelineCache: Partial read of cache file, starting fresh");
         data.Clear();
+        return data;
+    }
+
+    // Validate pipeline cache header per Vulkan spec (VkPipelineCacheHeaderVersionOne)
+    // Header: uint32 headerSize, uint32 cacheVersion, uint32 vendorID, uint32 deviceID, uint8[VK_UUID_SIZE] pipelineCacheUUID
+    const unsigned minHeaderSize = 4 + 4 + 4 + 4 + VK_UUID_SIZE; // 32 bytes
+    if (size < minHeaderSize)
+    {
+        URHO3D_LOGWARNING("VulkanPipelineCache: Cache file too small, discarding");
+        data.Clear();
+        return data;
+    }
+
+    const uint8_t* header = data.Buffer();
+    uint32_t headerLen = *(const uint32_t*)(header);
+    uint32_t cacheVersion = *(const uint32_t*)(header + 4);
+    uint32_t vendorID = *(const uint32_t*)(header + 8);
+    uint32_t deviceID = *(const uint32_t*)(header + 12);
+
+    // Validate cache version (must be VK_PIPELINE_CACHE_HEADER_VERSION_ONE = 1)
+    if (cacheVersion != VK_PIPELINE_CACHE_HEADER_VERSION_ONE)
+    {
+        URHO3D_LOGWARNING("VulkanPipelineCache: Cache version mismatch (got " + String(cacheVersion) + "), discarding");
+        data.Clear();
+        return data;
+    }
+
+    // Validate vendor/device match current GPU
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(graphics_->GetPhysicalDevice(), &props);
+
+    if (vendorID != props.vendorID || deviceID != props.deviceID)
+    {
+        URHO3D_LOGWARNING("VulkanPipelineCache: GPU mismatch (cache: vendor=" + String(vendorID) +
+            " device=" + String(deviceID) + ", current: vendor=" + String(props.vendorID) +
+            " device=" + String(props.deviceID) + "), discarding");
+        data.Clear();
+        return data;
+    }
+
+    // Validate pipeline cache UUID matches
+    const uint8_t* cacheUUID = header + 16;
+    if (memcmp(cacheUUID, props.pipelineCacheUUID, VK_UUID_SIZE) != 0)
+    {
+        URHO3D_LOGWARNING("VulkanPipelineCache: Pipeline cache UUID mismatch (driver update?), discarding");
+        data.Clear();
+        return data;
     }
 
     return data;

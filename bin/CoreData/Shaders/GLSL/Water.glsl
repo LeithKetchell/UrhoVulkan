@@ -35,6 +35,9 @@ void VS()
     mat4 modelMatrix = iModelMatrix;
     vec3 worldPos = GetWorldPos(modelMatrix);
     gl_Position = GetClipPos(worldPos);
+    // Bias water surface slightly toward camera to win depth test at terrain intersection
+    // Prevents Z-fight white line at shoreline, especially visible from below
+    gl_Position.z -= 0.0005 * gl_Position.w;
     vScreenPos = GetScreenPos(gl_Position);
     // GetQuadTexCoord() returns a vec2 that is OK for quad rendering; multiply it with output W
     // coordinate to make it work with arbitrary meshes such as the water plane (perform divide in pixel shader)

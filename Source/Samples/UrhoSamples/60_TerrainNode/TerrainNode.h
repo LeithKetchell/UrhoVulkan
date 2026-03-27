@@ -32,6 +32,7 @@
 #include "Fox.h"
 #include "Fish.h"
 #include "SchoolFish.h"
+#include "GrassSystem.h"
 #include <Urho3D/Graphics/TerrainBrush.h>
 #include <Urho3D/Graphics/ProfilerUI.h>
 
@@ -471,14 +472,17 @@ private:
     ParticleEmitter* rainEmitter_{};
     SharedPtr<ParticleEffect> rainEffect_;
 
-    // --- Grass ---
+    // --- Snow particles ---
+    void CreateSnow();
+    void UpdateSnow(float timeStep);
+    float CalculateTemperature() const;
+    SharedPtr<Node> snowNode_;
+    ParticleEmitter* snowEmitter_{};
+    SharedPtr<ParticleEffect> snowEffect_;
+
+    // --- Grass (GPU-driven) ---
     void CreateGrass();
-    void UpdateGrassPositions();
-    SharedPtr<Material> grassMat_;
-    SharedPtr<Model> grassModel_;
-    Node* grassRoot_{};
-    Vector3 lastGrassCenter_{M_INFINITY, M_INFINITY, M_INFINITY};
-    static const int MAX_GRASS_CLUMPS = 400;
+    SharedPtr<class GrassSystem> grassSystem_;
 
     // --- Fish ---
     void CreateFish();
@@ -609,4 +613,55 @@ private:
     float breachTime_{-100.0f};
     float splashTimer_{0.0f};       // countdown to next splash burst
     float splashInterval_{1.2f};    // seconds between splash bursts
+
+    // --- Survival HUD (driven by MSG_VITAL_UPDATE from AuthServer) ---
+    void HandleVitalUpdate(MemoryBuffer& msg);
+    void UpdateVitalBars();
+
+    int vitalHp_{20};
+    int vitalMaxHp_{20};
+    float vitalHunger_{100.0f};
+    float vitalThirst_{100.0f};
+    float vitalStamina_{100.0f};
+    float vitalWarmth_{15.0f};
+    bool vitalAlive_{true};
+    float vitalSpeedMult_{1.0f};
+
+    BorderImage* hungerBar_{};
+    BorderImage* hungerBarBg_{};
+    BorderImage* thirstBar_{};
+    BorderImage* thirstBarBg_{};
+    Text* hungerLabel_{};
+    Text* thirstLabel_{};
+
+    // --- Inventory UI (driven by MSG_INVENTORY_UPDATE/DELTA from AuthServer) ---
+    void HandleInventoryUpdate(MemoryBuffer& msg);
+    void HandleInventoryDelta(MemoryBuffer& msg);
+    void CreateInventoryUI();
+    void RefreshInventoryGrid();
+    void ToggleInventory();
+    void SendPickup(unsigned nodeId);
+    void SendDrop(int itemId, int qty);
+
+    struct ClientInventorySlot
+    {
+        int itemId{};
+        int quantity{};
+        int durability{-1};
+        String slotType;
+        String itemName;
+        float itemWeight{};
+    };
+    Vector<ClientInventorySlot> inventory_;
+    float inventoryWeight_{};
+    float inventoryMaxWeight_{30.0f};
+    float inventoryAbsWeight_{60.0f};
+    int inventoryMaxSlots_{10};
+    bool inventoryOpen_{false};
+
+    SharedPtr<Window> inventoryWindow_;
+    Vector<Button*> inventorySlotButtons_;
+    Text* inventoryWeightText_{};
+    BorderImage* inventoryWeightBar_{};
+    int selectedSlotIndex_{-1};
 };

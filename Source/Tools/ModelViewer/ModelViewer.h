@@ -18,6 +18,7 @@
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/CheckBox.h>
 #include <Urho3D/UI/Window.h>
+#include <Urho3D/UI/LineEdit.h>
 
 using namespace Urho3D;
 
@@ -185,4 +186,21 @@ private:
     };
     Vector<ActiveAnim> activeAnims_;
     UIElement* activeAnimContainer_{};
+
+    // Text keys
+    void CreateTextKeyPanel();
+    void RebuildTextKeyList();
+    void AddTextKeyAtCurrentTime();
+    void DeleteSelectedTextKey();
+    void SaveTextKeys();
+    void HandleTextKeyEvent(StringHash eventType, VariantMap& eventData);
+
+    UIElement* textKeyContainer_{};
+    Text* textKeyTitle_{};
+    Text* textKeyFlash_{};       // flashes key name during playback
+    float textKeyFlashTimer_{};
+    int selectedTextKey_{-1};
+    Vector<Button*> textKeyButtons_;
+    LineEdit* textKeyNameEdit_{};
+    LineEdit* textKeyDataEdit_{};
 };

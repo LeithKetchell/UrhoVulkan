@@ -153,18 +153,86 @@ announce)
     # SessionStart — register as unassigned via TTY-based role file
     TTY_ID=$(get_tty_id)
     CLAUDE_PID=$(get_claude_pid)
+
+    # Clean up any stale .pid files that point to OUR PID from a previous role
+    for pidfile in "$INST_DIR"/*.pid; do
+        [ -f "$pidfile" ] || continue
+        STORED=$(cat "$pidfile" 2>/dev/null)
+        if [ "$STORED" = "$CLAUDE_PID" ]; then
+            rm -f "$pidfile"
+        fi
+    done
+
+    # Auto-number unassigned: unassigned, unassigned2, unassigned3, ...
+    UNASSIGNED_ROLE="unassigned"
+    if [ -f "$INST_DIR/unassigned.pid" ]; then
+        OWNER_PID=$(cat "$INST_DIR/unassigned.pid" 2>/dev/null)
+        if [ -n "$OWNER_PID" ] && [ "$OWNER_PID" != "$CLAUDE_PID" ] && kill -0 "$OWNER_PID" 2>/dev/null; then
+            N=2
+            while true; do
+                CANDIDATE="unassigned${N}"
+                if [ ! -f "$INST_DIR/${CANDIDATE}.pid" ]; then
+                    UNASSIGNED_ROLE="$CANDIDATE"
+                    break
+                fi
+                CPID=$(cat "$INST_DIR/${CANDIDATE}.pid" 2>/dev/null)
+                if [ -z "$CPID" ] || [ "$CPID" = "$CLAUDE_PID" ] || ! kill -0 "$CPID" 2>/dev/null; then
+                    UNASSIGNED_ROLE="$CANDIDATE"
+                    break
+                fi
+                N=$((N + 1))
+                if [ "$N" -gt 20 ]; then
+                    echo "REFUSED: too many unassigned instances (20+)." >&2
+                    exit 1
+                fi
+            done
+        fi
+    fi
+
     # Line 1: role name, Line 2: PID (for Manager wake-up and liveness checks)
-    printf '%s\n%s\n' "unassigned" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
+    printf '%s\n%s\n' "$UNASSIGNED_ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
     # Also write <role>.pid for backward compat with Manager's ReadInstancePID()
-    echo "$CLAUDE_PID" > "$INST_DIR/unassigned.pid"
+    echo "$CLAUDE_PID" > "$INST_DIR/${UNASSIGNED_ROLE}.pid"
 
     # Ensure wake FIFO exists for this role
-    [ -p "$IPC_DIR/wake_unassigned" ] || mkfifo "$IPC_DIR/wake_unassigned" 2>/dev/null
+    [ -p "$IPC_DIR/wake_${UNASSIGNED_ROLE}" ] || mkfifo "$IPC_DIR/wake_${UNASSIGNED_ROLE}" 2>/dev/null
 
     # Create spool directories
-    mkdir -p "$SPOOL_DIR/to_unassigned" "$SPOOL_DIR/to_manager"
+    mkdir -p "$SPOOL_DIR/to_${UNASSIGNED_ROLE}" "$SPOOL_DIR/to_manager"
 
-    echo "Claude instance registered as unassigned (TTY $TTY_ID, PID $CLAUDE_PID)"
+    echo "Claude instance registered as ${UNASSIGNED_ROLE} (TTY $TTY_ID, PID $CLAUDE_PID)"
+    exit 0
+    ;;
+
+reannounce)
+    # PostCompact — re-register PID for current role (compaction gives us a new process tree)
+    TTY_ID=$(get_tty_id)
+    CLAUDE_PID=$(get_claude_pid)
+
+    # Read current role (keep it — don't reset to unassigned)
+    ROLE="unassigned"
+    if [ -f "$INST_DIR/${TTY_ID}.role" ]; then
+        ROLE=$(head -1 "$INST_DIR/${TTY_ID}.role")
+    fi
+
+    # Clean up stale .pid files pointing to our OLD PID
+    for pidfile in "$INST_DIR"/*.pid; do
+        [ -f "$pidfile" ] || continue
+        STORED=$(cat "$pidfile" 2>/dev/null)
+        # Remove if process is dead (stale from before compaction)
+        if [ -n "$STORED" ] && ! kill -0 "$STORED" 2>/dev/null; then
+            rm -f "$pidfile"
+        fi
+    done
+
+    # Update role file with fresh PID
+    printf '%s\n%s\n' "$ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
+    echo "$CLAUDE_PID" > "$INST_DIR/${ROLE}.pid"
+
+    # Ensure spool dirs exist
+    mkdir -p "$SPOOL_DIR/to_${ROLE}" "$SPOOL_DIR/to_manager"
+
+    echo "PostCompact: re-registered as $ROLE (TTY $TTY_ID, PID $CLAUDE_PID)"
     exit 0
     ;;
 
@@ -235,24 +303,40 @@ assume)
         OLD_ROLE=$(head -1 "$INST_DIR/${TTY_ID}.role")
     fi
 
-    # Enforce: refuse if role is already taken by a different live instance
-    if [ "$NEW_ROLE" != "unassigned" ] && [ -f "$INST_DIR/${NEW_ROLE}.pid" ]; then
+    # Enforce singleton for planner — refuse if already taken by a different live instance
+    # Coders auto-number: coder, coder2, coder3, ... (no limit)
+    if [ "$NEW_ROLE" = "planner" ] && [ -f "$INST_DIR/${NEW_ROLE}.pid" ]; then
         OWNER_PID=$(cat "$INST_DIR/${NEW_ROLE}.pid" 2>/dev/null)
         if [ -n "$OWNER_PID" ] && [ "$OWNER_PID" != "$CLAUDE_PID" ] && kill -0 "$OWNER_PID" 2>/dev/null; then
-            # Find which roles are available
-            AVAILABLE=""
-            for r in coder planner; do
-                if [ ! -f "$INST_DIR/${r}.pid" ]; then
-                    AVAILABLE="$AVAILABLE $r"
-                else
-                    rpid=$(cat "$INST_DIR/${r}.pid" 2>/dev/null)
-                    if [ -z "$rpid" ] || [ "$rpid" = "$CLAUDE_PID" ] || ! kill -0 "$rpid" 2>/dev/null; then
-                        AVAILABLE="$AVAILABLE $r"
-                    fi
+            echo "REFUSED: planner is a singleton, already taken by PID $OWNER_PID." >&2
+            exit 1
+        fi
+    fi
+
+    # Auto-number coders: if "coder" is taken, try coder2, coder3, ...
+    if [ "$NEW_ROLE" = "coder" ] && [ -f "$INST_DIR/coder.pid" ]; then
+        OWNER_PID=$(cat "$INST_DIR/coder.pid" 2>/dev/null)
+        if [ -n "$OWNER_PID" ] && [ "$OWNER_PID" != "$CLAUDE_PID" ] && kill -0 "$OWNER_PID" 2>/dev/null; then
+            # coder is taken — find next available number
+            N=2
+            while true; do
+                CANDIDATE="coder${N}"
+                if [ ! -f "$INST_DIR/${CANDIDATE}.pid" ]; then
+                    NEW_ROLE="$CANDIDATE"
+                    break
+                fi
+                CPID=$(cat "$INST_DIR/${CANDIDATE}.pid" 2>/dev/null)
+                if [ -z "$CPID" ] || [ "$CPID" = "$CLAUDE_PID" ] || ! kill -0 "$CPID" 2>/dev/null; then
+                    NEW_ROLE="$CANDIDATE"
+                    break
+                fi
+                N=$((N + 1))
+                # Safety: don't loop forever
+                if [ "$N" -gt 20 ]; then
+                    echo "REFUSED: too many coders (20+)." >&2
+                    exit 1
                 fi
             done
-            echo "REFUSED: $NEW_ROLE is already taken by PID $OWNER_PID. Available roles:$AVAILABLE" >&2
-            exit 1
         fi
     fi
 
@@ -327,6 +411,17 @@ for line in lines:
     if in_done and not line.startswith('|') and not line.strip() == '': break
     if in_done and task in line and '---' not in line and 'Task' not in line:
         print(f'Already exists in Done: {task}'); sys.exit(0)
+# Auto-cleanup: remove matching entry from In Progress
+in_progress = False
+remove_indices = []
+for i, line in enumerate(lines):
+    if line.strip().startswith('## In Progress'): in_progress = True; continue
+    if in_progress and not line.startswith('|') and not line.strip() == '': in_progress = False
+    if in_progress and task in line and line.startswith('|') and '---' not in line and 'Task' not in line:
+        remove_indices.append(i)
+for idx in reversed(remove_indices):
+    removed = lines.pop(idx).strip()
+    print(f'Auto-cleaned from In Progress: {removed}')
 row = '$ROW\n'
 in_done = False; insert_at = -1
 for i, line in enumerate(lines):
@@ -360,20 +455,32 @@ plan = '''$PLAN'''
 # Dedup: skip if plan name already exists in Ready table
 in_ready = False
 for line in lines:
-    if line.strip().startswith('## Ready'): in_ready = True; continue
+    if line.strip().startswith('## Planned') or line.strip().startswith('## Ready'): in_ready = True; continue
     if in_ready and not line.startswith('|') and not line.strip() == '': break
     if in_ready and plan in line and '---' not in line and 'Pri' not in line:
-        print(f'Already exists in Ready: {plan}'); sys.exit(0)
+        print(f'Already exists in Planned: {plan}'); sys.exit(0)
 row = '$ROW\n'
+# Auto-cleanup: remove matching entry from In Progress
+in_progress = False
+remove_indices = []
+for i, line in enumerate(lines):
+    if line.strip().startswith('## In Progress'): in_progress = True; continue
+    if in_progress and not line.startswith('|') and not line.strip() == '': in_progress = False
+    if in_progress and plan in line and line.startswith('|') and '---' not in line and 'Task' not in line:
+        remove_indices.append(i)
+for idx in reversed(remove_indices):
+    removed = lines.pop(idx).strip()
+    print(f'Auto-cleaned from In Progress: {removed}')
+# Insert into Ready
 in_ready = False; insert_at = -1
 for i, line in enumerate(lines):
-    if line.strip().startswith('## Ready'): in_ready = True; continue
+    if line.strip().startswith('## Planned') or line.strip().startswith('## Ready'): in_ready = True; continue
     if in_ready:
         if line.startswith('|') and '---' not in line and 'Pri' not in line: insert_at = i + 1
         elif in_ready and insert_at > 0 and not line.startswith('|'): break
 if insert_at > 0:
-    lines.insert(insert_at, row); open(wb, 'w').writelines(lines); print(f'Added to Ready: {plan}')
-else: print('Could not find Ready table', file=sys.stderr); sys.exit(1)
+    lines.insert(insert_at, row); open(wb, 'w').writelines(lines); print(f'Added to Planned: {plan}')
+else: print('Could not find Planned table', file=sys.stderr); sys.exit(1)
 "
     ) 200>"$LOCKFILE"
     exit $?
@@ -525,6 +632,62 @@ wb-add-shared)
         echo "Manager not running — add-shared requires Manager" >&2
         exit 1
     fi
+    exit 0
+    ;;
+
+spawn-coder)
+    # Launch a new Claude Code instance in the user's preferred terminal
+    # Usage: claude_ipc.sh spawn-coder
+    TERM_EMU=$(which x-terminal-emulator 2>/dev/null)
+    if [ -z "$TERM_EMU" ]; then
+        # Fallback chain
+        for t in gnome-terminal xfce4-terminal konsole xterm; do
+            TERM_EMU=$(which "$t" 2>/dev/null) && break
+        done
+    fi
+    if [ -z "$TERM_EMU" ]; then
+        echo "No terminal emulator found" >&2
+        exit 1
+    fi
+
+    # Resolve the real binary (x-terminal-emulator is often a symlink)
+    REAL_TERM=$(readlink -f "$TERM_EMU" 2>/dev/null || echo "$TERM_EMU")
+
+    # Initial prompt tells the instance to follow the startup protocol
+    INIT_PROMPT="Follow the Session Startup Protocol: assume the coder role by running .claude/hooks/claude_ipc.sh assume coder — then read Claude/WORKBOARD.md and check in with Leith for your assignment. Use .claude/hooks/safe_build.sh for all builds, never raw make."
+
+    # Launch claude in a new terminal, detached, with CLAUDECODE unset
+    case "$REAL_TERM" in
+        *gnome-terminal*)
+            env -u CLAUDECODE gnome-terminal -- claude "$INIT_PROMPT" 2>/dev/null &
+            ;;
+        *xfce4-terminal*)
+            env -u CLAUDECODE xfce4-terminal -e "claude \"$INIT_PROMPT\"" 2>/dev/null &
+            ;;
+        *konsole*)
+            env -u CLAUDECODE konsole -e claude "$INIT_PROMPT" 2>/dev/null &
+            ;;
+        *)
+            env -u CLAUDECODE "$TERM_EMU" -e claude "$INIT_PROMPT" 2>/dev/null &
+            ;;
+    esac
+
+    echo "Spawned new Claude Code instance via $REAL_TERM (PID $!)"
+
+    # Wait for the instance to register, then find the newest unassigned and send role assignment
+    sleep 5
+    NEWEST_UNASSIGNED=""
+    for uf in "$INST_DIR"/unassigned*.pid; do
+        [ -f "$uf" ] || continue
+        UPID=$(cat "$uf" 2>/dev/null)
+        if [ -n "$UPID" ] && kill -0 "$UPID" 2>/dev/null; then
+            UNAME=$(basename "$uf" .pid)
+            NEWEST_UNASSIGNED="$UNAME"
+        fi
+    done
+    TARGET="${NEWEST_UNASSIGNED:-unassigned}"
+    spool_write "$SPOOL_DIR/to_${TARGET}" "planner" "command" "You are a Coder. Assume the coder role immediately by running: .claude/hooks/claude_ipc.sh assume coder — then read Claude/WORKBOARD.md and check in with Leith for your assignment. Use .claude/hooks/safe_build.sh for all builds, never raw make."
+    echo "Role assignment queued for ${TARGET}"
     exit 0
     ;;
 

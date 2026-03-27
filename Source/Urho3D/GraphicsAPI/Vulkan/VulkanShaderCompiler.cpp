@@ -199,7 +199,6 @@ bool VulkanShaderCompiler::CompileGLSLToSPIRV(
         *customUniformMap = localCustomMap;
 
 #if VULKAN_SHADER_DEBUG_LOGGING
-            (int)source.Length(), (int)preprocessed.Length());
 #endif
 #if VULKAN_SHADER_DEBUG_LOGGING
 #endif
@@ -414,7 +413,6 @@ static String AddExplicitLayoutQualifiers(const String& source,
         if (trimmed.Contains("attribute") || trimmed.Contains("varying") || trimmed.Contains("fragData"))
         {
 #if VULKAN_SHADER_DEBUG_LOGGING
-                    i, isInput, isOutput, trimmed.Contains(";"));
 #endif
         }
 

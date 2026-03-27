@@ -72,11 +72,13 @@ void PS()
     // How far below the water surface this pixel is
     float depthBelowWater = cWaterLevel - worldPos.y;
 
-    // Skybox / far plane — fade toward fog color underwater
+    // Skybox / far plane — darken toward murky depth, not aqua tint
     if (hwDepth > 0.999)
     {
-        float darkness = clamp((cWaterLevel - cMainCameraY) * cDepthFalloff, 0.0, 1.0) * breachFade;
-        gl_FragColor = mix(passThrough, vec4(cUnderwaterColor * 0.3, 1.0), darkness);
+        float darkness = clamp((cWaterLevel - cMainCameraY) * cDepthFalloff, 0.0, 0.85) * breachFade;
+        // Darken the sky toward near-black when deep underwater
+        // Use passThrough color scaled down, not underwater tint — avoids aqua flood at night
+        gl_FragColor = vec4(passThrough.rgb * (1.0 - darkness), 1.0);
         return;
     }
 
@@ -89,7 +91,8 @@ void PS()
     vec2 surfNoise = (texture2D(sNormalMap, surfNoiseUV).rg - 0.5) * cNoiseStrength * 0.3 * breachFade;
     vec2 surfUV = clamp(vScreenPos + surfNoise, vec2(0.001), vec2(0.999));
     vec4 surfColor = texture2D(sDiffMap, surfUV);
-    vec3 surfResult = mix(surfColor.rgb, cUnderwaterColor, 0.5 * breachFade);
+    // Darken surface view instead of tinting aqua — prevents sky flooding
+    vec3 surfResult = surfColor.rgb * (1.0 - 0.3 * breachFade);
 
     // Underwater distortion (for submerged geometry)
     vec2 noiseUV = vScreenPos * cNoiseTiling + cElapsedTimePS * cNoiseSpeed;
