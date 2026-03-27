@@ -5,6 +5,8 @@
 #include "Animal.h"
 #include <Urho3D/Graphics/Material.h>
 
+class FishSpatialHash;
+
 class Fish : public Animal
 {
     URHO3D_OBJECT(Fish, Animal);
@@ -19,6 +21,7 @@ public:
 
     void SetMaterials(Material* base, Material* orbit, Material* stare);
     void SetCameraNode(Node* camNode) { cameraNode_ = WeakPtr<Node>(camNode); }
+    void SetSpatialHash(FishSpatialHash* hash) { spatialHash_ = hash; }
 
 protected:
     String GetModelPath() const override { return "Models/UrhoFish.mdl"; }
@@ -64,4 +67,8 @@ private:
     SharedPtr<Material> baseMat_;
     SharedPtr<Material> orbitMat_;
     SharedPtr<Material> stareMat_;
+
+protected:
+    // Spatial hash (owned by TerrainNode, not by Fish)
+    FishSpatialHash* spatialHash_{nullptr};
 };

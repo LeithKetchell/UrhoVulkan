@@ -7,6 +7,8 @@
 
 #include "Fish.h"
 
+class SchoolStateCache;
+
 class SchoolFish : public Fish
 {
     URHO3D_OBJECT(SchoolFish, Fish);
@@ -22,6 +24,7 @@ public:
     /// Assign this fish to a school. All fish sharing the same school ID will flock together.
     void SetSchoolID(unsigned id) { schoolID_ = id; }
     unsigned GetSchoolID() const { return schoolID_; }
+    void SetSchoolCache(SchoolStateCache* cache) { schoolCache_ = cache; }
 
 protected:
     float GetWanderSpeed() const override { return 0.8f; }
@@ -39,4 +42,7 @@ private:
     float separationWeight_{2.0f};   // push away from close neighbours
     float separationDist_{0.8f};     // min distance before separation kicks in
     float schoolTurnSpeed_{3.0f};    // faster turning for tight schooling
+
+    // School state cache (owned by TerrainNode, not by SchoolFish)
+    SchoolStateCache* schoolCache_{nullptr};
 };

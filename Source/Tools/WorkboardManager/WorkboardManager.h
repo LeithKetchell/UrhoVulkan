@@ -1,5 +1,5 @@
 // WorkboardManager — GUI dashboard for workboard viewing, plan browsing,
-// and bidirectional IPC with Claude Code instances via message spool directories.
+// and bidirectional IPC with Claude Code instances via TTY injection.
 
 #pragma once
 
@@ -81,11 +81,8 @@ private:
 
     // ── IPC ──
     void CreateIPCPaths();
-    void PollSpool();
-    void PollSpoolDir(const String& dirName, const String& sourceName, float& activityTimer);
     void SendMessage(const String& target, const String& message);
-    void SendToSpool(const String& targetRole, const String& from, const String& type, const String& body);
-    void WakeInstance(const String& role);
+    bool InjectViaTTY(const String& role, const String& message);
     int ReadInstancePID(const String& role);
     bool IsInstanceAlive(const String& role);
     void RefreshInstanceStatus();
@@ -148,7 +145,7 @@ private:
     String projectRoot_;
     Vector<WorkboardSection> sections_;
     float refreshAccumulator_{};
-    static constexpr float REFRESH_INTERVAL = 3.0f;
+    static constexpr float REFRESH_INTERVAL = 5.0f;
     unsigned lastWriteMtime_{0};
 
     // ── Workboard UI ──
@@ -196,7 +193,8 @@ private:
 
     // ── IPC state ──
     static constexpr const char* IPC_DIR = "/tmp/urho_claude";
-    static constexpr const char* SPOOL_DIR = "/tmp/urho_claude/spool";
+    static constexpr const char* TTY_SOCK_DIR = "/tmp/urho_claude/tty";
+
 
     // ── Beacon liveness ──
     HashMap<String, float> coderActivityTimers_;  // role name → seconds since last activity

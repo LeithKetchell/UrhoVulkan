@@ -132,7 +132,7 @@ GUI dashboard for coordinating multiple Claude Code instances (`build/bin/Workbo
 
 - Workboard display with Planned / In Progress / Done tables, plan browser with full markdown rendering
 - **Multi-instance status dropdowns** — separate dropdowns for Coders (auto-numbered: coder, coder2, ...) and Unassigned instances, Planner singleton
-- Bidirectional messaging with Claude Code instances via atomic message spool directories
+- **TTY injection messaging** — messages delivered directly into Claude Code terminals via PTY proxy Unix sockets. No polling, no user interaction required — messages arrive and submit automatically
 - Message composer with per-role send buttons and broadcast
 - Automatic liveness detection — crashed instances culled from status display
 - LAN discovery beacon for multi-tool coordination
@@ -274,10 +274,10 @@ Bottom-right corner, GPU-rendered orthographic RTT camera. Rotates with camera y
 
 ## Claude Code Multi-Instance Hooks
 
-A complete IPC system for running multiple Claude Code instances on the same project as a coordinated team. Included as `ClaudeCodeTeamHooks.zip` in the project root.
+A complete coordination system for running multiple Claude Code instances on the same project as a team. Included as `ClaudeCodeTeamHooks.zip` in the project root.
 
 - **Role-based coordination**: Planner (architecture/docs) + multiple Coders (implementation). First instance becomes Planner, subsequent instances become Coders
-- **spawn-coder**: Launch new Coder instances from Planner — opens a real terminal, registers via SessionStart hook, receives initial prompt automatically
+- **spawn-coder**: Launch new Coder instances from Planner — opens a real terminal via PTY proxy, registers via SessionStart hook, receives initial prompt automatically
 - **Build safety**: Per-target `flock` wrapper prevents concurrent `make` corruption when multiple Coders build simultaneously
 - **File locking**: Atomic `mkdir`-based locks on Read/Write/Edit operations via PreToolUse/PostToolUse hooks
 - **Dead instance culling**: Stale PIDs detected and cleaned on startup and at runtime
@@ -286,21 +286,32 @@ See `.claude/INSTALL.md` inside the zip for setup instructions across Linux, mac
 
 ---
 
-## IPC System (Message Spool V2)
+## TTY Injection (replacing IPC Spool)
 
-Claude Code instances and the WorkboardManager communicate via atomic message files in spool directories. Messages cannot be lost — files persist until consumed.
+Claude Code instances cannot receive messages between prompts — they only process input when the user types. Earlier IPC approaches (message spool directories, named FIFOs) all stalled until a hook fired, which required user interaction.
+
+The solution: a PTY proxy that sits between the terminal and Claude Code, forwarding normal I/O while also accepting injected messages via a Unix domain socket. Messages written to the socket appear as user-typed input, complete with a carriage return to submit.
+
+```
+Terminal ←→ PTY Proxy ←→ Claude Code
+                ↑
+          Unix Socket
+    (WorkboardManager writes here)
+```
 
 ```
 /tmp/urho_claude/
-    spool/
-        to_coder/       # Messages waiting for Coder
-        to_planner/     # Messages waiting for Planner
-        to_manager/     # Messages waiting for Manager
+    tty/
+        coder.sock      # symlink → spawn socket for coder
+        coder2.sock     # symlink → spawn socket for coder2
+        spawn_1.sock    # actual Unix socket (pty-proxy listens)
+        spawn_2.sock
     instances/          # PID/role registration
-    wake_<role>         # FIFO for instant notification
 ```
 
-Each message is an atomic file (`.tmp` -> rename to `.msg`) with headers and body. Sequence-numbered filenames guarantee ordering. See `Claude/IPC_PROTOCOL.md` for full details.
+Each Coder is launched through `pty-proxy`, which creates a Unix socket. When the Coder assumes its role (`claude_ipc.sh assume coder`), it symlinks `<role>.sock` to its spawn socket. The WorkboardManager sends messages by connecting to `<role>.sock`, writing the message text, pausing briefly, then writing `\r` to simulate pressing Enter. Claude Code processes the message as if the user typed it.
+
+No polling. No spool files. No FIFOs. Just bytes on a PTY — the way Unix intended.
 
 ---
 

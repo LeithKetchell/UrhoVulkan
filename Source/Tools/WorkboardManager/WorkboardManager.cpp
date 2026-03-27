@@ -20,6 +20,8 @@
 #include <Urho3D/UI/UIEvents.h>
 
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -80,6 +82,10 @@ void WorkboardManager::Start()
     // Ignore SIGPIPE — writing to a FIFO with no reader would otherwise kill us
     signal(SIGPIPE, SIG_IGN);
 
+    // Cap FPS — this is a static dashboard, not a game
+    engine_->SetMaxFps(30);
+    engine_->SetMaxInactiveFps(10);
+
     projectRoot_ = GetProjectRoot();
 
     auto* cache = GetSubsystem<ResourceCache>();
@@ -110,6 +116,24 @@ void WorkboardManager::Start()
     CreateIPCPaths();
     RefreshInstanceStatus();
 
+    // Notify any surviving instances that Manager is back online
+    {
+        const String onlineMsg = "=== WORKBOARD MANAGER ONLINE === The WorkboardManager is back. "
+            "Message delivery restored. Resume normal operations.";
+        for (const String& role : knownCoderRoles_)
+        {
+            if (IsInstanceAlive(role))
+                InjectViaTTY(role, onlineMsg);
+        }
+        if (IsInstanceAlive("planner"))
+            InjectViaTTY("planner", onlineMsg);
+        for (const String& role : knownUnassignedRoles_)
+        {
+            if (IsInstanceAlive(role))
+                InjectViaTTY(role, onlineMsg);
+        }
+    }
+
     // Start beacon server on UDP 31337
     auto* network = GetSubsystem<Network>();
     if (network)
@@ -130,6 +154,24 @@ void WorkboardManager::Start()
 
 void WorkboardManager::Stop()
 {
+    // Broadcast shutdown notice to all live instances via TTY injection
+    const String shutdownMsg = "=== WORKBOARD MANAGER SHUTTING DOWN === The WorkboardManager is temporarily offline. "
+        "Continue your current task. TTY injection will resume when Manager restarts. "
+        "Do NOT attempt to send messages to Manager until you receive a 'Manager back online' notice.";
+
+    for (const String& role : knownCoderRoles_)
+    {
+        if (IsInstanceAlive(role))
+            InjectViaTTY(role, shutdownMsg);
+    }
+    if (IsInstanceAlive("planner"))
+        InjectViaTTY("planner", shutdownMsg);
+    for (const String& role : knownUnassignedRoles_)
+    {
+        if (IsInstanceAlive(role))
+            InjectViaTTY(role, shutdownMsg);
+    }
+
     auto* network = GetSubsystem<Network>();
     if (network)
         network->StopServer();
@@ -1516,151 +1558,10 @@ void WorkboardManager::CreateIPCPaths()
     snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
     mkdir(instDir, 0777);
 
-    // Create spool directories
-    mkdir(SPOOL_DIR, 0777);
-    const char* roles[] = {"coder", "planner", "unassigned", "manager"};
-    for (int i = 0; i < 4; ++i)
-    {
-        char spoolPath[256];
-        snprintf(spoolPath, sizeof(spoolPath), "%s/to_%s", SPOOL_DIR, roles[i]);
-        mkdir(spoolPath, 0777);
-    }
-
-    // Create wake FIFOs (kept for instant notification — lightweight nudge)
-    const char* wakeFifos[] = {
-        "/tmp/urho_claude/wake_coder",
-        "/tmp/urho_claude/wake_planner",
-        "/tmp/urho_claude/wake_unassigned"
-    };
-    for (int i = 0; i < 3; ++i)
-    {
-        struct stat st;
-        if (stat(wakeFifos[i], &st) != 0)
-        {
-            if (mkfifo(wakeFifos[i], 0666) != 0)
-                URHO3D_LOGERRORF("Failed to create FIFO %s: %s", wakeFifos[i], strerror(errno));
-        }
-    }
+    // Create TTY socket directory
+    mkdir(TTY_SOCK_DIR, 0777);
 }
 
-// (Activity timer update moved inline — uses HashMap for multi-coder support)
-
-void WorkboardManager::PollSpoolDir(const String& dirName, const String& sourceName, float& activityTimer)
-{
-    char spoolPath[256];
-    snprintf(spoolPath, sizeof(spoolPath), "%s/%s", SPOOL_DIR, dirName.CString());
-
-    DIR* dir = opendir(spoolPath);
-    if (!dir)
-        return;
-
-    // Collect .msg filenames first, then sort for sequence order
-    Vector<String> msgFiles;
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr)
-    {
-        const char* dot = strrchr(entry->d_name, '.');
-        if (dot && strcmp(dot, ".msg") == 0)
-            msgFiles.Push(String(entry->d_name));
-    }
-    closedir(dir);
-
-    if (msgFiles.Empty())
-        return;
-
-    Sort(msgFiles.Begin(), msgFiles.End());
-
-    for (const String& filename : msgFiles)
-    {
-        char filePath[512];
-        snprintf(filePath, sizeof(filePath), "%s/%s", spoolPath, filename.CString());
-
-        // Read the entire file
-        FILE* f = fopen(filePath, "r");
-        if (!f)
-            continue;
-
-        // Parse headers and body
-        String from, type, body;
-        char line[4096];
-        bool inBody = false;
-
-        while (fgets(line, sizeof(line), f))
-        {
-            String sline(line);
-            sline = sline.Trimmed();
-
-            if (!inBody)
-            {
-                if (sline == "---")
-                {
-                    inBody = true;
-                    continue;
-                }
-                if (sline.StartsWith("From:"))
-                    from = sline.Substring(5).Trimmed();
-                else if (sline.StartsWith("Type:"))
-                    type = sline.Substring(5).Trimmed();
-            }
-            else
-            {
-                if (!body.Empty())
-                    body += "\n";
-                body += sline;
-            }
-        }
-        fclose(f);
-
-        // Delete the message file (consumed)
-        remove(filePath);
-
-        if (body.Empty())
-            continue;
-
-        // Reset the correct role's liveness timer based on From: header
-        if (from == "planner")
-            lastPlannerActivity_ = 0.0f;
-        else if (from == "unassigned")
-            lastUnassignedActivity_ = 0.0f;
-        else if (from.StartsWith("coder"))
-            coderActivityTimers_[from] = 0.0f;
-
-        // Capitalize source name from header for display
-        String displayFrom = from.Empty() ? sourceName : from;
-        if (!displayFrom.Empty())
-            displayFrom[0] = (char)toupper((unsigned char)displayFrom[0]);
-
-        URHO3D_LOGINFOF("PollSpool: %s [%s] from %s: %s",
-            dirName.CString(), type.CString(), displayFrom.CString(), body.CString());
-
-        // Route by message type
-        if (type == "command")
-        {
-            if (!HandleWorkboardCommand(body))
-                AppendLog(displayFrom + " \xe2\x86\x92 Manager", body);
-        }
-        else if (type == "status")
-        {
-            // Status messages are heartbeats — activity timer already reset above.
-            // Optionally log them (currently filtered by AppendLog).
-            AppendLog(displayFrom, body);
-        }
-        else
-        {
-            // chat, relay, or unknown — display in log
-            AppendLog(displayFrom + " \xe2\x86\x92 Manager", body);
-        }
-    }
-}
-
-void WorkboardManager::PollSpool()
-{
-    // All Claude messages go to to_manager spool.
-    // We pass a dummy timer here — real timer update happens inside PollSpoolDir
-    // by matching the From: header to the correct role timer.
-    float dummyTimer = 0.0f;
-    PollSpoolDir("to_manager", "Manager", dummyTimer);
-}
 
 
 // ============================================================================
@@ -1782,6 +1683,7 @@ void WorkboardManager::RefreshInstanceStatus()
     if (liveUnassigned != knownUnassignedRoles_)
     {
         anyChanged = true;
+
         knownUnassignedRoles_ = liveUnassigned;
     }
 
@@ -1841,6 +1743,7 @@ void WorkboardManager::RefreshInstanceStatus()
     if (liveCoders != knownCoderRoles_)
     {
         anyChanged = true;
+
         knownCoderRoles_ = liveCoders;
 
         // Rebuild composer dropdown
@@ -1919,84 +1822,47 @@ void WorkboardManager::RefreshInstanceStatus()
         UpdateBeacon();
 }
 
-void WorkboardManager::WakeInstance(const String& role)
+
+bool WorkboardManager::InjectViaTTY(const String& role, const String& message)
 {
-    int pid = ReadInstancePID(role);
-    if (pid <= 0 || kill(pid, 0) != 0)
-    {
-        AppendLog("System", role + " is not running — message saved for next session");
-        return;
-    }
+    // Try to inject message directly into the coder's TTY via pty-proxy Unix socket
+    String sockPath = "/tmp/urho_claude/tty/" + role + ".sock";
 
-    // Write to wake FIFO — Claude's background FIFO listener will trigger a task-notification
-    char fifoPath[128];
-    snprintf(fifoPath, sizeof(fifoPath), "%s/wake_%s", IPC_DIR, role.CString());
+    struct stat st;
+    if (stat(sockPath.CString(), &st) != 0 || !S_ISSOCK(st.st_mode))
+        return false;
 
-    int fd = open(fifoPath, O_WRONLY | O_NONBLOCK);
-    if (fd >= 0)
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return false;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sockPath.CString(), sizeof(addr.sun_path) - 1);
+
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
     {
-        const char* nudge = "wake\n";
-        ssize_t written = write(fd, nudge, strlen(nudge));
         close(fd);
-        if (written > 0)
-            AppendLog("System", "Woke " + role + " via FIFO");
-        else
-            AppendLog("System", "Wake FIFO write failed for " + role + ": " + String(strerror(errno)));
+        return false;
     }
-    else
+
+    // Send message text first, then Enter separately so TUI sees it as a keypress
+    ssize_t written = write(fd, message.CString(), message.Length());
+    if (written > 0)
     {
-        // FIFO not yet created or no reader — message stays in drop-file for next hook check
-        AppendLog("System", role + " wake FIFO not available — message queued for next check");
+        usleep(50000);  // 50ms pause
+        write(fd, "\r", 1);  // Enter keypress
     }
+    close(fd);
+
+    if (written < 0)
+        return false;
+
+    URHO3D_LOGINFOF("InjectViaTTY: sent %d bytes to %s via %s", (int)written, role.CString(), sockPath.CString());
+    return true;
 }
 
-void WorkboardManager::SendToSpool(const String& targetRole, const String& from, const String& type, const String& body)
-{
-    char spoolPath[256];
-    snprintf(spoolPath, sizeof(spoolPath), "%s/to_%s", SPOOL_DIR, targetRole.CString());
-    mkdir(spoolPath, 0777);
-
-    // Read sequence number
-    char seqPath[256];
-    snprintf(seqPath, sizeof(seqPath), "%s/.seq", spoolPath);
-
-    int seq = 1;
-    FILE* sf = fopen(seqPath, "r");
-    if (sf)
-    {
-        fscanf(sf, "%d", &seq);
-        fclose(sf);
-    }
-
-    // Write message atomically: .tmp → .msg
-    char tmpPath[512], msgPath[512];
-    snprintf(tmpPath, sizeof(tmpPath), "%s/%03d_%s.tmp", spoolPath, seq, from.CString());
-    snprintf(msgPath, sizeof(msgPath), "%s/%03d_%s.msg", spoolPath, seq, from.CString());
-
-    FILE* f = fopen(tmpPath, "w");
-    if (!f)
-    {
-        URHO3D_LOGERRORF("SendToSpool: failed to create %s: %s", tmpPath, strerror(errno));
-        return;
-    }
-
-    time_t now = time(nullptr);
-    struct tm* t = localtime(&now);
-    char timeStr[64];
-    strftime(timeStr, sizeof(timeStr), "%Y-%m-%dT%H:%M:%S", t);
-
-    fprintf(f, "From: %s\nTime: %s\nType: %s\n---\n%s\n", from.CString(), timeStr, type.CString(), body.CString());
-    fclose(f);
-    rename(tmpPath, msgPath);
-
-    // Increment sequence
-    sf = fopen(seqPath, "w");
-    if (sf)
-    {
-        fprintf(sf, "%d\n", seq + 1);
-        fclose(sf);
-    }
-}
 
 void WorkboardManager::SendMessage(const String& target, const String& message)
 {
@@ -2004,11 +1870,12 @@ void WorkboardManager::SendMessage(const String& target, const String& message)
     if (message.Empty())
         return;
 
-    SendToSpool(target, "manager", "chat", message);
-    AppendLog("Manager \xe2\x86\x92 " + target, message);
+    bool injected = InjectViaTTY(target, message);
 
-    // Wake the instance via FIFO for instant notification
-    WakeInstance(target);
+    if (!injected)
+        AppendLog(String("Manager \xe2\x86\x92 ") + target + " [FAILED]", "TTY injection failed — no socket for " + target);
+    else
+        AppendLog(String("Manager \xe2\x86\x92 ") + target + " [TTY]", message);
 }
 
 void WorkboardManager::HandleSendCoder(StringHash /*eventType*/, VariantMap& /*eventData*/)
@@ -2564,7 +2431,6 @@ void WorkboardManager::HandleUpdate(StringHash /*eventType*/, VariantMap& eventD
     for (auto it = coderActivityTimers_.Begin(); it != coderActivityTimers_.End(); ++it)
         it->second_ += timeStep;
 
-    PollSpool();
     CheckDownloadProgress();
 
     refreshAccumulator_ += timeStep;

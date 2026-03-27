@@ -13,52 +13,7 @@ INST_DIR="$IPC_DIR/instances"
 WORKBOARD="$(cd "$(dirname "$0")/../.." && pwd)/Claude/WORKBOARD.md"
 LOCKFILE="$IPC_DIR/workboard.lock"
 
-SPOOL_DIR="$IPC_DIR/spool"
-mkdir -p "$INST_DIR" "$SPOOL_DIR"
-
-# Write a message file to a spool directory (atomic: .tmp → .msg)
-spool_write() {
-    local target_dir="$1" from="$2" type="$3" body="$4"
-    mkdir -p "$target_dir"
-    local seq_file="$target_dir/.seq"
-    local lock_file="$target_dir/.seq.lock"
-    local seq next padded tmp final
-    (
-        flock -w 5 200 || { echo "Failed to acquire spool lock" >&2; return 1; }
-        seq=$(cat "$seq_file" 2>/dev/null || echo 1)
-        next=$((seq + 1))
-        padded=$(printf "%03d" "$seq")
-        tmp="$target_dir/${padded}_${from}.tmp"
-        final="$target_dir/${padded}_${from}.msg"
-        cat > "$tmp" <<SPOOL_EOF
-From: $from
-Time: $(date -Iseconds)
-Type: $type
----
-$body
-SPOOL_EOF
-        mv "$tmp" "$final"
-        echo "$next" > "$seq_file"
-    ) 200>"$lock_file"
-}
-
-# Read and delete all spool messages for a role, in order. Outputs body text.
-spool_drain() {
-    local spool="$1"
-    [ -d "$spool" ] || return 0
-    local found=0
-    for msg in $(ls -1 "$spool"/*.msg 2>/dev/null | sort); do
-        found=1
-        echo ""
-        echo "=== MESSAGE FROM WORKBOARD MANAGER ==="
-        # Print body (everything after first --- line)
-        sed '1,/^---$/d' "$msg"
-        echo "=== END MESSAGE ==="
-        echo ""
-        rm -f "$msg"
-    done
-    return $found
-}
+mkdir -p "$INST_DIR"
 
 # Get a stable identifier for this terminal session.
 # TTY is stable for the lifetime of the terminal — no PID issues.
@@ -139,13 +94,6 @@ ensure_manager() {
     manager_running
 }
 
-# Send a WB command via spool to Manager
-send_wb_command() {
-    local role
-    role=$(get_role)
-    spool_write "$SPOOL_DIR/to_manager" "$role" "command" "$1"
-    return $?
-}
 
 case "$ACTION" in
 
@@ -160,6 +108,42 @@ announce)
         STORED=$(cat "$pidfile" 2>/dev/null)
         if [ "$STORED" = "$CLAUDE_PID" ]; then
             rm -f "$pidfile"
+        fi
+    done
+
+    # Sweep orphaned builds from dead Claude instances
+    for pidfile in "$INST_DIR"/*.pid; do
+        [ -f "$pidfile" ] || continue
+        STORED_PID=$(cat "$pidfile" 2>/dev/null)
+        if [ -n "$STORED_PID" ] && ! kill -0 "$STORED_PID" 2>/dev/null; then
+            DEAD_ROLE=$(basename "$pidfile" .pid)
+            echo "Sweeping stale instance: $DEAD_ROLE (PID $STORED_PID)"
+            rm -f "$pidfile"
+            for rolefile in "$INST_DIR"/*.role; do
+                [ -f "$rolefile" ] || continue
+                if [ "$(head -1 "$rolefile")" = "$DEAD_ROLE" ]; then
+                    rm -f "$rolefile"
+                fi
+            done
+        fi
+    done
+
+    # Kill orphaned make processes with no living Claude parent
+    for mpid in $(pgrep -f "make.*-j[0-9]" 2>/dev/null); do
+        OWNED=false
+        for pidfile in "$INST_DIR"/*.pid; do
+            [ -f "$pidfile" ] || continue
+            OWNER_PID=$(cat "$pidfile" 2>/dev/null)
+            if [ -n "$OWNER_PID" ] && kill -0 "$OWNER_PID" 2>/dev/null; then
+                OWNED=true
+                break
+            fi
+        done
+        if [ "$OWNED" = false ]; then
+            echo "Killing orphaned build process: PID $mpid"
+            kill -TERM "$mpid" 2>/dev/null
+            sleep 1
+            kill -9 "$mpid" 2>/dev/null
         fi
     done
 
@@ -194,12 +178,6 @@ announce)
     # Also write <role>.pid for backward compat with Manager's ReadInstancePID()
     echo "$CLAUDE_PID" > "$INST_DIR/${UNASSIGNED_ROLE}.pid"
 
-    # Ensure wake FIFO exists for this role
-    [ -p "$IPC_DIR/wake_${UNASSIGNED_ROLE}" ] || mkfifo "$IPC_DIR/wake_${UNASSIGNED_ROLE}" 2>/dev/null
-
-    # Create spool directories
-    mkdir -p "$SPOOL_DIR/to_${UNASSIGNED_ROLE}" "$SPOOL_DIR/to_manager"
-
     echo "Claude instance registered as ${UNASSIGNED_ROLE} (TTY $TTY_ID, PID $CLAUDE_PID)"
     exit 0
     ;;
@@ -229,42 +207,29 @@ reannounce)
     printf '%s\n%s\n' "$ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
     echo "$CLAUDE_PID" > "$INST_DIR/${ROLE}.pid"
 
-    # Ensure spool dirs exist
-    mkdir -p "$SPOOL_DIR/to_${ROLE}" "$SPOOL_DIR/to_manager"
-
     echo "PostCompact: re-registered as $ROLE (TTY $TTY_ID, PID $CLAUDE_PID)"
     exit 0
     ;;
 
 check)
-    # UserPromptSubmit / Notification — drain spool for this role
+    # UserPromptSubmit / Notification — refresh PID (compaction changes process tree)
     ROLE=$(get_role)
-    MY_SPOOL="$SPOOL_DIR/to_${ROLE}"
-    mkdir -p "$MY_SPOOL"
-    echo "$(date '+%H:%M:%S') check fired for $ROLE" >> "$IPC_DIR/hook_debug.log"
 
-    # Primary: read all queued spool messages in order
-    spool_drain "$MY_SPOOL"
-
-    # Fallback: legacy drop-file (transition period — Manager may still write these)
-    MSG_FILE="$IPC_DIR/to_${ROLE}.msg"
-    if [ -f "$MSG_FILE" ]; then
-        CONTENT=$(cat "$MSG_FILE")
-        rm -f "$MSG_FILE"
-        echo "$(date '+%H:%M:%S') delivered legacy drop-file to $ROLE" >> "$IPC_DIR/hook_debug.log"
-        echo ""
-        echo "=== MESSAGE FROM WORKBOARD MANAGER ==="
-        echo "$CONTENT"
-        echo "=== END MESSAGE ==="
-        echo ""
+    TTY_ID=$(get_tty_id)
+    CLAUDE_PID=$(get_claude_pid)
+    STORED_PID=""
+    if [ -f "$INST_DIR/${ROLE}.pid" ]; then
+        STORED_PID=$(cat "$INST_DIR/${ROLE}.pid" 2>/dev/null)
+    fi
+    if [ "$STORED_PID" != "$CLAUDE_PID" ]; then
+        printf '%s\n%s\n' "$ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
+        echo "$CLAUDE_PID" > "$INST_DIR/${ROLE}.pid"
     fi
     exit 0
     ;;
 
 report)
-    # Stop — send status to Manager via spool
-    ROLE=$(get_role)
-    spool_write "$SPOOL_DIR/to_manager" "$ROLE" "status" "[$ROLE] Turn complete at $(date '+%H:%M:%S')"
+    # Stop — no-op now that spool is removed (TTY is push-based from Manager)
     exit 0
     ;;
 
@@ -282,6 +247,17 @@ cleanup)
             fi
         fi
         rm -f "$INST_DIR/${TTY_ID}.role"
+    fi
+
+    # Kill any orphaned build processes spawned by this instance
+    if [ -n "$CLAUDE_PID" ]; then
+        # Kill make processes whose parent is our Claude PID
+        pkill -TERM -P "$CLAUDE_PID" make 2>/dev/null
+        # Also kill any make processes in our process group
+        PGID=$(ps -o pgid= -p "$CLAUDE_PID" 2>/dev/null | tr -d ' ')
+        if [ -n "$PGID" ] && [ "$PGID" != "0" ]; then
+            pkill -TERM -g "$PGID" make 2>/dev/null
+        fi
     fi
     exit 0
     ;;
@@ -352,42 +328,34 @@ assume)
     printf '%s\n%s\n' "$NEW_ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
     # Write new role's .pid file
     echo "$CLAUDE_PID" > "$INST_DIR/${NEW_ROLE}.pid"
-    # Ensure wake FIFO exists for new role
-    [ -p "$IPC_DIR/wake_${NEW_ROLE}" ] || mkfifo "$IPC_DIR/wake_${NEW_ROLE}" 2>/dev/null
-    # Create spool directories for new role
-    mkdir -p "$SPOOL_DIR/to_${NEW_ROLE}" "$SPOOL_DIR/to_manager"
+    # TTY injection: symlink role socket to spawn socket if running under pty-proxy
+    if [ -n "$PTY_PROXY_SOCK" ] && [ -S "$PTY_PROXY_SOCK" ]; then
+        TTY_SOCK_DIR="/tmp/urho_claude/tty"
+        ROLE_SOCK="$TTY_SOCK_DIR/${NEW_ROLE}.sock"
+        # Remove old symlink if exists
+        rm -f "$ROLE_SOCK"
+        ln -s "$PTY_PROXY_SOCK" "$ROLE_SOCK"
+        echo "TTY socket mapped: ${NEW_ROLE}.sock -> $(basename "$PTY_PROXY_SOCK")"
+    fi
 
     echo "Role changed: $OLD_ROLE -> $NEW_ROLE (TTY $TTY_ID, PID $CLAUDE_PID)"
     exit 0
     ;;
 
 send)
-    # Send a message via spool
-    # Usage: claude_ipc.sh send <message>           (to manager)
-    #   or:  claude_ipc.sh send <target-role> <message>
+    # Send a message via TTY injection
+    # Usage: claude_ipc.sh send <target-role> <message>
     TARGET="$2"
     MSG="$3"
 
-    # If no third arg, the message is arg2 and target is manager
-    if [ -z "$MSG" ]; then
-        MSG="$TARGET"
-        TARGET="manager"
-    fi
-
-    if [ -z "$MSG" ]; then
-        echo "Usage: claude_ipc.sh send [target] <message>" >&2
+    if [ -z "$TARGET" ] || [ -z "$MSG" ]; then
+        echo "Usage: claude_ipc.sh send <target-role> <message>" >&2
         exit 1
     fi
 
-    ROLE=$(get_role)
-    spool_write "$SPOOL_DIR/to_${TARGET}" "$ROLE" "chat" "$MSG"
-
-    # Wake the target if it's a Claude instance (has a wake FIFO)
-    if [ "$TARGET" != "manager" ] && [ -p "$IPC_DIR/wake_${TARGET}" ]; then
-        echo "wake" > "$IPC_DIR/wake_${TARGET}" 2>/dev/null || true
-    fi
-
-    echo "Sent to $TARGET: $MSG"
+    HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+    "$HOOKS_DIR/tty-inject.sh" "$TARGET" "$MSG"
+    echo "Sent to $TARGET via TTY: $MSG"
     exit 0
     ;;
 
@@ -527,13 +495,9 @@ wb-move-done)
         echo "Usage: claude_ipc.sh wb-move-done <task>" >&2
         exit 1
     fi
-    CMD="WB:move-done:${TASK}"
-    if manager_running && send_wb_command "$CMD"; then
-        echo "Moved to Done: $TASK"
-    else
-        (
-            flock -w 10 200 || { echo "Failed to acquire workboard lock" >&2; exit 1; }
-            python3 -c "
+    (
+        flock -w 10 200 || { echo "Failed to acquire workboard lock" >&2; exit 1; }
+        python3 -c "
 import sys
 lines = open('$WORKBOARD').readlines()
 task = '''$TASK'''
@@ -554,8 +518,7 @@ if insert_at > 0:
     lines.insert(insert_at, removed_row + '\n'); open('$WORKBOARD', 'w').writelines(lines); print(f'Moved to Done: {task}')
 else: print('Could not find Done table', file=sys.stderr); sys.exit(1)
 "
-        ) 200>"$LOCKFILE"
-    fi
+    ) 200>"$LOCKFILE"
     exit $?
     ;;
 
@@ -565,13 +528,9 @@ wb-remove)
         echo "Usage: claude_ipc.sh wb-remove <text>" >&2
         exit 1
     fi
-    CMD="WB:remove:${MATCH}"
-    if manager_running && send_wb_command "$CMD"; then
-        echo "Removed: $MATCH"
-    else
-        (
-            flock -w 10 200 || { echo "Failed to acquire workboard lock" >&2; exit 1; }
-            python3 -c "
+    (
+        flock -w 10 200 || { echo "Failed to acquire workboard lock" >&2; exit 1; }
+        python3 -c "
 import sys
 lines = open('$WORKBOARD').readlines()
 match = '''$MATCH'''
@@ -582,8 +541,7 @@ for line in lines:
 if removed: open('$WORKBOARD', 'w').writelines(new_lines); print(f'Removed: {match}')
 else: print(f'Not found: {match}', file=sys.stderr); sys.exit(1)
 "
-        ) 200>"$LOCKFILE"
-    fi
+    ) 200>"$LOCKFILE"
     exit $?
     ;;
 
@@ -593,14 +551,8 @@ wb-update-review)
         echo "Usage: claude_ipc.sh wb-update-review <task> <review>" >&2
         exit 1
     fi
-    CMD="WB:update-review:${TASK}|${REVIEW}"
-    if manager_running && send_wb_command "$CMD"; then
-        echo "Updated review: $TASK -> $REVIEW"
-    else
-        echo "Manager not running — review update requires Manager" >&2
-        exit 1
-    fi
-    exit 0
+    echo "wb-update-review not yet implemented via TTY — edit workboard directly" >&2
+    exit 1
     ;;
 
 wb-download)
@@ -609,14 +561,8 @@ wb-download)
         echo "Usage: claude_ipc.sh wb-download <url> <dest-relative-to-project-root>" >&2
         exit 1
     fi
-    CMD="WB:download:${URL}|${DEST}"
-    if manager_running && send_wb_command "$CMD"; then
-        echo "Download requested: $URL -> $DEST"
-    else
-        echo "Manager not running — download requires Manager" >&2
-        exit 1
-    fi
-    exit 0
+    echo "wb-download not yet implemented via TTY — use curl directly" >&2
+    exit 1
     ;;
 
 wb-add-shared)
@@ -625,14 +571,8 @@ wb-add-shared)
         echo "Usage: claude_ipc.sh wb-add-shared <file> <reason>" >&2
         exit 1
     fi
-    CMD="WB:add-shared:${FILE}|${REASON}"
-    if manager_running && send_wb_command "$CMD"; then
-        echo "Added shared file: $FILE"
-    else
-        echo "Manager not running — add-shared requires Manager" >&2
-        exit 1
-    fi
-    exit 0
+    echo "wb-add-shared not yet implemented via TTY — edit workboard directly" >&2
+    exit 1
     ;;
 
 spawn-coder)
@@ -656,23 +596,56 @@ spawn-coder)
     # Initial prompt tells the instance to follow the startup protocol
     INIT_PROMPT="Follow the Session Startup Protocol: assume the coder role by running .claude/hooks/claude_ipc.sh assume coder — then read Claude/WORKBOARD.md and check in with Leith for your assignment. Use .claude/hooks/safe_build.sh for all builds, never raw make."
 
-    # Launch claude in a new terminal, detached, with CLAUDECODE unset
-    case "$REAL_TERM" in
-        *gnome-terminal*)
-            env -u CLAUDECODE gnome-terminal -- claude "$INIT_PROMPT" 2>/dev/null &
-            ;;
-        *xfce4-terminal*)
-            env -u CLAUDECODE xfce4-terminal -e "claude \"$INIT_PROMPT\"" 2>/dev/null &
-            ;;
-        *konsole*)
-            env -u CLAUDECODE konsole -e claude "$INIT_PROMPT" 2>/dev/null &
-            ;;
-        *)
-            env -u CLAUDECODE "$TERM_EMU" -e claude "$INIT_PROMPT" 2>/dev/null &
-            ;;
-    esac
+    # Determine pty-proxy socket path — use a provisional name until the coder assumes a role
+    # The socket will be at /tmp/urho_claude/tty/spawn_<N>.sock initially
+    # Once the coder assumes a role, the socket is symlinked to the role name
+    HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+    PTY_PROXY="$HOOKS_DIR/pty-proxy"
+    TTY_DIR="/tmp/urho_claude/tty"
+    mkdir -p "$TTY_DIR"
 
-    echo "Spawned new Claude Code instance via $REAL_TERM (PID $!)"
+    # Find next available spawn number
+    SPAWN_NUM=1
+    while [ -S "$TTY_DIR/spawn_${SPAWN_NUM}.sock" ]; do
+        SPAWN_NUM=$((SPAWN_NUM + 1))
+    done
+    SPAWN_SOCK="$TTY_DIR/spawn_${SPAWN_NUM}.sock"
+
+    if [ -x "$PTY_PROXY" ]; then
+        # Launch through pty-proxy for message injection support
+        case "$REAL_TERM" in
+            *gnome-terminal*)
+                env -u CLAUDECODE gnome-terminal -- "$PTY_PROXY" --socket "$SPAWN_SOCK" -- claude "$INIT_PROMPT" 2>/dev/null &
+                ;;
+            *xfce4-terminal*)
+                env -u CLAUDECODE xfce4-terminal -e "\"$PTY_PROXY\" --socket \"$SPAWN_SOCK\" -- claude \"$INIT_PROMPT\"" 2>/dev/null &
+                ;;
+            *konsole*)
+                env -u CLAUDECODE konsole -e "$PTY_PROXY" --socket "$SPAWN_SOCK" -- claude "$INIT_PROMPT" 2>/dev/null &
+                ;;
+            *)
+                env -u CLAUDECODE "$TERM_EMU" -e "$PTY_PROXY" --socket "$SPAWN_SOCK" -- claude "$INIT_PROMPT" 2>/dev/null &
+                ;;
+        esac
+        echo "Spawned new Claude Code instance via $REAL_TERM with pty-proxy (socket: $SPAWN_SOCK)"
+    else
+        # Fallback: no pty-proxy binary, launch directly
+        case "$REAL_TERM" in
+            *gnome-terminal*)
+                env -u CLAUDECODE gnome-terminal -- claude "$INIT_PROMPT" 2>/dev/null &
+                ;;
+            *xfce4-terminal*)
+                env -u CLAUDECODE xfce4-terminal -e "claude \"$INIT_PROMPT\"" 2>/dev/null &
+                ;;
+            *konsole*)
+                env -u CLAUDECODE konsole -e claude "$INIT_PROMPT" 2>/dev/null &
+                ;;
+            *)
+                env -u CLAUDECODE "$TERM_EMU" -e claude "$INIT_PROMPT" 2>/dev/null &
+                ;;
+        esac
+        echo "Spawned new Claude Code instance via $REAL_TERM (no pty-proxy, no TTY injection)"
+    fi
 
     # Wait for the instance to register, then find the newest unassigned and send role assignment
     sleep 5
@@ -686,7 +659,6 @@ spawn-coder)
         fi
     done
     TARGET="${NEWEST_UNASSIGNED:-unassigned}"
-    spool_write "$SPOOL_DIR/to_${TARGET}" "planner" "command" "You are a Coder. Assume the coder role immediately by running: .claude/hooks/claude_ipc.sh assume coder — then read Claude/WORKBOARD.md and check in with Leith for your assignment. Use .claude/hooks/safe_build.sh for all builds, never raw make."
     echo "Role assignment queued for ${TARGET}"
     exit 0
     ;;

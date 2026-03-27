@@ -1,6 +1,7 @@
 // Fish — aquatic animal. Swims underwater, avoids shallows, reacts to camera.
 
 #include "Fish.h"
+#include "FishSpatialHash.h"
 
 #include <Urho3D/Core/Context.h>
 #include <Urho3D/Graphics/StaticModel.h>
@@ -61,24 +62,25 @@ void Fish::Swim(float timeStep)
     // Fish model faces -Z, so forward is BACK
     Vector3 forward = rot * Vector3::BACK;
 
-    // --- Neighbour avoidance ---
-    // Query scene for other Fish components
+    // --- Neighbour avoidance via spatial hash ---
     Vector3 desiredDir = forward;
     float nearestDist = M_INFINITY;
     Vector3 nearestDir;
 
-    const Vector<SharedPtr<Node>>& children = GetScene()->GetChildren();
-    for (unsigned i = 0; i < children.Size(); ++i)
+    if (spatialHash_)
     {
-        Node* other = children[i];
-        if (other == node_ || other->GetName() != "Fish")
-            continue;
-        Vector3 diff = other->GetWorldPosition() - pos;
-        float dist = diff.Length();
-        if (dist < nearestDist)
+        Vector<Fish*> nearby;
+        spatialHash_->Query(pos, comfortDist_, nearby);
+        for (unsigned i = 0; i < nearby.Size(); ++i)
         {
-            nearestDist = dist;
-            nearestDir = diff;
+            if (nearby[i] == this) continue;
+            Vector3 diff = nearby[i]->GetNode()->GetWorldPosition() - pos;
+            float dist = diff.Length();
+            if (dist < nearestDist)
+            {
+                nearestDist = dist;
+                nearestDir = diff;
+            }
         }
     }
 

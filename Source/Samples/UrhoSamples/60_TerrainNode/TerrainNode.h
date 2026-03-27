@@ -32,7 +32,10 @@
 #include "Fox.h"
 #include "Fish.h"
 #include "SchoolFish.h"
+#include "FishSpatialHash.h"
+#include "SchoolState.h"
 #include "GrassSystem.h"
+#include "HUD.h"
 #include <Urho3D/Graphics/TerrainBrush.h>
 #include <Urho3D/Graphics/ProfilerUI.h>
 
@@ -476,6 +479,7 @@ private:
     void CreateSnow();
     void UpdateSnow(float timeStep);
     float CalculateTemperature() const;
+    float CalculateEffectiveTemperature() const;
     SharedPtr<Node> snowNode_;
     ParticleEmitter* snowEmitter_{};
     SharedPtr<ParticleEffect> snowEffect_;
@@ -487,6 +491,10 @@ private:
     // --- Fish ---
     void CreateFish();
     void CreateSchoolFish();
+    void RebuildFishSpatialHash();
+    FishSpatialHash fishSpatialHash_;
+    SchoolStateCache schoolStateCache_;
+    int frameNumber_{0};
 
     // --- Campfire ---
     void CreateCampfire();
@@ -627,12 +635,8 @@ private:
     bool vitalAlive_{true};
     float vitalSpeedMult_{1.0f};
 
-    BorderImage* hungerBar_{};
-    BorderImage* hungerBarBg_{};
-    BorderImage* thirstBar_{};
-    BorderImage* thirstBarBg_{};
-    Text* hungerLabel_{};
-    Text* thirstLabel_{};
+    /// HUD component (vital bars with fade, critical states)
+    WeakPtr<HUD> hud_;
 
     // --- Inventory UI (driven by MSG_INVENTORY_UPDATE/DELTA from AuthServer) ---
     void HandleInventoryUpdate(MemoryBuffer& msg);

@@ -1,6 +1,8 @@
 // SchoolFish — tiny schooling fish with flocking behavior.
 
 #include "SchoolFish.h"
+#include "FishSpatialHash.h"
+#include "SchoolState.h"
 
 #include <Urho3D/Core/Context.h>
 #include <Urho3D/Graphics/StaticModel.h>
@@ -29,32 +31,49 @@ void SchoolFish::ComputeSchoolState(Vector3& centroid, Vector3& avgHeading, unsi
     avgHeading = Vector3::ZERO;
     count = 0;
 
-    const Vector<SharedPtr<Node>>& children = GetScene()->GetChildren();
-    for (unsigned i = 0; i < children.Size(); ++i)
+    // Use school state cache — first fish to call triggers computation, rest get cached result
+    if (schoolCache_)
     {
-        Node* other = children[i];
-        if (other == node_ || other->GetName() != "SchoolFish")
-            continue;
+        SchoolState& state = schoolCache_->GetState(schoolID_);
+        if (state.frameComputed == schoolCache_->GetCurrentFrame())
+        {
+            // Already computed this frame — use cached
+            centroid = state.centroid;
+            avgHeading = state.averageHeading;
+            count = (unsigned)state.memberCount;
+            return;
+        }
 
-        auto* otherFish = other->GetComponent<SchoolFish>();
-        if (!otherFish || otherFish->GetSchoolID() != schoolID_)
-            continue;
+        // First fish in this school this frame — compute via spatial hash
+        if (spatialHash_)
+        {
+            Vector<SchoolFish*> members;
+            spatialHash_->QuerySchool(node_->GetWorldPosition(), GetWanderRadius(), schoolID_, members);
 
-        Vector3 otherPos = other->GetWorldPosition();
-        Quaternion otherRot = other->GetWorldRotation();
-        Vector3 otherFwd = otherRot * Vector3::BACK;  // fish face -Z
+            for (unsigned i = 0; i < members.Size(); ++i)
+            {
+                Node* n = members[i]->GetNode();
+                centroid += n->GetWorldPosition();
+                avgHeading += n->GetWorldRotation() * Vector3::BACK;
+                ++count;
+            }
 
-        centroid += otherPos;
-        avgHeading += otherFwd;
-        ++count;
+            if (count > 0)
+            {
+                centroid /= (float)count;
+                if (avgHeading.LengthSquared() > 0.001f)
+                    avgHeading.Normalize();
+            }
+
+            state.centroid = centroid;
+            state.averageHeading = avgHeading;
+            state.memberCount = (int)count;
+            state.frameComputed = schoolCache_->GetCurrentFrame();
+            return;
+        }
     }
 
-    if (count > 0)
-    {
-        centroid /= (float)count;
-        if (avgHeading.LengthSquared() > 0.001f)
-            avgHeading.Normalize();
-    }
+    // Fallback: no hash/cache available (shouldn't happen in normal operation)
 }
 
 void SchoolFish::Update(float timeStep)
@@ -88,25 +107,22 @@ void SchoolFish::Update(float timeStep)
         // Alignment — match average school heading
         desiredDir += avgHeading * alignmentWeight_;
 
-        // Separation — push away from too-close neighbours
-        const Vector<SharedPtr<Node>>& children = GetScene()->GetChildren();
-        for (unsigned i = 0; i < children.Size(); ++i)
+        // Separation — push away from too-close neighbours via spatial hash
+        if (spatialHash_)
         {
-            Node* other = children[i];
-            if (other == node_ || other->GetName() != "SchoolFish")
-                continue;
-
-            auto* otherFish = other->GetComponent<SchoolFish>();
-            if (!otherFish || otherFish->GetSchoolID() != schoolID_)
-                continue;
-
-            Vector3 diff = pos - other->GetWorldPosition();
-            float dist = diff.Length();
-            if (dist < separationDist_ && dist > 0.001f)
+            Vector<Fish*> tooClose;
+            spatialHash_->Query(pos, separationDist_, tooClose);
+            for (unsigned i = 0; i < tooClose.Size(); ++i)
             {
-                diff.Normalize();
-                float urgency = 1.0f - (dist / separationDist_);
-                desiredDir += diff * urgency * separationWeight_;
+                if (tooClose[i] == static_cast<Fish*>(this)) continue;
+                Vector3 diff = pos - tooClose[i]->GetNode()->GetWorldPosition();
+                float dist = diff.Length();
+                if (dist < separationDist_ && dist > 0.001f)
+                {
+                    diff.Normalize();
+                    float urgency = 1.0f - (dist / separationDist_);
+                    desiredDir += diff * urgency * separationWeight_;
+                }
             }
         }
     }

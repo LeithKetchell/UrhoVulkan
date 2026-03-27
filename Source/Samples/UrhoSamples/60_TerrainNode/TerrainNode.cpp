@@ -246,6 +246,7 @@ void TerrainNode::Start()
     Fish::RegisterObject(context_);
     SchoolFish::RegisterObject(context_);
     GrassSystem::RegisterObject(context_);
+    HUD::RegisterObject(context_);
 
     // Fallback RNG seed — local time + favourite prime.
     SetRandomSeed((unsigned)time(nullptr) + 25773u);
@@ -1111,6 +1112,14 @@ void TerrainNode::CreateScene()
     CreateRain();
     CreateSnow();
     CreateCampfire();
+
+    // HUD — vital bars (HP, Hunger, Thirst, Stamina)
+    {
+        Node* hudNode = scene_->CreateChild("HUD");
+        auto* hud = hudNode->CreateComponent<HUD>();
+        hud->SetFont(font_, 9);
+        hud_ = hud;
+    }
 }
 
 // OnSceneLoaded() — DEAD CODE, preserved for future network scene loading reintegration.
@@ -1154,54 +1163,7 @@ void TerrainNode::CreateInstructions()
     clockText_->SetVerticalAlignment(VA_BOTTOM);
     clockText_->SetPosition(-8, -8);
 
-    // --- Survival HUD bars (bottom center, hidden until hunger/thirst < 75%) ---
-    const int barW = 120, barH = 10, barGap = 6, barYOff = -30;
-
-    // Hunger bar background
-    hungerBarBg_ = ui->GetRoot()->CreateChild<BorderImage>();
-    hungerBarBg_->SetColor(Color(0.15f, 0.15f, 0.15f, 0.6f));
-    hungerBarBg_->SetSize(barW, barH);
-    hungerBarBg_->SetHorizontalAlignment(HA_CENTER);
-    hungerBarBg_->SetVerticalAlignment(VA_BOTTOM);
-    hungerBarBg_->SetPosition(-(barW / 2 + barGap / 2), barYOff);
-    hungerBarBg_->SetVisible(false);
-
-    // Hunger bar fill
-    hungerBar_ = hungerBarBg_->CreateChild<BorderImage>();
-    hungerBar_->SetColor(Color(0.8f, 0.6f, 0.1f));  // amber
-    hungerBar_->SetSize(barW, barH);
-    hungerBar_->SetPosition(0, 0);
-
-    // Hunger label
-    hungerLabel_ = hungerBarBg_->CreateChild<Text>();
-    hungerLabel_->SetFont(font_, 9);
-    hungerLabel_->SetColor(Color::WHITE);
-    hungerLabel_->SetText("Hunger");
-    hungerLabel_->SetHorizontalAlignment(HA_CENTER);
-    hungerLabel_->SetPosition(0, -12);
-
-    // Thirst bar background
-    thirstBarBg_ = ui->GetRoot()->CreateChild<BorderImage>();
-    thirstBarBg_->SetColor(Color(0.15f, 0.15f, 0.15f, 0.6f));
-    thirstBarBg_->SetSize(barW, barH);
-    thirstBarBg_->SetHorizontalAlignment(HA_CENTER);
-    thirstBarBg_->SetVerticalAlignment(VA_BOTTOM);
-    thirstBarBg_->SetPosition(barW / 2 + barGap / 2, barYOff);
-    thirstBarBg_->SetVisible(false);
-
-    // Thirst bar fill
-    thirstBar_ = thirstBarBg_->CreateChild<BorderImage>();
-    thirstBar_->SetColor(Color(0.2f, 0.5f, 0.9f));  // blue
-    thirstBar_->SetSize(barW, barH);
-    thirstBar_->SetPosition(0, 0);
-
-    // Thirst label
-    thirstLabel_ = thirstBarBg_->CreateChild<Text>();
-    thirstLabel_->SetFont(font_, 9);
-    thirstLabel_->SetColor(Color::WHITE);
-    thirstLabel_->SetText("Thirst");
-    thirstLabel_->SetHorizontalAlignment(HA_CENTER);
-    thirstLabel_->SetPosition(0, -12);
+    // Survival HUD bars now handled by HUD component (created in CreateScene)
 }
 
 // ============================================================================
@@ -5710,6 +5672,29 @@ float TerrainNode::CalculateTemperature() const
     return baseTemp - altEffect - nightEffect;
 }
 
+float TerrainNode::CalculateEffectiveTemperature() const
+{
+    float temp = CalculateTemperature();
+
+    // Wind chill: wind speed reduces perceived temperature
+    // weather_.windSpeed is 0..1 normalized; strong wind at 1.0 = -8C chill
+    float windChill = weather_.windSpeed * 8.0f;
+    temp -= windChill;
+
+    // Rain chill: being in rain is cold; precipitation 0..1, max -5C chill
+    if (weather_.precipitation > 0.1f)
+    {
+        float rainChill = (weather_.precipitation - 0.1f) / 0.9f * 5.0f;
+        temp -= rainChill;
+    }
+
+    // Cloud cover reduces solar warming during day
+    // Overcast dims warmth by up to 3C
+    temp -= weather_.cloudCover * 3.0f;
+
+    return temp;
+}
+
 void TerrainNode::UpdateSnow(float timeStep)
 {
     if (!snowNode_ || !snowEffect_ || !cameraNode_)
@@ -5894,6 +5879,7 @@ void TerrainNode::CreateFish()
         auto* fish = fishNode->CreateComponent<Fish>();
         fish->SetMaterials(baseMat, orbitMat, stareMat);
         fish->SetCameraNode(cameraNode_);
+        fish->SetSpatialHash(&fishSpatialHash_);
     }
 
     URHO3D_LOGINFOF("Spawned %d fish", NUM_FISH);
@@ -5954,10 +5940,30 @@ void TerrainNode::CreateSchoolFish()
             auto* fish = fishNode->CreateComponent<SchoolFish>();
             fish->SetSchoolID(school);
             fish->SetCameraNode(cameraNode_);
+            fish->SetSpatialHash(&fishSpatialHash_);
+            fish->SetSchoolCache(&schoolStateCache_);
         }
     }
 
     URHO3D_LOGINFOF("Spawned %d schools of %d tiny fish each", NUM_SCHOOLS, FISH_PER_SCHOOL);
+}
+
+void TerrainNode::RebuildFishSpatialHash()
+{
+    if (!scene_)
+        return;
+
+    fishSpatialHash_.Clear();
+    schoolStateCache_.InvalidateAll(++frameNumber_);
+
+    // Single scene iteration — insert all fish into the spatial hash
+    const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
+    for (unsigned i = 0; i < children.Size(); ++i)
+    {
+        auto* fish = children[i]->GetComponent<Fish>();
+        if (fish)
+            fishSpatialHash_.Insert(fish, children[i]->GetWorldPosition());
+    }
 }
 
 // ============================================================================
@@ -6788,6 +6794,9 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
     using namespace Update;
     float timeStep = eventData[P_TIMESTEP].GetFloat();
+
+    // Rebuild fish spatial hash once per frame (O(N) insert, enables O(1) neighbor queries)
+    RebuildFishSpatialHash();
 
     // AuthServer LAN discovery (skipped if user chose localhost or already connected)
     discoveryTimer_ -= timeStep;
@@ -9460,52 +9469,16 @@ void TerrainNode::HandleVitalUpdate(MemoryBuffer& msg)
 
 void TerrainNode::UpdateVitalBars()
 {
-    const float showThreshold = 75.0f;  // bars appear below this %
-    const int barW = 120;
+    if (!hud_)
+        return;
 
-    // Hunger bar — show when hunger drops below 75%
-    if (hungerBarBg_)
-    {
-        bool show = vitalHunger_ < showThreshold;
-        hungerBarBg_->SetVisible(show);
-        if (show && hungerBar_)
-        {
-            float frac = Clamp(vitalHunger_ / 100.0f, 0.0f, 1.0f);
-            hungerBar_->SetSize((int)(barW * frac), hungerBar_->GetHeight());
-
-            // Color shift: amber → orange → red
-            Color c;
-            if (vitalHunger_ > 40.0f)
-                c = Color(0.8f, 0.6f, 0.1f);       // amber
-            else if (vitalHunger_ > 15.0f)
-                c = Color(0.9f, 0.4f, 0.05f);       // orange
-            else
-                c = Color(0.9f, 0.15f, 0.1f);       // red
-            hungerBar_->SetColor(c);
-        }
-    }
-
-    // Thirst bar — show when thirst drops below 75%
-    if (thirstBarBg_)
-    {
-        bool show = vitalThirst_ < showThreshold;
-        thirstBarBg_->SetVisible(show);
-        if (show && thirstBar_)
-        {
-            float frac = Clamp(vitalThirst_ / 100.0f, 0.0f, 1.0f);
-            thirstBar_->SetSize((int)(barW * frac), thirstBar_->GetHeight());
-
-            // Color shift: blue → dark blue → red
-            Color c;
-            if (vitalThirst_ > 40.0f)
-                c = Color(0.2f, 0.5f, 0.9f);        // blue
-            else if (vitalThirst_ > 15.0f)
-                c = Color(0.15f, 0.3f, 0.7f);        // dark blue
-            else
-                c = Color(0.9f, 0.15f, 0.1f);        // red
-            thirstBar_->SetColor(c);
-        }
-    }
+    // Feed normalized 0.0-1.0 values to HUD component
+    float hp = (vitalMaxHp_ > 0) ? Clamp((float)vitalHp_ / (float)vitalMaxHp_, 0.0f, 1.0f) : 1.0f;
+    hud_->SetHP(hp);
+    hud_->SetHunger(Clamp(vitalHunger_ / 100.0f, 0.0f, 1.0f));
+    hud_->SetThirst(Clamp(vitalThirst_ / 100.0f, 0.0f, 1.0f));
+    hud_->SetStamina(Clamp(vitalStamina_ / 100.0f, 0.0f, 1.0f));
+    hud_->SetTemperature(CalculateEffectiveTemperature());
 }
 
 // ============================================================================
