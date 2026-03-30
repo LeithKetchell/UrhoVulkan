@@ -43,6 +43,7 @@ struct RecipeInfo
 {
     int id;
     String name;
+    String description;
     int outputId, outputQty;
     float craftTime;
     int toolReq, stationReq, tier;

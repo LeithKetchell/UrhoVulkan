@@ -10,6 +10,8 @@
 // Vertex shader uniforms
 uniform vec3 cAmbientStartColor;
 uniform vec3 cAmbientEndColor;
+uniform vec3 cSkyAmbient;
+uniform vec3 cGroundAmbient;
 uniform mat3 cBillboardRot;
 uniform vec3 cCameraPos;
 uniform float cNearClip;
@@ -53,6 +55,8 @@ uniform mat4 cZone;
 #endif
 
 uniform vec4 cAmbientColor;
+uniform vec3 cSkyAmbient;
+uniform vec3 cGroundAmbient;
 uniform vec3 cCameraPosPS;
 uniform float cDeltaTimePS;
 uniform vec4 cDepthReconstruct;
@@ -119,6 +123,8 @@ uniform ZoneVS
 {
     vec3 cAmbientStartColor;
     vec3 cAmbientEndColor;
+    vec3 cSkyAmbient;
+    vec3 cGroundAmbient;
     mat4 cZone;
 };
 
@@ -176,6 +182,8 @@ uniform CameraPS
 uniform ZonePS
 {
     vec4 cAmbientColor;
+    vec3 cSkyAmbient;
+    vec3 cGroundAmbient;
     vec4 cFogParams;
     vec3 cFogColor;
     vec3 cZoneMin;

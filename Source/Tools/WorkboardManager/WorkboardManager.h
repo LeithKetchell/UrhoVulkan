@@ -3,41 +3,22 @@
 
 #pragma once
 
-#include <sys/types.h>
+#include "WorkboardBase.h"
 
-#include <Urho3D/Engine/Application.h>
 #include <Urho3D/Network/Network.h>
+#include <Urho3D/Network/Connection.h>
 #include <Urho3D/UI/BorderImage.h>
 #include <Urho3D/UI/Button.h>
 #include <Urho3D/UI/DropDownList.h>
-#include <Urho3D/UI/Font.h>
 #include <Urho3D/UI/LineEdit.h>
-#include <Urho3D/UI/ListView.h>
 #include <Urho3D/UI/MultiLineEdit.h>
-#include <Urho3D/UI/ScrollView.h>
 #include <Urho3D/UI/ScrollBar.h>
-#include <Urho3D/UI/Text.h>
-#include <Urho3D/UI/Window.h>
 
 using namespace Urho3D;
 
-/// A parsed table row from the workboard markdown.
-struct WorkboardRow
+class WorkboardManager : public WorkboardBase
 {
-    Vector<String> cells;
-};
-
-/// A parsed table section (Ready, In Progress, Done, etc.)
-struct WorkboardSection
-{
-    String title;
-    Vector<String> headers;
-    Vector<WorkboardRow> rows;
-};
-
-class WorkboardManager : public Application
-{
-    URHO3D_OBJECT(WorkboardManager, Application);
+    URHO3D_OBJECT(WorkboardManager, WorkboardBase);
 
 public:
     explicit WorkboardManager(Context* context);
@@ -50,16 +31,11 @@ private:
     // ── UI creation ──
     void CreateUI();
     void CreateInstanceStatusBar(UIElement* parent, int w, int h);
-    void CreateWorkboardPanel(UIElement* parent, int x, int y, int w, int h);
-    void CreatePlanPanel(UIElement* parent, int x, int y, int w, int h);
     void CreateComposer(UIElement* parent, int x, int y, int w, int h);
     void CreateMessageLog(UIElement* parent, int x, int y, int w, int h);
 
     // ── Workboard ──
     void LoadWorkboard();
-    void ParseWorkboard(const String& content);
-    void RenderWorkboardUI();
-    void AddSectionToUI(const WorkboardSection& section);
 
     // ── Workboard mutations (Manager is single authority) ──
     bool HandleWorkboardCommand(const String& message);
@@ -71,13 +47,14 @@ private:
     void RemoveRow(const String& matchText);
     void AddSharedFile(const Vector<String>& fields);
     void UpdateReview(const String& taskName, const String& newReview);
+    bool AssignTask(const String& taskName, const String& coderRole);
     void WriteWorkboard();
     void EmitTableRows(String& output, const WorkboardSection* sec);
 
     // ── Plans ──
     void ScanPlanFiles();
     void LoadPlanContent(const String& filename);
-    void HandlePlanSelected(StringHash eventType, VariantMap& eventData);
+    void OnPlanSelected(const String& filename) override;
 
     // ── IPC ──
     void CreateIPCPaths();
@@ -98,12 +75,11 @@ private:
     void HandleSendUnassigned(StringHash eventType, VariantMap& eventData);
     void HandleSendBroadcast(StringHash eventType, VariantMap& eventData);
     void HandleClearFileLocks(StringHash eventType, VariantMap& eventData);
+    void HandleSpawnCoder(StringHash eventType, VariantMap& eventData);
 
     // ── Multi-Coder discovery ──
-    /// Scan instances/ dir for all live roles starting with "coder".
     Vector<String> DiscoverCoderRoles();
     Vector<String> DiscoverUnassignedRoles();
-    /// Get the currently selected coder role from the dropdown.
     String GetSelectedCoderRole();
 
     // ── Download ──
@@ -124,58 +100,56 @@ private:
     void SaveThemePrefs();
     void RebuildAllUI();
 
+    // ── Remote workboard sync (Phase 2a) ──
+    void RegisterWorkboardRemoteEvents();
+    void PushWorkboardToClient(Connection* conn);
+    void PushPlanListToClient(Connection* conn);
+    void PushClientListToAll();
+    void PushWorkboardToAllClients();
+    String BuildPlanListString();
+    String BuildClientListString();
+
+    void HandleClientConnected(StringHash eventType, VariantMap& eventData);
+    void HandleClientDisconnected(StringHash eventType, VariantMap& eventData);
+    void HandleClientIdentity(StringHash eventType, VariantMap& eventData);
+    void HandleKeyExchangeAuth(StringHash eventType, VariantMap& eventData);
+    void HandleClientAuthenticated(StringHash eventType, VariantMap& eventData);
+    void HandleWbRequestPlan(StringHash eventType, VariantMap& eventData);
+    void HandleWbMutation(StringHash eventType, VariantMap& eventData);
+    void HandleWbSetIdentity(StringHash eventType, VariantMap& eventData);
+
     // ── Events ──
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
     void HandleKeyDown(StringHash eventType, VariantMap& eventData);
-    void HandleSectionToggle(StringHash eventType, VariantMap& eventData);
-
-    // ── Helpers ──
-    String GetProjectRoot();
-    String GetClaudeDir();
 
     // ── Font / Theme ──
-    SharedPtr<Font> font_;
     String currentFontName_{"Anonymous Pro"};
     int currentFontSize_{11};
     Vector<String> availableFonts_;
     DropDownList* fontSelector_{};
     DropDownList* fontSizeSelector_{};
 
-    // ── Workboard state ──
-    String projectRoot_;
-    Vector<WorkboardSection> sections_;
+    // ── Workboard state (Manager-specific) ──
     float refreshAccumulator_{};
     static constexpr float REFRESH_INTERVAL = 5.0f;
     unsigned lastWriteMtime_{0};
 
-    // ── Workboard UI ──
-    Window* workboardPanel_{};
-    ScrollView* workboardScroll_{};
-    UIElement* workboardContent_{};
-
-    // ── Plan UI ──
-    Window* planPanel_{};
-    ListView* planListView_{};
-    ScrollView* planContentScroll_{};
-    Text* planContentText_{};
-    Vector<String> planFiles_;
-    String currentPlanFile_;
-
     // ── Instance status UI ──
-    DropDownList* coderStatusDropdown_{}; // dropdown listing coder instances + PIDs
-    Vector<String> knownCoderRoles_;      // "coder", "coder1", "coder2", etc.
+    DropDownList* coderStatusDropdown_{};
+    Vector<String> knownCoderRoles_;
     Text* plannerStatusText_{};
-    DropDownList* unassignedStatusDropdown_{}; // dropdown listing unassigned instances + PIDs
-    Vector<String> knownUnassignedRoles_;     // "unassigned", "unassigned2", etc.
+    DropDownList* unassignedStatusDropdown_{};
+    Vector<String> knownUnassignedRoles_;
 
     // ── Composer UI ──
     LineEdit* messageInput_{};
-    DropDownList* coderDropdown_{};    // lists connected coder instances
-    Button* sendCoderBtn_{};          // sends to selected coder from dropdown
+    DropDownList* coderDropdown_{};
+    Button* sendCoderBtn_{};
     Button* sendPlannerBtn_{};
     Button* sendUnassignedBtn_{};
     Button* sendBroadcastBtn_{};
     Button* clearFileLocksBtn_{};
+    Button* spawnCoderBtn_{};
 
     // ── Download UI ──
     LineEdit* downloadUrlInput_{};
@@ -183,7 +157,7 @@ private:
     Text* downloadStatusText_{};
     bool downloadInProgress_{false};
     String downloadOutputPath_;
-    pid_t curlPid_{0};
+    unsigned curlRequestId_{0};
     float downloadCheckTimer_{0.0f};
 
     // ── Message log UI ──
@@ -191,15 +165,22 @@ private:
     ListView* logListView_{};
     static const unsigned MAX_LOG_LINES = 500;
 
-    // ── IPC state ──
-    static constexpr const char* IPC_DIR = "/tmp/urho_claude";
-    static constexpr const char* TTY_SOCK_DIR = "/tmp/urho_claude/tty";
-
+    // ── IPC state (initialized in Start() via FileSystem::GetTemporaryDir()) ──
+    String ipcDir_;
+    String ttySockDir_;
 
     // ── Beacon liveness ──
-    HashMap<String, float> coderActivityTimers_;  // role name → seconds since last activity
+    HashMap<String, float> coderActivityTimers_;
     float lastPlannerActivity_{999.0f};
     float lastUnassignedActivity_{999.0f};
-    static constexpr float LIVENESS_TIMEOUT = 300.0f;  // 5 min — Claude sessions can idle
+    static constexpr float LIVENESS_TIMEOUT = 300.0f;
     static constexpr unsigned short BEACON_PORT = 31337;
+
+    // ── Remote workboard sync (Phase 2a) ──
+    HashMap<Connection*, WbClientInfo> wbClients_;
+    String wbSecret_;
+    unsigned char pakeSecretHash_[32]{};
+    bool pakeSecretValid_{false};
+    unsigned lastWorkboardMtime_{0};
+    unsigned lastPlanListHash_{0};
 };

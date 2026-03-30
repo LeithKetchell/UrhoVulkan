@@ -14,7 +14,10 @@ PlayerCharacter::PlayerCharacter(Context* context) :
     onGround_(false),
     okToJump_(true),
     inWater_(false),
-    inAirTimer_(0.0f)
+    sprinting_(false),
+    inAirTimer_(0.0f),
+    stamina_(100.0f),
+    maxStamina_(100.0f)
 {
     SetUpdateEventMask(LogicComponentEvents::FixedUpdate);
 }
@@ -30,6 +33,7 @@ void PlayerCharacter::RegisterObject(Context* context)
     URHO3D_ATTRIBUTE("OK To Jump", okToJump_, true, AM_DEFAULT);
     URHO3D_ATTRIBUTE("In Air Timer", inAirTimer_, 0.0f, AM_DEFAULT);
     URHO3D_ATTRIBUTE("In Water", inWater_, false, AM_DEFAULT);
+    URHO3D_ATTRIBUTE("Stamina", stamina_, 100.0f, AM_DEFAULT);
 }
 
 void PlayerCharacter::Start()

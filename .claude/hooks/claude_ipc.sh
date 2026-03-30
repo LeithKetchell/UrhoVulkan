@@ -6,6 +6,7 @@
 #   action: wb-add-ready <pri> <plan> <file> <owner> <review> <summary>
 #   action: wb-add-inprogress <task> <owner> <started> <review> <notes>
 #   action: wb-move-done <task>   (move from In Progress to Done)
+#   action: wb-assign <task-name> <coder-role>  (atomic claim + TTY notify)
 
 ACTION="${1:-check}"
 IPC_DIR="/tmp/urho_claude"
@@ -97,10 +98,40 @@ ensure_manager() {
 
 case "$ACTION" in
 
+get-role)
+    get_role
+    exit 0
+    ;;
+
 announce)
-    # SessionStart — register as unassigned via TTY-based role file
+    # SessionStart — register via TTY-based role file
+    # Auto-detect role from pty-proxy socket name (e.g. planner.sock → planner)
     TTY_ID=$(get_tty_id)
     CLAUDE_PID=$(get_claude_pid)
+
+    if [ -n "$PTY_PROXY_SOCK" ]; then
+        SOCK_BASE=$(basename "$PTY_PROXY_SOCK" .sock)
+        # Known roles auto-assume; spawn_N sockets stay unassigned
+        case "$SOCK_BASE" in
+            planner|coder|coder[0-9]*)
+                # Delegate to assume — it handles singleton checks, numbering, and socket symlinks
+                "$0" assume "$SOCK_BASE"
+                exit $?
+                ;;
+        esac
+    fi
+
+    # If this TTY already has a non-unassigned role, keep it — don't stomp
+    if [ -f "$INST_DIR/${TTY_ID}.role" ]; then
+        EXISTING_ROLE=$(head -1 "$INST_DIR/${TTY_ID}.role")
+        if [ -n "$EXISTING_ROLE" ] && [[ "$EXISTING_ROLE" != unassigned* ]]; then
+            # Update PID in case it changed, but preserve the role
+            printf '%s\n%s\n' "$EXISTING_ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
+            echo "$CLAUDE_PID" > "$INST_DIR/${EXISTING_ROLE}.pid"
+            echo "Claude instance re-registered as ${EXISTING_ROLE} (TTY $TTY_ID, PID $CLAUDE_PID) — role preserved"
+            exit 0
+        fi
+    fi
 
     # Clean up any stale .pid files that point to OUR PID from a previous role
     for pidfile in "$INST_DIR"/*.pid; do
@@ -225,6 +256,17 @@ check)
         printf '%s\n%s\n' "$ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
         echo "$CLAUDE_PID" > "$INST_DIR/${ROLE}.pid"
     fi
+
+    # Sticky note delivery — check for messages from WorkboardManager
+    STICKY_DIR="$IPC_DIR/sticky"
+    STICKY_FILE="$STICKY_DIR/${ROLE}.msg"
+    if [ -f "$STICKY_FILE" ]; then
+        MSG=$(cat "$STICKY_FILE" 2>/dev/null)
+        if [ -n "$MSG" ]; then
+            echo "Message from Manager: $MSG"
+        fi
+        rm -f "$STICKY_FILE"
+    fi
     exit 0
     ;;
 
@@ -263,79 +305,72 @@ cleanup)
     ;;
 
 assume)
-    # Role change — called by Claude via Bash tool
-    # Usage: claude_ipc.sh assume <new_role>
-    NEW_ROLE="$2"
-
-    if [ -z "$NEW_ROLE" ]; then
-        echo "Usage: claude_ipc.sh assume <role>" >&2
-        exit 1
-    fi
-
+    # Auto-detect role under flock. Planner if free, coder otherwise.
+    # Role arg is accepted but ignored — determined by planner availability.
     TTY_ID=$(get_tty_id)
     CLAUDE_PID=$(get_claude_pid)
+
+    # Serialize all role claims
+    exec 9>/tmp/urho_claude/assume.lock
+    flock -w 10 9 || { echo "FAILED: could not acquire assume lock." >&2; exit 1; }
+
     OLD_ROLE="unassigned"
-    if [ -f "$INST_DIR/${TTY_ID}.role" ]; then
-        OLD_ROLE=$(head -1 "$INST_DIR/${TTY_ID}.role")
+    [ -f "$INST_DIR/${TTY_ID}.role" ] && OLD_ROLE=$(head -1 "$INST_DIR/${TTY_ID}.role")
+
+    # Planner free? (no PID file, stale PID, or it's us re-assuming)
+    PLANNER_TAKEN=false
+    if [ -f "$INST_DIR/planner.pid" ]; then
+        OWNER=$(cat "$INST_DIR/planner.pid" 2>/dev/null)
+        [ -n "$OWNER" ] && [ "$OWNER" != "$CLAUDE_PID" ] && kill -0 "$OWNER" 2>/dev/null && PLANNER_TAKEN=true
     fi
 
-    # Enforce singleton for planner — refuse if already taken by a different live instance
-    # Coders auto-number: coder, coder2, coder3, ... (no limit)
-    if [ "$NEW_ROLE" = "planner" ] && [ -f "$INST_DIR/${NEW_ROLE}.pid" ]; then
-        OWNER_PID=$(cat "$INST_DIR/${NEW_ROLE}.pid" 2>/dev/null)
-        if [ -n "$OWNER_PID" ] && [ "$OWNER_PID" != "$CLAUDE_PID" ] && kill -0 "$OWNER_PID" 2>/dev/null; then
-            echo "REFUSED: planner is a singleton, already taken by PID $OWNER_PID." >&2
-            exit 1
+    if ! $PLANNER_TAKEN; then
+        NEW_ROLE="planner"
+    else
+        # Find first free coder slot
+        NEW_ROLE="coder"
+        if [ -f "$INST_DIR/coder.pid" ]; then
+            CPID=$(cat "$INST_DIR/coder.pid" 2>/dev/null)
+            if [ -n "$CPID" ] && [ "$CPID" != "$CLAUDE_PID" ] && kill -0 "$CPID" 2>/dev/null; then
+                N=2
+                while [ "$N" -le 20 ]; do
+                    CPID=$(cat "$INST_DIR/coder${N}.pid" 2>/dev/null)
+                    if [ -z "$CPID" ] || [ "$CPID" = "$CLAUDE_PID" ] || ! kill -0 "$CPID" 2>/dev/null; then
+                        NEW_ROLE="coder${N}"; break
+                    fi
+                    N=$((N + 1))
+                done
+            fi
         fi
     fi
 
-    # Auto-number coders: if "coder" is taken, try coder2, coder3, ...
-    if [ "$NEW_ROLE" = "coder" ] && [ -f "$INST_DIR/coder.pid" ]; then
-        OWNER_PID=$(cat "$INST_DIR/coder.pid" 2>/dev/null)
-        if [ -n "$OWNER_PID" ] && [ "$OWNER_PID" != "$CLAUDE_PID" ] && kill -0 "$OWNER_PID" 2>/dev/null; then
-            # coder is taken — find next available number
-            N=2
-            while true; do
-                CANDIDATE="coder${N}"
-                if [ ! -f "$INST_DIR/${CANDIDATE}.pid" ]; then
-                    NEW_ROLE="$CANDIDATE"
-                    break
-                fi
-                CPID=$(cat "$INST_DIR/${CANDIDATE}.pid" 2>/dev/null)
-                if [ -z "$CPID" ] || [ "$CPID" = "$CLAUDE_PID" ] || ! kill -0 "$CPID" 2>/dev/null; then
-                    NEW_ROLE="$CANDIDATE"
-                    break
-                fi
-                N=$((N + 1))
-                # Safety: don't loop forever
-                if [ "$N" -gt 20 ]; then
-                    echo "REFUSED: too many coders (20+)." >&2
-                    exit 1
-                fi
-            done
-        fi
-    fi
-
-    # Remove old role's .pid file (only if it points to our PID)
+    # Clean up old role PID if it's ours
     if [ -f "$INST_DIR/${OLD_ROLE}.pid" ]; then
-        STORED_PID=$(cat "$INST_DIR/${OLD_ROLE}.pid" 2>/dev/null)
-        if [ "$STORED_PID" = "$CLAUDE_PID" ]; then
-            rm -f "$INST_DIR/${OLD_ROLE}.pid"
-        fi
+        [ "$(cat "$INST_DIR/${OLD_ROLE}.pid" 2>/dev/null)" = "$CLAUDE_PID" ] && rm -f "$INST_DIR/${OLD_ROLE}.pid"
     fi
 
-    # Write updated role file with PID
+    # Claim
     printf '%s\n%s\n' "$NEW_ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
-    # Write new role's .pid file
     echo "$CLAUDE_PID" > "$INST_DIR/${NEW_ROLE}.pid"
-    # TTY injection: symlink role socket to spawn socket if running under pty-proxy
+    exec 9>&-
+
+    # Set up TTY socket
+    TTY_SOCK_DIR="/tmp/urho_claude/tty"
+    ROLE_SOCK="$TTY_SOCK_DIR/${NEW_ROLE}.sock"
+    rm -f "$ROLE_SOCK"
+
     if [ -n "$PTY_PROXY_SOCK" ] && [ -S "$PTY_PROXY_SOCK" ]; then
-        TTY_SOCK_DIR="/tmp/urho_claude/tty"
-        ROLE_SOCK="$TTY_SOCK_DIR/${NEW_ROLE}.sock"
-        # Remove old symlink if exists
-        rm -f "$ROLE_SOCK"
         ln -s "$PTY_PROXY_SOCK" "$ROLE_SOCK"
         echo "TTY socket mapped: ${NEW_ROLE}.sock -> $(basename "$PTY_PROXY_SOCK")"
+    else
+        HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+        TTY_DEV=$(readlink -f /proc/$CLAUDE_PID/fd/0 2>/dev/null)
+        if [ -n "$TTY_DEV" ] && [ -c "$TTY_DEV" ] && [ -x "$HOOK_DIR/tty-listen" ]; then
+            "$HOOK_DIR/tty-listen" "$ROLE_SOCK" "$TTY_DEV" "$CLAUDE_PID" &
+            echo "Standalone TTY listener started: ${NEW_ROLE}.sock -> $TTY_DEV (PID $!)"
+        else
+            echo "Warning: cannot start TTY listener (no TTY device or tty-listen not built)" >&2
+        fi
     fi
 
     echo "Role changed: $OLD_ROLE -> $NEW_ROLE (TTY $TTY_ID, PID $CLAUDE_PID)"
@@ -522,6 +557,88 @@ else: print('Could not find Done table', file=sys.stderr); sys.exit(1)
     exit $?
     ;;
 
+wb-assign)
+    TASK="$2"; CODER="$3"
+    if [ -z "$TASK" ] || [ -z "$CODER" ]; then
+        echo "Usage: claude_ipc.sh wb-assign <task-name> <coder-role>" >&2
+        exit 1
+    fi
+    # Verify coder is alive
+    if [ -f "$INST_DIR/${CODER}.pid" ]; then
+        CODER_PID=$(cat "$INST_DIR/${CODER}.pid" 2>/dev/null)
+        if [ -z "$CODER_PID" ] || ! kill -0 "$CODER_PID" 2>/dev/null; then
+            echo "REJECTED: Coder '$CODER' is not alive (PID $CODER_PID)" >&2
+            exit 1
+        fi
+    else
+        echo "REJECTED: Coder '$CODER' not registered (no PID file)" >&2
+        exit 1
+    fi
+    TODAY=$(date +%Y-%m-%d)
+    (
+        flock -w 10 200 || { echo "Failed to acquire workboard lock" >&2; exit 1; }
+        python3 -c "
+import sys
+lines = open('$WORKBOARD').readlines()
+task = '''$TASK'''
+coder = '''$CODER'''
+today = '''$TODAY'''
+# Check task is NOT already in In Progress, and coder doesn't already own a task
+in_progress = False
+for line in lines:
+    if line.strip().startswith('## In Progress'): in_progress = True; continue
+    if in_progress and not line.startswith('|') and not line.strip() == '': in_progress = False
+    if in_progress and line.startswith('|') and '---' not in line and 'Task' not in line:
+        cells = [c.strip() for c in line.split('|')]
+        if any(c == task for c in cells):
+            print(f'REJECTED: Task already in In Progress: {task}', file=sys.stderr); sys.exit(1)
+        if any(c == coder for c in cells):
+            print(f'REJECTED: {coder} already owns a task in In Progress', file=sys.stderr); sys.exit(1)
+# Find task in Planned section
+in_planned = False; found_idx = -1; found_line = None
+for i, line in enumerate(lines):
+    if line.strip().startswith('## Planned'): in_planned = True; continue
+    if in_planned and not line.startswith('|') and not line.strip() == '': in_planned = False
+    if in_planned and line.startswith('|') and '---' not in line and 'Pri' not in line:
+        cells = [c.strip() for c in line.split('|')]
+        if not any(c == task for c in cells): continue
+        found_idx = i; found_line = line.rstrip(); break
+if found_idx < 0: print(f'REJECTED: Task not found in Planned: {task}', file=sys.stderr); sys.exit(1)
+# Remove from Planned
+lines.pop(found_idx)
+# Build In Progress row: | Task | Owner | Started | Review | Notes |
+ip_row = f'| {task} | {coder} | {today} | — | Assigned via wb-assign |\n'
+# Insert into In Progress
+in_progress = False; insert_at = -1
+for i, line in enumerate(lines):
+    if line.strip().startswith('## In Progress'): in_progress = True; continue
+    if in_progress:
+        if line.startswith('|') and '---' not in line and 'Task' not in line: insert_at = i + 1
+        elif in_progress and insert_at > 0 and not line.startswith('|'): break
+# If no rows yet, insert after the separator line
+if insert_at < 0:
+    for i, line in enumerate(lines):
+        if line.strip().startswith('## In Progress'): in_progress = True; continue
+        if in_progress and '---' in line: insert_at = i + 1; break
+if insert_at > 0:
+    lines.insert(insert_at, ip_row)
+    open('$WORKBOARD', 'w').writelines(lines)
+    print(f'ASSIGNED: {task} -> {coder}')
+else:
+    print('Could not find In Progress table', file=sys.stderr); sys.exit(1)
+"
+    ) 200>"$LOCKFILE"
+    RESULT=$?
+    if [ $RESULT -eq 0 ]; then
+        # Send TTY notification to the assigned coder
+        HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+        if [ -x "$HOOKS_DIR/tty-inject.sh" ]; then
+            "$HOOKS_DIR/tty-inject.sh" "$CODER" "TASK ASSIGNED: $TASK — You own this. Check the workboard and start working."
+        fi
+    fi
+    exit $RESULT
+    ;;
+
 wb-remove)
     MATCH="$2"
     if [ -z "$MATCH" ]; then
@@ -576,90 +693,53 @@ wb-add-shared)
     ;;
 
 spawn-coder)
-    # Launch a new Claude Code instance in the user's preferred terminal
+    # Launch a new Claude Code instance via ClaudeTerminal
     # Usage: claude_ipc.sh spawn-coder
-    TERM_EMU=$(which x-terminal-emulator 2>/dev/null)
-    if [ -z "$TERM_EMU" ]; then
-        # Fallback chain
-        for t in gnome-terminal xfce4-terminal konsole xterm; do
-            TERM_EMU=$(which "$t" 2>/dev/null) && break
-        done
-    fi
-    if [ -z "$TERM_EMU" ]; then
-        echo "No terminal emulator found" >&2
-        exit 1
-    fi
+    # ClaudeTerminal owns the PTY, IPC socket, and injection scheduling.
+    # No gnome-terminal, no pty-proxy needed.
 
-    # Resolve the real binary (x-terminal-emulator is often a symlink)
-    REAL_TERM=$(readlink -f "$TERM_EMU" 2>/dev/null || echo "$TERM_EMU")
+    # Role is auto-detected by 'assume' under flock — no need to pre-decide
 
-    # Initial prompt tells the instance to follow the startup protocol
-    INIT_PROMPT="Follow the Session Startup Protocol: assume the coder role by running .claude/hooks/claude_ipc.sh assume coder — then read Claude/WORKBOARD.md and check in with Leith for your assignment. Use .claude/hooks/safe_build.sh for all builds, never raw make."
-
-    # Determine pty-proxy socket path — use a provisional name until the coder assumes a role
-    # The socket will be at /tmp/urho_claude/tty/spawn_<N>.sock initially
-    # Once the coder assumes a role, the socket is symlinked to the role name
+    # Find ClaudeTerminal binary — check build/bin first, then PATH
     HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
-    PTY_PROXY="$HOOKS_DIR/pty-proxy"
-    TTY_DIR="/tmp/urho_claude/tty"
-    mkdir -p "$TTY_DIR"
+    PROJECT_ROOT="$(cd "$HOOKS_DIR/../.." && pwd)"
+    CLAUDE_TERM="$PROJECT_ROOT/build/bin/ClaudeTerminal"
 
-    # Find next available spawn number
-    SPAWN_NUM=1
-    while [ -S "$TTY_DIR/spawn_${SPAWN_NUM}.sock" ]; do
-        SPAWN_NUM=$((SPAWN_NUM + 1))
-    done
-    SPAWN_SOCK="$TTY_DIR/spawn_${SPAWN_NUM}.sock"
-
-    if [ -x "$PTY_PROXY" ]; then
-        # Launch through pty-proxy for message injection support
-        case "$REAL_TERM" in
-            *gnome-terminal*)
-                env -u CLAUDECODE gnome-terminal -- "$PTY_PROXY" --socket "$SPAWN_SOCK" -- claude "$INIT_PROMPT" 2>/dev/null &
-                ;;
-            *xfce4-terminal*)
-                env -u CLAUDECODE xfce4-terminal -e "\"$PTY_PROXY\" --socket \"$SPAWN_SOCK\" -- claude \"$INIT_PROMPT\"" 2>/dev/null &
-                ;;
-            *konsole*)
-                env -u CLAUDECODE konsole -e "$PTY_PROXY" --socket "$SPAWN_SOCK" -- claude "$INIT_PROMPT" 2>/dev/null &
-                ;;
-            *)
-                env -u CLAUDECODE "$TERM_EMU" -e "$PTY_PROXY" --socket "$SPAWN_SOCK" -- claude "$INIT_PROMPT" 2>/dev/null &
-                ;;
-        esac
-        echo "Spawned new Claude Code instance via $REAL_TERM with pty-proxy (socket: $SPAWN_SOCK)"
-    else
-        # Fallback: no pty-proxy binary, launch directly
-        case "$REAL_TERM" in
-            *gnome-terminal*)
-                env -u CLAUDECODE gnome-terminal -- claude "$INIT_PROMPT" 2>/dev/null &
-                ;;
-            *xfce4-terminal*)
-                env -u CLAUDECODE xfce4-terminal -e "claude \"$INIT_PROMPT\"" 2>/dev/null &
-                ;;
-            *konsole*)
-                env -u CLAUDECODE konsole -e claude "$INIT_PROMPT" 2>/dev/null &
-                ;;
-            *)
-                env -u CLAUDECODE "$TERM_EMU" -e claude "$INIT_PROMPT" 2>/dev/null &
-                ;;
-        esac
-        echo "Spawned new Claude Code instance via $REAL_TERM (no pty-proxy, no TTY injection)"
+    if [ ! -x "$CLAUDE_TERM" ]; then
+        CLAUDE_TERM=$(which ClaudeTerminal 2>/dev/null)
     fi
 
-    # Wait for the instance to register, then find the newest unassigned and send role assignment
-    sleep 5
-    NEWEST_UNASSIGNED=""
-    for uf in "$INST_DIR"/unassigned*.pid; do
-        [ -f "$uf" ] || continue
-        UPID=$(cat "$uf" 2>/dev/null)
-        if [ -n "$UPID" ] && kill -0 "$UPID" 2>/dev/null; then
-            UNAME=$(basename "$uf" .pid)
-            NEWEST_UNASSIGNED="$UNAME"
+    if [ -z "$CLAUDE_TERM" ] || [ ! -x "$CLAUDE_TERM" ]; then
+        echo "ClaudeTerminal not found. Falling back to gnome-terminal." >&2
+
+        # Fallback to old gnome-terminal + pty-proxy path
+        TERM_EMU=$(which gnome-terminal 2>/dev/null || which x-terminal-emulator 2>/dev/null)
+        if [ -z "$TERM_EMU" ]; then
+            echo "No terminal emulator found" >&2
+            exit 1
         fi
-    done
-    TARGET="${NEWEST_UNASSIGNED:-unassigned}"
-    echo "Role assignment queued for ${TARGET}"
+        INIT_PROMPT="Follow the Session Startup Protocol: assume your role by running .claude/hooks/claude_ipc.sh assume -- then read Claude/WORKBOARD.md and check in with Leith for your assignment. Use .claude/hooks/safe_build.sh for all builds, never raw make."
+        PTY_PROXY="$HOOKS_DIR/pty-proxy"
+        TTY_DIR="/tmp/urho_claude/tty"
+        mkdir -p "$TTY_DIR"
+        SPAWN_NUM=1
+        while [ -S "$TTY_DIR/spawn_${SPAWN_NUM}.sock" ]; do
+            SPAWN_NUM=$((SPAWN_NUM + 1))
+        done
+        SPAWN_SOCK="$TTY_DIR/spawn_${SPAWN_NUM}.sock"
+        if [ -x "$PTY_PROXY" ]; then
+            env -u CLAUDECODE gnome-terminal -- "$PTY_PROXY" --socket "$SPAWN_SOCK" -- claude --dangerously-skip-permissions "$INIT_PROMPT" 2>/dev/null &
+        else
+            env -u CLAUDECODE gnome-terminal -- claude --dangerously-skip-permissions "$INIT_PROMPT" 2>/dev/null &
+        fi
+        echo "Spawned via gnome-terminal fallback"
+        exit 0
+    fi
+
+    # Launch ClaudeTerminal — role auto-detected by assume
+    cd "$PROJECT_ROOT/build/bin"
+    env -u CLAUDECODE "$CLAUDE_TERM" 2>/dev/null &
+    echo "Spawned ClaudeTerminal (PID: $!) — role will be auto-assigned"
     exit 0
     ;;
 

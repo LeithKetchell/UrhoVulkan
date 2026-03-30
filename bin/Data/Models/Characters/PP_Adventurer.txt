@@ -1,0 +1,15 @@
+Models/Characters/Materials/Black.xml
+Models/Characters/Materials/Grey.xml
+Models/Characters/Materials/Brown2.xml
+Models/Characters/Materials/Brown.xml
+Models/Characters/Materials/Green.xml
+Models/Characters/Materials/LightGreen.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Eyebrows.xml
+Models/Characters/Materials/Eye.xml
+Models/Characters/Materials/Hair.xml
+Models/Characters/Materials/Brown.xml
+Models/Characters/Materials/Green.xml
+Models/Characters/Materials/LightGreen.xml
+Models/Characters/Materials/Gold.xml

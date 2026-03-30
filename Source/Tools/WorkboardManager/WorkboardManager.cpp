@@ -14,20 +14,24 @@
 #include <Urho3D/IO/File.h>
 #include <Urho3D/IO/FileSystem.h>
 #include <Urho3D/IO/Log.h>
+#include <Urho3D/Network/NetworkEvents.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Resource/XMLFile.h>
 #include <Urho3D/UI/UI.h>
 #include <Urho3D/UI/UIEvents.h>
 
-#include <sys/stat.h>
+#include "PlatformUtils.h"
+
+#include <libsodium/sodium.h>
+
+#include <cstdlib>
+#include <cerrno>
+#include <ctime>
+
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
-#include <signal.h>
-#include <stdio.h>
-#include <dirent.h>
+#endif
 
 URHO3D_DEFINE_APPLICATION_MAIN(WorkboardManager);
 
@@ -35,35 +39,43 @@ URHO3D_DEFINE_APPLICATION_MAIN(WorkboardManager);
 // Application lifecycle
 // ============================================================================
 
-WorkboardManager::WorkboardManager(Context* context) : Application(context) {}
+WorkboardManager::WorkboardManager(Context* context) : WorkboardBase(context) {}
 
 void WorkboardManager::Setup()
 {
     // ── Singleton guard — fire before engine init (no window, no GPU) ──
     {
-        const char* pidPath = "/tmp/urho_claude/manager.pid";
-        mkdir("/tmp/urho_claude", 0777);
+        // Use platform temp dir — on Linux: /tmp/urho_claude/, on Windows: %TEMP%/urho_claude/
+        String tempBase = GetSubsystem<FileSystem>() ?
+            GetSubsystem<FileSystem>()->GetTemporaryDir() + "urho_claude/" :
+            String("/tmp/urho_claude/");
+        String pidPathStr = tempBase + "manager.pid";
+        const char* pidPath = pidPathStr.CString();
+        auto* setupFs = GetSubsystem<FileSystem>();
+        if (setupFs)
+            setupFs->CreateDir(tempBase);
 
-        FILE* f = fopen(pidPath, "r");
-        if (f)
+        if (setupFs && setupFs->FileExists(pidPathStr))
         {
-            int existingPid = 0;
-            if (fscanf(f, "%d", &existingPid) == 1 && existingPid > 0 && kill(existingPid, 0) == 0)
+            File pidFile(context_, pidPathStr);
+            if (pidFile.IsOpen())
             {
-                fclose(f);
-                fprintf(stderr, "WorkboardManager already running (PID %d). Exiting.\n", existingPid);
-                exitCode_ = EXIT_FAILURE;
-                return;
+                int existingPid = atoi(pidFile.ReadLine().Trimmed().CString());
+                pidFile.Close();
+                if (existingPid > 0 && IsProcessAlive(existingPid))
+                {
+                    URHO3D_LOGERROR("WorkboardManager already running (PID " + String(existingPid) + "). Exiting.");
+                    exitCode_ = EXIT_FAILURE;
+                    return;
+                }
             }
-            fclose(f);
         }
 
         // Write our PID
-        f = fopen(pidPath, "w");
-        if (f)
         {
-            fprintf(f, "%d\n", getpid());
-            fclose(f);
+            File pidFile(context_, pidPathStr, FILE_WRITE);
+            if (pidFile.IsOpen())
+                pidFile.WriteLine(String(GetCurrentPID()));
         }
     }
 
@@ -79,12 +91,15 @@ void WorkboardManager::Setup()
 
 void WorkboardManager::Start()
 {
-    // Ignore SIGPIPE — writing to a FIFO with no reader would otherwise kill us
-    signal(SIGPIPE, SIG_IGN);
+    IgnoreSigPipe();
 
     // Cap FPS — this is a static dashboard, not a game
     engine_->SetMaxFps(30);
     engine_->SetMaxInactiveFps(10);
+
+    // Initialize IPC paths from platform temp directory
+    ipcDir_ = GetSubsystem<FileSystem>()->GetTemporaryDir() + "urho_claude/";
+    ttySockDir_ = ipcDir_ + "tty/";
 
     projectRoot_ = GetProjectRoot();
 
@@ -109,6 +124,7 @@ void WorkboardManager::Start()
     font_ = cache->GetResource<Font>("Fonts/" + currentFontName_ + ".ttf");
     if (!font_)
         font_ = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+    fontSize_ = currentFontSize_;  // sync base class font size
 
     CreateUI();
     LoadWorkboard();
@@ -134,6 +150,34 @@ void WorkboardManager::Start()
         }
     }
 
+    // Parse --secret from command line for workboard sync auth
+    {
+        const Vector<String>& args = GetArguments();
+        for (unsigned i = 0; i < args.Size(); ++i)
+        {
+            if (args[i] == "--secret" && i + 1 < args.Size())
+            {
+                wbSecret_ = args[i + 1];
+                break;
+            }
+        }
+    }
+
+    // Pre-compute BLAKE2b hash of shared secret for PAKE authentication
+    if (!wbSecret_.Empty())
+    {
+        if (sodium_init() < 0)
+            URHO3D_LOGERROR("sodium_init() failed — PAKE auth unavailable");
+        else
+        {
+            crypto_generichash(pakeSecretHash_, sizeof(pakeSecretHash_),
+                reinterpret_cast<const unsigned char*>(wbSecret_.CString()), wbSecret_.Length(),
+                nullptr, 0);
+            pakeSecretValid_ = true;
+            URHO3D_LOGINFO("PAKE secret hash computed (BLAKE2b-256)");
+        }
+    }
+
     // Start beacon server on UDP 31337
     auto* network = GetSubsystem<Network>();
     if (network)
@@ -141,6 +185,24 @@ void WorkboardManager::Start()
         network->StartServer(BEACON_PORT);
         UpdateBeacon();
         AppendLog("System", "Beacon active on UDP port " + String(BEACON_PORT));
+
+        // Register workboard remote events and subscribe to connection lifecycle
+        RegisterWorkboardRemoteEvents();
+        SubscribeToEvent(E_CLIENTCONNECTED, URHO3D_HANDLER(WorkboardManager, HandleClientConnected));
+        SubscribeToEvent(E_CLIENTDISCONNECTED, URHO3D_HANDLER(WorkboardManager, HandleClientDisconnected));
+        SubscribeToEvent(E_CLIENTIDENTITY, URHO3D_HANDLER(WorkboardManager, HandleClientIdentity));
+        // PAKE authentication events
+        SubscribeToEvent(E_KEYEXCHANGEAUTH, URHO3D_HANDLER(WorkboardManager, HandleKeyExchangeAuth));
+        SubscribeToEvent(E_CLIENTAUTHENTICATED, URHO3D_HANDLER(WorkboardManager, HandleClientAuthenticated));
+        // Client → Server remote events
+        SubscribeToEvent(E_WB_REQUEST_PLAN, URHO3D_HANDLER(WorkboardManager, HandleWbRequestPlan));
+        SubscribeToEvent(E_WB_MUTATION, URHO3D_HANDLER(WorkboardManager, HandleWbMutation));
+        SubscribeToEvent(E_WB_SET_IDENTITY, URHO3D_HANDLER(WorkboardManager, HandleWbSetIdentity));
+
+        if (!wbSecret_.Empty())
+            AppendLog("System", "Workboard sync ready (LAN open, WAN PAKE auth enabled)");
+        else
+            AppendLog("System", "Workboard sync ready (LAN open, WAN blocked — use --secret to allow WAN)");
     }
 
     SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(WorkboardManager, HandleUpdate));
@@ -172,38 +234,34 @@ void WorkboardManager::Stop()
             InjectViaTTY(role, shutdownMsg);
     }
 
+    // Notify remote workboard clients of graceful shutdown
+    for (auto it = wbClients_.Begin(); it != wbClients_.End(); ++it)
+    {
+        if (it->second_.authenticated_ && it->first_)
+        {
+            VariantMap data;
+            data["Success"] = false;
+            data["Reason"] = String("Server shutting down");
+            it->first_->SendRemoteEvent(E_WB_MUTATION_ACK, true, data);
+            it->first_->Disconnect();
+        }
+    }
+    wbClients_.Clear();
+
     auto* network = GetSubsystem<Network>();
     if (network)
         network->StopServer();
 
     // Only remove PID file if we own it (a rejected duplicate must not delete the real instance's file)
     if (exitCode_ == EXIT_SUCCESS)
-        unlink("/tmp/urho_claude/manager.pid");
+        GetSubsystem<FileSystem>()->Delete(ipcDir_ + "manager.pid");
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-String WorkboardManager::GetProjectRoot()
-{
-    // build/bin/ → strip two levels to get project root
-    String programDir = GetSubsystem<FileSystem>()->GetProgramDir();
-    if (programDir.EndsWith("/"))
-        programDir = programDir.Substring(0, programDir.Length() - 1);
-    unsigned pos = programDir.FindLast('/');
-    if (pos != String::NPOS)
-        programDir = programDir.Substring(0, pos);
-    pos = programDir.FindLast('/');
-    if (pos != String::NPOS)
-        programDir = programDir.Substring(0, pos);
-    return programDir + "/";
-}
-
-String WorkboardManager::GetClaudeDir()
-{
-    return projectRoot_ + "Claude/";
-}
+// GetProjectRoot() and GetClaudeDir() are in WorkboardBase
 
 // ============================================================================
 // UI Creation
@@ -297,75 +355,9 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, int w, int h)
     }
 }
 
-void WorkboardManager::CreateWorkboardPanel(UIElement* parent, int x, int y, int w, int h)
-{
-    workboardPanel_ = parent->CreateChild<Window>("WorkboardPanel");
-    workboardPanel_->SetStyle("Window");
-    workboardPanel_->SetPosition(x, y);
-    workboardPanel_->SetSize(w, h);
-    workboardPanel_->SetMovable(true);
-    workboardPanel_->SetResizable(true);
-    workboardPanel_->SetResizeBorder(IntRect(6, 6, 6, 6));
-    workboardPanel_->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
+// CreateWorkboardPanel() is in WorkboardBase
 
-    auto* titleText = workboardPanel_->CreateChild<Text>("WBTitle");
-    titleText->SetFont(font_, currentFontSize_ + 3);
-    titleText->SetText("WORKBOARD");
-    titleText->SetColor(Color(1.0f, 0.9f, 0.5f));
-
-    workboardScroll_ = workboardPanel_->CreateChild<ScrollView>("WBScroll");
-    workboardScroll_->SetStyleAuto();
-    workboardScroll_->SetFixedHeight(h - 30);  // fill panel minus title
-
-    workboardContent_ = new UIElement(context_);
-    workboardContent_->SetLayout(LM_VERTICAL, 2);
-    workboardContent_->SetFixedWidth(w - 20);
-    workboardScroll_->SetContentElement(workboardContent_);
-}
-
-void WorkboardManager::CreatePlanPanel(UIElement* parent, int x, int y, int w, int h)
-{
-    planPanel_ = parent->CreateChild<Window>("PlanPanel");
-    planPanel_->SetStyle("Window");
-    planPanel_->SetPosition(x, y);
-    planPanel_->SetSize(w, h);
-    planPanel_->SetMovable(true);
-    planPanel_->SetResizable(true);
-    planPanel_->SetResizeBorder(IntRect(6, 6, 6, 6));
-    planPanel_->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
-
-    auto* titleText = planPanel_->CreateChild<Text>("PlanTitle");
-    titleText->SetFont(font_, currentFontSize_ + 3);
-    titleText->SetText("PLANS");
-    titleText->SetColor(Color(0.5f, 0.8f, 1.0f));
-
-    // Plan list (top ~30%)
-    planListView_ = planPanel_->CreateChild<ListView>("PlanList");
-    planListView_->SetStyleAuto();
-    planListView_->SetMinHeight(120);
-    planListView_->SetMaxHeight(180);
-    SubscribeToEvent(planListView_, "ItemClicked", URHO3D_HANDLER(WorkboardManager, HandlePlanSelected));
-
-    // Plan content (bottom ~70%) — fixed height prevents layout from expanding to fit content
-    planContentScroll_ = planPanel_->CreateChild<ScrollView>("PlanScroll");
-    planContentScroll_->SetStyleAuto();
-    int scrollHeight = h - 180;  // panel height minus title + list + padding
-    planContentScroll_->SetFixedHeight(scrollHeight > 100 ? scrollHeight : 100);
-    planContentScroll_->SetClipChildren(true);
-    planContentScroll_->SetScrollBarsAutoVisible(true);
-    // Vertical scroll only — no horizontal overflow
-    auto* hBar = planContentScroll_->GetHorizontalScrollBar();
-    if (hBar)
-        hBar->SetVisible(false);
-
-    planContentText_ = new Text(context_);
-    planContentText_->SetFont(font_, currentFontSize_);
-    planContentText_->SetColor(Color(0.85f, 0.85f, 0.85f));
-    planContentText_->SetWordwrap(true);
-    planContentText_->SetFixedWidth(w - 20);
-    planContentText_->SetText("Select a plan file to view its contents.");
-    planContentScroll_->SetContentElement(planContentText_);
-}
+// CreatePlanPanel() is in WorkboardBase
 
 void WorkboardManager::CreateComposer(UIElement* parent, int x, int y, int w, int h)
 {
@@ -430,6 +422,15 @@ void WorkboardManager::CreateComposer(UIElement* parent, int x, int y, int w, in
     cfl->SetText("Clear File Locks");
     cfl->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(clearFileLocksBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleClearFileLocks));
+
+    spawnCoderBtn_ = bar->CreateChild<Button>("SpawnCoder");
+    spawnCoderBtn_->SetStyleAuto();
+    spawnCoderBtn_->SetFixedSize(100, 28);
+    auto* sc = spawnCoderBtn_->CreateChild<Text>();
+    sc->SetFont(font_, currentFontSize_);
+    sc->SetText("Spawn Coder");
+    sc->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(spawnCoderBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSpawnCoder));
 }
 
 void WorkboardManager::CreateDownloadBar(UIElement* parent, int x, int y, int w, int h)
@@ -501,18 +502,18 @@ void WorkboardManager::HandleDownload(StringHash /*eventType*/, VariantMap& /*ev
 
     downloadOutputPath_ = downloadDir + "/" + filename;
 
-    // Run curl in background via fork — no blocking system() call
-    curlPid_ = fork();
-    if (curlPid_ == 0)
+    // Run curl in background via Urho3D async process
     {
-        // Child process — redirect stdout/stderr to log, exec curl
-        int logFd = open("/tmp/urho_curl.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (logFd >= 0) { dup2(logFd, STDOUT_FILENO); dup2(logFd, STDERR_FILENO); close(logFd); }
-        execlp("curl", "curl", "-L", "-o", downloadOutputPath_.CString(), url.CString(), (char*)nullptr);
-        _exit(1);  // exec failed
+        auto* fs = GetSubsystem<FileSystem>();
+        Vector<String> args;
+        args.Push("-L");
+        args.Push("-o");
+        args.Push(downloadOutputPath_);
+        args.Push(url);
+        curlRequestId_ = fs->SystemRunAsync("curl", args);
     }
 
-    downloadInProgress_ = (curlPid_ > 0);
+    downloadInProgress_ = (curlRequestId_ > 0);
     downloadCheckTimer_ = 0.0f;
     if (downloadStatusText_)
     {
@@ -535,12 +536,12 @@ void WorkboardManager::CheckDownloadProgress()
 
     auto* fs = GetSubsystem<FileSystem>();
 
-    // Non-blocking check: if curl PID is stored, check if it's still alive
-    if (curlPid_ > 0)
+    // Non-blocking check: if output file doesn't exist yet, curl is still running
+    if (curlRequestId_ > 0)
     {
-        if (kill(curlPid_, 0) == 0)
+        if (!fs->FileExists(downloadOutputPath_))
             return;  // still running
-        curlPid_ = 0;
+        curlRequestId_ = 0;
     }
 
     // curl finished (or was never tracked) — check result
@@ -874,264 +875,17 @@ void WorkboardManager::LoadWorkboard()
     RenderWorkboardUI();
 }
 
-void WorkboardManager::ParseWorkboard(const String& content)
+// ParseWorkboard(), RenderWorkboardUI(), AddSectionToUI(), HandleSectionToggle()
+// are all in WorkboardBase.
+
+// HandlePlanSelected() is in WorkboardBase — calls virtual OnPlanSelected().
+void WorkboardManager::OnPlanSelected(const String& filename)
 {
-    sections_.Clear();
-
-    Vector<String> lines = content.Split('\n');
-
-    WorkboardSection currentSection;
-    bool inSection = false;
-    bool headersParsed = false;
-
-    for (unsigned i = 0; i < lines.Size(); ++i)
-    {
-        String line = lines[i].Trimmed();
-
-        if (line.StartsWith("## "))
-        {
-            if (inSection && !currentSection.headers.Empty())
-                sections_.Push(currentSection);
-
-            currentSection = WorkboardSection();
-            currentSection.title = line.Substring(3).Trimmed();
-            inSection = true;
-            headersParsed = false;
-            continue;
-        }
-
-        if (!inSection)
-            continue;
-
-        if (line.StartsWith("|") && line.EndsWith("|"))
-        {
-            if (line.Contains("---"))
-                continue;
-
-            Vector<String> cells;
-            Vector<String> parts = line.Split('|');
-            for (unsigned j = 0; j < parts.Size(); ++j)
-            {
-                String cell = parts[j].Trimmed();
-                if (!cell.Empty())
-                    cells.Push(cell);
-            }
-
-            if (!headersParsed)
-            {
-                currentSection.headers = cells;
-                headersParsed = true;
-            }
-            else
-            {
-                WorkboardRow row;
-                row.cells = cells;
-                currentSection.rows.Push(row);
-            }
-        }
-    }
-
-    if (inSection && !currentSection.headers.Empty())
-        sections_.Push(currentSection);
+    LoadPlanContent(filename);
 }
 
-void WorkboardManager::RenderWorkboardUI()
-{
-    if (!workboardContent_)
-        return;
-
-    // Save scroll position before rebuild
-    IntVector2 savedScroll = workboardScroll_ ? workboardScroll_->GetViewPosition() : IntVector2::ZERO;
-
-    // Update content width to match current panel size
-    if (workboardPanel_)
-        workboardContent_->SetFixedWidth(workboardPanel_->GetWidth() - 20);
-
-    workboardContent_->RemoveAllChildren();
-
-    for (unsigned i = 0; i < sections_.Size(); ++i)
-        AddSectionToUI(sections_[i]);
-
-    URHO3D_LOGINFOF("RenderWorkboardUI: %u children, content size %dx%d, panel size %dx%d",
-        workboardContent_->GetNumChildren(),
-        workboardContent_->GetWidth(), workboardContent_->GetHeight(),
-        workboardPanel_ ? workboardPanel_->GetWidth() : -1,
-        workboardPanel_ ? workboardPanel_->GetHeight() : -1);
-
-    // Restore scroll position after rebuild
-    if (workboardScroll_)
-        workboardScroll_->SetViewPosition(savedScroll);
-}
-
-void WorkboardManager::AddSectionToUI(const WorkboardSection& section)
-{
-    Color titleColor(0.7f, 0.7f, 0.7f);
-    if (section.title.Contains("Ready"))
-        titleColor = Color(1.0f, 0.9f, 0.3f);
-    else if (section.title.Contains("In Progress"))
-        titleColor = Color(0.3f, 0.9f, 1.0f);
-    else if (section.title.Contains("Done"))
-        titleColor = Color(0.3f, 1.0f, 0.5f);
-    else if (section.title.Contains("Team"))
-        titleColor = Color(0.8f, 0.6f, 1.0f);
-    else if (section.title.Contains("Coder Status"))
-        titleColor = Color(0.3f, 0.9f, 1.0f);
-    else if (section.title.Contains("Archive"))
-        titleColor = Color(0.5f, 0.5f, 0.5f);
-
-    // Clickable section title — looks like plain text
-    auto* titleText = workboardContent_->CreateChild<Text>();
-    titleText->SetFont(font_, currentFontSize_ + 2);
-    titleText->SetText("> " + section.title);
-    titleText->SetColor(titleColor);
-    titleText->SetEnabled(true);  // required for click events
-
-    // Content container — collapsed by default
-    auto* content = workboardContent_->CreateChild<UIElement>();
-    content->SetLayout(LM_VERTICAL, 2);
-    content->SetVisible(false);
-
-    // Store content pointer in title for toggle
-    titleText->SetVar("SectionContent", content);
-    SubscribeToEvent(titleText, E_CLICK, URHO3D_HANDLER(WorkboardManager, HandleSectionToggle));
-
-    // Determine available width for columns
-    int totalW = workboardContent_->GetWidth();
-    if (totalW < 100) totalW = 900;
-
-    unsigned numCols = section.headers.Size();
-    if (numCols == 0)
-    {
-        for (unsigned r = 0; r < section.rows.Size(); ++r)
-        {
-            const WorkboardRow& row = section.rows[r];
-            String rowLine;
-            for (unsigned c = 0; c < row.cells.Size(); ++c)
-            {
-                if (c > 0) rowLine += "  |  ";
-                rowLine += row.cells[c];
-            }
-            auto* rowText = content->CreateChild<Text>();
-            rowText->SetFont(font_, currentFontSize_ - 1);
-            rowText->SetText(rowLine);
-            rowText->SetColor(Color(0.8f, 0.8f, 0.8f));
-            rowText->SetWordwrap(true);
-        }
-        return;
-    }
-
-    // Build column widths
-    Vector<int> colWidths;
-    int usedW = 0;
-    int flexCount = 0;
-    colWidths.Resize(numCols);
-
-    for (unsigned h = 0; h < numCols; ++h)
-    {
-        String hdr = section.headers[h].ToLower().Trimmed();
-        if (hdr == "pri")
-            colWidths[h] = 30;
-        else if (hdr == "owner" || hdr == "started" || hdr == "completed")
-            colWidths[h] = 65;
-        else if (hdr == "review")
-            colWidths[h] = 75;
-        else
-        {
-            colWidths[h] = 0;
-            ++flexCount;
-        }
-        usedW += colWidths[h];
-    }
-
-    int remaining = totalW - usedW - 4;
-    if (flexCount > 0 && remaining > 0)
-    {
-        int perFlex = remaining / flexCount;
-        for (unsigned h = 0; h < numCols; ++h)
-        {
-            if (colWidths[h] == 0)
-                colWidths[h] = perFlex;
-        }
-    }
-
-    // Column header row
-    auto* headerRow = content->CreateChild<UIElement>("HeaderRow");
-    headerRow->SetLayout(LM_HORIZONTAL, 2);
-    headerRow->SetFixedHeight(currentFontSize_ + 6);
-    Color headerColor = titleColor * 0.7f + Color(0.3f, 0.3f, 0.3f);
-    for (unsigned h = 0; h < numCols; ++h)
-    {
-        auto* cell = headerRow->CreateChild<Text>();
-        cell->SetFont(font_, currentFontSize_ - 2);
-        cell->SetText(section.headers[h]);
-        cell->SetColor(headerColor);
-        cell->SetFixedWidth(colWidths[h]);
-    }
-
-    // Data rows
-    for (unsigned r = 0; r < section.rows.Size(); ++r)
-    {
-        const WorkboardRow& row = section.rows[r];
-        auto* rowElem = content->CreateChild<UIElement>("DataRow");
-        rowElem->SetLayout(LM_HORIZONTAL, 2);
-
-        for (unsigned c = 0; c < row.cells.Size() && c < numCols; ++c)
-        {
-            auto* cell = rowElem->CreateChild<Text>();
-            cell->SetFont(font_, currentFontSize_ - 1);
-            cell->SetText(row.cells[c].Trimmed());
-            cell->SetFixedWidth(colWidths[c]);
-            cell->SetWordwrap(true);
-
-            String hdr = (c < numCols) ? section.headers[c].ToLower().Trimmed() : String::EMPTY;
-            if (hdr == "review")
-            {
-                String val = row.cells[c].Trimmed().ToLower();
-                if (val.Contains("accepted"))
-                    cell->SetColor(Color(0.3f, 1.0f, 0.5f));
-                else if (val.Contains("pending"))
-                    cell->SetColor(Color(1.0f, 0.9f, 0.3f));
-                else if (val.Contains("unacceptable"))
-                    cell->SetColor(Color(1.0f, 0.3f, 0.3f));
-                else
-                    cell->SetColor(Color(0.5f, 0.5f, 0.5f));
-            }
-            else
-            {
-                cell->SetColor(Color(0.8f, 0.8f, 0.8f));
-            }
-        }
-    }
-
-    // Separator
-    auto* sep = workboardContent_->CreateChild<BorderImage>();
-    sep->SetFixedHeight(1);
-    sep->SetColor(titleColor * 0.3f);
-}
-
-void WorkboardManager::HandleSectionToggle(StringHash /*eventType*/, VariantMap& eventData)
-{
-    using namespace Click;
-    auto* titleText = static_cast<Text*>(eventData[P_ELEMENT].GetPtr());
-    if (!titleText) return;
-
-    auto* content = static_cast<UIElement*>(titleText->GetVar("SectionContent").GetPtr());
-    if (!content) return;
-
-    bool wasVisible = content->IsVisible();
-    content->SetVisible(!wasVisible);
-
-    // Toggle prefix: "v " (expanded) / "> " (collapsed)
-    String text = titleText->GetText();
-    if (wasVisible && text.StartsWith("v "))
-        titleText->SetText("> " + text.Substring(2));
-    else if (!wasVisible && text.StartsWith("> "))
-        titleText->SetText("v " + text.Substring(2));
-
-    // Force parent reflow
-    workboardContent_->SetHeight(0);
-    workboardContent_->UpdateLayout();
-}
+// (ParseWorkboard, RenderWorkboardUI, AddSectionToUI, HandleSectionToggle
+//  removed — now in WorkboardBase)
 
 // ============================================================================
 // Workboard Mutations (Manager is single authority)
@@ -1268,6 +1022,85 @@ void WorkboardManager::UpdateReview(const String& taskName, const String& newRev
     AppendLog("System", "WB: Task not found for review update: " + taskName);
 }
 
+bool WorkboardManager::AssignTask(const String& taskName, const String& coderRole)
+{
+    // Validate: coder must be alive
+    if (!IsInstanceAlive(coderRole))
+    {
+        AppendLog("System", "WB assign REJECTED: Coder '" + coderRole + "' is not alive");
+        return false;
+    }
+
+    // Validate: task must NOT already be in In Progress (first-wins conflict resolution)
+    WorkboardSection* inProg = FindSection("In Progress");
+    if (inProg)
+    {
+        for (unsigned i = 0; i < inProg->rows.Size(); ++i)
+        {
+            if (inProg->rows[i].cells.Size() > 0 && inProg->rows[i].cells[0].Contains(taskName))
+            {
+                AppendLog("System", "WB assign REJECTED: '" + taskName + "' already in In Progress");
+                return false;
+            }
+        }
+    }
+
+    // Find task in Planned section
+    WorkboardSection* planned = FindSection("Planned");
+    if (!planned)
+    {
+        AppendLog("System", "WB assign REJECTED: Planned section not found");
+        return false;
+    }
+
+    int foundIdx = -1;
+    for (unsigned i = 0; i < planned->rows.Size(); ++i)
+    {
+        if (planned->rows[i].cells.Size() > 0 && planned->rows[i].cells[0].Contains(taskName))
+        {
+            foundIdx = (int)i;
+            break;
+        }
+    }
+
+    if (foundIdx < 0)
+    {
+        AppendLog("System", "WB assign REJECTED: '" + taskName + "' not found in Planned");
+        return false;
+    }
+
+    // Remove from Planned
+    planned->rows.Erase((unsigned)foundIdx);
+
+    // Add to In Progress: | Task | Owner | Started | Review | Notes |
+    if (!inProg)
+    {
+        AppendLog("System", "WB assign REJECTED: In Progress section not found");
+        return false;
+    }
+
+    // Get today's date
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    char dateBuf[16];
+    strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", t);
+
+    WorkboardRow row;
+    row.cells.Push(taskName);
+    row.cells.Push(coderRole);
+    row.cells.Push(String(dateBuf));
+    row.cells.Push(String::EMPTY + "\xe2\x80\x94");  // em dash
+    row.cells.Push("Assigned via wb-assign");
+    inProg->rows.Push(row);
+
+    AppendLog("System", "WB ASSIGNED: " + taskName + " -> " + coderRole);
+
+    // Send TTY notification to the assigned coder
+    String msg = "TASK ASSIGNED: " + taskName + " -- You own this. Check the workboard and start working.";
+    InjectViaTTY(coderRole, msg);
+    return true;
+}
+
 void WorkboardManager::EmitTableRows(String& output, const WorkboardSection* sec)
 {
     for (unsigned r = 0; r < sec->rows.Size(); ++r)
@@ -1363,7 +1196,7 @@ void WorkboardManager::WriteWorkboard()
     {
         writeFile.Write(output.CString(), output.Length());
         writeFile.Close();
-        rename(tmpPath.CString(), path.CString());
+        GetSubsystem<FileSystem>()->Rename(tmpPath, path);
         lastWriteMtime_ = GetSubsystem<FileSystem>()->GetLastModifiedTime(path);
     }
 }
@@ -1417,17 +1250,17 @@ bool WorkboardManager::HandleWorkboardCommand(const String& message)
 
         downloadOutputPath_ = fullDest;
 
-        // Non-blocking fork+exec instead of system()
-        curlPid_ = fork();
-        if (curlPid_ == 0)
+        // Non-blocking async curl via Urho3D
         {
-            int logFd = open("/tmp/urho_curl.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (logFd >= 0) { dup2(logFd, STDOUT_FILENO); dup2(logFd, STDERR_FILENO); close(logFd); }
-            execlp("curl", "curl", "-L", "-o", downloadOutputPath_.CString(), url.CString(), (char*)nullptr);
-            _exit(1);
+            Vector<String> args;
+            args.Push("-L");
+            args.Push("-o");
+            args.Push(downloadOutputPath_);
+            args.Push(url);
+            curlRequestId_ = fs->SystemRunAsync("curl", args);
         }
 
-        downloadInProgress_ = (curlPid_ > 0);
+        downloadInProgress_ = (curlRequestId_ > 0);
         downloadCheckTimer_ = 0.0f;
         if (downloadStatusText_)
         {
@@ -1437,6 +1270,8 @@ bool WorkboardManager::HandleWorkboardCommand(const String& message)
         AppendLog("Download", "Started: " + url + " -> " + fullDest);
         return true;
     }
+
+    bool mutationOk = true;
 
     if (command == "add-ready" && fields.Size() >= 6)
         AddReadyRow(fields);
@@ -1450,17 +1285,22 @@ bool WorkboardManager::HandleWorkboardCommand(const String& message)
         RemoveRow(payload.Trimmed());
     else if (command == "add-shared" && fields.Size() >= 2)
         AddSharedFile(fields);
+    else if (command == "assign" && fields.Size() >= 2)
+        mutationOk = AssignTask(fields[0].Trimmed(), fields[1].Trimmed());
     else if (command == "update-review" && fields.Size() >= 2)
         UpdateReview(fields[0].Trimmed(), fields[1].Trimmed());
     else
     {
         AppendLog("System", "Unknown or malformed WB command: " + message);
-        return true;
+        return false;
     }
 
-    WriteWorkboard();
-    RenderWorkboardUI();
-    return true;
+    if (mutationOk)
+    {
+        WriteWorkboard();
+        RenderWorkboardUI();
+    }
+    return mutationOk;
 }
 
 // ============================================================================
@@ -1503,13 +1343,7 @@ void WorkboardManager::ScanPlanFiles()
     }
 }
 
-void WorkboardManager::HandlePlanSelected(StringHash /*eventType*/, VariantMap& eventData)
-{
-    using namespace ItemClicked;
-    int index = eventData[P_SELECTION].GetI32();
-    if (index >= 0 && (unsigned)index < planFiles_.Size())
-        LoadPlanContent(planFiles_[index]);
-}
+// HandlePlanSelected() is in WorkboardBase — calls virtual OnPlanSelected()
 
 void WorkboardManager::LoadPlanContent(const String& filename)
 {
@@ -1551,15 +1385,10 @@ void WorkboardManager::LoadPlanContent(const String& filename)
 
 void WorkboardManager::CreateIPCPaths()
 {
-    mkdir(IPC_DIR, 0777);
-
-    // Create instances directory
-    char instDir[128];
-    snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
-    mkdir(instDir, 0777);
-
-    // Create TTY socket directory
-    mkdir(TTY_SOCK_DIR, 0777);
+    auto* fs = GetSubsystem<FileSystem>();
+    fs->CreateDir(ipcDir_);
+    fs->CreateDir(ipcDir_ + "instances");
+    fs->CreateDir(ttySockDir_);
 }
 
 
@@ -1570,77 +1399,50 @@ void WorkboardManager::CreateIPCPaths()
 
 int WorkboardManager::ReadInstancePID(const String& role)
 {
-    // Primary: read <role>.pid file
-    char path[128];
-    snprintf(path, sizeof(path), "%s/instances/%s.pid", IPC_DIR, role.CString());
+    auto* fs = GetSubsystem<FileSystem>();
+    String instDir = ipcDir_ + "instances/";
 
-    FILE* f = fopen(path, "r");
-    if (f)
+    // Primary: read <role>.pid file
+    String path = instDir + role + ".pid";
+    if (fs->FileExists(path))
     {
-        int pid = 0;
-        if (fscanf(f, "%d", &pid) == 1 && pid > 0)
+        File f(context_, path);
+        if (f.IsOpen())
         {
-            fclose(f);
-            return pid;
+            int pid = atoi(f.ReadLine().Trimmed().CString());
+            if (pid > 0)
+                return pid;
         }
-        fclose(f);
     }
 
     // Fallback: scan *.role files for one matching this role name
-    char instDir[128];
-    snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
-    DIR* dir = opendir(instDir);
-    if (!dir)
-        return -1;
+    Vector<String> roleFiles;
+    fs->ScanDir(roleFiles, instDir, "*.role", SCAN_FILES, false);
 
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr)
+    for (const String& filename : roleFiles)
     {
-        const char* dot = strrchr(entry->d_name, '.');
-        if (!dot || strcmp(dot, ".role") != 0)
+        File rf(context_, instDir + filename);
+        if (!rf.IsOpen())
             continue;
 
-        char rolePath[512];
-        snprintf(rolePath, sizeof(rolePath), "%s/%s", instDir, entry->d_name);
-
-        FILE* rf = fopen(rolePath, "r");
-        if (!rf)
-            continue;
-
-        char roleName[64] = {};
-        char pidStr[32] = {};
-        if (!fgets(roleName, sizeof(roleName), rf)) roleName[0] = '\0';
-        if (!fgets(pidStr, sizeof(pidStr), rf)) pidStr[0] = '\0';
-        fclose(rf);
-
-        // Strip newlines
-        char* nl = strchr(roleName, '\n');
-        if (nl) *nl = '\0';
-        nl = strchr(pidStr, '\n');
-        if (nl) *nl = '\0';
+        String roleName = rf.ReadLine().Trimmed();
+        String pidStr = rf.ReadLine().Trimmed();
 
         if (role == roleName)
         {
-            int pid = atoi(pidStr);
-            closedir(dir);
+            int pid = atoi(pidStr.CString());
             return pid > 0 ? pid : -1;
         }
     }
 
-    closedir(dir);
     return -1;
 }
 
 bool WorkboardManager::IsInstanceAlive(const String& role)
 {
-    // Primary: recent FIFO activity
-    float lastActivity = GetLastActivity(role);
-    if (lastActivity < LIVENESS_TIMEOUT)
-        return true;
-
-    // Fallback: PID file + process check
+    // PID is the authority — if the process is alive, it's alive
     int pid = ReadInstancePID(role);
-    if (pid > 0 && kill(pid, 0) == 0)
+    if (pid > 0 && IsProcessAlive(pid))
         return true;
 
     // Dead — clean up stale PID file
@@ -1785,6 +1587,25 @@ void WorkboardManager::RefreshInstanceStatus()
         }
         else
         {
+            // Count online coders
+            unsigned onlineCount = 0;
+            for (const String& role : knownCoderRoles_)
+            {
+                if (IsInstanceAlive(role))
+                    ++onlineCount;
+            }
+
+            // If more than one coder, add summary header as first item
+            if (knownCoderRoles_.Size() > 1)
+            {
+                auto* header = new Text(context_);
+                header->SetFont(font_, currentFontSize_);
+                header->SetMinSize(170, 20);
+                header->SetText("Coders: " + String(onlineCount) + "/" + String(knownCoderRoles_.Size()));
+                header->SetColor(onlineCount > 0 ? Color(0.3f, 1.0f, 0.5f) : Color(0.5f, 0.5f, 0.5f));
+                coderStatusDropdown_->AddItem(header);
+            }
+
             for (const String& role : knownCoderRoles_)
             {
                 bool alive = IsInstanceAlive(role);
@@ -1812,7 +1633,10 @@ void WorkboardManager::RefreshInstanceStatus()
             }
         }
 
-        if (prevSel < coderStatusDropdown_->GetNumItems())
+        // When multiple coders, select the summary header (index 0)
+        if (knownCoderRoles_.Size() > 1)
+            coderStatusDropdown_->SetSelection(0);
+        else if (prevSel < coderStatusDropdown_->GetNumItems())
             coderStatusDropdown_->SetSelection(prevSel);
         else if (coderStatusDropdown_->GetNumItems() > 0)
             coderStatusDropdown_->SetSelection(0);
@@ -1825,8 +1649,9 @@ void WorkboardManager::RefreshInstanceStatus()
 
 bool WorkboardManager::InjectViaTTY(const String& role, const String& message)
 {
-    // Try to inject message directly into the coder's TTY via pty-proxy Unix socket
-    String sockPath = "/tmp/urho_claude/tty/" + role + ".sock";
+#ifndef _WIN32
+    // Inject message directly into the target's TTY via pty-proxy Unix socket
+    String sockPath = ttySockDir_ + role + ".sock";
 
     struct stat st;
     if (stat(sockPath.CString(), &st) != 0 || !S_ISSOCK(st.st_mode))
@@ -1847,11 +1672,21 @@ bool WorkboardManager::InjectViaTTY(const String& role, const String& message)
         return false;
     }
 
-    // Send message text first, then Enter separately so TUI sees it as a keypress
-    ssize_t written = write(fd, message.CString(), message.Length());
+    // Flatten to single line — multi-line triggers bracketed paste mode in terminal,
+    // which swallows the trailing Enter and requires manual user intervention
+    String flat = message;
+    flat.Replace("\n", " ");
+    flat.Replace("\r", "");
+
+    // Bracketed paste: Ink routes content atomically to input buffer
+    const char* pasteStart = "\x1b[200~";
+    const char* pasteEnd = "\x1b[201~";
+    write(fd, pasteStart, 6);
+    ssize_t written = write(fd, flat.CString(), flat.Length());
+    write(fd, pasteEnd, 6);
     if (written > 0)
     {
-        usleep(50000);  // 50ms pause
+        usleep(150000);  // 150ms — let Ink process paste before submit
         write(fd, "\r", 1);  // Enter keypress
     }
     close(fd);
@@ -1861,6 +1696,9 @@ bool WorkboardManager::InjectViaTTY(const String& role, const String& message)
 
     URHO3D_LOGINFOF("InjectViaTTY: sent %d bytes to %s via %s", (int)written, role.CString(), sockPath.CString());
     return true;
+#else
+    return false;
+#endif
 }
 
 
@@ -1947,21 +1785,19 @@ void WorkboardManager::HandleSendBroadcast(StringHash /*eventType*/, VariantMap&
 
 void WorkboardManager::HandleClearFileLocks(StringHash /*eventType*/, VariantMap& /*eventData*/)
 {
-    const char* lockDir = "/tmp/urho_claude/locks";
+    String lockDir = ipcDir_ + "locks";
     int cleared = 0;
 
-    // Remove all lock directories and files
-    Vector<String> entries;
     auto* fs = GetSubsystem<FileSystem>();
     if (fs)
     {
+        Vector<String> entries;
         fs->ScanDir(entries, lockDir, "*", SCAN_FILES | SCAN_DIRS, false);
         for (const String& entry : entries)
         {
             if (entry == "." || entry == "..")
                 continue;
-            String fullPath = String(lockDir) + "/" + entry;
-            // Lock entries are directories (mkdir-based locks)
+            String fullPath = lockDir + "/" + entry;
             if (fs->DirExists(fullPath))
             {
                 // Remove contents first
@@ -1972,12 +1808,11 @@ void WorkboardManager::HandleClearFileLocks(StringHash /*eventType*/, VariantMap
                     if (f != "." && f != "..")
                         fs->Delete(fullPath + "/" + f);
                 }
-                rmdir(fullPath.CString());
+                fs->SystemCommand("rmdir \"" + fullPath + "\"");
                 cleared++;
             }
             else
             {
-                // Stale flat files from old locking approach
                 fs->Delete(fullPath);
                 cleared++;
             }
@@ -1987,6 +1822,27 @@ void WorkboardManager::HandleClearFileLocks(StringHash /*eventType*/, VariantMap
     AppendLog("Manager", cleared > 0
         ? String("Cleared ") + String(cleared) + " file lock(s)"
         : "No file locks to clear");
+}
+
+void WorkboardManager::HandleSpawnCoder(StringHash /*eventType*/, VariantMap& /*eventData*/)
+{
+    String scriptPath = GetProjectRoot() + "/.claude/hooks/claude_ipc.sh";
+
+    // Check script exists
+    auto* fs = GetSubsystem<FileSystem>();
+    if (!fs->FileExists(scriptPath))
+    {
+        AppendLog("Manager", "Cannot spawn coder: " + scriptPath + " not found");
+        return;
+    }
+
+    // SystemCommand inherits environment (DISPLAY, DBUS_SESSION_BUS_ADDRESS)
+    // which gnome-terminal needs. The script launches in the background (&).
+    int ret = fs->SystemCommand(scriptPath + " spawn-coder");
+    if (ret == 0)
+        AppendLog("Manager", "Spawn Coder command executed");
+    else
+        AppendLog("Manager", "Spawn Coder failed (exit code " + String(ret) + ")");
 }
 
 // ============================================================================
@@ -2081,11 +1937,10 @@ void WorkboardManager::UpdateBeacon()
 
 void WorkboardManager::CleanupStalePID(const String& role, int pid)
 {
-    char pidFile[128], roleFile[128];
-    snprintf(pidFile, sizeof(pidFile), "%s/instances/%s.pid", IPC_DIR, role.CString());
-    snprintf(roleFile, sizeof(roleFile), "%s/instances/%d.role", IPC_DIR, pid);
-    remove(pidFile);
-    remove(roleFile);
+    auto* fs = GetSubsystem<FileSystem>();
+    String instDir = ipcDir_ + "instances/";
+    fs->Delete(instDir + role + ".pid");
+    fs->Delete(instDir + String(pid) + ".role");
     AppendLog("System", role + " (PID " + String(pid) + ") detected dead — cleaned up stale files");
     UpdateBeacon();
 }
@@ -2108,112 +1963,81 @@ float WorkboardManager::GetLastActivity(const String& role)
 
 void WorkboardManager::SweepStaleRoleFiles()
 {
-    char instDir[128];
-    snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
+    auto* fs = GetSubsystem<FileSystem>();
+    String instDir = ipcDir_ + "instances/";
 
-    DIR* dir = opendir(instDir);
-    if (!dir)
-        return;
-
-    // Collect filenames first — removing files while iterating is undefined
+    // Collect .role filenames first — removing files while iterating is undefined
     Vector<String> roleFiles;
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr)
-    {
-        const char* dot = strrchr(entry->d_name, '.');
-        if (dot && strcmp(dot, ".role") == 0)
-            roleFiles.Push(String(entry->d_name));
-    }
-    closedir(dir);
+    fs->ScanDir(roleFiles, instDir, "*.role", SCAN_FILES, false);
 
     for (const String& filename : roleFiles)
     {
-        char rolePath[512];
-        snprintf(rolePath, sizeof(rolePath), "%s/%s", instDir, filename.CString());
+        String rolePath = instDir + filename;
 
         // Read role name (line 1) and PID (line 2) from the file
-        FILE* f = fopen(rolePath, "r");
-        if (!f)
+        File f(context_, rolePath);
+        if (!f.IsOpen())
             continue;
 
-        char roleName[64] = {};
-        char pidStr[32] = {};
-        if (!fgets(roleName, sizeof(roleName), f)) roleName[0] = '\0';
-        if (!fgets(pidStr, sizeof(pidStr), f)) pidStr[0] = '\0';
-        fclose(f);
+        String roleName = f.ReadLine().Trimmed();
+        String pidStr = f.ReadLine().Trimmed();
+        f.Close();
 
-        // Strip newlines
-        char* nl = strchr(roleName, '\n');
-        if (nl) *nl = '\0';
-        nl = strchr(pidStr, '\n');
-        if (nl) *nl = '\0';
-
-        int pid = atoi(pidStr);
+        int pid = atoi(pidStr.CString());
         if (pid <= 0)
         {
             // No PID stored (legacy format) — can't check liveness, remove it
-            remove(rolePath);
-            AppendLog("System", String("Swept role file with no PID: ") + filename);
+            fs->Delete(rolePath);
+            AppendLog("System", "Swept role file with no PID: " + filename);
             continue;
         }
 
         // Is this PID still alive?
-        if (kill(pid, 0) == 0)
+        if (IsProcessAlive(pid))
             continue;  // Still alive, keep it
 
         // Dead — remove the .role file and its matching .pid file
-        if (roleName[0])
+        if (!roleName.Empty())
         {
-            char pidFile[512];
-            snprintf(pidFile, sizeof(pidFile), "%s/%s.pid", instDir, roleName);
-            FILE* pf = fopen(pidFile, "r");
-            if (pf)
+            String pidFilePath = instDir + roleName + ".pid";
+            if (fs->FileExists(pidFilePath))
             {
-                int storedPid = 0;
-                if (fscanf(pf, "%d", &storedPid) == 1 && storedPid == pid)
-                    remove(pidFile);
-                fclose(pf);
+                File pf(context_, pidFilePath);
+                if (pf.IsOpen())
+                {
+                    int storedPid = atoi(pf.ReadLine().Trimmed().CString());
+                    pf.Close();
+                    if (storedPid == pid)
+                        fs->Delete(pidFilePath);
+                }
             }
         }
 
-        remove(rolePath);
-        AppendLog("System", String("Swept dead instance: ") + filename +
+        fs->Delete(rolePath);
+        AppendLog("System", "Swept dead instance: " + filename +
                   " (role=" + roleName + ", PID=" + String(pid) + ")");
     }
 
     // Also sweep orphaned .pid files whose PID is dead
-    dir = opendir(instDir);
-    if (!dir)
-        return;
-
     Vector<String> pidFiles;
-    while ((entry = readdir(dir)) != nullptr)
-    {
-        const char* dot = strrchr(entry->d_name, '.');
-        if (dot && strcmp(dot, ".pid") == 0)
-            pidFiles.Push(String(entry->d_name));
-    }
-    closedir(dir);
+    fs->ScanDir(pidFiles, instDir, "*.pid", SCAN_FILES, false);
 
     for (const String& filename : pidFiles)
     {
-        char pidPath[512];
-        snprintf(pidPath, sizeof(pidPath), "%s/%s", instDir, filename.CString());
+        String pidPath = instDir + filename;
 
-        FILE* f = fopen(pidPath, "r");
-        if (!f)
+        File f(context_, pidPath);
+        if (!f.IsOpen())
             continue;
 
-        int pid = 0;
-        if (fscanf(f, "%d", &pid) != 1)
-            pid = 0;
-        fclose(f);
+        int pid = atoi(f.ReadLine().Trimmed().CString());
+        f.Close();
 
-        if (pid > 0 && kill(pid, 0) == 0)
+        if (pid > 0 && IsProcessAlive(pid))
             continue;  // Still alive
 
-        remove(pidPath);
-        AppendLog("System", String("Swept orphaned PID file: ") + filename);
+        fs->Delete(pidPath);
+        AppendLog("System", "Swept orphaned PID file: " + filename);
     }
 }
 
@@ -2224,93 +2048,55 @@ void WorkboardManager::SweepStaleRoleFiles()
 Vector<String> WorkboardManager::DiscoverCoderRoles()
 {
     Vector<String> roles;
-    char instDir[128];
-    snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
-
-    DIR* dir = opendir(instDir);
-    if (!dir)
-        return roles;
+    auto* fs = GetSubsystem<FileSystem>();
+    String instDir = ipcDir_ + "instances/";
 
     // Scan .role files for any role starting with "coder"
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr)
+    Vector<String> roleFiles;
+    fs->ScanDir(roleFiles, instDir, "*.role", SCAN_FILES, false);
+
+    for (const String& filename : roleFiles)
     {
-        const char* dot = strrchr(entry->d_name, '.');
-        if (!dot || strcmp(dot, ".role") != 0)
+        File f(context_, instDir + filename);
+        if (!f.IsOpen())
             continue;
 
-        char rolePath[512];
-        snprintf(rolePath, sizeof(rolePath), "%s/%s", instDir, entry->d_name);
+        String role = f.ReadLine().Trimmed();
+        String pidStr = f.ReadLine().Trimmed();
 
-        FILE* f = fopen(rolePath, "r");
-        if (!f)
-            continue;
-
-        char roleName[64] = {};
-        char pidStr[32] = {};
-        if (!fgets(roleName, sizeof(roleName), f)) roleName[0] = '\0';
-        if (!fgets(pidStr, sizeof(pidStr), f)) pidStr[0] = '\0';
-        fclose(f);
-
-        // Strip newlines
-        char* nl = strchr(roleName, '\n');
-        if (nl) *nl = '\0';
-        nl = strchr(pidStr, '\n');
-        if (nl) *nl = '\0';
-
-        String role(roleName);
         if (!role.StartsWith("coder"))
             continue;
 
-        // Only include if the PID is alive
-        int pid = atoi(pidStr);
-        if (pid > 0 && kill(pid, 0) == 0)
+        int pid = atoi(pidStr.CString());
+        if (pid > 0 && IsProcessAlive(pid) && !roles.Contains(role))
         {
-            if (!roles.Contains(role))
-            {
-                roles.Push(role);
-                // Ensure activity timer exists for this role
-                if (coderActivityTimers_.Find(role) == coderActivityTimers_.End())
-                    coderActivityTimers_[role] = 0.0f;
-            }
+            roles.Push(role);
+            if (coderActivityTimers_.Find(role) == coderActivityTimers_.End())
+                coderActivityTimers_[role] = 0.0f;
         }
     }
-    closedir(dir);
 
     // Also check .pid files (direct role-name format: coder.pid, coder1.pid, etc.)
-    dir = opendir(instDir);
-    if (dir)
+    Vector<String> pidFiles;
+    fs->ScanDir(pidFiles, instDir, "coder*.pid", SCAN_FILES, false);
+
+    for (const String& filename : pidFiles)
     {
-        while ((entry = readdir(dir)) != nullptr)
+        String role = filename.Substring(0, filename.FindLast('.'));
+        if (!role.StartsWith("coder"))
+            continue;
+
+        File f(context_, instDir + filename);
+        if (!f.IsOpen())
+            continue;
+        int pid = atoi(f.ReadLine().Trimmed().CString());
+
+        if (pid > 0 && IsProcessAlive(pid) && !roles.Contains(role))
         {
-            const char* dot = strrchr(entry->d_name, '.');
-            if (!dot || strcmp(dot, ".pid") != 0)
-                continue;
-
-            // Extract role name from filename (e.g., "coder1.pid" → "coder1")
-            String filename(entry->d_name);
-            String role = filename.Substring(0, filename.FindLast('.'));
-            if (!role.StartsWith("coder"))
-                continue;
-
-            // Check if PID is alive
-            char pidPath[512];
-            snprintf(pidPath, sizeof(pidPath), "%s/%s", instDir, entry->d_name);
-            FILE* f = fopen(pidPath, "r");
-            if (!f)
-                continue;
-            int pid = 0;
-            if (fscanf(f, "%d", &pid) != 1) pid = 0;
-            fclose(f);
-
-            if (pid > 0 && kill(pid, 0) == 0 && !roles.Contains(role))
-            {
-                roles.Push(role);
-                if (coderActivityTimers_.Find(role) == coderActivityTimers_.End())
-                    coderActivityTimers_[role] = 0.0f;
-            }
+            roles.Push(role);
+            if (coderActivityTimers_.Find(role) == coderActivityTimers_.End())
+                coderActivityTimers_[role] = 0.0f;
         }
-        closedir(dir);
     }
 
     Sort(roles.Begin(), roles.End());
@@ -2324,80 +2110,47 @@ Vector<String> WorkboardManager::DiscoverCoderRoles()
 Vector<String> WorkboardManager::DiscoverUnassignedRoles()
 {
     Vector<String> roles;
-    char instDir[128];
-    snprintf(instDir, sizeof(instDir), "%s/instances", IPC_DIR);
-
-    DIR* dir = opendir(instDir);
-    if (!dir)
-        return roles;
+    auto* fs = GetSubsystem<FileSystem>();
+    String instDir = ipcDir_ + "instances/";
 
     // Scan .role files for any role starting with "unassigned"
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr)
+    Vector<String> roleFiles;
+    fs->ScanDir(roleFiles, instDir, "*.role", SCAN_FILES, false);
+
+    for (const String& filename : roleFiles)
     {
-        const char* dot = strrchr(entry->d_name, '.');
-        if (!dot || strcmp(dot, ".role") != 0)
+        File f(context_, instDir + filename);
+        if (!f.IsOpen())
             continue;
 
-        char rolePath[512];
-        snprintf(rolePath, sizeof(rolePath), "%s/%s", instDir, entry->d_name);
+        String role = f.ReadLine().Trimmed();
+        String pidStr = f.ReadLine().Trimmed();
 
-        FILE* f = fopen(rolePath, "r");
-        if (!f)
-            continue;
-
-        char roleName[64] = {};
-        char pidStr[32] = {};
-        if (!fgets(roleName, sizeof(roleName), f)) roleName[0] = '\0';
-        if (!fgets(pidStr, sizeof(pidStr), f)) pidStr[0] = '\0';
-        fclose(f);
-
-        char* nl = strchr(roleName, '\n');
-        if (nl) *nl = '\0';
-        nl = strchr(pidStr, '\n');
-        if (nl) *nl = '\0';
-
-        String role(roleName);
         if (!role.StartsWith("unassigned"))
             continue;
 
-        int pid = atoi(pidStr);
-        if (pid > 0 && kill(pid, 0) == 0)
-        {
-            if (!roles.Contains(role))
-                roles.Push(role);
-        }
+        int pid = atoi(pidStr.CString());
+        if (pid > 0 && IsProcessAlive(pid) && !roles.Contains(role))
+            roles.Push(role);
     }
-    closedir(dir);
 
     // Also check .pid files (unassigned.pid, unassigned2.pid, etc.)
-    dir = opendir(instDir);
-    if (dir)
+    Vector<String> pidFiles;
+    fs->ScanDir(pidFiles, instDir, "unassigned*.pid", SCAN_FILES, false);
+
+    for (const String& filename : pidFiles)
     {
-        while ((entry = readdir(dir)) != nullptr)
-        {
-            const char* dot = strrchr(entry->d_name, '.');
-            if (!dot || strcmp(dot, ".pid") != 0)
-                continue;
+        String role = filename.Substring(0, filename.FindLast('.'));
+        if (!role.StartsWith("unassigned"))
+            continue;
 
-            String filename(entry->d_name);
-            String role = filename.Substring(0, filename.FindLast('.'));
-            if (!role.StartsWith("unassigned"))
-                continue;
+        File f(context_, instDir + filename);
+        if (!f.IsOpen())
+            continue;
+        int pid = atoi(f.ReadLine().Trimmed().CString());
 
-            char pidPath[512];
-            snprintf(pidPath, sizeof(pidPath), "%s/%s", instDir, entry->d_name);
-            FILE* f = fopen(pidPath, "r");
-            if (!f)
-                continue;
-            int pid = 0;
-            if (fscanf(f, "%d", &pid) != 1) pid = 0;
-            fclose(f);
-
-            if (pid > 0 && kill(pid, 0) == 0 && !roles.Contains(role))
-                roles.Push(role);
-        }
-        closedir(dir);
+        if (pid > 0 && IsProcessAlive(pid) && !roles.Contains(role))
+            roles.Push(role);
     }
 
     Sort(roles.Begin(), roles.End());
@@ -2437,9 +2190,21 @@ void WorkboardManager::HandleUpdate(StringHash /*eventType*/, VariantMap& eventD
     if (refreshAccumulator_ >= REFRESH_INTERVAL)
     {
         refreshAccumulator_ = 0.0f;
+
+        // Track mtime before reload to detect changes
+        auto* fs = GetSubsystem<FileSystem>();
+        String wbPath = GetClaudeDir() + "WORKBOARD.md";
+        unsigned oldMtime = lastWorkboardMtime_;
+        if (fs->FileExists(wbPath))
+            lastWorkboardMtime_ = fs->GetLastModifiedTime(wbPath);
+
         LoadWorkboard();
         ScanPlanFiles();
         RefreshInstanceStatus();
+
+        // Push workboard to remote clients if it changed
+        if (lastWorkboardMtime_ != oldMtime && !wbClients_.Empty())
+            PushWorkboardToAllClients();
     }
 }
 
@@ -2457,4 +2222,328 @@ void WorkboardManager::HandleKeyDown(StringHash /*eventType*/, VariantMap& event
         RefreshInstanceStatus();
         AppendLog("System", "Refreshed.");
     }
+}
+
+// ============================================================================
+// Remote Workboard Sync (Phase 2a)
+// ============================================================================
+
+void WorkboardManager::RegisterWorkboardRemoteEvents()
+{
+    auto* network = GetSubsystem<Network>();
+    if (!network)
+        return;
+
+    // Register all workboard events so they pass the remote event whitelist
+    network->RegisterRemoteEvent(E_WB_WELCOME);
+    network->RegisterRemoteEvent(E_WB_WORKBOARD_FULL);
+    network->RegisterRemoteEvent(E_WB_PLAN_LIST);
+    network->RegisterRemoteEvent(E_WB_PLAN_CONTENT);
+    network->RegisterRemoteEvent(E_WB_MUTATION_ACK);
+    network->RegisterRemoteEvent(E_WB_CLIENT_LIST);
+    network->RegisterRemoteEvent(E_WB_REQUEST_PLAN);
+    network->RegisterRemoteEvent(E_WB_MUTATION);
+    network->RegisterRemoteEvent(E_WB_SET_IDENTITY);
+}
+
+void WorkboardManager::HandleClientConnected(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace ClientConnected;
+    auto* conn = static_cast<Connection*>(eventData[P_CONNECTION].GetPtr());
+    AppendLog("Network", "Client connected: " + conn->ToString());
+}
+
+void WorkboardManager::HandleClientDisconnected(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace ClientDisconnected;
+    auto* conn = static_cast<Connection*>(eventData[P_CONNECTION].GetPtr());
+
+    auto it = wbClients_.Find(conn);
+    if (it != wbClients_.End())
+    {
+        AppendLog("Network", "Workboard client disconnected: " + it->second_.name_);
+        wbClients_.Erase(it);
+        PushClientListToAll();
+    }
+    else
+    {
+        AppendLog("Network", "Client disconnected (unauthenticated)");
+    }
+}
+
+void WorkboardManager::HandleClientIdentity(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace ClientIdentity;
+    auto* conn = static_cast<Connection*>(eventData[P_CONNECTION].GetPtr());
+
+    // LAN clients are trusted (no auth). WAN clients must provide --secret password.
+    String addr = conn->GetAddress();
+    bool isLan = addr.StartsWith("127.") || addr.StartsWith("10.") ||
+                 addr.StartsWith("192.168.") || addr == "::1";
+    // 172.16.0.0 – 172.31.255.255
+    if (!isLan && addr.StartsWith("172."))
+    {
+        unsigned dot1 = addr.Find('.');
+        if (dot1 != String::NPOS)
+        {
+            int second = atoi(addr.Substring(dot1 + 1).CString());
+            if (second >= 16 && second <= 31)
+                isLan = true;
+        }
+    }
+
+    if (!isLan)
+    {
+        // WAN — require PAKE authentication (password never sent in plaintext)
+        if (wbSecret_.Empty())
+        {
+            AppendLog("Network", "WAN client rejected — no --secret configured: " + conn->ToString());
+            eventData[P_ALLOW] = false;
+            return;
+        }
+        if (!conn->IsPakeAuthenticated())
+        {
+            AppendLog("Network", "WAN client rejected — PAKE auth failed from " + conn->ToString());
+            eventData[P_ALLOW] = false;
+            return;
+        }
+        AppendLog("Network", "WAN client PAKE-authenticated: " + conn->ToString());
+    }
+
+    // Accept the connection
+    eventData[P_ALLOW] = true;
+
+    // Register as authenticated workboard client
+    const VariantMap& ident = conn->GetIdentity();
+    auto nameIt = ident.Find(StringHash("Name"));
+    auto roleIt = ident.Find(StringHash("Role"));
+
+    WbClientInfo info;
+    info.connection_ = conn;
+    info.name_ = (nameIt != ident.End()) ? nameIt->second_.GetString() : String::EMPTY;
+    info.role_ = (roleIt != ident.End()) ? roleIt->second_.GetString() : String::EMPTY;
+    info.authenticated_ = true;
+    if (info.name_.Empty())
+        info.name_ = conn->ToString();
+    wbClients_[conn] = info;
+
+    AppendLog("Network", "Workboard client authenticated: " + info.name_ + " (" + info.role_ + ")");
+
+    // Send welcome
+    {
+        VariantMap data;
+        data["ServerName"] = String("WorkboardManager");
+        data["Version"] = String("1.0");
+        data["ClientCount"] = (int)wbClients_.Size();
+        conn->SendRemoteEvent(E_WB_WELCOME, true, data);
+    }
+
+    // Push initial state
+    PushWorkboardToClient(conn);
+    PushPlanListToClient(conn);
+    PushClientListToAll();
+}
+
+void WorkboardManager::HandleKeyExchangeAuth(StringHash /*eventType*/, VariantMap& eventData)
+{
+    // PAKE: provide the BLAKE2b hash of the shared secret for key exchange
+    using namespace KeyExchangeAuth;
+    String username = eventData[P_USERNAME].GetString();
+
+    if (!pakeSecretValid_)
+    {
+        // No secret configured — cannot authenticate
+        eventData[P_FOUND] = false;
+        AppendLog("Network", "PAKE: no secret hash available for user '" + username + "'");
+        return;
+    }
+
+    eventData[P_PASSWORDHASH].SetBuffer(pakeSecretHash_, sizeof(pakeSecretHash_));
+    eventData[P_FOUND] = true;
+    AppendLog("Network", "PAKE: password hash provided for '" + username + "'");
+}
+
+void WorkboardManager::HandleClientAuthenticated(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace ClientAuthenticated;
+    auto* conn = static_cast<Connection*>(eventData[P_CONNECTION].GetPtr());
+    String username = eventData[P_USERNAME].GetString();
+    AppendLog("Network", "PAKE: client authenticated — user '" + username + "' from " + conn->ToString());
+}
+
+void WorkboardManager::PushWorkboardToClient(Connection* conn)
+{
+    String wbPath = GetClaudeDir() + "WORKBOARD.md";
+    File file(context_, wbPath, FILE_READ);
+    if (!file.IsOpen())
+        return;
+
+    unsigned size = file.GetSize();
+    String content;
+    content.Resize(size);
+    file.Read(&content[0], size);
+    file.Close();
+
+    VariantMap data;
+    data["Markdown"] = content;
+    conn->SendRemoteEvent(E_WB_WORKBOARD_FULL, true, data);
+}
+
+void WorkboardManager::PushPlanListToClient(Connection* conn)
+{
+    VariantMap data;
+    data["Filenames"] = BuildPlanListString();
+    conn->SendRemoteEvent(E_WB_PLAN_LIST, true, data);
+}
+
+void WorkboardManager::PushClientListToAll()
+{
+    VariantMap data;
+    data["Clients"] = BuildClientListString();
+
+    for (auto it = wbClients_.Begin(); it != wbClients_.End(); ++it)
+        it->first_->SendRemoteEvent(E_WB_CLIENT_LIST, true, data);
+}
+
+void WorkboardManager::PushWorkboardToAllClients()
+{
+    if (wbClients_.Empty())
+        return;
+
+    // Read workboard content once
+    String wbPath = GetClaudeDir() + "WORKBOARD.md";
+    File file(context_, wbPath, FILE_READ);
+    if (!file.IsOpen())
+        return;
+
+    unsigned size = file.GetSize();
+    String content;
+    content.Resize(size);
+    file.Read(&content[0], size);
+    file.Close();
+
+    VariantMap data;
+    data["Markdown"] = content;
+
+    for (auto it = wbClients_.Begin(); it != wbClients_.End(); ++it)
+        it->first_->SendRemoteEvent(E_WB_WORKBOARD_FULL, true, data);
+
+    AppendLog("Network", "Pushed workboard update to " + String(wbClients_.Size()) + " client(s)");
+}
+
+String WorkboardManager::BuildPlanListString()
+{
+    String result;
+    for (unsigned i = 0; i < planFiles_.Size(); ++i)
+    {
+        if (i > 0)
+            result += "\n";
+        result += planFiles_[i];
+    }
+    return result;
+}
+
+String WorkboardManager::BuildClientListString()
+{
+    String result;
+    unsigned idx = 0;
+    for (auto it = wbClients_.Begin(); it != wbClients_.End(); ++it)
+    {
+        if (idx > 0)
+            result += "\n";
+        result += it->second_.name_ + ":" + it->second_.role_;
+        ++idx;
+    }
+    return result;
+}
+
+void WorkboardManager::HandleWbRequestPlan(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace RemoteEventData;
+    auto* conn = static_cast<Connection*>(eventData[P_CONNECTION].GetPtr());
+    if (wbClients_.Find(conn) == wbClients_.End())
+        return;  // not authenticated
+
+    String filename = eventData["Filename"].GetString();
+    if (filename.Empty())
+        return;
+
+    // Sanitize — only allow PLAN_*.md files from Claude dir
+    if (!filename.StartsWith("PLAN_") || !filename.EndsWith(".md") || filename.Contains(".."))
+    {
+        AppendLog("Network", "Rejected plan request: " + filename);
+        return;
+    }
+
+    String path = GetClaudeDir() + filename;
+    File file(context_, path, FILE_READ);
+    if (!file.IsOpen())
+    {
+        AppendLog("Network", "Plan not found: " + filename);
+        return;
+    }
+
+    unsigned size = file.GetSize();
+    String content;
+    content.Resize(size);
+    file.Read(&content[0], size);
+    file.Close();
+
+    VariantMap data;
+    data["Filename"] = filename;
+    data["Content"] = content;
+    conn->SendRemoteEvent(E_WB_PLAN_CONTENT, true, data);
+
+    AppendLog("Network", "Sent plan " + filename + " to " + wbClients_[conn].name_);
+}
+
+void WorkboardManager::HandleWbMutation(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace RemoteEventData;
+    auto* conn = static_cast<Connection*>(eventData[P_CONNECTION].GetPtr());
+    if (wbClients_.Find(conn) == wbClients_.End())
+        return;  // not authenticated
+
+    String command = eventData["Command"].GetString();
+    String args = eventData["Args"].GetString();
+    String clientName = wbClients_[conn].name_;
+
+    AppendLog("Network", "Mutation from " + clientName + ": " + command + " " + args);
+
+    // Construct the wb-* command string and run it through existing handler
+    String fullCommand = "wb-" + command + " " + args;
+    bool success = HandleWorkboardCommand(fullCommand);
+
+    // Send ack
+    VariantMap ack;
+    ack["Success"] = success;
+    ack["Reason"] = success ? String("OK") : String("Command failed: " + fullCommand);
+    conn->SendRemoteEvent(E_WB_MUTATION_ACK, true, ack);
+
+    // If mutation succeeded, push updated workboard to all clients
+    if (success)
+    {
+        LoadWorkboard();
+        PushWorkboardToAllClients();
+    }
+}
+
+void WorkboardManager::HandleWbSetIdentity(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace RemoteEventData;
+    auto* conn = static_cast<Connection*>(eventData[P_CONNECTION].GetPtr());
+    auto it = wbClients_.Find(conn);
+    if (it == wbClients_.End())
+        return;  // not authenticated
+
+    String name = eventData["Name"].GetString();
+    String role = eventData["Role"].GetString();
+
+    if (!name.Empty())
+        it->second_.name_ = name;
+    if (!role.Empty())
+        it->second_.role_ = role;
+
+    AppendLog("Network", "Client identity updated: " + it->second_.name_ + " (" + it->second_.role_ + ")");
+    PushClientListToAll();
 }

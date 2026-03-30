@@ -953,10 +953,10 @@ void VulkanGraphicsImpl::Shutdown()
     }
 }
 
-bool VulkanGraphicsImpl::AcquireNextImage()
+AcquireResult VulkanGraphicsImpl::AcquireNextImage()
 {
     if (!swapchain_ || imageSemaphores_.Empty())
-        return false;
+        return AcquireResult::Error;
 
     // Get current frame resources
     FrameResources& frame = frames_[currentFrame_];
@@ -967,9 +967,9 @@ bool VulkanGraphicsImpl::AcquireNextImage()
     if (fenceResult == VK_TIMEOUT)
     {
         URHO3D_LOGWARNING("Fence wait timed out (5s), GPU may be stuck or app shutting down");
-        return false;
+        // Don't reset fence — it was never signaled
+        return AcquireResult::Timeout;
     }
-    vkResetFences(device_, 1, &frame.fence);
 
     // Process deferred deletions for this frame (GPU finished using these resources)
     ProcessDeferredDeletions();
@@ -989,20 +989,25 @@ bool VulkanGraphicsImpl::AcquireNextImage()
     if (result == VK_TIMEOUT)
     {
         // Window likely obscured/minimized — skip this frame, don't log (normal behavior)
-        return false;
+        // Don't reset fence — no new work will be submitted this frame
+        return AcquireResult::Timeout;
     }
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR)
     {
         URHO3D_LOGINFO("Swapchain out of date during acquire, needs recreation");
-        return false;  // Caller will handle recreation
+        // Don't reset fence — caller will recreate swapchain and retry
+        return AcquireResult::OutOfDate;
     }
 
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
         URHO3D_LOGERROR("Failed to acquire swapchain image: " + String((int)result));
-        return false;
+        return AcquireResult::Error;
     }
+
+    // Acquire succeeded — now safe to reset fence (we will submit new work this frame)
+    vkResetFences(device_, 1, &frame.fence);
 
     // Store which image this frame will render to
     frame.imageIndex = imageIndex;
@@ -1010,7 +1015,7 @@ bool VulkanGraphicsImpl::AcquireNextImage()
     // Update global index for compatibility (can remove later)
     currentImageIndex_ = frame.imageIndex;
 
-    return true;
+    return AcquireResult::Success;
 }
 
 void VulkanGraphicsImpl::Present()
@@ -1147,8 +1152,6 @@ void VulkanGraphicsImpl::BeginRenderPass()
         return;
     }
 
-    URHO3D_LOGDEBUG("BeginRenderPass: Starting render pass");
-
     // Handle framebuffer rebuild if render targets changed
     if (renderTargetsDirty_)
         RebuildRenderTargetFramebuffer();
@@ -1228,14 +1231,7 @@ void VulkanGraphicsImpl::BeginRenderPass()
     renderPassInfo.clearValueCount = clearValueCount;
     renderPassInfo.pClearValues = clearValues;
 
-    URHO3D_LOGDEBUGF("[Thread %lu] BeginRenderPass: renderArea=(%u,%u) extent=%ux%u, framebuffer=%llu, renderPass=%llu",
-                     (unsigned long)Thread::GetCurrentThreadID(),
-                     renderPassInfo.renderArea.offset.x, renderPassInfo.renderArea.offset.y,
-                     renderPassInfo.renderArea.extent.width, renderPassInfo.renderArea.extent.height,
-                     (unsigned long long)currentFramebuffer, (unsigned long long)currentRenderPass);
-
     vkCmdBeginRenderPass(cmdBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    URHO3D_LOGDEBUG("BeginRenderPass: Render pass ACTIVE, framebuffer=" + String((unsigned long long)currentFramebuffer));
 
     renderPassActive_ = true;
 
@@ -2106,10 +2102,6 @@ void VulkanGraphicsImpl::InsertPipelineBarrier(VkCommandBuffer cmdBuffer,
         nullptr    // pImageMemoryBarriers
     );
 
-    URHO3D_LOGDEBUG("InsertPipelineBarrier: srcStage=0x" + String((unsigned)srcStage) +
-                    " dstStage=0x" + String((unsigned)dstStage) +
-                    " srcAccess=0x" + String((unsigned)srcAccess) +
-                    " dstAccess=0x" + String((unsigned)dstAccess));
 }
 
 bool VulkanGraphicsImpl::CreateLogicalDevice()
@@ -4066,7 +4058,6 @@ void VulkanGraphicsImpl::TransitionImageLayout(VkCommandBuffer commandBuffer, Vk
                          0, nullptr,  // no buffer barriers
                          1, &barrier);  // one image barrier
 
-    URHO3D_LOGDEBUG("vkCmdPipelineBarrier completed successfully");
 }
 
 void VulkanGraphicsImpl::ReportPoolStatistics() const
@@ -5087,9 +5078,13 @@ VkDescriptorSet VulkanGraphicsImpl::CreateTextureDescriptorSet()
         if (!imageView)
             continue;
 
-        // Get sampler from sampler cache
-        // TODO: Use full sampler parameters (U/V/W address modes, border color) when available
-        VkSampler sampler = samplerCache_->GetSampler(texture->GetFilterMode(), texture->GetAddressMode(COORD_U), 1);
+        // Get sampler from sampler cache with per-axis address modes
+        VkSampler sampler = samplerCache_->GetSampler(
+            texture->GetFilterMode(),
+            texture->GetAddressMode(COORD_U),
+            texture->GetAddressMode(COORD_V),
+            texture->GetAddressMode(COORD_W),
+            1);
         if (!sampler)
             continue;
 
@@ -5116,12 +5111,6 @@ VkDescriptorSet VulkanGraphicsImpl::CreateTextureDescriptorSet()
     if (!descriptorWrites.Empty())
     {
         vkUpdateDescriptorSets(device_, descriptorWrites.Size(), descriptorWrites.Buffer(), 0, nullptr);
-        URHO3D_LOGDEBUG(String("CreateTextureDescriptorSet: Updated descriptor set with ") +
-                        String(descriptorWrites.Size()) + " texture bindings");
-    }
-    else
-    {
-        URHO3D_LOGDEBUG("CreateTextureDescriptorSet: No textures bound, descriptor set is empty");
     }
 
     return descriptorSet;
@@ -5154,7 +5143,6 @@ void VulkanGraphicsImpl::BindTextureDescriptorSet(VkDescriptorSet descriptorSet)
         nullptr
     );
 
-    URHO3D_LOGDEBUG("BindTextureDescriptorSet: Bound texture descriptor set to Set 1");
 }
 
 // Phase 36C: Constant Buffer Descriptor Management
@@ -5169,7 +5157,6 @@ VkDescriptorSet VulkanGraphicsImpl::CreateConstantBufferDescriptorSet(const void
 
     if (!data || dataSize == 0)
     {
-        URHO3D_LOGDEBUG("CreateConstantBufferDescriptorSet: No data provided, skipping");
         return VK_NULL_HANDLE;
     }
 
@@ -5222,9 +5209,6 @@ VkDescriptorSet VulkanGraphicsImpl::CreateConstantBufferDescriptorSet(const void
     // Update descriptor set with constant buffer binding
     vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
 
-    URHO3D_LOGDEBUG(String("CreateConstantBufferDescriptorSet: Created descriptor set with ") +
-                    String(dataSize) + " bytes at offset " + String((unsigned)bufferOffset));
-
     return descriptorSet;
 }
 
@@ -5255,7 +5239,6 @@ void VulkanGraphicsImpl::BindConstantBufferDescriptorSet(VkDescriptorSet descrip
         nullptr
     );
 
-    URHO3D_LOGDEBUG("BindConstantBufferDescriptorSet: Bound constant buffer descriptor set to Set 2");
 }
 
 // Phase 36D: Input Attachment Descriptor Management
@@ -5333,8 +5316,6 @@ VkDescriptorSet VulkanGraphicsImpl::CreateInputAttachmentDescriptorSet()
     // Update descriptor set with all input attachment bindings
     vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
 
-    URHO3D_LOGDEBUG("CreateInputAttachmentDescriptorSet: Created descriptor set with 4 G-Buffer input attachments");
-
     return descriptorSet;
 }
 
@@ -5365,7 +5346,6 @@ void VulkanGraphicsImpl::BindInputAttachmentDescriptorSet(VkDescriptorSet descri
         nullptr
     );
 
-    URHO3D_LOGDEBUG("BindInputAttachmentDescriptorSet: Bound input attachment descriptor set to Set 3");
 }
 
 } // namespace Urho3D

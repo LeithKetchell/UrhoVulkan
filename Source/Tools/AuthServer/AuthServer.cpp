@@ -99,6 +99,8 @@ static void ReleaseInstanceLock()
 #else
 #include <signal.h>
 static int lockFileFd_ = -1;
+// Lock file path — computed at runtime, but the POSIX lock code needs a C string
+// initialized early. This is fine since /tmp/ exists on all POSIX platforms.
 static const char* lockFilePath_ = "/tmp/urho3d_authserver.lock";
 static bool AcquireInstanceLock()
 {
@@ -286,6 +288,7 @@ void AuthServer::Setup()
     engineParameters_[EP_WINDOW_RESIZABLE] = true;
     engineParameters_[EP_LOG_NAME] = "AuthServer.log";
     engineParameters_[EP_RESOURCE_PATHS] = "CoreData;Data";
+    engineParameters_[EP_FRAME_LIMITER] = true;
 }
 
 void AuthServer::Start()
@@ -297,7 +300,17 @@ void AuthServer::Start()
         engine_->Exit();
         return;
     }
-    URHO3D_LOGINFOF("Instance lock acquired (PID %d, replace=%s)", (int)getpid(), SERVER_REPLACE_AT_RUNTIME ? "true" : "false");
+    URHO3D_LOGINFOF("Instance lock acquired (PID %d, replace=%s)",
+#ifdef _WIN32
+                    (int)GetCurrentProcessId(),
+#else
+                    (int)getpid(),
+#endif
+                    SERVER_REPLACE_AT_RUNTIME ? "true" : "false");
+
+    // Cap FPS — AuthServer renders UI only, no need for high frame rates
+    engine_->SetMaxFps(30);
+    engine_->SetMaxInactiveFps(10);
 
     // Create debug UI first
     CreateUI();
@@ -318,7 +331,6 @@ void AuthServer::Start()
     LoadScene();
     RegisterExistingTerrain();
     InitTerrainBrush();
-    SetupGodCamera();
 
     // Generate a test terrain at grid (1,0) to verify the generator works
     // TODO: remove this test once on-demand generation is wired to patch claims
@@ -417,7 +429,6 @@ void AuthServer::CreateUI()
     CreateNetworkingPanel(bg, font);
     CreateDatabasePanel(bg, font);
     CreateWeatherPanel(bg, font);
-    CreateSceneViewPanel(bg, font);
 
     SwitchTab(0);  // Networking tab active by default
 
@@ -456,18 +467,9 @@ void AuthServer::CreateMenuBar(BorderImage* bg, Font* font)
     wxLabel->SetText("Weather");
     wxLabel->SetAlignment(HA_CENTER, VA_CENTER);
 
-    sceneViewTab_ = menuBar->CreateChild<Button>("SceneViewTab");
-    sceneViewTab_->SetStyle("Button");
-    sceneViewTab_->SetFixedSize(100, 24);
-    auto* svLabel = sceneViewTab_->CreateChild<Text>("Label");
-    svLabel->SetFont(font, 12);
-    svLabel->SetText("Scene");
-    svLabel->SetAlignment(HA_CENTER, VA_CENTER);
-
     SubscribeToEvent(networkingTab_, "Released", URHO3D_HANDLER(AuthServer, HandleTabClicked));
     SubscribeToEvent(databaseTab_, "Released", URHO3D_HANDLER(AuthServer, HandleTabClicked));
     SubscribeToEvent(weatherTab_, "Released", URHO3D_HANDLER(AuthServer, HandleTabClicked));
-    SubscribeToEvent(sceneViewTab_, "Released", URHO3D_HANDLER(AuthServer, HandleTabClicked));
 }
 
 void AuthServer::CreateNetworkingPanel(BorderImage* bg, Font* font)
@@ -742,152 +744,6 @@ void AuthServer::RefreshWeatherPanel()
     }
 }
 
-void AuthServer::CreateSceneViewPanel(BorderImage* bg, Font* font)
-{
-    sceneViewPanel_ = bg->CreateChild<BorderImage>("SceneViewPanel");
-    sceneViewPanel_->SetColor(Color(0.0f, 0.0f, 0.0f, 0.0f));  // transparent — 3D renders behind
-    sceneViewPanel_->SetLayout(LM_VERTICAL, 4, IntRect(8, 8, 8, 8));
-
-    // Instructions
-    auto* instrText = sceneViewPanel_->CreateChild<Text>("SceneInstr");
-    instrText->SetFont(font, 11);
-    instrText->SetText("RMB+WASD: fly camera  |  LMB: raise water  |  MMB: lower water  |  Scroll: brush size");
-    instrText->SetColor(Color(0.6f, 0.6f, 0.7f));
-
-    // Scene stats (updated each frame)
-    sceneStatsText_ = sceneViewPanel_->CreateChild<Text>("SceneStats");
-    sceneStatsText_->SetFont(font, 11);
-    sceneStatsText_->SetText("Nodes: -- | Clients: --");
-    sceneStatsText_->SetColor(Color(0.5f, 0.8f, 0.5f));
-
-    // Brush info
-    auto* brushText = sceneViewPanel_->CreateChild<Text>("BrushInfo");
-    brushText->SetFont(font, 11);
-    brushText->SetText("Water Brush: radius 8, strength 0.02");
-    brushText->SetColor(Color(0.4f, 0.6f, 0.9f));
-    brushText->SetVar("IsBrushInfo", true);
-}
-
-void AuthServer::PaintWater(float worldX, float worldZ, bool raise)
-{
-    if (!waterHeightMap_)
-        return;
-
-    int width = waterHeightMap_->GetWidth();
-    int height = waterHeightMap_->GetHeight();
-
-    // Convert world coords to pixel coords (same math as HandleWaterEdit)
-    float terrainSpacingX = 2.0f;
-    float terrainSpacingZ = 2.0f;
-    float halfSize = (width - 1) * terrainSpacingX * 0.5f;
-
-    int centerPX = (int)((worldX + halfSize) / terrainSpacingX);
-    int centerPZ = (int)((worldZ + halfSize) / terrainSpacingZ);
-    int pixelRadius = (int)(waterBrushRadius_ / terrainSpacingX);
-
-    HashSet<unsigned long long> touchedPatches;
-    int modified = 0;
-
-    for (int pz = Max(0, centerPZ - pixelRadius); pz <= Min(height - 1, centerPZ + pixelRadius); ++pz)
-    {
-        for (int px = Max(0, centerPX - pixelRadius); px <= Min(width - 1, centerPX + pixelRadius); ++px)
-        {
-            float dx = (float)(px - centerPX);
-            float dz = (float)(pz - centerPZ);
-            float dist = sqrtf(dx * dx + dz * dz);
-            if (dist > pixelRadius)
-                continue;
-
-            float falloff = 1.0f - (dist / (float)pixelRadius);
-            float delta = waterBrushStrength_ * falloff;
-
-            Color c = waterHeightMap_->GetPixel(px, pz);
-            float val = c.r_;
-            if (raise)
-                val = Min(val + delta, 1.0f);
-            else
-                val = Max(val - delta, 0.0f);
-            waterHeightMap_->SetPixel(px, pz, Color(val, val, val));
-            ++modified;
-
-            // Record which patch this pixel belongs to
-            int patchPixels = 64;  // PATCH_PIXELS
-            int patchPX = (px - width / 2) / patchPixels;
-            int patchPZ = (pz - height / 2) / patchPixels;
-            if (px < width / 2) patchPX--;
-            if (pz < height / 2) patchPZ--;
-            touchedPatches.Insert(PatchKey(patchPX, patchPZ));
-        }
-    }
-
-    if (modified == 0)
-        return;
-
-    // Broadcast affected patches to all connected clients
-    for (auto pit = touchedPatches.Begin(); pit != touchedPatches.End(); ++pit)
-    {
-        int tpx = (int)(*pit >> 32);
-        int tpz = (int)(*pit & 0xFFFFFFFF);
-        BroadcastAffectedPatch(tpx, tpz, "water_heightmap", waterHeightMap_);
-    }
-}
-
-void AuthServer::UpdateSceneView(float timeStep)
-{
-    if (activeTab_ != 3)
-        return;
-
-    // Update scene stats
-    if (sceneStatsText_ && scene_)
-    {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "Nodes: %d | Clients: %d | Brush: r=%.0f s=%.3f",
-                 scene_->GetNumChildren(true), sessions_.Size(),
-                 waterBrushRadius_, waterBrushStrength_);
-        sceneStatsText_->SetText(buf);
-    }
-
-    auto* input = GetSubsystem<Input>();
-    auto* ui = GetSubsystem<UI>();
-
-    // Scroll wheel adjusts brush radius
-    int wheel = input->GetMouseMoveWheel();
-    if (wheel != 0)
-    {
-        waterBrushRadius_ = Clamp(waterBrushRadius_ + wheel * 2.0f, 2.0f, 64.0f);
-    }
-
-    // LMB = raise water, MMB = lower water (only when not over UI)
-    bool lmb = input->GetMouseButtonDown(MOUSEB_LEFT);
-    bool mmb = input->GetMouseButtonDown(MOUSEB_MIDDLE);
-    bool rmb = input->GetMouseButtonDown(MOUSEB_RIGHT);
-
-    if ((lmb || mmb) && !rmb && !ui->GetFocusElement())
-    {
-        // Raycast from camera through cursor
-        auto* camera = godCamNode_ ? godCamNode_->GetComponent<Camera>() : nullptr;
-        if (camera)
-        {
-            auto* graphics = GetSubsystem<Graphics>();
-            IntVector2 mousePos = input->GetMousePosition();
-            Ray ray = camera->GetScreenRay(
-                (float)mousePos.x_ / graphics->GetWidth(),
-                (float)mousePos.y_ / graphics->GetHeight());
-
-            auto* physicsWorld = scene_->GetComponent<PhysicsWorld>();
-            if (physicsWorld)
-            {
-                PhysicsRaycastResult result;
-                physicsWorld->RaycastSingle(result, ray, 2000.0f);
-                if (result.body_)
-                {
-                    PaintWater(result.position_.x_, result.position_.z_, lmb);
-                }
-            }
-        }
-    }
-}
-
 void AuthServer::HandleKeyDown(StringHash eventType, VariantMap& eventData)
 {
     using namespace KeyDown;
@@ -905,8 +761,6 @@ void AuthServer::HandleTabClicked(StringHash eventType, VariantMap& eventData)
         SwitchTab(1);
     else if (element == weatherTab_)
         SwitchTab(2);
-    else if (element == sceneViewTab_)
-        SwitchTab(3);
 }
 
 void AuthServer::SwitchTab(int tab)
@@ -916,22 +770,17 @@ void AuthServer::SwitchTab(int tab)
     databasePanel_->SetVisible(tab == 1);
     if (weatherPanel_)
         weatherPanel_->SetVisible(tab == 2);
-    if (sceneViewPanel_)
-        sceneViewPanel_->SetVisible(tab == 3);
 
     // Update tab button colors
     auto* netLabel = static_cast<Text*>(networkingTab_->GetChild("Label", false));
     auto* dbLabel = static_cast<Text*>(databaseTab_->GetChild("Label", false));
     auto* wxLabel = weatherTab_ ? static_cast<Text*>(weatherTab_->GetChild("Label", false)) : nullptr;
-    auto* svLabel = sceneViewTab_ ? static_cast<Text*>(sceneViewTab_->GetChild("Label", false)) : nullptr;
     if (netLabel)
         netLabel->SetColor(tab == 0 ? Color(0.8f, 0.8f, 1.0f) : Color(0.5f, 0.5f, 0.5f));
     if (dbLabel)
         dbLabel->SetColor(tab == 1 ? Color(0.8f, 0.8f, 1.0f) : Color(0.5f, 0.5f, 0.5f));
     if (wxLabel)
         wxLabel->SetColor(tab == 2 ? Color(0.8f, 0.8f, 1.0f) : Color(0.5f, 0.5f, 0.5f));
-    if (svLabel)
-        svLabel->SetColor(tab == 3 ? Color(0.8f, 0.8f, 1.0f) : Color(0.5f, 0.5f, 0.5f));
 
     // Refresh weather panel when switching to it
     if (tab == 2)
@@ -1760,72 +1609,6 @@ void AuthServer::InitTerrainBrush()
                String(heightMap->GetWidth()) + "x" + String(heightMap->GetHeight()) + ")");
 }
 
-void AuthServer::SetupGodCamera()
-{
-    if (!scene_)
-        return;
-
-    godCamNode_ = scene_->CreateChild("GodCamera", LOCAL);
-    auto* camera = godCamNode_->CreateComponent<Camera>(LOCAL);
-    camera->SetFarClip(2000.0f);
-
-    // Start high above terrain center looking down at an angle
-    godCamNode_->SetPosition(Vector3(0.0f, 80.0f, -50.0f));
-    godCamNode_->SetRotation(Quaternion(30.0f, 0.0f, 0.0f));  // pitch down
-    yaw_ = 0.0f;
-    pitch_ = 30.0f;
-
-    // Set up viewport
-    auto* renderer = GetSubsystem<Renderer>();
-    SharedPtr<Viewport> viewport(new Viewport(context_, scene_, camera));
-    renderer->SetViewport(0, viewport);
-
-    LogMessage("God camera active — WASD move, mouse look, RMB to fly");
-}
-
-void AuthServer::UpdateGodCamera(float timeStep)
-{
-    if (!godCamNode_)
-        return;
-
-    auto* input = GetSubsystem<Input>();
-    auto* ui = GetSubsystem<UI>();
-
-    // Only capture mouse when RMB is held (so UI stays usable)
-    bool flying = input->GetMouseButtonDown(MOUSEB_RIGHT);
-
-    if (flying)
-    {
-        IntVector2 mouseMove = input->GetMouseMove();
-        const float sensitivity = 0.1f;
-        yaw_ += mouseMove.x_ * sensitivity;
-        pitch_ += mouseMove.y_ * sensitivity;
-        pitch_ = Clamp(pitch_, -89.0f, 89.0f);
-        godCamNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
-    }
-
-    // WASD + QE movement (only when RMB held or no UI element focused)
-    if (flying || !ui->GetFocusElement())
-    {
-        float speed = 50.0f * timeStep;
-        if (input->GetKeyDown(KEY_SHIFT))
-            speed *= 3.0f;
-
-        if (input->GetKeyDown(KEY_W))
-            godCamNode_->Translate(Vector3::FORWARD * speed);
-        if (input->GetKeyDown(KEY_S))
-            godCamNode_->Translate(Vector3::BACK * speed);
-        if (input->GetKeyDown(KEY_A))
-            godCamNode_->Translate(Vector3::LEFT * speed);
-        if (input->GetKeyDown(KEY_D))
-            godCamNode_->Translate(Vector3::RIGHT * speed);
-        if (input->GetKeyDown(KEY_Q))
-            godCamNode_->Translate(Vector3::DOWN * speed);
-        if (input->GetKeyDown(KEY_E))
-            godCamNode_->Translate(Vector3::UP * speed);
-    }
-}
-
 Node* AuthServer::CreatePlayerAvatar(int patchX, int patchZ)
 {
     if (!scene_)
@@ -2181,13 +1964,6 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
     using namespace Update;
     float dt = eventData[P_TIMESTEP].GetFloat();
     uptime_ += dt;
-
-    // God camera movement
-    if (godCamActive_)
-        UpdateGodCamera(dt);
-
-    // Scene view water brush
-    UpdateSceneView(dt);
 
     // Melbourne clock
     if (melbourneClock_)

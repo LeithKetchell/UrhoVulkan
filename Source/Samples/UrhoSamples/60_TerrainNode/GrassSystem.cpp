@@ -112,9 +112,17 @@ void GrassSystem::Initialize(Terrain* terrain, float gridSize, float cellSize, f
     // Texture unit 1 = heightmap (for VTF)
     grassMat_->SetTexture(TU_NORMAL, heightmapTex_);
 
-    // Texture unit 2 = density map (splat map or dedicated)
-    // For now, use a white texture (full density everywhere above water)
-    // TODO: hook up terrain splat map or ecosystem density texture
+    // Texture unit 2 = density map (terrain weight map — R channel = grass density)
+    Material* terrainMat = terrain->GetMaterial();
+    if (terrainMat)
+    {
+        Texture* weightTex = terrainMat->GetTexture(TU_DIFFUSE);  // unit 0 = TerrainWeights.dds
+        if (weightTex)
+        {
+            grassMat_->SetTexture(TU_SPECULAR, weightTex);
+            URHO3D_LOGINFO("GrassSystem — bound terrain weight map as density texture");
+        }
+    }
 
     // Compute terrain world size and offset for shader
     IntVector2 numVerts = terrain->GetNumVertices();
@@ -237,6 +245,13 @@ void GrassSystem::SetRadius(float radius, float fadeWidth)
         grassMat_->SetShaderParameter("GrassRadius", grassRadius_);
         grassMat_->SetShaderParameter("GrassFadeWidth", grassFadeWidth_);
     }
+}
+
+void GrassSystem::SetDensityMap(Texture2D* texture)
+{
+    densityMapTex_ = texture;
+    if (grassMat_ && texture)
+        grassMat_->SetTexture(TU_SPECULAR, texture);
 }
 
 SharedPtr<Model> GrassSystem::BuildGridMesh(float gridSize, float cellSize)

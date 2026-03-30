@@ -61,6 +61,8 @@ void HUD::Start()
     }
 
     CreateBars();
+    CreateStatusIcons();
+    CreateContextHint();
 }
 
 void HUD::SetFont(Font* font, int size)
@@ -152,6 +154,8 @@ void HUD::Update(float timeStep)
     UpdateBar(hungerBar_, timeStep);
     UpdateBar(thirstBar_, timeStep);
     UpdateBar(staminaBar_, timeStep);
+    UpdateStatusIcons(timeStep);
+    UpdateContextHint(timeStep);
 
     // Temperature indicator — only visible when uncomfortable
     if (tempIndicator_)
@@ -303,4 +307,133 @@ void HUD::SetStamina(float v)
 void HUD::SetTemperature(float celsius)
 {
     temperature_ = celsius;
+}
+
+// ============================================================================
+// Phase 2: Status Icons
+// ============================================================================
+
+void HUD::CreateStatusIcons()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* root = ui->GetRoot();
+
+    // Bottom-left container — icons stack vertically upward
+    iconContainer_ = root->CreateChild<UIElement>("HUDStatusIcons");
+    iconContainer_->SetAlignment(HA_LEFT, VA_BOTTOM);
+    iconContainer_->SetPosition(ICON_MARGIN, -ICON_MARGIN);
+    iconContainer_->SetLayout(LM_VERTICAL, ICON_GAP, IntRect(0, 0, 0, 0));
+
+    // Icon definitions: symbol, color
+    // Using ASCII/text labels since we're using Anonymous Pro (no icon font)
+    struct IconDef
+    {
+        const char* symbol;
+        Color color;
+    };
+
+    IconDef defs[ICON_MAX] = {
+        {"*FREEZING*",    Color(0.4f, 0.6f, 1.0f)},    // ICON_FREEZING - ice blue
+        {"*HOT*",         Color(1.0f, 0.4f, 0.15f)},   // ICON_OVERHEATING - orange
+        {"*STARVING*",    Color(0.9f, 0.3f, 0.1f)},    // ICON_STARVING - red-orange
+        {"*THIRSTY*",     Color(0.3f, 0.5f, 0.9f)},    // ICON_DEHYDRATED - blue
+        {"*TIRED*",       Color(0.6f, 0.4f, 0.8f)},    // ICON_EXHAUSTED - purple
+        {"*WARMTH*",      Color(1.0f, 0.6f, 0.2f)},    // ICON_NEAR_FIRE - warm orange
+        {"*SHELTER*",     Color(0.8f, 0.7f, 0.3f)},    // ICON_IN_SHELTER - warm gold
+        {"*HEAVY*",       Color(0.9f, 0.8f, 0.2f)},    // ICON_ENCUMBERED - yellow
+    };
+
+    for (int i = 0; i < ICON_MAX; ++i)
+    {
+        auto* text = iconContainer_->CreateChild<Text>(String("StatusIcon") + String(i));
+        text->SetFont(font_, fontSize_);
+        text->SetText(defs[i].symbol);
+        text->SetColor(Color(defs[i].color.r_, defs[i].color.g_, defs[i].color.b_, 0.0f));
+        text->SetVisible(false);
+        icons_[i].element = text;
+        icons_[i].currentAlpha = 0.0f;
+        icons_[i].active = false;
+    }
+}
+
+void HUD::UpdateStatusIcons(float timeStep)
+{
+    // Auto-derive some icon states from existing vitals
+    icons_[ICON_FREEZING].active = temperature_ < 0.0f;
+    icons_[ICON_OVERHEATING].active = temperature_ > 40.0f;
+    icons_[ICON_STARVING].active = hungerBar_.value < CRITICAL_THRESHOLD;
+    icons_[ICON_DEHYDRATED].active = thirstBar_.value < CRITICAL_THRESHOLD;
+    icons_[ICON_EXHAUSTED].active = staminaBar_.value < 0.1f;
+
+    for (int i = 0; i < ICON_MAX; ++i)
+    {
+        float target = icons_[i].active ? 1.0f : 0.0f;
+        if (icons_[i].currentAlpha < target)
+            icons_[i].currentAlpha = Min(icons_[i].currentAlpha + FADE_SPEED * timeStep, target);
+        else if (icons_[i].currentAlpha > target)
+            icons_[i].currentAlpha = Max(icons_[i].currentAlpha - FADE_SPEED * timeStep, target);
+
+        bool vis = icons_[i].currentAlpha > 0.01f;
+        if (icons_[i].element)
+        {
+            icons_[i].element->SetVisible(vis);
+            if (vis)
+            {
+                Color c = icons_[i].element->GetColor(C_TOPLEFT);
+                c.a_ = icons_[i].currentAlpha;
+                icons_[i].element->SetColor(c);
+            }
+        }
+    }
+}
+
+void HUD::SetStatusIcon(StatusIcon icon, bool active)
+{
+    if (icon >= 0 && icon < ICON_MAX)
+        icons_[icon].active = active;
+}
+
+// ============================================================================
+// Phase 2: Context Hints
+// ============================================================================
+
+void HUD::CreateContextHint()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* root = ui->GetRoot();
+
+    contextHintText_ = root->CreateChild<Text>("HUDContextHint");
+    contextHintText_->SetFont(font_, fontSize_ + 2);  // slightly larger for readability
+    contextHintText_->SetAlignment(HA_RIGHT, VA_BOTTOM);
+    contextHintText_->SetPosition(-ICON_MARGIN, -ICON_MARGIN);
+    contextHintText_->SetColor(Color(0.87f, 0.8f, 0.73f, 0.0f));  // warm off-white
+    contextHintText_->SetVisible(false);
+}
+
+void HUD::UpdateContextHint(float timeStep)
+{
+    if (!contextHintText_)
+        return;
+
+    float target = contextHintTarget_.Length() > 0 ? 1.0f : 0.0f;
+    if (contextHintAlpha_ < target)
+        contextHintAlpha_ = Min(contextHintAlpha_ + FADE_SPEED * timeStep, target);
+    else if (contextHintAlpha_ > target)
+        contextHintAlpha_ = Max(contextHintAlpha_ - FADE_SPEED * timeStep, target);
+
+    bool vis = contextHintAlpha_ > 0.01f;
+    contextHintText_->SetVisible(vis);
+    if (vis)
+    {
+        // Update text when fading in (not while fading out — keep old text during fade)
+        if (target > 0.5f)
+            contextHintText_->SetText(contextHintTarget_);
+        Color c(0.87f, 0.8f, 0.73f, contextHintAlpha_);
+        contextHintText_->SetColor(c);
+    }
+}
+
+void HUD::SetContextHint(const String& text)
+{
+    contextHintTarget_ = text;
 }

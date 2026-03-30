@@ -1,0 +1,12 @@
+Models/Characters/Materials/Brown2.xml
+Models/Characters/Materials/Brown.xml
+Models/Characters/Materials/LightBlue.xml
+Models/Characters/Materials/Brown.xml
+Models/Characters/Materials/LightBlue.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Beige.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Beige.xml
+Models/Characters/Materials/Eyebrows.xml
+Models/Characters/Materials/Red.xml
+Models/Characters/Materials/Eye.xml

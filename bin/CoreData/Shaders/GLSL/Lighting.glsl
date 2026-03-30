@@ -4,6 +4,13 @@ vec3 GetAmbient(float zonePos)
     return cAmbientStartColor + zonePos * cAmbientEndColor;
 }
 
+/// Hemisphere ambient for per-vertex lighting path
+vec3 GetHemisphereAmbient(vec3 normal)
+{
+    float blend = normal.y * 0.5 + 0.5;
+    return mix(cGroundAmbient, cSkyAmbient, blend);
+}
+
 #ifdef NUMVERTEXLIGHTS
 float GetVertexLight(int index, vec3 worldPos, vec3 normal)
 {
@@ -104,6 +111,14 @@ vec4 GetShadowPos(int index, vec3 normal, vec4 projWorldPos)
 #endif
 
 #ifdef COMPILEPS
+
+/// Hemisphere ambient: blend sky color (normal pointing up) to ground color (normal pointing down)
+vec3 HemisphereAmbient(vec3 normal, vec3 skyColor, vec3 groundColor)
+{
+    float blend = normal.y * 0.5 + 0.5;  // remap -1..1 to 0..1
+    return mix(groundColor, skyColor, blend);
+}
+
 float GetDiffuse(vec3 normal, vec3 worldPos, out vec3 lightDir)
 {
     #ifdef DIRLIGHT

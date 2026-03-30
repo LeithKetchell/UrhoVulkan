@@ -294,11 +294,15 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
 
         graphics->SetShaderParameter(PSP_AMBIENTCOLOR, zone_->GetAmbientColor());
 
-        // Hemisphere lighting: upload sky/ground ambient colors
+        // Hemisphere lighting: upload sky/ground ambient colors (PS + VS)
         if (zone_->HasHemisphereAmbient())
         {
-            graphics->SetShaderParameter(PSP_SKYAMBIENT, zone_->GetSkyAmbientColor().ToVector3());
-            graphics->SetShaderParameter(PSP_GROUNDAMBIENT, zone_->GetGroundAmbientColor().ToVector3());
+            Vector3 sky = zone_->GetSkyAmbientColor().ToVector3();
+            Vector3 ground = zone_->GetGroundAmbientColor().ToVector3();
+            graphics->SetShaderParameter(PSP_SKYAMBIENT, sky);
+            graphics->SetShaderParameter(PSP_GROUNDAMBIENT, ground);
+            graphics->SetShaderParameter(VSP_SKYAMBIENT, sky);
+            graphics->SetShaderParameter(VSP_GROUNDAMBIENT, ground);
         }
         else
         {
@@ -306,6 +310,8 @@ void Batch::Prepare(View* view, Camera* camera, bool setModelTransform, bool all
             Vector3 amb = zone_->GetAmbientColor().ToVector3();
             graphics->SetShaderParameter(PSP_SKYAMBIENT, amb);
             graphics->SetShaderParameter(PSP_GROUNDAMBIENT, amb);
+            graphics->SetShaderParameter(VSP_SKYAMBIENT, amb);
+            graphics->SetShaderParameter(VSP_GROUNDAMBIENT, amb);
         }
         graphics->SetShaderParameter(PSP_FOGCOLOR, overrideFogColorToBlack ? Color::BLACK : zone_->GetFogColor());
         graphics->SetShaderParameter(PSP_ZONEMIN, zone_->GetBoundingBox().min_);
@@ -703,8 +709,8 @@ void Batch::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool allowD
         Matrix3x4 normalMatrix = VulkanPushConstantManager::CalculateNormalMatrix(*worldTransform_);
         VulkanBatchPushConstants pushConstants(*worldTransform_);
         pushConstants.normalMatrix = normalMatrix;
-        pushConstants.materialIndex = 0;  // TODO: Per-material index from material data
-        pushConstants.batchFlags = 0;     // TODO: Batch-specific flags (skinning, billboarding, etc.)
+        pushConstants.materialIndex = 0;  // Placeholder — per-material indexing not yet implemented
+        pushConstants.batchFlags = 0;     // Placeholder — skinning/billboarding flags not yet implemented
 
         // Get pipeline layout from graphics implementation
         Graphics* graphics = view->GetGraphics();
@@ -875,8 +881,8 @@ void BatchGroup::DrawToSecondaryCommandBuffer(View* view, Camera* camera, bool a
                     Matrix3x4 normalMatrix = VulkanPushConstantManager::CalculateNormalMatrix(*instance.worldTransform_);
                     VulkanBatchPushConstants pushConstants(*instance.worldTransform_);
                     pushConstants.normalMatrix = normalMatrix;
-                    pushConstants.materialIndex = 0;  // TODO: Per-material index
-                    pushConstants.batchFlags = 0;     // TODO: Batch flags
+                    pushConstants.materialIndex = 0;  // Placeholder — per-material indexing not yet implemented
+                    pushConstants.batchFlags = 0;     // Placeholder — skinning/billboarding flags not yet implemented
 
                     // Get pipeline layout from graphics implementation
                     VulkanGraphicsImpl* vkImpl = graphics->GetImpl_Vulkan();
@@ -1181,8 +1187,7 @@ void BatchQueue::RecordToIndirectBuffer(View* view, Camera* camera, bool markToS
     for (Vector<BatchGroup*>::ConstIterator i = sortedBatchGroups_.Begin(); i != sortedBatchGroups_.End(); ++i)
     {
         BatchGroup* group = *i;
-        // TODO: Phase 14.6.1 - Set stencil for per-batch-group masking if needed
-        // if (markToStencil) { ... }
+        // Phase 14.6.1: stencil masking per batch group — deferred until indirect rendering is prioritized
         group->RecordToIndirectBuffer(view, camera, allowDepthWrite, dispatcher);
     }
 
@@ -1190,11 +1195,7 @@ void BatchQueue::RecordToIndirectBuffer(View* view, Camera* camera, bool markToS
     for (Vector<Batch*>::ConstIterator i = sortedBatches_.Begin(); i != sortedBatches_.End(); ++i)
     {
         Batch* batch = *i;
-        // TODO: Phase 14.6.2 - Set stencil for per-batch masking if needed
-        // if (markToStencil) { ... }
-
-        // TODO: Phase 14.6.3 - Apply scissor optimization for alpha batches
-        // if (!usingLightOptimization && !batch->isBase_ && batch->lightQueue_) { ... }
+        // Phase 14.6.2-3: stencil masking + scissor optimization — deferred until indirect rendering is prioritized
 
         batch->RecordToIndirectBuffer(view, camera, allowDepthWrite, dispatcher);
     }

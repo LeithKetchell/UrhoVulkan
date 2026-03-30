@@ -1,0 +1,9 @@
+Models/Characters/Materials/White.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Grey.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Hair_Blond.xml
+Models/Characters/Materials/Hair_Brown.xml
+Models/Characters/Materials/Brown.xml
+Models/Characters/Materials/Orange.xml

@@ -88,7 +88,7 @@ void VS()
             vVertexLight = vec3(0.0, 0.0, 0.0);
             vTexCoord2 = iTexCoord1;
         #else
-            vVertexLight = GetAmbient(GetZonePos(worldPos));
+            vVertexLight = GetHemisphereAmbient(vNormal);
         #endif
 
         #ifdef NUMVERTEXLIGHTS
@@ -180,7 +180,7 @@ void PS()
         #endif
 
         #ifdef AMBIENT
-            finalColor += cAmbientColor.rgb * diffColor.rgb;
+            finalColor += HemisphereAmbient(normal, cSkyAmbient, cGroundAmbient) * diffColor.rgb;
             finalColor += cMatEmissiveColor;
             gl_FragColor = vec4(GetFog(finalColor, fogFactor), diffColor.a);
         #else

@@ -162,11 +162,17 @@ void VS()
         }
     }
 
-    // Per-vertex lighting from sun direction (VS-only uniforms)
-    // cAmbientColor/cLightColor are PS-only; approximate with cLightDir + fixed ambient
+    // Per-vertex lighting: hemisphere ambient + directional sun + subsurface scatter
+    vec3 bladeNormal = vec3(0.0, 1.0, 0.0);
+    vec3 ambient = GetHemisphereAmbient(bladeNormal);
+
     vec3 lightDir = normalize(cLightDir);
-    float NdotL = max(dot(vec3(0.0, 1.0, 0.0), lightDir), 0.0);
-    vec3 lighting = vec3(0.4) + vec3(0.6) * NdotL;
+    float NdotL = max(dot(bladeNormal, lightDir), 0.0);
+
+    // Subsurface scatter: light through thin blade (backlit glow)
+    float scatter = max(dot(-bladeNormal, lightDir), 0.0) * 0.3;
+
+    vec3 lighting = ambient + vec3(0.6) * (NdotL + scatter);
     // Darken base, lighten tips
     lighting *= (0.6 + 0.4 * heightFactor);
 

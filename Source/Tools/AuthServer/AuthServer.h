@@ -171,21 +171,12 @@ private:
     void HandlePhysicsPreStep(StringHash eventType, VariantMap& eventData);
     HashMap<Connection*, WeakPtr<Node>> serverObjects_;
 
-    // God camera — free-fly view of the server world
-    SharedPtr<Node> godCamNode_;
-    void SetupGodCamera();
-    void UpdateGodCamera(float timeStep);
-    float yaw_{};
-    float pitch_{};
-    bool godCamActive_{true};
-
     // GUI
     void CreateUI();
     void CreateMenuBar(BorderImage* bg, Font* font);
     void CreateNetworkingPanel(BorderImage* bg, Font* font);
     void CreateDatabasePanel(BorderImage* bg, Font* font);
     void CreateWeatherPanel(BorderImage* bg, Font* font);
-    void CreateSceneViewPanel(BorderImage* bg, Font* font);
     void RefreshWeatherPanel();
     void SwitchTab(int tab);
     void HandleTabClicked(StringHash eventType, VariantMap& eventData);
@@ -197,21 +188,12 @@ private:
     Button* networkingTab_{};
     Button* databaseTab_{};
     Button* weatherTab_{};
-    Button* sceneViewTab_{};
     int activeTab_{0};
 
     // Panels
     BorderImage* networkingPanel_{};
     BorderImage* databasePanel_{};
     BorderImage* weatherPanel_{};
-    BorderImage* sceneViewPanel_{};
-    Text* sceneStatsText_{};
-
-    // Water brush (server-side painting in Scene View)
-    void PaintWater(float worldX, float worldZ, bool raise);
-    void UpdateSceneView(float timeStep);
-    float waterBrushRadius_{8.0f};
-    float waterBrushStrength_{0.02f};
     Text* weatherConditionText_{};
     Text* weatherTempText_{};
     Text* weatherHumidityText_{};

@@ -18,6 +18,9 @@
 #include "VulkanShaderCache.h"
 #include "VulkanConstantBufferPool.h"
 #include "VulkanMemoryPoolManager.h"
+
+/// Result of swapchain image acquisition attempt
+enum class AcquireResult { Success, OutOfDate, Timeout, Error };
 #include "VulkanSecondaryCommandBuffer.h"
 #include "VulkanInstanceBufferManager.h"
 #include "VulkanIndirectDrawManager.h"
@@ -269,10 +272,10 @@ public:
     bool RecreateSwapchainResources(SDL_Window* window, int width, int height);
 
     /// \brief Acquire next swapchain image for rendering
-    /// \returns True if image acquired successfully, false on out-of-date swapchain
+    /// \returns AcquireResult indicating success, out-of-date, timeout, or error
     /// \details Waits for image availability and updates currentImageIndex_.
-    /// Handles swapchain recreation on VK_ERROR_OUT_OF_DATE_KHR.
-    bool AcquireNextImage();
+    /// Returns OutOfDate when swapchain needs recreation (DPMS, resize, etc.)
+    AcquireResult AcquireNextImage();
 
     /// \brief Submit command buffer and present swapchain image
     /// \details Submits recorded command buffer to graphics queue and presents

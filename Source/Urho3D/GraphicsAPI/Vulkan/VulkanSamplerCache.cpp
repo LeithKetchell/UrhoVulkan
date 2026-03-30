@@ -37,15 +37,16 @@ bool VulkanSamplerCache::Initialize()
     return true;
 }
 
-VkSampler VulkanSamplerCache::GetSampler(uint8_t filterMode, uint8_t addressMode, uint8_t maxAnisotropy)
+VkSampler VulkanSamplerCache::GetSampler(uint8_t filterMode, uint8_t addressModeU, uint8_t addressModeV, uint8_t addressModeW, uint8_t maxAnisotropy)
 {
     if (!graphics_)
         return VK_NULL_HANDLE;
 
-    // Phase 17.1: Create cache key for sampler lookup
     VulkanSamplerKey key;
     key.filterMode_ = filterMode;
-    key.addressMode_ = addressMode;
+    key.addressModeU_ = addressModeU;
+    key.addressModeV_ = addressModeV;
+    key.addressModeW_ = addressModeW;
     key.maxAnisotropy_ = (maxAnisotropy > 0) ? maxAnisotropy : 1;
 
     // Check if already cached
@@ -66,7 +67,8 @@ VkSampler VulkanSamplerCache::GetSampler(uint8_t filterMode, uint8_t addressMode
     samplerCache_[key] = sampler;
 
     URHO3D_LOGDEBUG("VulkanSamplerCache: Created sampler - filter: " + String(static_cast<unsigned>(filterMode)) +
-        ", address: " + String(static_cast<unsigned>(addressMode)) +
+        ", address UVW: " + String(static_cast<unsigned>(addressModeU)) + "/" +
+        String(static_cast<unsigned>(addressModeV)) + "/" + String(static_cast<unsigned>(addressModeW)) +
         ", anisotropy: " + String(static_cast<unsigned>(maxAnisotropy)));
 
     return sampler;
@@ -137,17 +139,16 @@ VkSampler VulkanSamplerCache::CreateSampler(const VulkanSamplerKey& key)
         samplerInfo.maxAnisotropy = static_cast<float>(key.maxAnisotropy_);
     }
 
-    // Map Urho3D address modes to Vulkan VkSamplerAddressMode
-    // 0=CLAMP, 1=REPEAT, 2=MIRROR
-    VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    if (key.addressMode_ == 1)
-        addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    else if (key.addressMode_ == 2)
-        addressMode = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    // Map Urho3D address modes to Vulkan VkSamplerAddressMode (per-axis)
+    auto mapAddressMode = [](uint8_t mode) -> VkSamplerAddressMode {
+        if (mode == 1) return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        if (mode == 2) return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;  // 0 = CLAMP
+    };
 
-    samplerInfo.addressModeU = addressMode;
-    samplerInfo.addressModeV = addressMode;
-    samplerInfo.addressModeW = addressMode;
+    samplerInfo.addressModeU = mapAddressMode(key.addressModeU_);
+    samplerInfo.addressModeV = mapAddressMode(key.addressModeV_);
+    samplerInfo.addressModeW = mapAddressMode(key.addressModeW_);
 
     // Sampler parameters
     samplerInfo.mipLodBias = 0.0f;

@@ -78,4 +78,12 @@ private:
     float stateTimer_{0.0f};
     float drownTimer_{0.0f};
     float waterLevel_{5.5f};
+
+    /// Terrain height cache — avoid redundant GetHeight calls.
+    float cachedHeight_{0.0f};
+    Vector3 cachedHeightPos_{Vector3::ZERO};
+
+    /// Stagger ID for drowning scan distribution across frames.
+    unsigned staggerID_{0};
+    static unsigned nextStaggerID_;
 };

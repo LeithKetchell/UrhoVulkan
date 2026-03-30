@@ -25,11 +25,12 @@ import socket, sys, time
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
     s.connect('$SOCK')
-    # Send message text first
+    # Send text as bulk, then Enter after a delay.
+    # Claude Code's TUI uses bracketed paste detection — rapid byte bursts
+    # are treated as paste, and CR within a paste doesn't trigger submit.
+    # The delay lets paste detection expire so CR is treated as a keypress.
     s.sendall(sys.argv[1].encode())
-    # Brief pause so TUI processes the text as input
-    time.sleep(0.05)
-    # Then send Enter as a separate event
+    time.sleep(0.15)
     s.sendall(b'\r')
     s.close()
 except Exception as e:

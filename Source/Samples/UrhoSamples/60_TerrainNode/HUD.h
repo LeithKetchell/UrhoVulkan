@@ -7,6 +7,7 @@
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/UIElement.h>
 #include <Urho3D/Scene/LogicComponent.h>
+#include <Urho3D/Graphics/Camera.h>
 
 using namespace Urho3D;
 
@@ -28,7 +29,30 @@ struct VitalBar
     String criticalText;         // e.g. "STARVING"
 };
 
-/// HUD overlay with vital bars (HP, Hunger, Thirst, Stamina).
+/// Status icon identifiers (bottom-left icon stack).
+enum StatusIcon
+{
+    ICON_FREEZING = 0,
+    ICON_OVERHEATING,
+    ICON_STARVING,
+    ICON_DEHYDRATED,
+    ICON_EXHAUSTED,
+    ICON_NEAR_FIRE,
+    ICON_IN_SHELTER,
+    ICON_ENCUMBERED,
+    ICON_MAX
+};
+
+/// Single status icon with fade behavior.
+struct StatusIconEntry
+{
+    Text* element{};       // text glyph used as icon (Unicode symbol)
+    float currentAlpha{};  // smooth fade
+    bool active{};         // whether condition is currently true
+};
+
+/// HUD overlay with vital bars (HP, Hunger, Thirst, Stamina),
+/// status icons (bottom-left), and context hints (bottom-right).
 /// Attach to any scene node as a LogicComponent.
 class HUD : public LogicComponent
 {
@@ -53,10 +77,22 @@ public:
     /// Set the font used by all HUD text elements.
     void SetFont(Font* font, int size);
 
+    // --- Phase 2: Status Icons ---
+    /// Set a status icon active or inactive. HUD handles fade.
+    void SetStatusIcon(StatusIcon icon, bool active);
+
+    // --- Phase 2: Context Hints ---
+    /// Set the context hint text (e.g. "E: Pick up"). Empty string hides it.
+    void SetContextHint(const String& text);
+
 private:
     void CreateBars();
     void CreateBar(VitalBar& bar, const String& name);
     void UpdateBar(VitalBar& bar, float timeStep);
+    void CreateStatusIcons();
+    void UpdateStatusIcons(float timeStep);
+    void CreateContextHint();
+    void UpdateContextHint(float timeStep);
 
     UIElement* barContainer_{};   // bottom-center anchor
     UIElement* topRow_{};         // HP + Hunger + Thirst side by side
@@ -72,6 +108,15 @@ private:
     float temperature_{15.0f};       // current effective temp in Celsius
     float tempIndicatorAlpha_{0.0f}; // smooth fade
 
+    // --- Phase 2: Status Icons (bottom-left) ---
+    UIElement* iconContainer_{};
+    StatusIconEntry icons_[ICON_MAX];
+
+    // --- Phase 2: Context Hint (bottom-right) ---
+    Text* contextHintText_{};
+    String contextHintTarget_;       // current desired text
+    float contextHintAlpha_{};       // smooth fade
+
     SharedPtr<Font> font_;
     int fontSize_{9};
 
@@ -82,4 +127,7 @@ private:
     static constexpr int BAR_MARGIN_BOTTOM = 80;
     static constexpr float FADE_SPEED = 3.0f;
     static constexpr float CRITICAL_THRESHOLD = 0.25f;
+    static constexpr int ICON_SIZE = 16;
+    static constexpr int ICON_GAP = 4;
+    static constexpr int ICON_MARGIN = 20;
 };

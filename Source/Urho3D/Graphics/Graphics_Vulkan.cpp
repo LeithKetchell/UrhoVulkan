@@ -328,8 +328,37 @@ bool Graphics::BeginFrame_Vulkan()
 
     // Apply user-requested MSAA setting from screen parameters
     vkImpl->SetRequestedSampleCount(screenParams_.multiSample_);
+
     // Acquire next swapchain image (waits for fence internally)
-    if (!vkImpl->AcquireNextImage())
+    AcquireResult acquireResult = vkImpl->AcquireNextImage();
+
+    if (acquireResult == AcquireResult::OutOfDate)
+    {
+        // Swapchain invalidated (DPMS, screen blank, compositor, resize)
+        URHO3D_LOGINFO("Swapchain out of date — recreating");
+        int w, h;
+        SDL_GetWindowSize(window_, &w, &h);
+        if (w < 1 || h < 1) { w = 1024; h = 768; }
+
+        if (!vkImpl->RecreateSwapchainResources(window_, w, h))
+        {
+            URHO3D_LOGERROR("Failed to recreate swapchain");
+            return false;
+        }
+        width_ = w;
+        height_ = h;
+
+        // Retry acquire with fresh swapchain
+        acquireResult = vkImpl->AcquireNextImage();
+    }
+
+    if (acquireResult == AcquireResult::Timeout)
+    {
+        // Window minimized or obscured — skip frame silently
+        return false;
+    }
+
+    if (acquireResult != AcquireResult::Success)
     {
         URHO3D_LOGERROR("Failed to acquire next swapchain image");
         return false;
@@ -1137,25 +1166,16 @@ bool Graphics::BindMaterialDescriptors_Vulkan(Material* material) const
     // URHO3D_LOGDEBUG("BindMaterialDescriptors_Vulkan: ENTRY");
 
     if (!impl_)
-    {
-        URHO3D_LOGDEBUG("BindMaterialDescriptors_Vulkan: impl_ is NULL");
         return false;
-    }
 
     VulkanGraphicsImpl* vkImpl = GetImpl_Vulkan();
     if (!vkImpl)
-    {
-        URHO3D_LOGDEBUG("BindMaterialDescriptors_Vulkan: vkImpl is NULL");
         return false;
-    }
 
     // Get command buffer for recording descriptor binding commands
     VkCommandBuffer cmdBuffer = vkImpl->GetFrameCommandBuffer();
     if (!cmdBuffer)
-    {
-        URHO3D_LOGDEBUG("BindMaterialDescriptors_Vulkan: cmdBuffer is NULL");
         return false;
-    }
 
     // Create descriptor set using reflection-based layout
     VkDescriptorSet descriptorSet = const_cast<Graphics*>(this)->CreateReflectionBasedDescriptorSet_Vulkan();
@@ -1171,7 +1191,7 @@ bool Graphics::BindMaterialDescriptors_Vulkan(Material* material) const
     VkPipelineLayout pipelineLayout = vkImpl->GetCurrentPipelineLayout();
     if (pipelineLayout == VK_NULL_HANDLE)
     {
-        URHO3D_LOGDEBUG("No pipeline layout available for descriptor binding");
+        URHO3D_LOGERROR("No pipeline layout available for descriptor binding");
         return false;
     }
 
@@ -1228,8 +1248,8 @@ VkDescriptorSet Graphics::CreateGBufferTextureDescriptorSet_Vulkan()
     {
         // Descriptor pool exhausted - this is expected behavior, just skip binding
         // The draw will proceed without texture descriptors (may show black)
-        URHO3D_LOGDEBUG("CreateGBufferTextureDescriptorSet_Vulkan: Descriptor pool exhausted (result=" +
-                        String((int)result) + "), skipping texture binding");
+        URHO3D_LOGERROR("CreateGBufferTextureDescriptorSet_Vulkan: Descriptor pool exhausted (result=" +
+                        String((int)result) + ")");
         return VK_NULL_HANDLE;
     }
 
@@ -1270,7 +1290,6 @@ VkDescriptorSet Graphics::CreateGBufferTextureDescriptorSet_Vulkan()
     if (!writes.Empty())
     {
         vkUpdateDescriptorSets(device, writes.Size(), &writes[0], 0, nullptr);
-        URHO3D_LOGDEBUG("CreateGBufferTextureDescriptorSet_Vulkan: Bound " + String(writes.Size()) + " textures");
     }
 
     return descriptorSet;
@@ -1298,7 +1317,6 @@ bool Graphics::BindGBufferTextureDescriptors_Vulkan()
     VkDescriptorSet descriptorSet = CreateGBufferTextureDescriptorSet_Vulkan();
     if (descriptorSet == VK_NULL_HANDLE)
     {
-        URHO3D_LOGDEBUG("BindGBufferTextureDescriptors_Vulkan: No textures bound, skipping");
         return true;  // Not an error if no textures are bound
     }
 
@@ -1313,7 +1331,6 @@ bool Graphics::BindGBufferTextureDescriptors_Vulkan()
         0, nullptr
     );
 
-    URHO3D_LOGDEBUG("BindGBufferTextureDescriptors_Vulkan: Bound texture descriptors to set 1");
     return true;
 }
 
@@ -1511,9 +1528,6 @@ void Graphics::SetIndexBuffer_Vulkan(IndexBuffer* buffer)
 
             vkCmdBindIndexBuffer(cmdBuffer, vkBuffer, 0, indexType);
 
-            URHO3D_LOGDEBUG("SetIndexBuffer_Vulkan: Bound index buffer, size=" +
-                            String(buffer->GetIndexSize()) + ", count=" +
-                            String(buffer->GetIndexCount()));
         }
     }
 }
@@ -1714,7 +1728,6 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned vertexStart, unsigned ve
     // Bind material descriptors AFTER pipeline binding (Vulkan requirement)
     if (!BindMaterialDescriptors_Vulkan(nullptr))
     {
-        URHO3D_LOGDEBUG("Failed to bind reflection-based material descriptors");
     }
 
     // Record draw command
@@ -1885,7 +1898,6 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     // Bind material descriptors AFTER pipeline binding (Vulkan requirement)
     if (!BindMaterialDescriptors_Vulkan(nullptr))
     {
-        URHO3D_LOGDEBUG("Failed to bind reflection-based material descriptors");
     }
 
     // Record indexed draw command
@@ -1963,18 +1975,10 @@ void Graphics::Draw_Vulkan(PrimitiveType type, unsigned indexStart, unsigned ind
     // Descriptor sets must be bound after vkCmdBindPipeline to remain valid
     if (!BindMaterialDescriptors_Vulkan(nullptr))
     {
-        URHO3D_LOGDEBUG("Failed to bind reflection-based material descriptors");
     }
 
     // Record draw command with base vertex index
-    URHO3D_LOGDEBUG("About to call vkCmdDrawIndexed: indexCount=" + String(indexCount) + ", indexStart=" + String(indexStart) + ", baseVertexIndex=" + String(baseVertexIndex));
     vkCmdDrawIndexed(cmdBuffer, indexCount, 1, indexStart, baseVertexIndex, 0);
-    URHO3D_LOGDEBUG("vkCmdDrawIndexed completed successfully");
-
-    // Clean up shader modules after pipeline is created
-    // Shader modules cached — do NOT destroy here
-
-    URHO3D_LOGDEBUG("Draw_Vulkan: indexStart=" + String(indexStart) + " indexCount=" + String(indexCount) + " baseVertexIndex=" + String(baseVertexIndex));
 }
 
 void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, unsigned indexCount, unsigned minVertex, unsigned vertexCount, unsigned instanceCount, unsigned instanceStart)
@@ -2122,7 +2126,6 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     // Bind material descriptors AFTER pipeline binding (Vulkan requirement)
     if (!BindMaterialDescriptors_Vulkan(nullptr))
     {
-        URHO3D_LOGDEBUG("Failed to bind reflection-based material descriptors");
     }
 
     // Record instanced draw command
@@ -2288,7 +2291,6 @@ void Graphics::DrawInstanced_Vulkan(PrimitiveType type, unsigned indexStart, uns
     // Bind material descriptors AFTER pipeline binding (Vulkan requirement)
     if (!BindMaterialDescriptors_Vulkan(nullptr))
     {
-        URHO3D_LOGDEBUG("Failed to bind reflection-based material descriptors");
     }
 
     // Record instanced draw command with base vertex index
@@ -2559,8 +2561,6 @@ void Graphics::SetStorageBuffer_Vulkan(unsigned index, VertexBuffer* buffer)
     // TODO: Update descriptor set with storage buffer binding
     // This will be implemented when storage buffer descriptor management is added
 
-    URHO3D_LOGDEBUG("SetStorageBuffer_Vulkan: index=" + String(index) +
-                    " buffer=" + String(buffer ? "valid" : "null"));
 }
 
 void Graphics::BeginComputeBatch_Vulkan()
@@ -2869,37 +2869,8 @@ void Graphics::SetShaderParameter_Vulkan(StringHash param, const Variant& value)
 
     pendingShaderParameters_[param] = value;
 
-    // TODO Phase 36 Step 3.2: Implement batched parameter upload in draw call
-    // Integration with VulkanConstantBufferPool (to be called from PrepareDraw_Vulkan or Draw_Vulkan):
-    //
-    // if (!pendingShaderParameters_.Empty())
-    // {
-    //     VulkanConstantBufferPool* cbPool = vkImpl->GetConstantBufferPool();
-    //
-    //     // Calculate total parameter size
-    //     size_t totalSize = CalculateParameterBufferSize(pendingShaderParameters_);
-    //
-    //     // Allocate constant buffer
-    //     VkBuffer cbBuffer;
-    //     VkDeviceSize cbOffset;
-    //     void* cbData = cbPool->AllocateBuffer(nullptr, totalSize, cbBuffer, cbOffset);
-    //
-    //     // Pack parameters into buffer
-    //     PackShaderParameters(pendingShaderParameters_, cbData, totalSize);
-    //
-    //     // Create/update descriptor set for constant buffer (TODO Step 3.3)
-    //     VkDescriptorSet cbDescriptorSet = CreateConstantBufferDescriptorSet(cbBuffer, cbOffset, totalSize);
-    //
-    //     // Bind descriptor set (TODO Step 3.4)
-    //     vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-    //                             pipelineLayout, 2, 1, &cbDescriptorSet, 0, nullptr);
-    //
-    //     // Clear pending parameters after upload
-    //     pendingShaderParameters_.Clear();
-    // }
-
-    // TODO Phase 36 Step 3.3: Create constant buffer descriptor sets
-    // TODO Phase 36 Step 3.4: Bind constant buffers before draw calls
+    // Batched upload happens in UploadPendingShaderParameters_Vulkan() at draw time.
+    // Future optimization: descriptor set caching, push constants for small params.
 }
 
 // ============================================
@@ -2959,9 +2930,6 @@ size_t Graphics::CalculateParameterBufferSize(const HashMap<StringHash, Variant>
                 break;
         }
     }
-
-    URHO3D_LOGDEBUG("CalculateParameterBufferSize: Total size = " + String(totalSize) +
-                    " bytes for " + String(parameters.Size()) + " parameters");
 
     return totalSize;
 }
@@ -3099,8 +3067,6 @@ void Graphics::PackShaderParameters(
         }
     }
 
-    URHO3D_LOGDEBUG("PackShaderParameters: Packed " + String(parameters.Size()) +
-                    " parameters, total offset = " + String(offset) + " bytes");
 }
 
 // ============================================
@@ -3137,8 +3103,7 @@ VkDescriptorSet Graphics::CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buff
     // Returns:
     //   VkDescriptorSet for the constant buffer, or VK_NULL_HANDLE on error
     //
-    // TODO Phase 36 Step 3.3.1: Integrate with VulkanConstantBufferPool
-    // TODO Phase 36 Step 3.3.2: Handle descriptor set caching/reuse
+    // Future optimization: descriptor set caching/reuse, VulkanConstantBufferPool integration
 
     if (!impl_)
     {
@@ -3179,7 +3144,6 @@ VkDescriptorSet Graphics::CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buff
             return VK_NULL_HANDLE;
         }
 
-        URHO3D_LOGDEBUG("CreateConstantBufferDescriptorSet_Vulkan: Created static descriptor set layout");
     }
 
     // Phase 36 Step 3.3.2: Allocate descriptor set from pool
@@ -3215,9 +3179,6 @@ VkDescriptorSet Graphics::CreateConstantBufferDescriptorSet_Vulkan(VkBuffer buff
 
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
-    URHO3D_LOGDEBUG("CreateConstantBufferDescriptorSet_Vulkan: Created descriptor set with " +
-                    String((unsigned)size) + " byte constant buffer");
-
     return descriptorSet;
 }
 
@@ -3229,8 +3190,7 @@ bool Graphics::BindConstantBufferDescriptors_Vulkan(VkDescriptorSet descriptorSe
     //
     // Called before draw calls in deferred lighting pass
     //
-    // TODO Phase 36 Step 3.4.1: Integrate with pipeline layout
-    // TODO Phase 36 Step 3.4.2: Handle multiple descriptor sets in pipeline
+    // Future optimization: multi-set pipeline layout integration
 
     if (!impl_ || descriptorSet == VK_NULL_HANDLE)
         return false;
@@ -3256,7 +3216,6 @@ bool Graphics::BindConstantBufferDescriptors_Vulkan(VkDescriptorSet descriptorSe
         0, nullptr
     );
 
-    URHO3D_LOGDEBUG("BindConstantBufferDescriptors_Vulkan: Bound constant buffer descriptor set to slot 2");
     return true;
 }
 
@@ -3318,17 +3277,23 @@ static UniformBlockInfo GetUniformBlockInfo(const StringHash& paramHash)
     if (paramHash == VSP_CLIPPLANE)  // "ClipPlane"
         return { 1, 272, 288, "CameraVS" };
 
-    // ZoneVS (binding 2): Ambient gradient and zone matrix (128 bytes)
+    // ZoneVS (binding 2): Ambient gradient, hemisphere, and zone matrix (128 bytes)
     // Layout (std140):
     //   vec3 cAmbientStartColor @ 0 (padded to 16)
     //   vec3 cAmbientEndColor @ 16 (padded to 32)
-    //   mat4 cZone @ 32
+    //   vec3 cSkyAmbient @ 32 (padded to 48)
+    //   vec3 cGroundAmbient @ 48 (padded to 64)
+    //   mat4 cZone @ 64
     if (paramHash == VSP_AMBIENTSTARTCOLOR)  // "AmbientStartColor"
         return { 2, 0, 128, "ZoneVS" };
     if (paramHash == VSP_AMBIENTENDCOLOR)  // "AmbientEndColor"
         return { 2, 16, 128, "ZoneVS" };
-    if (paramHash == VSP_ZONE)  // "Zone"
+    if (paramHash == VSP_SKYAMBIENT)  // "SkyAmbient"
         return { 2, 32, 128, "ZoneVS" };
+    if (paramHash == VSP_GROUNDAMBIENT)  // "GroundAmbient"
+        return { 2, 48, 128, "ZoneVS" };
+    if (paramHash == VSP_ZONE)  // "Zone"
+        return { 2, 64, 128, "ZoneVS" };
 
     // LightVS (binding 3): Light parameters for vertex lighting (512 bytes)
     // Layout (std140):
@@ -3391,23 +3356,29 @@ static UniformBlockInfo GetUniformBlockInfo(const StringHash& paramHash)
     if (paramHash == PSP_FARCLIP)  // "FarClipPS"
         return { 7, 44, 48, "CameraPS" };
 
-    // ZonePS (binding 8): Ambient and fog parameters (128 bytes total)
+    // ZonePS (binding 8): Ambient, hemisphere, and fog parameters (128 bytes total)
     // Layout (std140):
-    //   vec4 cAmbientColor @ 0
-    //   vec4 cFogParams @ 16
-    //   vec3 cFogColor @ 32 (size 12, alignment 16)
-    //   vec3 cZoneMin @ 48 (size 12, alignment 16)
-    //   vec3 cZoneMax @ 64 (size 12, alignment 16)
+    //   vec4 cAmbientColor    @ 0   (16 bytes)
+    //   vec3 cSkyAmbient      @ 16  (12 bytes, padded to 16)
+    //   vec3 cGroundAmbient   @ 32  (12 bytes, padded to 16)
+    //   vec4 cFogParams       @ 48  (16 bytes)
+    //   vec3 cFogColor        @ 64  (12 bytes, padded to 16)
+    //   vec3 cZoneMin         @ 80  (12 bytes, padded to 16)
+    //   vec3 cZoneMax         @ 96  (12 bytes, padded to 16)
     if (paramHash == PSP_AMBIENTCOLOR)  // "AmbientColor"
         return { 8, 0, 128, "ZonePS" };
-    if (paramHash == PSP_FOGPARAMS)  // "FogParams"
+    if (paramHash == PSP_SKYAMBIENT)  // "SkyAmbient"
         return { 8, 16, 128, "ZonePS" };
-    if (paramHash == PSP_FOGCOLOR)  // "FogColor"
+    if (paramHash == PSP_GROUNDAMBIENT)  // "GroundAmbient"
         return { 8, 32, 128, "ZonePS" };
-    if (paramHash == PSP_ZONEMIN)  // "ZoneMin"
+    if (paramHash == PSP_FOGPARAMS)  // "FogParams"
         return { 8, 48, 128, "ZonePS" };
-    if (paramHash == PSP_ZONEMAX)  // "ZoneMax"
+    if (paramHash == PSP_FOGCOLOR)  // "FogColor"
         return { 8, 64, 128, "ZonePS" };
+    if (paramHash == PSP_ZONEMIN)  // "ZoneMin"
+        return { 8, 80, 128, "ZonePS" };
+    if (paramHash == PSP_ZONEMAX)  // "ZoneMax"
+        return { 8, 96, 128, "ZonePS" };
 
     // LightPS (binding 9): Light and shadow parameters (512 bytes total with mat4[4])
     // Layout (std140):
@@ -3614,6 +3585,27 @@ void Graphics::UploadPendingShaderParameters_Vulkan()
         param.value = value;
         param.size = paramSize;
         params.Push(param);
+
+        // Hemisphere uniforms share the same StringHash for VS and PS ("SkyAmbient", "GroundAmbient").
+        // GetUniformBlockInfo returns the first match (VS binding 2). We must also write to PS (binding 8).
+        if (paramHash == VSP_SKYAMBIENT)
+        {
+            PendingParameter psCopy;
+            psCopy.binding = 8;   // ZonePS
+            psCopy.offset = 16;   // cSkyAmbient offset in ZonePS
+            psCopy.value = value;
+            psCopy.size = paramSize;
+            params.Push(psCopy);
+        }
+        else if (paramHash == VSP_GROUNDAMBIENT)
+        {
+            PendingParameter psCopy;
+            psCopy.binding = 8;   // ZonePS
+            psCopy.offset = 32;   // cGroundAmbient offset in ZonePS
+            psCopy.value = value;
+            psCopy.size = paramSize;
+            params.Push(psCopy);
+        }
     }
 
 
@@ -3997,7 +3989,6 @@ VkDescriptorSet Graphics::CreateInputAttachmentDescriptorSet_Vulkan()
     if (!writes.Empty())
     {
         vkUpdateDescriptorSets(device, writes.Size(), &writes[0], 0, nullptr);
-        URHO3D_LOGDEBUG("CreateInputAttachmentDescriptorSet_Vulkan: Bound " + String(writes.Size()) + " input attachments");
     }
 
     return descriptorSet;
@@ -4032,7 +4023,6 @@ bool Graphics::BindInputAttachmentDescriptors_Vulkan(VkDescriptorSet descriptorS
         0, nullptr
     );
 
-    URHO3D_LOGDEBUG("BindInputAttachmentDescriptors_Vulkan: Input attachment descriptors bound to set 3");
     return true;
 }
 
@@ -4078,7 +4068,7 @@ bool Graphics::IsDeviceLost_Vulkan() const
     VulkanGraphicsImpl* impl = GetImpl_Vulkan();
     if (!impl)
     {
-        URHO3D_LOGDEBUG("IsDeviceLost_Vulkan: No impl, returning false");
+        URHO3D_LOGERROR("IsDeviceLost_Vulkan: No impl, returning false");
         return false;
     }
 
@@ -4472,13 +4462,15 @@ bool Graphics::ResolveToTexture_Vulkan(Texture2D* destination, const IntRect& vi
 
 bool Graphics::ResolveToTexture_Vulkan(Texture2D* texture)
 {
-    // TODO: Implement via vkCmdResolveImage
+    // MSAA resolve — requires multisampled VkImage infrastructure (not yet implemented).
+    // Needs: per-RT msaaImage_ creation, vkCmdResolveImage, layout transitions.
     return false;
 }
 
 bool Graphics::ResolveToTexture_Vulkan(TextureCube* texture)
 {
-    // TODO: Implement via vkCmdResolveImage
+    // MSAA resolve per cube face — requires multisampled VkImage infrastructure (not yet implemented).
+    // Needs: per-face msaaImage_ creation, vkCmdResolveImage, layout transitions.
     return false;
 }
 

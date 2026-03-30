@@ -57,6 +57,9 @@
 #include <Urho3D/GraphicsAPI/VertexBuffer.h>
 #include <Urho3D/GraphicsAPI/IndexBuffer.h>
 #include <Urho3D/Graphics/Geometry.h>
+#include <Urho3D/Database/Database.h>
+#include <Urho3D/Database/DbConnection.h>
+#include <Urho3D/Database/DbResult.h>
 #ifdef URHO3D_VULKAN
 #include <Urho3D/GraphicsAPI/Vulkan/VulkanGraphicsImpl.h>
 #endif
@@ -651,7 +654,8 @@ void TerrainNode::FinishEnterWorld()
         auto* ui = GetSubsystem<UI>();
         Font* font = font_;
 
-        auto* panel = ui->GetRoot()->CreateChild<Window>();
+        networkPanel_ = ui->GetRoot()->CreateChild<Window>();
+        auto* panel = networkPanel_;
         panel->SetStyle("Window");
         panel->SetLayout(LM_VERTICAL, 6, IntRect(8, 8, 8, 8));
         panel->SetHorizontalAlignment(HA_RIGHT);
@@ -659,6 +663,10 @@ void TerrainNode::FinishEnterWorld()
         panel->SetPosition(-8, 30);
         panel->SetMinWidth(240);
         panel->SetColor(Color(0.15f, 0.15f, 0.2f, 0.9f));
+
+        // Hide network panel in offline mode — it's just clutter
+        if (loggedInUsername_ == "Offline")
+            panel->SetVisible(false);
 
         auto* title = panel->CreateChild<Text>();
         title->SetFont(font, 16);
@@ -1120,6 +1128,12 @@ void TerrainNode::CreateScene()
         hud->SetFont(font_, 9);
         hud_ = hud;
     }
+
+    // GameDB — client-side read-only for recipe/item lookups
+    InitGameDB();
+
+    // Building system
+    InitBuildingSystem();
 }
 
 // OnSceneLoaded() — DEAD CODE, preserved for future network scene loading reintegration.
@@ -1535,6 +1549,21 @@ void TerrainNode::CreateMenuBar()
             rainLabel_->SetText("Auto");
             rainLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
             rainLabel_->SetMinWidth(50);
+
+            // Hemisphere lighting toggle
+            auto* hemiRow = weatherSection->CreateChild<UIElement>();
+            hemiRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+            hemiRow->SetMinHeight(22);
+
+            auto* hemiCb = hemiRow->CreateChild<CheckBox>();
+            hemiCb->SetStyleAuto();
+            hemiCb->SetChecked(hemisphereEnabled_);
+            SubscribeToEvent(hemiCb, E_TOGGLED, URHO3D_HANDLER(TerrainNode, HandleHemisphereToggle));
+
+            auto* hemiLabel = hemiRow->CreateChild<Text>();
+            hemiLabel->SetFont(font, 12);
+            hemiLabel->SetText("Hemisphere Lighting");
+            hemiLabel->SetColor(Color(0.9f, 0.9f, 0.9f));
         }
 
         // --- Fish section (collapsed by default) ---
@@ -2015,6 +2044,17 @@ void TerrainNode::HandleWeatherSlider(StringHash eventType, VariantMap& eventDat
     }
 
     ApplyWeatherToScene();
+}
+
+void TerrainNode::HandleHemisphereToggle(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Toggled;
+    auto* cb = static_cast<CheckBox*>(eventData[P_ELEMENT].GetPtr());
+    if (cb)
+    {
+        hemisphereEnabled_ = cb->IsChecked();
+        URHO3D_LOGINFOF("Hemisphere lighting: %s", hemisphereEnabled_ ? "ON" : "OFF");
+    }
 }
 
 void TerrainNode::HandleMenuButton(StringHash eventType, VariantMap& eventData)
@@ -4037,12 +4077,11 @@ void TerrainNode::MoveCamera(float timeStep)
 {
     auto* input = GetSubsystem<Input>();
 
-    // Numpad Enter = toggle all UI and debug draw visibility
+    // Numpad Enter = toggle all UI visibility (does NOT affect debug draw)
     if (input->GetKeyPress(KEY_KP_ENTER))
     {
         auto* uiRoot = GetSubsystem<UI>()->GetRoot();
         uiRoot->SetVisible(!uiRoot->IsVisible());
-        drawDebug_ = uiRoot->IsVisible();
     }
 
     // F1 = cycle camera mode: editor → third person → first person
@@ -4082,6 +4121,18 @@ void TerrainNode::MoveCamera(float timeStep)
     if (input->GetKeyPress(KEY_I))
         ToggleInventory();
 
+    // C = toggle crafting panel
+    if (input->GetKeyPress(KEY_C))
+        ToggleCrafting();
+
+    // B = toggle build mode
+    if (input->GetKeyPress(KEY_B))
+        ToggleBuildMode();
+
+    // R = rotate ghost in build mode
+    if (input->GetKeyPress(KEY_R) && buildingSystem_ && buildingSystem_->IsBuildMode())
+        buildingSystem_->RotateGhost();
+
     // [ and ] = cycle brush shape (before focus guard so it works with terrain panel open)
     {
         static const char* shapeNames[] = {"Circle", "Square", "Triangle", "Star", "Pentagon", "Hexagon", "Octagon"};
@@ -4094,6 +4145,24 @@ void TerrainNode::MoveCamera(float timeStep)
         {
             brushShape_ = (brushShape_ + 1) % 7;
             URHO3D_LOGINFOF("Brush shape: %s (%d)", shapeNames[brushShape_], brushShape_);
+        }
+    }
+
+    // Build mode: left-click to place, Escape to cancel
+    if (buildingSystem_ && buildingSystem_->IsBuildMode())
+    {
+        if (input->GetMouseButtonPress(MOUSEB_LEFT) && buildingSystem_->IsGhostValid())
+        {
+            auto* network = GetSubsystem<Network>();
+            auto* serverConn = network ? network->GetServerConnection() : nullptr;
+            buildingSystem_->RequestBuild(serverConn);
+        }
+        if (input->GetKeyPress(KEY_ESCAPE))
+        {
+            buildingSystem_->SetBuildMode(false);
+            if (buildMenuWindow_)
+                buildMenuWindow_->SetVisible(false);
+            buildMenuOpen_ = false;
         }
     }
 
@@ -5333,6 +5402,67 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
     if (moonLight_)
         moonLight_->GetNode()->SetDirection(-moonOffset.Normalized());
 
+    // --- Occlusion test: fade sun/moon when behind terrain ---
+    {
+        auto* octree = scene_->GetComponent<Octree>();
+        if (octree)
+        {
+            // Sun occlusion
+            if (sunNode_ && cachedSunAlt_ > 0.0f)
+            {
+                Vector3 toSun = (sunNode_->GetWorldPosition() - camPos);
+                float sunDist = toSun.Length();
+                Ray sunRay(camPos, toSun / sunDist);
+                Vector<RayQueryResult> results;
+                RayOctreeQuery query(results, sunRay, RAY_TRIANGLE, sunDist);
+                octree->Raycast(query);
+                bool occluded = false;
+                for (unsigned i = 0; i < results.Size(); ++i)
+                {
+                    // Only terrain can occlude — skip billboards, skybox, animals, etc.
+                    if (!dynamic_cast<TerrainPatch*>(results[i].drawable_))
+                        continue;
+                    if (results[i].distance_ < sunDist)
+                    {
+                        occluded = true;
+                        break;
+                    }
+                }
+                float target = occluded ? 0.0f : 1.0f;
+                sunOcclusionFade_ = Lerp(sunOcclusionFade_, target, Min(1.0f, timeStep * 2.0f));
+                if (sunMat_)
+                    sunMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, sunOcclusionFade_));
+            }
+
+            // Moon occlusion
+            if (moonNode_ && cachedMoonAlt_ > 0.0f)
+            {
+                Vector3 toMoon = (moonNode_->GetWorldPosition() - camPos);
+                float moonDist = toMoon.Length();
+                Ray moonRay(camPos, toMoon / moonDist);
+                Vector<RayQueryResult> results;
+                RayOctreeQuery query(results, moonRay, RAY_TRIANGLE, moonDist);
+                octree->Raycast(query);
+                bool occluded = false;
+                for (unsigned i = 0; i < results.Size(); ++i)
+                {
+                    // Only terrain can occlude — skip billboards, skybox, animals, etc.
+                    if (!dynamic_cast<TerrainPatch*>(results[i].drawable_))
+                        continue;
+                    if (results[i].distance_ < moonDist)
+                    {
+                        occluded = true;
+                        break;
+                    }
+                }
+                float target = occluded ? 0.0f : 1.0f;
+                moonOcclusionFade_ = Lerp(moonOcclusionFade_, target, Min(1.0f, timeStep * 2.0f));
+                if (moonMat_)
+                    moonMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, moonOcclusionFade_));
+            }
+        }
+    }
+
     UpdateAtmosphere(cachedSunAlt_);
 
     // --- God rays tracking ---
@@ -5400,9 +5530,9 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                 renderPath_->SetShaderParameter("GodRayDensity", 0.5f);
                 renderPath_->SetShaderParameter("GodRayDecay", 0.97f);
                 renderPath_->SetShaderParameter("GodRayWeight", 0.4f);
-                renderPath_->SetShaderParameter("GodRayExposure", exposure);
-                renderPath_->SetShaderParameter("GodRayIntensity", intensity);
-                sunRayActive = true;
+                renderPath_->SetShaderParameter("GodRayExposure", exposure * sunOcclusionFade_);
+                renderPath_->SetShaderParameter("GodRayIntensity", intensity * sunOcclusionFade_);
+                sunRayActive = sunOcclusionFade_ > 0.01f;
             }
         }
         renderPath_->SetEnabled("GodRays", sunRayActive);
@@ -5435,12 +5565,12 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                         cmd->SetShaderParameter("GodRayDensity", 0.5f);
                         cmd->SetShaderParameter("GodRayDecay", 0.97f);
                         cmd->SetShaderParameter("GodRayWeight", 0.4f);
-                        cmd->SetShaderParameter("GodRayExposure", 0.4f);
-                        cmd->SetShaderParameter("GodRayIntensity", 0.8f * moonFade);
+                        cmd->SetShaderParameter("GodRayExposure", 0.4f * moonOcclusionFade_);
+                        cmd->SetShaderParameter("GodRayIntensity", 0.8f * moonFade * moonOcclusionFade_);
                         break;
                     }
                 }
-                moonRayActive = true;
+                moonRayActive = moonOcclusionFade_ > 0.01f;
             }
         }
         renderPath_->SetEnabled("MoonRays", moonRayActive);
@@ -6313,6 +6443,19 @@ void TerrainNode::UpdateAtmosphere(float sunAltitude)
     zone_->SetAmbientColor(ambient);
     zone_->SetFogColor(fogColor);
 
+    // Hemisphere lighting: sky=bright blue bounce, ground=dark warm bounce
+    if (hemisphereEnabled_)
+    {
+        float intensity = Max(Max(ambient.r_, ambient.g_), ambient.b_);
+        zone_->SetSkyAmbientColor(Color(intensity * 0.6f, intensity * 0.7f, intensity * 1.0f));
+        zone_->SetGroundAmbientColor(Color(intensity * 0.15f, intensity * 0.1f, intensity * 0.05f));
+    }
+    else
+    {
+        zone_->SetSkyAmbientColor(Color::BLACK);
+        zone_->SetGroundAmbientColor(Color::BLACK);
+    }
+
     if (sunLight_)
     {
         sunLight_->SetColor(sunColor);
@@ -6602,9 +6745,39 @@ void TerrainNode::ApplyWeatherToScene()
         }
     }
 
-    // Modulate cloud rotation speed with wind
-    // (cloudAngle_ is already updated in UpdateCelestialBodies — we add wind boost)
-    // Future: wind affects particle systems for rain/snow
+    // Weather-modulate hemisphere lighting (Phase 3)
+    if (hemisphereEnabled_)
+    {
+        Color sky = zone_->GetSkyAmbientColor();
+        Color gnd = zone_->GetGroundAmbientColor();
+
+        // Overcast desaturates sky toward flat gray
+        if (weather_.cloudCover > 0.0f)
+        {
+            float cc = weather_.cloudCover;
+            float skyGray = sky.r_ * 0.299f + sky.g_ * 0.587f + sky.b_ * 0.114f;
+            sky = Color(
+                Lerp(sky.r_, skyGray * 0.7f, cc * 0.6f),
+                Lerp(sky.g_, skyGray * 0.7f, cc * 0.6f),
+                Lerp(sky.b_, skyGray * 0.7f, cc * 0.6f)
+            );
+            // Rain darkens ground bounce
+            float rainDarken = 1.0f - weather_.precipitation * 0.5f;
+            gnd = Color(gnd.r_ * rainDarken, gnd.g_ * rainDarken, gnd.b_ * rainDarken);
+        }
+
+        // Snow whitens ground bounce (winter: cachedSeasonFactor_ < 0.3)
+        if (cachedSeasonFactor_ < 0.3f)
+        {
+            float snowFactor = (0.3f - cachedSeasonFactor_) / 0.3f;  // 0 at equinox, 1 at solstice
+            snowFactor *= (1.0f - weather_.cloudCover * 0.3f);  // less snow bounce when overcast
+            Color snowBounce(sky.r_ * 0.8f, sky.g_ * 0.8f, sky.b_ * 0.85f);
+            gnd = gnd.Lerp(snowBounce, snowFactor * 0.6f);
+        }
+
+        zone_->SetSkyAmbientColor(sky);
+        zone_->SetGroundAmbientColor(gnd);
+    }
 
     // God ray intensity reduced by cloud cover
     if (godRaysEnabled_ && renderPath_)
@@ -6935,6 +7108,30 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
                 renderPath_->SetEnabled("WaterDroplets", false);
             wasUnderwater_ = isUnderwater;
         }
+    }
+
+    // Craft timer update
+    if (craftingRecipeId_ >= 0)
+        UpdateCraftTimer(timeStep);
+
+    // Building system ghost preview update
+    if (buildingSystem_ && buildingSystem_->IsBuildMode())
+    {
+        auto* cam = cameraNode_ ? cameraNode_->GetComponent<Camera>() : nullptr;
+        buildingSystem_->UpdateGhostPreview(cam, terrain_, 5.0f);
+    }
+
+    // Context hint — crosshair raycast for interactable detection
+    if (hud_ && !asyncSceneLoading_ && (cameraMode_ == CAM_CHASE || cameraMode_ == CAM_FIRSTPERSON))
+        UpdateContextHintRaycast();
+    else if (hud_)
+        hud_->SetContextHint("");
+
+    // Status icons driven by proximity (near-fire, shelter)
+    if (hud_ && campfireNode_ && characterNode_)
+    {
+        float distToFire = (characterNode_->GetWorldPosition() - campfireNode_->GetWorldPosition()).Length();
+        hud_->SetStatusIcon(ICON_NEAR_FIRE, distToFire < 8.0f);
     }
 
     // Celestial update AFTER camera movement — god ray screen position must match
@@ -8373,6 +8570,21 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
         return;
     }
 
+    if (msgID == MSG_STORAGE_CONTENTS)
+    {
+        MemoryBuffer msg(data);
+        HandleStorageContents(msg);
+        return;
+    }
+
+    // Building system messages
+    if (msgID == MSG_BUILD_RESULT || msgID == MSG_BUILDING_SPAWN || msgID == MSG_BUILDING_REMOVE)
+    {
+        MemoryBuffer msg(data);
+        HandleBuildMessage(msgID, msg);
+        return;
+    }
+
     if (msgID == MSG_RESOURCE_PATCH)
     {
         MemoryBuffer msg(data);
@@ -9481,6 +9693,83 @@ void TerrainNode::UpdateVitalBars()
     hud_->SetTemperature(CalculateEffectiveTemperature());
 }
 
+void TerrainNode::UpdateContextHintRaycast()
+{
+    if (!hud_ || !cameraNode_ || !scene_)
+    {
+        hud_->SetContextHint("");
+        return;
+    }
+
+    auto* camera = cameraNode_->GetComponent<Camera>();
+    if (!camera)
+    {
+        hud_->SetContextHint("");
+        return;
+    }
+
+    // Center-screen ray (crosshair)
+    Ray ray = camera->GetScreenRay(0.5f, 0.5f);
+
+    // Use octree raycast for interactable detection (works with all drawables)
+    auto* octree = scene_->GetComponent<Octree>();
+    if (!octree)
+    {
+        hud_->SetContextHint("");
+        return;
+    }
+
+    Vector<RayQueryResult> results;
+    RayOctreeQuery query(results, ray, RAY_TRIANGLE, INTERACT_DISTANCE);
+    octree->Raycast(query);
+
+    // Walk results, skip terrain patches, find first interactable
+    for (unsigned i = 0; i < results.Size(); ++i)
+    {
+        Node* node = results[i].drawable_->GetNode();
+        if (!node)
+            continue;
+
+        // Skip terrain
+        if (dynamic_cast<TerrainPatch*>(results[i].drawable_))
+            continue;
+
+        // Walk up to find a meaningful parent (animals, campfire, etc. are top-level scene children)
+        Node* candidate = node;
+        while (candidate && candidate->GetParent() && candidate->GetParent() != scene_)
+            candidate = candidate->GetParent();
+
+        if (!candidate || candidate == scene_)
+            continue;
+
+        const String& name = candidate->GetName();
+
+        // Determine context hint based on node name/type
+        if (name == "Campfire")
+        {
+            hud_->SetContextHint("E: Add Fuel");
+            return;
+        }
+        if (name == "Deer" || name == "Rabbit" || name == "Fox")
+        {
+            // Check if animal is dead
+            auto* animal = candidate->GetComponent<Animal>();
+            if (animal && animal->GetState() == ANIMAL_DIE)
+            {
+                hud_->SetContextHint("E: Harvest");
+                return;
+            }
+            // Living animal — no interaction hint
+            continue;
+        }
+        // Generic interactable objects (gather sources, etc.)
+        // Future: check for "GatherSource", "WaterSource", "Building", "Gate", etc.
+        // For now, skip unrecognized nodes
+    }
+
+    hud_->SetContextHint("");
+}
+
 // ============================================================================
 // Inventory UI
 // ============================================================================
@@ -9570,7 +9859,7 @@ void TerrainNode::CreateInventoryUI()
     inventoryWindow_ = new Window(context_);
     ui->GetRoot()->AddChild(inventoryWindow_);
     inventoryWindow_->SetStyleAuto(style);
-    inventoryWindow_->SetSize(280, 340);
+    inventoryWindow_->SetSize(290, 480);
     inventoryWindow_->SetHorizontalAlignment(HA_CENTER);
     inventoryWindow_->SetVerticalAlignment(VA_CENTER);
     inventoryWindow_->SetMovable(true);
@@ -9585,16 +9874,31 @@ void TerrainNode::CreateInventoryUI()
     title->SetColor(Color(0.9f, 0.85f, 0.7f));
     title->SetHorizontalAlignment(HA_CENTER);
 
-    // Grid area — 2 rows of 5 slots (10 default)
+    // --- Equipment section (Phase 2) ---
+    CreateEquipmentUI(inventoryWindow_);
+
+    // Separator
+    auto* separator = inventoryWindow_->CreateChild<BorderImage>();
+    separator->SetColor(Color(0.4f, 0.4f, 0.4f, 0.5f));
+    separator->SetMinHeight(2);
+    separator->SetMaxHeight(2);
+
+    // Bag label
+    auto* bagLabel = inventoryWindow_->CreateChild<Text>();
+    bagLabel->SetFont(font_, 11);
+    bagLabel->SetText("Bag");
+    bagLabel->SetColor(Color(0.7f, 0.65f, 0.55f));
+
+    // Grid area — 3 rows of 5 slots (15 max with bag bonus)
     auto* gridContainer = inventoryWindow_->CreateChild<UIElement>();
     gridContainer->SetLayout(LM_VERTICAL, 2);
-    gridContainer->SetMinHeight(200);
+    gridContainer->SetMinHeight(160);
 
     const int slotsPerRow = 5;
     const int slotSize = 48;
 
     inventorySlotButtons_.Clear();
-    for (int row = 0; row < 3; ++row)  // 3 rows = 15 max (with bag bonus)
+    for (int row = 0; row < 3; ++row)
     {
         auto* rowElem = gridContainer->CreateChild<UIElement>();
         rowElem->SetLayout(LM_HORIZONTAL, 2);
@@ -9602,10 +9906,12 @@ void TerrainNode::CreateInventoryUI()
 
         for (int col = 0; col < slotsPerRow; ++col)
         {
+            int idx = row * slotsPerRow + col;
             auto* btn = rowElem->CreateChild<Button>();
             btn->SetStyleAuto(style);
             btn->SetSize(slotSize, slotSize);
             btn->SetColor(Color(0.2f, 0.2f, 0.25f, 0.8f));
+            btn->SetVar("BagIndex", idx);
 
             auto* label = btn->CreateChild<Text>();
             label->SetFont(font_, 9);
@@ -9613,6 +9919,12 @@ void TerrainNode::CreateInventoryUI()
             label->SetHorizontalAlignment(HA_CENTER);
             label->SetVerticalAlignment(VA_CENTER);
             label->SetText("");
+
+            // Left-click to select/equip, right-click for context menu
+            SubscribeToEvent(btn, E_CLICK, URHO3D_HANDLER(TerrainNode, HandleBagSlotClick));
+            // Hover for tooltip
+            SubscribeToEvent(btn, E_HOVERBEGIN, URHO3D_HANDLER(TerrainNode, HandleSlotHoverBegin));
+            SubscribeToEvent(btn, E_HOVEREND, URHO3D_HANDLER(TerrainNode, HandleSlotHoverEnd));
 
             inventorySlotButtons_.Push(btn);
         }
@@ -9627,6 +9939,17 @@ void TerrainNode::CreateInventoryUI()
     inventoryWeightText_->SetFont(font_, 11);
     inventoryWeightText_->SetColor(Color(0.7f, 0.7f, 0.7f));
     inventoryWeightText_->SetText("0.0 / 30.0 kg");
+
+    // Sort button
+    sortButton_ = weightRow->CreateChild<Button>();
+    sortButton_->SetStyleAuto(style);
+    sortButton_->SetSize(40, 18);
+    auto* sortLabel = sortButton_->CreateChild<Text>();
+    sortLabel->SetFont(font_, 9);
+    sortLabel->SetText("Sort");
+    sortLabel->SetHorizontalAlignment(HA_CENTER);
+    sortLabel->SetVerticalAlignment(VA_CENTER);
+    SubscribeToEvent(sortButton_, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleSortButton));
 
     // Weight bar
     auto* weightBarBg = inventoryWindow_->CreateChild<BorderImage>();
@@ -9675,15 +9998,42 @@ void TerrainNode::RefreshInventoryGrid()
         if (inventory_[i].slotType != "bag")
             continue;
 
-        auto* label = inventorySlotButtons_[slotIdx]->GetChildStaticCast<Text>(0);
+        auto* btn = inventorySlotButtons_[slotIdx];
+        auto* label = btn->GetChildStaticCast<Text>(0);
         if (label)
         {
-            String text = String(inventory_[i].itemId);
+            // Show item name if available, else ID
+            String name = inventory_[i].itemName.Length() > 0
+                ? inventory_[i].itemName
+                : String(inventory_[i].itemId);
+            String text = name;
             if (inventory_[i].quantity > 1)
                 text += " x" + String(inventory_[i].quantity);
             label->SetText(text);
+
+            // Color consumable items differently
+            if (IsConsumable(inventory_[i].itemCategory))
+                label->SetColor(Color(0.7f, 0.9f, 0.7f));  // greenish for food/drink
+            else
+                label->SetColor(Color::WHITE);
         }
-        inventorySlotButtons_[slotIdx]->SetColor(Color(0.3f, 0.35f, 0.4f, 0.9f));
+
+        // Durability indicator — tint the slot button border when item has durability
+        if (inventory_[i].durability >= 0)
+        {
+            // durability 0 = broken (red), higher = more green
+            // We don't know max durability here, so show red at 0, yellow at low, normal otherwise
+            if (inventory_[i].durability == 0)
+                btn->SetColor(Color(0.5f, 0.2f, 0.2f, 0.9f));  // broken — red tint
+            else if (inventory_[i].durability < 5)
+                btn->SetColor(Color(0.5f, 0.45f, 0.2f, 0.9f)); // low durability — yellow tint
+            else
+                btn->SetColor(Color(0.3f, 0.35f, 0.4f, 0.9f)); // normal
+        }
+        else
+        {
+            btn->SetColor(Color(0.3f, 0.35f, 0.4f, 0.9f));
+        }
         ++slotIdx;
     }
 
@@ -9717,6 +10067,13 @@ void TerrainNode::RefreshInventoryGrid()
         else
             inventoryWeightBar_->SetColor(Color(0.3f, 0.7f, 0.3f));
     }
+
+    // Also refresh equipment slots
+    RefreshEquipmentSlots();
+
+    // Wire encumbered status icon
+    if (hud_)
+        hud_->SetStatusIcon(ICON_ENCUMBERED, inventoryWeight_ > inventoryMaxWeight_);
 }
 
 void TerrainNode::ToggleInventory()
@@ -9775,4 +10132,1896 @@ void TerrainNode::SendDrop(int itemId, int qty)
     buf.WriteI32(itemId);
     buf.WriteI32(qty);
     serverConn->SendMessage(MSG_DROP, true, true, buf);
+}
+
+// ============================================================================
+// Equipment Slots (Inventory Phase 2)
+// ============================================================================
+
+void TerrainNode::CreateEquipmentUI(UIElement* parent)
+{
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+
+    auto* equipLabel = parent->CreateChild<Text>();
+    equipLabel->SetFont(font_, 11);
+    equipLabel->SetText("Equipment");
+    equipLabel->SetColor(Color(0.7f, 0.65f, 0.55f));
+
+    // Equipment slot definitions (matching equipment_slots table)
+    const char* slotTypes[] = {"head", "body", "back", "hand", "offhand", "feet"};
+    const char* slotLabels[] = {"Head", "Body", "Back", "Main Hand", "Off Hand", "Feet"};
+
+    const int eqSlotSize = 44;
+
+    // Top row: Head | Body | Back
+    auto* topRow = parent->CreateChild<UIElement>();
+    topRow->SetLayout(LM_HORIZONTAL, 4);
+    topRow->SetMinHeight(eqSlotSize + 16);
+    topRow->SetHorizontalAlignment(HA_CENTER);
+
+    // Bottom row: Main Hand | Off Hand | Feet
+    auto* botRow = parent->CreateChild<UIElement>();
+    botRow->SetLayout(LM_HORIZONTAL, 4);
+    botRow->SetMinHeight(eqSlotSize + 16);
+    botRow->SetHorizontalAlignment(HA_CENTER);
+
+    for (int i = 0; i < NUM_EQUIP_SLOTS; ++i)
+    {
+        UIElement* row = (i < 3) ? topRow : botRow;
+
+        // Wrapper with label above slot
+        auto* wrapper = row->CreateChild<UIElement>();
+        wrapper->SetLayout(LM_VERTICAL, 1);
+        wrapper->SetMinSize(eqSlotSize + 8, eqSlotSize + 16);
+
+        auto* slotLabel = wrapper->CreateChild<Text>();
+        slotLabel->SetFont(font_, 8);
+        slotLabel->SetText(slotLabels[i]);
+        slotLabel->SetColor(Color(0.6f, 0.55f, 0.45f));
+        slotLabel->SetHorizontalAlignment(HA_CENTER);
+
+        auto* btn = wrapper->CreateChild<Button>();
+        btn->SetStyleAuto(style);
+        btn->SetSize(eqSlotSize, eqSlotSize);
+        btn->SetColor(Color(0.25f, 0.2f, 0.18f, 0.8f));  // earthy dark
+        btn->SetVar("EquipSlot", String(slotTypes[i]));
+
+        auto* text = btn->CreateChild<Text>();
+        text->SetFont(font_, 8);
+        text->SetColor(Color(0.87f, 0.8f, 0.73f));
+        text->SetHorizontalAlignment(HA_CENTER);
+        text->SetVerticalAlignment(VA_CENTER);
+        text->SetText("--");
+
+        // Click to unequip
+        SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleEquipSlotClick));
+
+        equipSlots_[i].slotType = slotTypes[i];
+        equipSlots_[i].label = slotLabels[i];
+        equipSlots_[i].button = btn;
+        equipSlots_[i].text = text;
+    }
+}
+
+void TerrainNode::RefreshEquipmentSlots()
+{
+    for (int i = 0; i < NUM_EQUIP_SLOTS; ++i)
+    {
+        if (!equipSlots_[i].text)
+            continue;
+
+        // Find item equipped in this slot
+        bool found = false;
+        for (unsigned j = 0; j < inventory_.Size(); ++j)
+        {
+            if (inventory_[j].slotType == equipSlots_[i].slotType)
+            {
+                String display = inventory_[j].itemName.Length() > 0
+                    ? inventory_[j].itemName
+                    : String(inventory_[j].itemId);
+                equipSlots_[i].text->SetText(display);
+                equipSlots_[i].button->SetColor(Color(0.35f, 0.3f, 0.25f, 0.9f));  // occupied
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            equipSlots_[i].text->SetText("--");
+            equipSlots_[i].button->SetColor(Color(0.25f, 0.2f, 0.18f, 0.8f));  // empty
+        }
+    }
+}
+
+void TerrainNode::HandleEquipSlotClick(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Released;
+    auto* btn = static_cast<Button*>(eventData[P_ELEMENT].GetPtr());
+    if (!btn)
+        return;
+
+    String slot = btn->GetVar("EquipSlot").GetString();
+    if (slot.Empty())
+        return;
+
+    // If a bag slot is selected, try to equip the selected item to this slot
+    if (selectedSlotIndex_ >= 0)
+    {
+        // Find the bag item at selectedSlotIndex_
+        unsigned bagIdx = 0;
+        for (unsigned i = 0; i < inventory_.Size(); ++i)
+        {
+            if (inventory_[i].slotType != "bag")
+                continue;
+            if ((int)bagIdx == selectedSlotIndex_)
+            {
+                if (CanEquipToSlot(inventory_[i].itemCategory, slot))
+                {
+                    // Move item: bag → equipment slot
+                    inventory_[i].slotType = slot;
+                    SendEquip(inventory_[i].itemId, slot);
+                }
+                break;
+            }
+            ++bagIdx;
+        }
+        selectedSlotIndex_ = -1;
+        RefreshInventoryGrid();
+        RefreshEquipmentSlots();
+        return;
+    }
+
+    // Otherwise, unequip: move equipped item back to bag
+    UnequipItem(slot);
+}
+
+void TerrainNode::HandleBagSlotDoubleClick(StringHash eventType, VariantMap& eventData)
+{
+    // Not used — double-click handled via timestamp in HandleBagSlotClick
+}
+
+void TerrainNode::HandleBagSlotClick(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Click;
+    auto* btn = static_cast<Button*>(eventData[P_ELEMENT].GetPtr());
+    if (!btn)
+        return;
+
+    int mouseButton = eventData[P_BUTTON].GetI32();
+    int idx = btn->GetVar("BagIndex").GetI32();
+
+    // Right-click → context menu
+    if (mouseButton == MOUSEB_RIGHT)
+    {
+        DismissItemContextMenu();
+        IntVector2 pos(eventData[P_X].GetI32(), eventData[P_Y].GetI32());
+        ShowItemContextMenu(idx, pos);
+        return;
+    }
+
+    // Left-click handling
+    float now = GetSubsystem<Time>()->GetElapsedTime();
+    auto* input = GetSubsystem<Input>();
+
+    // Shift+left-click → split stack
+    if (input->GetQualifierDown(QUAL_SHIFT))
+    {
+        SplitStack(idx);
+        return;
+    }
+
+    // If storage is open, left-click transfers to storage
+    if (storageOpen_)
+    {
+        TransferToStorage(idx);
+        return;
+    }
+
+    // Dismiss context menu if open
+    DismissItemContextMenu();
+
+    // Double-click detection: same slot clicked twice within threshold
+    if (idx == lastBagClickIndex_ && (now - lastBagClickTime_) < DOUBLE_CLICK_TIME)
+    {
+        // Double-click → auto-equip
+        EquipItem(idx);
+        selectedSlotIndex_ = -1;
+        lastBagClickIndex_ = -1;
+        RefreshInventoryGrid();
+        RefreshEquipmentSlots();
+        return;
+    }
+
+    lastBagClickTime_ = now;
+    lastBagClickIndex_ = idx;
+
+    // Single click → select/deselect
+    if (selectedSlotIndex_ == idx)
+        selectedSlotIndex_ = -1;  // deselect
+    else
+        selectedSlotIndex_ = idx;
+
+    // Visual highlight
+    for (unsigned i = 0; i < inventorySlotButtons_.Size(); ++i)
+    {
+        if ((int)i == selectedSlotIndex_)
+            inventorySlotButtons_[i]->SetColor(Color(0.5f, 0.45f, 0.3f, 0.95f));  // selected highlight
+        else if (inventorySlotButtons_[i]->IsVisible())
+        {
+            // Check if slot has content
+            bool hasItem = false;
+            unsigned bagIdx = 0;
+            for (unsigned j = 0; j < inventory_.Size(); ++j)
+            {
+                if (inventory_[j].slotType != "bag")
+                    continue;
+                if (bagIdx == i)
+                {
+                    hasItem = true;
+                    break;
+                }
+                ++bagIdx;
+            }
+            inventorySlotButtons_[i]->SetColor(hasItem
+                ? Color(0.3f, 0.35f, 0.4f, 0.9f)
+                : Color(0.2f, 0.2f, 0.25f, 0.8f));
+        }
+    }
+}
+
+void TerrainNode::EquipItem(int bagIndex)
+{
+    // Find the bag item at the given visual index
+    unsigned bagIdx = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+        if ((int)bagIdx == bagIndex)
+        {
+            String bestSlot = FindBestEquipSlot(inventory_[i].itemCategory);
+            if (bestSlot.Empty())
+                return;  // not equippable
+
+            // If something is already in that slot, swap it to bag
+            for (unsigned k = 0; k < inventory_.Size(); ++k)
+            {
+                if (inventory_[k].slotType == bestSlot)
+                {
+                    inventory_[k].slotType = "bag";
+                    break;
+                }
+            }
+
+            inventory_[i].slotType = bestSlot;
+            SendEquip(inventory_[i].itemId, bestSlot);
+            return;
+        }
+        ++bagIdx;
+    }
+}
+
+void TerrainNode::UnequipItem(const String& slotType)
+{
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType == slotType)
+        {
+            inventory_[i].slotType = "bag";
+            SendUnequip(slotType);
+            RefreshInventoryGrid();
+            RefreshEquipmentSlots();
+            return;
+        }
+    }
+}
+
+bool TerrainNode::CanEquipToSlot(const String& itemCategory, const String& slotType) const
+{
+    // Equipment slot acceptance rules (mirrors equipment_slots table)
+    if (slotType == "hand")
+        return itemCategory == "weapon" || itemCategory == "tool";
+    if (slotType == "offhand")
+        return itemCategory == "weapon" || itemCategory == "armor";
+    if (slotType == "body")
+        return itemCategory == "armor" || itemCategory == "clothing";
+    if (slotType == "head")
+        return itemCategory == "armor" || itemCategory == "clothing";
+    if (slotType == "feet")
+        return itemCategory == "clothing";
+    if (slotType == "back")
+        return itemCategory == "clothing" || itemCategory == "container";
+    return false;
+}
+
+String TerrainNode::FindBestEquipSlot(const String& itemCategory) const
+{
+    // Try each equipment slot in priority order
+    const char* slotOrder[] = {"hand", "offhand", "body", "head", "feet", "back"};
+    for (int i = 0; i < NUM_EQUIP_SLOTS; ++i)
+    {
+        if (CanEquipToSlot(itemCategory, slotOrder[i]))
+        {
+            // Prefer empty slots
+            bool occupied = false;
+            for (unsigned j = 0; j < inventory_.Size(); ++j)
+            {
+                if (inventory_[j].slotType == slotOrder[i])
+                {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (!occupied)
+                return slotOrder[i];
+        }
+    }
+    // All compatible slots occupied — return first compatible (will swap)
+    for (int i = 0; i < NUM_EQUIP_SLOTS; ++i)
+    {
+        if (CanEquipToSlot(itemCategory, slotOrder[i]))
+            return slotOrder[i];
+    }
+    return "";
+}
+
+void TerrainNode::SendEquip(int itemId, const String& targetSlot)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+    {
+        URHO3D_LOGINFOF("Equip item %d -> slot %s (offline — no server)", itemId, targetSlot.CString());
+        return;
+    }
+
+    VectorBuffer buf;
+    buf.WriteI32(itemId);
+    buf.WriteString(targetSlot);
+    serverConn->SendMessage(MSG_EQUIP, true, true, buf);
+    URHO3D_LOGINFOF("Sent equip: item %d -> slot %s", itemId, targetSlot.CString());
+}
+
+void TerrainNode::SendUnequip(const String& slot)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+    {
+        URHO3D_LOGINFOF("Unequip slot %s (offline — no server)", slot.CString());
+        return;
+    }
+
+    VectorBuffer buf;
+    buf.WriteString(slot);
+    serverConn->SendMessage(MSG_UNEQUIP, true, true, buf);
+    URHO3D_LOGINFOF("Sent unequip: slot %s", slot.CString());
+}
+
+// ============================================================================
+// Consumables & Context Menu (Inventory Phase 3)
+// ============================================================================
+
+bool TerrainNode::IsConsumable(const String& category) const
+{
+    return category == "food" || category == "fuel";
+}
+
+void TerrainNode::ShowItemContextMenu(int bagIndex, const IntVector2& screenPos)
+{
+    // Find the inventory item at this bag index
+    unsigned bagIdx = 0;
+    int invIdx = -1;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+        if ((int)bagIdx == bagIndex)
+        {
+            invIdx = i;
+            break;
+        }
+        ++bagIdx;
+    }
+
+    if (invIdx < 0)
+        return;  // empty slot — no menu
+
+    contextMenuBagIndex_ = bagIndex;
+
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+
+    itemContextMenu_ = new Window(context_);
+    ui->GetRoot()->AddChild(itemContextMenu_);
+    itemContextMenu_->SetStyleAuto(style);
+    itemContextMenu_->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
+    itemContextMenu_->SetPosition(screenPos);
+    itemContextMenu_->SetOpacity(0.92f);
+    itemContextMenu_->SetBringToFront(true);
+    itemContextMenu_->SetBringToBack(false);
+
+    const auto& item = inventory_[invIdx];
+
+    // Item name header
+    auto* header = itemContextMenu_->CreateChild<Text>();
+    header->SetFont(font_, 10);
+    String headerText = item.itemName.Length() > 0 ? item.itemName : String(item.itemId);
+    if (item.durability >= 0)
+    {
+        char durBuf[32];
+        snprintf(durBuf, sizeof(durBuf), " [%d]", item.durability);
+        headerText += String(durBuf);
+    }
+    header->SetText(headerText);
+    header->SetColor(Color(0.9f, 0.85f, 0.7f));
+
+    // Separator
+    auto* sep = itemContextMenu_->CreateChild<BorderImage>();
+    sep->SetColor(Color(0.4f, 0.4f, 0.4f, 0.5f));
+    sep->SetMinHeight(1);
+    sep->SetMaxHeight(1);
+
+    // Context actions based on item category
+    auto addAction = [&](const String& label, int actionId)
+    {
+        auto* btn = itemContextMenu_->CreateChild<Button>();
+        btn->SetStyleAuto(style);
+        btn->SetMinHeight(22);
+        btn->SetMinWidth(100);
+        btn->SetVar("ActionId", actionId);
+        btn->SetVar("BagIndex", bagIndex);
+
+        auto* txt = btn->CreateChild<Text>();
+        txt->SetFont(font_, 10);
+        txt->SetText(label);
+        txt->SetColor(Color(0.87f, 0.8f, 0.73f));
+        txt->SetHorizontalAlignment(HA_CENTER);
+
+        SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleContextMenuAction));
+    };
+
+    // Eat/Use (for food items)
+    if (IsConsumable(item.itemCategory))
+        addAction("Eat", 1);
+
+    // Equip (for equippable items)
+    if (!FindBestEquipSlot(item.itemCategory).Empty())
+        addAction("Equip", 2);
+
+    // Drop (always available)
+    addAction("Drop", 3);
+
+    // Cancel
+    addAction("Cancel", 0);
+}
+
+void TerrainNode::DismissItemContextMenu()
+{
+    if (itemContextMenu_)
+    {
+        itemContextMenu_->Remove();
+        itemContextMenu_.Reset();
+    }
+    contextMenuBagIndex_ = -1;
+}
+
+void TerrainNode::HandleContextMenuAction(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Released;
+    auto* btn = static_cast<Button*>(eventData[P_ELEMENT].GetPtr());
+    if (!btn)
+        return;
+
+    int action = btn->GetVar("ActionId").GetI32();
+    int bagIndex = btn->GetVar("BagIndex").GetI32();
+
+    DismissItemContextMenu();
+
+    switch (action)
+    {
+    case 1:  // Eat/Use
+        UseItem(bagIndex);
+        break;
+    case 2:  // Equip
+        EquipItem(bagIndex);
+        RefreshInventoryGrid();
+        RefreshEquipmentSlots();
+        break;
+    case 3:  // Drop
+        DropItem(bagIndex);
+        break;
+    default: // Cancel
+        break;
+    }
+}
+
+void TerrainNode::UseItem(int bagIndex)
+{
+    // Find the inventory item at this bag index
+    unsigned bagIdx = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+        if ((int)bagIdx == bagIndex)
+        {
+            if (!IsConsumable(inventory_[i].itemCategory))
+            {
+                URHO3D_LOGWARNING("Item is not consumable");
+                return;
+            }
+
+            // Send use/eat message to server
+            SendUseItem(inventory_[i].itemId);
+
+            // Optimistic local update: decrement quantity
+            inventory_[i].quantity--;
+            if (inventory_[i].quantity <= 0)
+                inventory_.Erase(i);
+
+            RefreshInventoryGrid();
+
+            // Brief feedback via context hint
+            if (hud_)
+                hud_->SetContextHint("Consumed");
+
+            return;
+        }
+        ++bagIdx;
+    }
+}
+
+void TerrainNode::DropItem(int bagIndex)
+{
+    // Find the inventory item at this bag index
+    unsigned bagIdx = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+        if ((int)bagIdx == bagIndex)
+        {
+            SendDrop(inventory_[i].itemId, 1);
+
+            // Optimistic local update
+            inventory_[i].quantity--;
+            if (inventory_[i].quantity <= 0)
+                inventory_.Erase(i);
+
+            RefreshInventoryGrid();
+            return;
+        }
+        ++bagIdx;
+    }
+}
+
+void TerrainNode::SendUseItem(int itemId)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+    {
+        URHO3D_LOGINFOF("Use item %d (offline — no server)", itemId);
+        return;
+    }
+
+    // Use existing MSG_EAT for food consumption
+    VectorBuffer buf;
+    buf.WriteI32(itemId);
+    serverConn->SendMessage(MSG_EAT, true, true, buf);
+    URHO3D_LOGINFOF("Sent MSG_EAT for item %d", itemId);
+}
+
+// ============================================================================
+// Crafting UI (Inventory Phase 4)
+// ============================================================================
+
+void TerrainNode::InitGameDB()
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    gameDB_ = new GameDB(context_);
+    String dbPath = GetSubsystem<ResourceCache>()->GetResourceDirs()[1] + "GameDB/game_rules.db";
+    if (!gameDB_->Open(dbPath))
+    {
+        // Try alternate path
+        dbPath = "Data/GameDB/game_rules.db";
+        if (!gameDB_->Open(dbPath))
+        {
+            URHO3D_LOGWARNING("Could not open game_rules.db for crafting lookups");
+            gameDB_.Reset();
+            return;
+        }
+    }
+    // Load building schema + seed data (idempotent — IF NOT EXISTS / OR IGNORE)
+    String dataDir = GetSubsystem<ResourceCache>()->GetResourceDirs()[1];
+    gameDB_->ExecuteFile(dataDir + "GameDB/buildings_schema.sql");
+    gameDB_->ExecuteFile(dataDir + "GameDB/buildings_seed.sql");
+
+    // Load all tier 0-3 recipes
+    recipes_ = gameDB_->GetRecipesForTier(3);
+    URHO3D_LOGINFOF("GameDB loaded: %d recipes", recipes_.Size());
+#endif
+}
+
+void TerrainNode::CreateCraftingUI()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+
+    craftingWindow_ = new Window(context_);
+    ui->GetRoot()->AddChild(craftingWindow_);
+    craftingWindow_->SetStyleAuto(style);
+    craftingWindow_->SetSize(420, 380);
+    craftingWindow_->SetHorizontalAlignment(HA_CENTER);
+    craftingWindow_->SetVerticalAlignment(VA_CENTER);
+    craftingWindow_->SetMovable(true);
+    craftingWindow_->SetOpacity(0.92f);
+    craftingWindow_->SetVisible(false);
+    craftingWindow_->SetLayout(LM_VERTICAL, 4, IntRect(6, 6, 6, 6));
+
+    // Title
+    auto* title = craftingWindow_->CreateChild<Text>();
+    title->SetFont(font_, 13);
+    title->SetText("Crafting");
+    title->SetColor(Color(0.9f, 0.85f, 0.7f));
+    title->SetHorizontalAlignment(HA_CENTER);
+
+    // Main content: recipe list (left) + detail (right)
+    auto* content = craftingWindow_->CreateChild<UIElement>();
+    content->SetLayout(LM_HORIZONTAL, 6);
+    content->SetMinHeight(280);
+
+    // --- Left: Recipe list ---
+    auto* leftPanel = content->CreateChild<UIElement>();
+    leftPanel->SetLayout(LM_VERTICAL, 2);
+    leftPanel->SetMinWidth(160);
+
+    auto* listLabel = leftPanel->CreateChild<Text>();
+    listLabel->SetFont(font_, 10);
+    listLabel->SetText("Recipes");
+    listLabel->SetColor(Color(0.7f, 0.65f, 0.55f));
+
+    recipeList_ = leftPanel->CreateChild<ListView>();
+    recipeList_->SetStyleAuto(style);
+    recipeList_->SetMinHeight(250);
+    recipeList_->SetHighlightMode(HM_ALWAYS);
+    SubscribeToEvent(recipeList_, E_ITEMSELECTED, URHO3D_HANDLER(TerrainNode, HandleRecipeSelect));
+
+    // --- Right: Recipe detail ---
+    auto* rightPanel = content->CreateChild<UIElement>();
+    rightPanel->SetLayout(LM_VERTICAL, 4);
+    rightPanel->SetMinWidth(230);
+
+    recipeTitle_ = rightPanel->CreateChild<Text>();
+    recipeTitle_->SetFont(font_, 12);
+    recipeTitle_->SetColor(Color(0.9f, 0.85f, 0.7f));
+    recipeTitle_->SetText("Select a recipe");
+
+    recipeDesc_ = rightPanel->CreateChild<Text>();
+    recipeDesc_->SetFont(font_, 9);
+    recipeDesc_->SetColor(Color(0.6f, 0.6f, 0.6f));
+    recipeDesc_->SetWordwrap(true);
+    recipeDesc_->SetMaxWidth(220);
+
+    // Separator
+    auto* sep = rightPanel->CreateChild<BorderImage>();
+    sep->SetColor(Color(0.4f, 0.4f, 0.4f, 0.3f));
+    sep->SetMinHeight(1);
+    sep->SetMaxHeight(1);
+
+    // Inputs label
+    auto* inputsLabel = rightPanel->CreateChild<Text>();
+    inputsLabel->SetFont(font_, 10);
+    inputsLabel->SetText("Materials:");
+    inputsLabel->SetColor(Color(0.7f, 0.65f, 0.55f));
+
+    recipeInputs_ = rightPanel->CreateChild<UIElement>();
+    recipeInputs_->SetLayout(LM_VERTICAL, 2);
+    recipeInputs_->SetMinHeight(80);
+
+    // Output
+    recipeOutput_ = rightPanel->CreateChild<Text>();
+    recipeOutput_->SetFont(font_, 10);
+    recipeOutput_->SetColor(Color(0.7f, 0.9f, 0.7f));
+
+    // Craft button
+    craftBtn_ = rightPanel->CreateChild<Button>();
+    craftBtn_->SetStyleAuto(style);
+    craftBtn_->SetMinHeight(28);
+    craftBtnText_ = craftBtn_->CreateChild<Text>();
+    craftBtnText_->SetFont(font_, 11);
+    craftBtnText_->SetText("Craft");
+    craftBtnText_->SetHorizontalAlignment(HA_CENTER);
+    craftBtnText_->SetColor(Color(0.87f, 0.8f, 0.73f));
+    SubscribeToEvent(craftBtn_, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleCraftButton));
+
+    // Progress bar
+    auto* progressBg = rightPanel->CreateChild<BorderImage>();
+    progressBg->SetColor(Color(0.15f, 0.15f, 0.15f, 0.6f));
+    progressBg->SetMinHeight(8);
+    progressBg->SetMaxHeight(8);
+    craftProgressBar_ = progressBg;
+
+    craftProgressFill_ = progressBg->CreateChild<BorderImage>();
+    craftProgressFill_->SetColor(Color(0.3f, 0.7f, 0.3f));
+    craftProgressFill_->SetMinHeight(8);
+    craftProgressFill_->SetMaxHeight(8);
+    craftProgressFill_->SetWidth(0);
+
+    // Close button
+    auto* closeBtn = craftingWindow_->CreateChild<Button>();
+    closeBtn->SetStyleAuto(style);
+    closeBtn->SetMinHeight(24);
+    auto* closeTxt = closeBtn->CreateChild<Text>();
+    closeTxt->SetFont(font_, 11);
+    closeTxt->SetText("Close");
+    closeTxt->SetHorizontalAlignment(HA_CENTER);
+    SubscribeToEvent(closeBtn, E_RELEASED, [this](StringHash, VariantMap&) { ToggleCrafting(); });
+
+    // Populate recipe list
+    RefreshRecipeList();
+}
+
+void TerrainNode::RefreshRecipeList()
+{
+    if (!recipeList_)
+        return;
+
+    recipeList_->RemoveAllItems();
+
+    HashMap<int, int> inv = BuildInventoryMap();
+
+    for (unsigned i = 0; i < recipes_.Size(); ++i)
+    {
+        auto* item = new Text(context_);
+        item->SetFont(font_, 10);
+        item->SetMinWidth(150);
+        item->SetMinHeight(18);
+
+        // Check if we can craft this recipe
+        bool canCraft = true;
+        for (unsigned j = 0; j < recipes_[i].inputs.Size(); ++j)
+        {
+            auto it = inv.Find(recipes_[i].inputs[j].itemId);
+            int have = (it != inv.End()) ? it->second_ : 0;
+            if (have < recipes_[i].inputs[j].quantity)
+            {
+                canCraft = false;
+                break;
+            }
+        }
+
+        // Also check tool requirement
+        if (recipes_[i].toolReq > 0)
+        {
+            auto it = inv.Find(recipes_[i].toolReq);
+            if (it == inv.End() || it->second_ < 1)
+                canCraft = false;
+        }
+
+        item->SetText(recipes_[i].name);
+        item->SetColor(canCraft
+            ? Color(0.87f, 0.8f, 0.73f)      // available — warm white
+            : Color(0.45f, 0.4f, 0.35f));     // unavailable — dimmed
+
+        recipeList_->AddItem(item);
+    }
+}
+
+void TerrainNode::HandleRecipeSelect(StringHash eventType, VariantMap& eventData)
+{
+    using namespace ItemSelected;
+    int sel = eventData[P_SELECTION].GetI32();
+    SelectRecipe(sel);
+}
+
+void TerrainNode::SelectRecipe(int index)
+{
+    if (index < 0 || index >= (int)recipes_.Size())
+    {
+        selectedRecipeIndex_ = -1;
+        if (recipeTitle_) recipeTitle_->SetText("Select a recipe");
+        if (recipeDesc_) recipeDesc_->SetText("");
+        if (recipeOutput_) recipeOutput_->SetText("");
+        if (recipeInputs_) recipeInputs_->RemoveAllChildren();
+        return;
+    }
+
+    selectedRecipeIndex_ = index;
+    RefreshRecipeDetail();
+}
+
+void TerrainNode::RefreshRecipeDetail()
+{
+    if (selectedRecipeIndex_ < 0 || selectedRecipeIndex_ >= (int)recipes_.Size())
+        return;
+
+    const auto& recipe = recipes_[selectedRecipeIndex_];
+    HashMap<int, int> inv = BuildInventoryMap();
+
+    // Title
+    if (recipeTitle_)
+        recipeTitle_->SetText(recipe.name);
+
+    // Description — look up from DB or use recipe name
+    if (recipeDesc_)
+    {
+        String desc = recipe.description;
+        if (recipe.toolReq > 0)
+        {
+#ifdef URHO3D_DATABASE_SQLITE
+            ItemInfo toolInfo;
+            if (gameDB_ && gameDB_->GetItem(recipe.toolReq, toolInfo))
+                desc += (desc.Length() > 0 ? "\n" : "") + String("Requires: ") + toolInfo.name;
+            else
+#endif
+                desc += (desc.Length() > 0 ? "\n" : "") + String("Requires tool ID ") + String(recipe.toolReq);
+        }
+        if (recipe.stationReq > 0)
+        {
+#ifdef URHO3D_DATABASE_SQLITE
+            ItemInfo stationInfo;
+            if (gameDB_ && gameDB_->GetItem(recipe.stationReq, stationInfo))
+                desc += (desc.Length() > 0 ? "\n" : "") + String("Station: ") + stationInfo.name;
+            else
+#endif
+                desc += (desc.Length() > 0 ? "\n" : "") + String("Station ID ") + String(recipe.stationReq);
+        }
+        recipeDesc_->SetText(desc);
+    }
+
+    // Inputs
+    if (recipeInputs_)
+    {
+        recipeInputs_->RemoveAllChildren();
+        for (unsigned i = 0; i < recipe.inputs.Size(); ++i)
+        {
+            auto* row = recipeInputs_->CreateChild<Text>();
+            row->SetFont(font_, 9);
+
+            int need = recipe.inputs[i].quantity;
+            auto it = inv.Find(recipe.inputs[i].itemId);
+            int have = (it != inv.End()) ? it->second_ : 0;
+
+            // Resolve item name
+            String itemName = String(recipe.inputs[i].itemId);
+#ifdef URHO3D_DATABASE_SQLITE
+            ItemInfo itemInfo;
+            if (gameDB_ && gameDB_->GetItem(recipe.inputs[i].itemId, itemInfo))
+                itemName = itemInfo.name;
+#endif
+
+            char buf[64];
+            snprintf(buf, sizeof(buf), "  %s: %d/%d", itemName.CString(), have, need);
+            row->SetText(String(buf));
+            row->SetColor(have >= need
+                ? Color(0.5f, 0.8f, 0.5f)   // have enough — green
+                : Color(0.9f, 0.3f, 0.3f));  // not enough — red
+        }
+    }
+
+    // Output
+    if (recipeOutput_)
+    {
+        String outputName = String(recipe.outputId);
+#ifdef URHO3D_DATABASE_SQLITE
+        ItemInfo outputInfo;
+        if (gameDB_ && gameDB_->GetItem(recipe.outputId, outputInfo))
+            outputName = outputInfo.name;
+#endif
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Makes: %s x%d", outputName.CString(), recipe.outputQty);
+        recipeOutput_->SetText(String(buf));
+    }
+
+    // Craft button state
+    if (craftBtn_ && craftBtnText_)
+    {
+        bool canCraft = true;
+        for (unsigned j = 0; j < recipe.inputs.Size(); ++j)
+        {
+            auto it = inv.Find(recipe.inputs[j].itemId);
+            int have = (it != inv.End()) ? it->second_ : 0;
+            if (have < recipe.inputs[j].quantity)
+            {
+                canCraft = false;
+                break;
+            }
+        }
+        if (recipe.toolReq > 0)
+        {
+            auto it = inv.Find(recipe.toolReq);
+            if (it == inv.End() || it->second_ < 1)
+                canCraft = false;
+        }
+
+        craftBtnText_->SetText(canCraft ? "Craft" : "Missing materials");
+        craftBtnText_->SetColor(canCraft
+            ? Color(0.87f, 0.8f, 0.73f)
+            : Color(0.5f, 0.4f, 0.35f));
+    }
+}
+
+void TerrainNode::HandleCraftButton(StringHash eventType, VariantMap& eventData)
+{
+    if (selectedRecipeIndex_ < 0 || selectedRecipeIndex_ >= (int)recipes_.Size())
+        return;
+    if (craftingRecipeId_ >= 0)
+        return;  // already crafting
+
+    const auto& recipe = recipes_[selectedRecipeIndex_];
+    HashMap<int, int> inv = BuildInventoryMap();
+
+    // Validate locally
+    for (unsigned j = 0; j < recipe.inputs.Size(); ++j)
+    {
+        auto it = inv.Find(recipe.inputs[j].itemId);
+        int have = (it != inv.End()) ? it->second_ : 0;
+        if (have < recipe.inputs[j].quantity)
+            return;  // can't craft
+    }
+    if (recipe.toolReq > 0)
+    {
+        auto it = inv.Find(recipe.toolReq);
+        if (it == inv.End() || it->second_ < 1)
+            return;
+    }
+
+    // Start craft timer
+    craftingRecipeId_ = recipe.id;
+    craftDuration_ = recipe.craftTime > 0.0f ? recipe.craftTime : 2.0f;
+    craftTimer_ = craftDuration_;
+
+    if (craftBtnText_)
+    {
+        craftBtnText_->SetText("Crafting...");
+        craftBtnText_->SetColor(Color(0.9f, 0.8f, 0.3f));
+    }
+}
+
+void TerrainNode::UpdateCraftTimer(float timeStep)
+{
+    if (craftingRecipeId_ < 0)
+        return;
+
+    craftTimer_ -= timeStep;
+
+    // Update progress bar
+    if (craftProgressFill_ && craftProgressBar_ && craftDuration_ > 0.0f)
+    {
+        float frac = 1.0f - Clamp(craftTimer_ / craftDuration_, 0.0f, 1.0f);
+        int parentW = craftProgressBar_->GetWidth();
+        if (parentW < 10) parentW = 200;
+        craftProgressFill_->SetWidth((int)(parentW * frac));
+    }
+
+    if (craftTimer_ <= 0.0f)
+    {
+        // Craft complete — send to server
+        SendCraft(craftingRecipeId_);
+
+        // Optimistic local: deduct inputs, add output
+        int recipeIdx = -1;
+        for (unsigned i = 0; i < recipes_.Size(); ++i)
+        {
+            if (recipes_[i].id == craftingRecipeId_)
+            {
+                recipeIdx = i;
+                break;
+            }
+        }
+
+        if (recipeIdx >= 0)
+        {
+            const auto& recipe = recipes_[recipeIdx];
+            // Deduct inputs
+            for (unsigned j = 0; j < recipe.inputs.Size(); ++j)
+            {
+                if (!recipe.inputs[j].consumed)
+                    continue;
+                int toRemove = recipe.inputs[j].quantity;
+                for (unsigned k = 0; k < inventory_.Size() && toRemove > 0; ++k)
+                {
+                    if (inventory_[k].itemId == recipe.inputs[j].itemId && inventory_[k].slotType == "bag")
+                    {
+                        int remove = Min(toRemove, inventory_[k].quantity);
+                        inventory_[k].quantity -= remove;
+                        toRemove -= remove;
+                        if (inventory_[k].quantity <= 0)
+                        {
+                            inventory_.Erase(k);
+                            --k;
+                        }
+                    }
+                }
+            }
+            // Add output
+            bool stacked = false;
+            for (unsigned k = 0; k < inventory_.Size(); ++k)
+            {
+                if (inventory_[k].itemId == recipe.outputId && inventory_[k].slotType == "bag")
+                {
+                    inventory_[k].quantity += recipe.outputQty;
+                    stacked = true;
+                    break;
+                }
+            }
+            if (!stacked)
+            {
+                ClientInventorySlot slot;
+                slot.itemId = recipe.outputId;
+                slot.quantity = recipe.outputQty;
+                slot.slotType = "bag";
+#ifdef URHO3D_DATABASE_SQLITE
+                ItemInfo outputInfo;
+                if (gameDB_ && gameDB_->GetItem(recipe.outputId, outputInfo))
+                {
+                    slot.itemName = outputInfo.name;
+                    slot.itemCategory = outputInfo.category;
+                }
+#endif
+                inventory_.Push(slot);
+            }
+        }
+
+        // Reset
+        craftingRecipeId_ = -1;
+        craftTimer_ = 0.0f;
+        if (craftProgressFill_)
+            craftProgressFill_->SetWidth(0);
+
+        // Refresh UI
+        RefreshRecipeList();
+        RefreshRecipeDetail();
+        RefreshInventoryGrid();
+
+        if (hud_)
+            hud_->SetContextHint("Crafted!");
+    }
+}
+
+void TerrainNode::ToggleCrafting()
+{
+    craftingOpen_ = !craftingOpen_;
+
+    if (!craftingWindow_)
+        CreateCraftingUI();
+
+    craftingWindow_->SetVisible(craftingOpen_);
+
+    if (craftingOpen_)
+    {
+        RefreshRecipeList();
+        if (selectedRecipeIndex_ >= 0)
+            RefreshRecipeDetail();
+
+        auto* input = GetSubsystem<Input>();
+        if (!menuOpen_)
+        {
+            input->SetMouseMode(MM_FREE);
+            input->SetMouseVisible(true);
+        }
+    }
+    else
+    {
+        // Cancel active crafting if closing
+        if (craftingRecipeId_ >= 0)
+        {
+            craftingRecipeId_ = -1;
+            craftTimer_ = 0.0f;
+            if (craftProgressFill_)
+                craftProgressFill_->SetWidth(0);
+            if (craftBtnText_)
+            {
+                craftBtnText_->SetText("Craft");
+                craftBtnText_->SetColor(Color(0.87f, 0.8f, 0.73f));
+            }
+        }
+
+        if (!menuOpen_ && !inventoryOpen_)
+        {
+            auto* input = GetSubsystem<Input>();
+            GetSubsystem<UI>()->SetFocusElement(nullptr);
+            input->SetMouseMode(MM_RELATIVE);
+            input->SetMouseVisible(false);
+        }
+    }
+}
+
+HashMap<int, int> TerrainNode::BuildInventoryMap() const
+{
+    HashMap<int, int> result;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+        result[inventory_[i].itemId] += inventory_[i].quantity;
+    return result;
+}
+
+void TerrainNode::SendCraft(int recipeId)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+    {
+        URHO3D_LOGINFOF("Craft recipe %d (offline — no server)", recipeId);
+        return;
+    }
+
+    VectorBuffer buf;
+    buf.WriteI32(recipeId);
+    serverConn->SendMessage(MSG_CRAFT, true, true, buf);
+    URHO3D_LOGINFOF("Sent craft request for recipe %d", recipeId);
+}
+
+// ============================================================================
+// Inventory Phase 5: Storage
+// ============================================================================
+
+void TerrainNode::CreateStorageUI()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+
+    storageWindow_ = new Window(context_);
+    ui->GetRoot()->AddChild(storageWindow_);
+    storageWindow_->SetStyleAuto(style);
+    storageWindow_->SetSize(260, 400);
+    storageWindow_->SetAlignment(HA_LEFT, VA_CENTER);
+    storageWindow_->SetPosition(20, 0);
+    storageWindow_->SetMovable(true);
+    storageWindow_->SetOpacity(0.9f);
+    storageWindow_->SetVisible(false);
+    storageWindow_->SetLayout(LM_VERTICAL, 4, IntRect(6, 6, 6, 6));
+
+    // Title
+    storageTitle_ = storageWindow_->CreateChild<Text>();
+    storageTitle_->SetFont(font_, 13);
+    storageTitle_->SetText("Storage");
+    storageTitle_->SetColor(Color(0.9f, 0.85f, 0.7f));
+    storageTitle_->SetHorizontalAlignment(HA_CENTER);
+
+    // Grid — 4 rows of 5 slots (20 max)
+    auto* gridContainer = storageWindow_->CreateChild<UIElement>();
+    gridContainer->SetLayout(LM_VERTICAL, 2);
+
+    const int slotsPerRow = 5;
+    const int slotSize = 48;
+
+    storageSlotButtons_.Clear();
+    for (int row = 0; row < 4; ++row)
+    {
+        auto* rowElem = gridContainer->CreateChild<UIElement>();
+        rowElem->SetLayout(LM_HORIZONTAL, 2);
+        rowElem->SetMinHeight(slotSize + 4);
+
+        for (int col = 0; col < slotsPerRow; ++col)
+        {
+            int idx = row * slotsPerRow + col;
+            auto* btn = rowElem->CreateChild<Button>();
+            btn->SetStyleAuto(style);
+            btn->SetSize(slotSize, slotSize);
+            btn->SetColor(Color(0.25f, 0.2f, 0.2f, 0.8f));
+            btn->SetVar("StorageIndex", idx);
+
+            auto* label = btn->CreateChild<Text>();
+            label->SetFont(font_, 9);
+            label->SetColor(Color::WHITE);
+            label->SetHorizontalAlignment(HA_CENTER);
+            label->SetVerticalAlignment(VA_CENTER);
+            label->SetText("");
+
+            SubscribeToEvent(btn, E_CLICK, URHO3D_HANDLER(TerrainNode, HandleStorageSlotClick));
+            storageSlotButtons_.Push(btn);
+        }
+    }
+
+    // Close button
+    auto* closeBtn = storageWindow_->CreateChild<Button>();
+    closeBtn->SetStyleAuto(style);
+    closeBtn->SetMinHeight(24);
+    auto* closeTxt = closeBtn->CreateChild<Text>();
+    closeTxt->SetFont(font_, 11);
+    closeTxt->SetText("Close");
+    closeTxt->SetHorizontalAlignment(HA_CENTER);
+    SubscribeToEvent(closeBtn, E_RELEASED, [this](StringHash, VariantMap&) { CloseStorage(); });
+}
+
+void TerrainNode::OpenStorage(int buildingId)
+{
+    openBuildingId_ = buildingId;
+    storageOpen_ = true;
+
+    if (!storageWindow_)
+        CreateStorageUI();
+
+    storageWindow_->SetVisible(true);
+
+    // Also open inventory side-by-side
+    if (!inventoryOpen_)
+        ToggleInventory();
+
+    // Request contents from server
+    SendOpenStorage(buildingId);
+}
+
+void TerrainNode::CloseStorage()
+{
+    if (openBuildingId_ >= 0)
+        SendCloseStorage(openBuildingId_);
+
+    storageOpen_ = false;
+    openBuildingId_ = -1;
+    storageContents_.Clear();
+
+    if (storageWindow_)
+        storageWindow_->SetVisible(false);
+}
+
+void TerrainNode::ToggleStorage()
+{
+    if (storageOpen_)
+        CloseStorage();
+    // Opening requires a building ID — done via interaction, not key toggle
+}
+
+void TerrainNode::RefreshStorageGrid()
+{
+    if (!storageWindow_ || storageSlotButtons_.Empty())
+        return;
+
+    // Clear all slots
+    for (unsigned i = 0; i < storageSlotButtons_.Size(); ++i)
+    {
+        auto* label = storageSlotButtons_[i]->GetChildStaticCast<Text>(0);
+        if (label)
+            label->SetText("");
+        storageSlotButtons_[i]->SetColor(Color(0.25f, 0.2f, 0.2f, 0.8f));
+    }
+
+    // Fill from storageContents_
+    for (unsigned i = 0; i < storageContents_.Size() && i < storageSlotButtons_.Size(); ++i)
+    {
+        auto* btn = storageSlotButtons_[i];
+        auto* label = btn->GetChildStaticCast<Text>(0);
+        if (label)
+        {
+            String name = storageContents_[i].itemName.Length() > 0
+                ? storageContents_[i].itemName
+                : String(storageContents_[i].itemId);
+            String text = name;
+            if (storageContents_[i].quantity > 1)
+                text += " x" + String(storageContents_[i].quantity);
+            label->SetText(text);
+        }
+        btn->SetColor(Color(0.35f, 0.3f, 0.3f, 0.9f));
+    }
+}
+
+void TerrainNode::HandleStorageSlotClick(StringHash eventType, VariantMap& eventData)
+{
+    using namespace Click;
+    auto* btn = static_cast<Button*>(eventData[P_ELEMENT].GetPtr());
+    if (!btn) return;
+
+    int storageIdx = btn->GetVar("StorageIndex").GetI32();
+
+    // Left-click: transfer from storage to bag
+    if (storageIdx >= 0 && storageIdx < (int)storageContents_.Size())
+        TransferFromStorage(storageIdx);
+}
+
+void TerrainNode::HandleStorageContents(MemoryBuffer& msg)
+{
+    int buildingId = msg.ReadI32();
+    int count = msg.ReadI32();
+
+    storageContents_.Clear();
+    for (int i = 0; i < count; ++i)
+    {
+        StorageSlot slot;
+        slot.itemId = msg.ReadI32();
+        slot.quantity = msg.ReadI32();
+        slot.itemName = msg.ReadString();
+        storageContents_.Push(slot);
+    }
+
+    if (storageTitle_)
+        storageTitle_->SetText("Storage (" + String(count) + "/" + String(STORAGE_MAX_SLOTS) + ")");
+
+    RefreshStorageGrid();
+}
+
+void TerrainNode::TransferToStorage(int bagIndex)
+{
+    // Find the bag item at this index
+    int bagCount = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+        if (bagCount == bagIndex)
+        {
+            if ((int)storageContents_.Size() >= STORAGE_MAX_SLOTS)
+            {
+                URHO3D_LOGINFO("Storage is full");
+                return;
+            }
+            SendTransfer(inventory_[i].itemId, inventory_[i].quantity, true);
+
+            // Optimistic local update
+            StorageSlot ss;
+            ss.itemId = inventory_[i].itemId;
+            ss.quantity = inventory_[i].quantity;
+            ss.itemName = inventory_[i].itemName;
+            storageContents_.Push(ss);
+            inventory_.Erase(i);
+
+            RefreshInventoryGrid();
+            RefreshStorageGrid();
+            return;
+        }
+        ++bagCount;
+    }
+}
+
+void TerrainNode::TransferFromStorage(int storageIndex)
+{
+    if (storageIndex < 0 || storageIndex >= (int)storageContents_.Size())
+        return;
+
+    // Check weight
+    // We don't have weight per storage item stored locally, so just check slot count
+    int bagCount = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+        if (inventory_[i].slotType == "bag") ++bagCount;
+
+    if (bagCount >= inventoryMaxSlots_)
+    {
+        URHO3D_LOGINFO("Inventory is full");
+        return;
+    }
+
+    const auto& ss = storageContents_[storageIndex];
+    SendTransfer(ss.itemId, ss.quantity, false);
+
+    // Optimistic local update
+    ClientInventorySlot slot;
+    slot.itemId = ss.itemId;
+    slot.quantity = ss.quantity;
+    slot.itemName = ss.itemName;
+    slot.slotType = "bag";
+    inventory_.Push(slot);
+    storageContents_.Erase(storageIndex);
+
+    RefreshInventoryGrid();
+    RefreshStorageGrid();
+}
+
+void TerrainNode::SendOpenStorage(int buildingId)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+    {
+        URHO3D_LOGINFOF("Open storage %d (offline — no server)", buildingId);
+        return;
+    }
+
+    VectorBuffer buf;
+    buf.WriteI32(buildingId);
+    serverConn->SendMessage(MSG_OPEN_STORAGE, true, true, buf);
+}
+
+void TerrainNode::SendCloseStorage(int buildingId)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn) return;
+
+    VectorBuffer buf;
+    buf.WriteI32(buildingId);
+    serverConn->SendMessage(MSG_CLOSE_STORAGE, true, true, buf);
+}
+
+void TerrainNode::SendTransfer(int itemId, int qty, bool toStorage)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+    {
+        URHO3D_LOGINFOF("Transfer item %d x%d %s (offline)", itemId, qty, toStorage ? "to storage" : "from storage");
+        return;
+    }
+
+    VectorBuffer buf;
+    buf.WriteI32(itemId);
+    buf.WriteI32(qty);
+    buf.WriteBool(toStorage);
+    serverConn->SendMessage(MSG_TRANSFER, true, true, buf);
+}
+
+// ============================================================================
+// Inventory Phase 6: Polish
+// ============================================================================
+
+void TerrainNode::SplitStack(int bagIndex)
+{
+    // Find the bag item at this index
+    int bagCount = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+        if (bagCount == bagIndex)
+        {
+            if (inventory_[i].quantity <= 1)
+                return;  // can't split a single item
+
+            int half = inventory_[i].quantity / 2;
+            int remainder = inventory_[i].quantity - half;
+
+            // Check if there's room for a new slot
+            int totalBag = 0;
+            for (unsigned j = 0; j < inventory_.Size(); ++j)
+                if (inventory_[j].slotType == "bag") ++totalBag;
+
+            if (totalBag >= inventoryMaxSlots_)
+            {
+                URHO3D_LOGINFO("No room to split stack");
+                return;
+            }
+
+            // Split: reduce original, create new slot
+            inventory_[i].quantity = half;
+
+            ClientInventorySlot newSlot;
+            newSlot.itemId = inventory_[i].itemId;
+            newSlot.quantity = remainder;
+            newSlot.itemName = inventory_[i].itemName;
+            newSlot.itemCategory = inventory_[i].itemCategory;
+            newSlot.itemWeight = inventory_[i].itemWeight;
+            newSlot.slotType = "bag";
+            newSlot.durability = inventory_[i].durability;
+            inventory_.Push(newSlot);
+
+            RefreshInventoryGrid();
+            return;
+        }
+        ++bagCount;
+    }
+}
+
+void TerrainNode::SortInventory()
+{
+    // Collect bag items, sort by category then name, reinsert
+    Vector<ClientInventorySlot> bagItems;
+    Vector<ClientInventorySlot> nonBagItems;
+
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType == "bag")
+            bagItems.Push(inventory_[i]);
+        else
+            nonBagItems.Push(inventory_[i]);
+    }
+
+    // Sort: weapons, tools, armor, food, materials, misc
+    auto categoryOrder = [](const String& cat) -> int {
+        if (cat == "weapon") return 0;
+        if (cat == "tool") return 1;
+        if (cat == "armor" || cat == "clothing") return 2;
+        if (cat == "food" || cat == "drink") return 3;
+        if (cat == "material") return 4;
+        return 5;
+    };
+
+    Sort(bagItems.Begin(), bagItems.End(),
+        [&categoryOrder](const ClientInventorySlot& a, const ClientInventorySlot& b) -> bool {
+            int ca = categoryOrder(a.itemCategory);
+            int cb = categoryOrder(b.itemCategory);
+            if (ca != cb) return ca < cb;
+            return a.itemName < b.itemName;
+        });
+
+    // Rebuild inventory
+    inventory_.Clear();
+    for (unsigned i = 0; i < nonBagItems.Size(); ++i)
+        inventory_.Push(nonBagItems[i]);
+    for (unsigned i = 0; i < bagItems.Size(); ++i)
+        inventory_.Push(bagItems[i]);
+
+    RefreshInventoryGrid();
+}
+
+void TerrainNode::HandleSortButton(StringHash eventType, VariantMap& eventData)
+{
+    SortInventory();
+}
+
+void TerrainNode::ShowItemTooltip(int bagIndex, const IntVector2& screenPos)
+{
+    // Find the actual item
+    int bagCount = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+        if (bagCount == bagIndex)
+        {
+            const auto& item = inventory_[i];
+            auto* ui = GetSubsystem<UI>();
+            auto* cache = GetSubsystem<ResourceCache>();
+            auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+
+            if (!itemTooltip_)
+            {
+                itemTooltip_ = new Window(context_);
+                ui->GetRoot()->AddChild(itemTooltip_);
+                itemTooltip_->SetStyleAuto(style);
+                itemTooltip_->SetLayout(LM_VERTICAL, 3, IntRect(6, 4, 6, 4));
+                itemTooltip_->SetOpacity(0.95f);
+                itemTooltip_->SetPriority(200);  // above everything
+            }
+            else
+            {
+                itemTooltip_->RemoveAllChildren();
+            }
+
+            // Name
+            auto* nameText = itemTooltip_->CreateChild<Text>();
+            nameText->SetFont(font_, 12);
+            nameText->SetText(item.itemName.Length() > 0 ? item.itemName : String(item.itemId));
+            nameText->SetColor(Color(0.95f, 0.9f, 0.75f));
+
+            // Category
+            if (item.itemCategory.Length() > 0)
+            {
+                auto* catText = itemTooltip_->CreateChild<Text>();
+                catText->SetFont(font_, 9);
+                catText->SetText(item.itemCategory);
+                catText->SetColor(Color(0.6f, 0.6f, 0.6f));
+            }
+
+            // Quantity
+            if (item.quantity > 1)
+            {
+                auto* qtyText = itemTooltip_->CreateChild<Text>();
+                qtyText->SetFont(font_, 10);
+                qtyText->SetText("Qty: " + String(item.quantity));
+                qtyText->SetColor(Color(0.7f, 0.7f, 0.7f));
+            }
+
+            // Weight
+            if (item.itemWeight > 0.0f)
+            {
+                char wBuf[32];
+                snprintf(wBuf, sizeof(wBuf), "Weight: %.1f kg", item.itemWeight * item.quantity);
+                auto* wText = itemTooltip_->CreateChild<Text>();
+                wText->SetFont(font_, 10);
+                wText->SetText(String(wBuf));
+                wText->SetColor(Color(0.7f, 0.7f, 0.7f));
+            }
+
+            // Durability
+            if (item.durability >= 0)
+            {
+                auto* durText = itemTooltip_->CreateChild<Text>();
+                durText->SetFont(font_, 10);
+                durText->SetText("Durability: " + String(item.durability));
+                if (item.durability == 0)
+                    durText->SetColor(Color(0.9f, 0.3f, 0.3f));
+                else if (item.durability < 5)
+                    durText->SetColor(Color(0.9f, 0.7f, 0.2f));
+                else
+                    durText->SetColor(Color(0.5f, 0.8f, 0.5f));
+            }
+
+            // Position near cursor, keep on screen
+            auto* graphics = GetSubsystem<Graphics>();
+            int tipW = 160;
+            int tipH = itemTooltip_->GetChildren().Size() * 18 + 12;
+            itemTooltip_->SetSize(tipW, tipH);
+
+            int x = screenPos.x_ + 16;
+            int y = screenPos.y_ - 8;
+            if (x + tipW > graphics->GetWidth())
+                x = screenPos.x_ - tipW - 8;
+            if (y + tipH > graphics->GetHeight())
+                y = graphics->GetHeight() - tipH;
+
+            itemTooltip_->SetPosition(x, y);
+            itemTooltip_->SetVisible(true);
+            return;
+        }
+        ++bagCount;
+    }
+}
+
+void TerrainNode::HideItemTooltip()
+{
+    if (itemTooltip_)
+        itemTooltip_->SetVisible(false);
+}
+
+void TerrainNode::HandleSlotHoverBegin(StringHash eventType, VariantMap& eventData)
+{
+    using namespace HoverBegin;
+    auto* btn = static_cast<Button*>(eventData[P_ELEMENT].GetPtr());
+    if (!btn) return;
+
+    int bagIdx = btn->GetVar("BagIndex").GetI32();
+    IntVector2 screenPos = btn->GetScreenPosition();
+    screenPos.x_ += btn->GetWidth();
+    ShowItemTooltip(bagIdx, screenPos);
+}
+
+void TerrainNode::HandleSlotHoverEnd(StringHash eventType, VariantMap& eventData)
+{
+    HideItemTooltip();
+}
+
+void TerrainNode::UpdateWeightBarColor()
+{
+    // Already handled in RefreshInventoryGrid — this is a no-op hook for future extensions
+}
+
+// ============================================================================
+// Building System Phase 1
+// ============================================================================
+
+void TerrainNode::InitBuildingSystem()
+{
+    if (!scene_)
+        return;
+
+    // Create building system component on the scene
+    auto* existing = scene_->GetComponent<BuildingSystem>();
+    if (!existing)
+    {
+        buildingSystem_ = scene_->CreateComponent<BuildingSystem>(LOCAL);
+    }
+    else
+    {
+        buildingSystem_ = existing;
+    }
+
+    // Load building types from GameDB
+    LoadBuildingTypes();
+}
+
+void TerrainNode::LoadBuildingTypes()
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    if (!gameDB_ || !buildingSystem_)
+        return;
+
+    // Use the Urho3D Database subsystem for the query
+    auto* database = GetSubsystem<Database>();
+    if (!database)
+        return;
+
+    // Open a read-only connection to the same DB file
+    String dbPath = GetSubsystem<ResourceCache>()->GetResourceDirs()[1] + "GameDB/game_rules.db";
+    DbConnection* conn = database->Connect("file:" + dbPath + "?mode=ro");
+    if (!conn)
+    {
+        URHO3D_LOGWARNING("Could not open DB connection for building types");
+        return;
+    }
+
+    DbResult result = conn->Execute(
+        "SELECT id, name, category, tier, footprint_x, footprint_z, "
+        "height, max_hp, decay_rate, warmth, storage_slots, "
+        "sleep_capacity, respawn, snap_type, model, ghost_model, "
+        "description FROM building_types ORDER BY tier, id");
+
+    Vector<BuildingTypeInfo> types;
+    for (unsigned i = 0; i < result.GetNumRows(); ++i)
+    {
+        const VariantVector& row = result.GetRows()[i];
+        BuildingTypeInfo info;
+        info.id = row[0].GetI32();
+        info.name = row[1].GetString();
+        info.category = row[2].GetString();
+        info.tier = row[3].GetI32();
+        info.footprintX = row[4].GetFloat();
+        info.footprintZ = row[5].GetFloat();
+        info.height = row[6].GetFloat();
+        info.maxHp = row[7].GetI32();
+        info.decayRate = row[8].GetFloat();
+        info.warmth = row[9].GetFloat();
+        info.storageSlots = row[10].GetI32();
+        info.sleepCapacity = row[11].GetI32();
+        info.respawn = row[12].GetI32() != 0;
+        info.snapType = row[13].GetString();
+        info.modelPath = row[14].GetString();
+        info.ghostModelPath = row[15].GetString();
+        info.description = row[16].GetString();
+        types.Push(info);
+    }
+
+    database->Disconnect(conn);
+    buildingSystem_->SetBuildingTypes(types);
+    URHO3D_LOGINFOF("Loaded %u building types from GameDB", types.Size());
+#endif
+}
+
+void TerrainNode::CreateBuildMenuUI()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+
+    buildMenuWindow_ = new Window(context_);
+    ui->GetRoot()->AddChild(buildMenuWindow_);
+    buildMenuWindow_->SetStyleAuto(style);
+    buildMenuWindow_->SetSize(240, 380);
+    buildMenuWindow_->SetAlignment(HA_RIGHT, VA_CENTER);
+    buildMenuWindow_->SetPosition(-20, 0);
+    buildMenuWindow_->SetMovable(true);
+    buildMenuWindow_->SetOpacity(0.9f);
+    buildMenuWindow_->SetVisible(false);
+    buildMenuWindow_->SetLayout(LM_VERTICAL, 4, IntRect(6, 6, 6, 6));
+
+    // Title
+    auto* title = buildMenuWindow_->CreateChild<Text>();
+    title->SetFont(font_, 13);
+    title->SetText("Build");
+    title->SetColor(Color(0.9f, 0.85f, 0.7f));
+    title->SetHorizontalAlignment(HA_CENTER);
+
+    // Status text
+    buildStatusText_ = buildMenuWindow_->CreateChild<Text>();
+    buildStatusText_->SetFont(font_, 10);
+    buildStatusText_->SetColor(Color(0.7f, 0.7f, 0.6f));
+    buildStatusText_->SetText("Select a building to place");
+
+    // Building list
+    buildMenuList_ = buildMenuWindow_->CreateChild<ListView>();
+    buildMenuList_->SetStyleAuto(style);
+    buildMenuList_->SetMinHeight(280);
+    buildMenuList_->SetHighlightMode(HM_ALWAYS);
+    SubscribeToEvent(buildMenuList_, E_ITEMSELECTED, URHO3D_HANDLER(TerrainNode, HandleBuildMenuSelect));
+
+    // Close button
+    auto* closeBtn = buildMenuWindow_->CreateChild<Button>();
+    closeBtn->SetStyleAuto(style);
+    closeBtn->SetMinHeight(24);
+    auto* closeTxt = closeBtn->CreateChild<Text>();
+    closeTxt->SetFont(font_, 11);
+    closeTxt->SetText("Close [B]");
+    closeTxt->SetHorizontalAlignment(HA_CENTER);
+    SubscribeToEvent(closeBtn, E_RELEASED, [this](StringHash, VariantMap&) { ToggleBuildMode(); });
+}
+
+void TerrainNode::RefreshBuildMenu()
+{
+    if (!buildMenuList_ || !buildingSystem_)
+        return;
+
+    buildMenuList_->RemoveAllItems();
+    const auto& types = buildingSystem_->GetBuildingTypes();
+    HashMap<int, int> inv = BuildInventoryMap();
+
+    for (unsigned i = 0; i < types.Size(); ++i)
+    {
+        auto* row = new Text(context_);
+        row->SetFont(font_, 11);
+        row->SetVar("BuildingTypeId", types[i].id);
+
+        String label = types[i].name;
+        label += " (T" + String(types[i].tier) + ")";
+
+        // Check if player can afford it (simplified — check if they have any materials)
+        // Full check would query building_recipes, but for now just show all
+        row->SetText(label);
+        row->SetColor(Color(0.85f, 0.85f, 0.85f));
+
+        buildMenuList_->AddItem(row);
+    }
+}
+
+void TerrainNode::HandleBuildMenuSelect(StringHash eventType, VariantMap& eventData)
+{
+    using namespace ItemSelected;
+    int sel = eventData[P_SELECTION].GetI32();
+    if (sel < 0 || !buildMenuList_)
+        return;
+
+    auto* item = buildMenuList_->GetItem(sel);
+    if (!item)
+        return;
+
+    int typeId = item->GetVar("BuildingTypeId").GetI32();
+    if (buildingSystem_)
+    {
+        buildingSystem_->SetBuildMode(true, typeId);
+
+        // Find the building name for status text
+        const auto& types = buildingSystem_->GetBuildingTypes();
+        for (unsigned i = 0; i < types.Size(); ++i)
+        {
+            if (types[i].id == typeId)
+            {
+                if (buildStatusText_)
+                    buildStatusText_->SetText("Placing: " + types[i].name + "\nR=Rotate, Click=Place, Esc=Cancel");
+                break;
+            }
+        }
+    }
+}
+
+void TerrainNode::ToggleBuildMode()
+{
+    buildMenuOpen_ = !buildMenuOpen_;
+
+    if (!buildMenuWindow_)
+        CreateBuildMenuUI();
+
+    buildMenuWindow_->SetVisible(buildMenuOpen_);
+
+    if (buildMenuOpen_)
+    {
+        RefreshBuildMenu();
+        auto* input = GetSubsystem<Input>();
+        input->SetMouseMode(MM_FREE);
+        input->SetMouseVisible(true);
+    }
+    else
+    {
+        // Exit build mode
+        if (buildingSystem_)
+            buildingSystem_->SetBuildMode(false);
+
+        if (!menuOpen_ && !inventoryOpen_ && !craftingOpen_)
+        {
+            auto* input = GetSubsystem<Input>();
+            GetSubsystem<UI>()->SetFocusElement(nullptr);
+            input->SetMouseMode(MM_RELATIVE);
+            input->SetMouseVisible(false);
+        }
+    }
+}
+
+void TerrainNode::HandleBuildMessage(int msgID, MemoryBuffer& msg)
+{
+    if (!buildingSystem_)
+        return;
+
+    if (msgID == MSG_BUILD_RESULT)
+    {
+        bool success = msg.ReadBool();
+        if (success)
+        {
+            int placedId = msg.ReadI32();
+            URHO3D_LOGINFOF("Build successful: placed_id=%d", placedId);
+        }
+        else
+        {
+            String reason = msg.ReadString();
+            URHO3D_LOGINFOF("Build failed: %s", reason.CString());
+            if (buildStatusText_)
+                buildStatusText_->SetText("Build failed: " + reason);
+        }
+    }
+    else if (msgID == MSG_BUILDING_SPAWN)
+    {
+        int placedId = msg.ReadI32();
+        int typeId = msg.ReadI32();
+        float px = msg.ReadFloat();
+        float py = msg.ReadFloat();
+        float pz = msg.ReadFloat();
+        float rot = msg.ReadFloat();
+        int hp = msg.ReadI32();
+        buildingSystem_->HandleBuildingSpawn(placedId, typeId, Vector3(px, py, pz), rot, hp);
+    }
+    else if (msgID == MSG_BUILDING_REMOVE)
+    {
+        int placedId = msg.ReadI32();
+        buildingSystem_->HandleBuildingRemove(placedId);
+    }
 }

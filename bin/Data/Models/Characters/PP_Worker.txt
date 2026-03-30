@@ -1,0 +1,13 @@
+Models/Characters/Materials/Black.xml
+Models/Characters/Materials/Grey.xml
+Models/Characters/Materials/Brown2.xml
+Models/Characters/Materials/Brown.xml
+Models/Characters/Materials/Worker_Yellow.xml
+Models/Characters/Materials/Worker_Vest.xml
+Models/Characters/Materials/LightBrown.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Worker_Yellow.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Eyebrows.xml
+Models/Characters/Materials/Eye.xml
+Models/Characters/Materials/Moustache.xml

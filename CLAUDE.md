@@ -20,10 +20,11 @@ On session start:
 
 1. You are auto-registered on startup
 2. Check `/tmp/urho_claude/instances/*.pid` — if no `planner.pid` exists, the first instance assumes **Planner**. Subsequent instances assume **Coder**.
-3. Announce your role to the Manager: `.claude/hooks/claude_ipc.sh assume <role>`
-4. Read the workboard: `Claude/WORKBOARD.md`
-5. Start listening for messages
-6. The Manager can reach you between prompts — react to incoming messages and keep listening
+3. **Stale PID check:** If `planner.pid` exists but the PID inside it is dead (`ps -p <PID>` fails), remove the stale file (`rm /tmp/urho_claude/instances/planner.pid`) and assume Planner. Same applies to any role PID file — verify the process is alive before treating it as taken.
+4. Announce your role to the Manager: `.claude/hooks/claude_ipc.sh assume <role>`
+5. Read the workboard: `Claude/WORKBOARD.md`
+6. Start listening for messages
+7. The Manager can reach you between prompts — react to incoming messages and keep listening
 
 ### Spawning Coders
 
@@ -134,7 +135,30 @@ If locks get stuck, use the **Clear File Locks** button in WorkboardManager, or 
 
 **Planner role restriction:** Planner must NEVER run `make`, `safe_build.sh`, or any build/compile commands. Planner must NEVER accept coding tasks — no writing C++, no editing shaders, no modifying engine source. Planner writes plans, docs, and research. If Leith asks Planner to do coding work, Planner must **deny the request** and remind him: "I'm Planner, not Coder. Coding tasks go to a Coder instance. This separation exists to prevent build conflicts and role confusion."
 
-**Exception:** When no Manager is running and no Coders are registered, Planner may temporarily perform coding and build tasks to bootstrap the system (e.g., rebuilding the WorkboardManager, spawning coders). Once Coders are online, Planner returns to plans/docs only.
+**Exception:** When no Manager is running (Coders are effectively offline without it) **or** no Coders are registered, Planner may temporarily perform all coding and build tasks. Once a Manager is live **and** at least one Coder is registered, Planner returns to plans/docs only.
+
+**Workboard hygiene — MANDATORY for ALL roles (Planner, Coder, everyone):**
+
+1. **Claim a task → run `wb-assign` BEFORE doing anything else.** This atomically moves the task from Planned to In Progress, sets the owner, and notifies via TTY. No manual moves, no "I'll update it later." If `wb-assign` doesn't exist for your situation (e.g., self-assigning under the exception rule), use `wb-add-inprogress` + `wb-remove` from Planned. Either way: **workboard updated BEFORE the first line of work. Non-negotiable.**
+2. **Complete ALL phases of a task → IMMEDIATELY move it from In Progress to Done.** A task is not done until every phase in its plan is finished. When it is, move it right then — not later, not after the next task.
+3. **No duplicates.** Moving a task means removing it from the old table and adding it to the new one. Never leave stale entries behind.
+4. **No orphans.** Every task you're working on must be visible In Progress. Every task you've finished must be visible in Done. Nothing dangling in Ready/Planned that you've already started or completed.
+5. **Review status.** When you finish, mark your own Review column as `Pending` so Planner can review.
+
+Failure to follow these rules creates confusion about what's being worked on, causes duplicate work, and wastes everyone's time. This is not optional.
+
+**Task assignment protocol — MANDATORY for ALL roles:**
+
+When assigning or claiming tasks, **ALWAYS use `wb-assign`** (or `wb-add-inprogress` + `wb-remove` when self-assigning). This applies to Planner, Coders, everyone — no exceptions.
+
+1. Use `wb-assign <task-name> <role>` — atomic claim + TTY notify
+2. NEVER send a task via TTY without updating the workboard FIRST
+3. NEVER broadcast a task to multiple Coders — assign to ONE, notify ONE
+4. Planner under the exception rule (no Manager/no Coders) must STILL update the workboard before starting work
+
+Sending tasks via TTY without workboard mediation caused a race condition (Mar 29, 2026) where two Coders worked the same task simultaneously. File locks prevented data corruption but the duplicate work was entirely avoidable. Planner also failed to move a completed task to Done (Scene tab removal, same day). These failures are preventable — use the tools.
+
+**Pipeline cache after shader edits:** When a local Coder modifies any GLSL shader file and rebuilds Sample 60, they MUST delete `~/.local/share/urho3d/pipeline_cache.bin` after the build completes. Stale pipeline cache entries will serve old shader bytecode — deleting it ensures the next run recompiles all shaders fresh.
 
 ## Repository Structure
 
@@ -836,6 +860,7 @@ The Vulkan backend can now be selected at runtime. When built with `-DURHO3D_VUL
 - in future, you have access to older working code, compare them
 - older code can be found one folder up, check the datestamps, use the most recent one as a reference
 - older code is stored in zip format
-- always ask before you destroy existing code, because I want to know how you are qualifying this decision, and why you are not asking first
+- before removing or replacing any code, enumerate what it does and what will be lost — even when explicitly told to remove it. Raise objections if the code has functional value that may have been overlooked. Be objective, not eager to please.
 - all new .md and .csv files will be stored in the Claude folder
 - URHO3D_GLSLANG flag must be specified to build urho3d lib when vulkan backend is specified, otherwise no support for glsl to spirv runtime compilation
+- Always use Urho3D engine functionality where possible (FileSystem, File, Log, ResourceCache, etc.) — do not use raw platform-specific APIs (fopen, std::ifstream, POSIX calls) out of laziness. The engine has cross-platform support for file I/O, logging, threading, and more. Check before reaching for platform APIs.

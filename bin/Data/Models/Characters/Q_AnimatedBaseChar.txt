@@ -1,0 +1,2 @@
+Models/Characters/Materials/M_Main.xml
+Models/Characters/Materials/M_Joints.xml

@@ -293,12 +293,14 @@ static void ReadRecipeRow(sqlite3_stmt* stmt, RecipeInfo& out)
 {
     out.id = sqlite3_column_int(stmt, 0);
     out.name = (const char*)sqlite3_column_text(stmt, 1);
-    out.outputId = sqlite3_column_int(stmt, 2);
-    out.outputQty = sqlite3_column_int(stmt, 3);
-    out.craftTime = (float)sqlite3_column_double(stmt, 4);
-    out.toolReq = sqlite3_column_int(stmt, 5);
-    out.stationReq = sqlite3_column_int(stmt, 6);
-    out.tier = sqlite3_column_int(stmt, 7);
+    const char* desc = (const char*)sqlite3_column_text(stmt, 2);
+    out.description = desc ? desc : "";
+    out.outputId = sqlite3_column_int(stmt, 3);
+    out.outputQty = sqlite3_column_int(stmt, 4);
+    out.craftTime = (float)sqlite3_column_double(stmt, 5);
+    out.toolReq = sqlite3_column_int(stmt, 6);
+    out.stationReq = sqlite3_column_int(stmt, 7);
+    out.tier = sqlite3_column_int(stmt, 8);
 }
 
 bool GameDB::GetRecipe(int recipeId, RecipeInfo& out)
@@ -307,7 +309,7 @@ bool GameDB::GetRecipe(int recipeId, RecipeInfo& out)
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_,
-        "SELECT id, name, output_id, output_qty, craft_time, tool_req, station_req, tier "
+        "SELECT id, name, description, output_id, output_qty, craft_time, tool_req, station_req, tier "
         "FROM recipes WHERE id = ?", -1, &stmt, nullptr);
     if (rc != SQLITE_OK) return false;
 
@@ -348,7 +350,7 @@ Vector<RecipeInfo> GameDB::GetRecipesForTier(int maxTier)
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_,
-        "SELECT id, name, output_id, output_qty, craft_time, tool_req, station_req, tier "
+        "SELECT id, name, description, output_id, output_qty, craft_time, tool_req, station_req, tier "
         "FROM recipes WHERE tier <= ? ORDER BY tier, id", -1, &stmt, nullptr);
     if (rc != SQLITE_OK) return result;
 

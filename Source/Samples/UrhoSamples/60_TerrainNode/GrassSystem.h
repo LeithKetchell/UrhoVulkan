@@ -38,6 +38,9 @@ public:
     /// Set grass visible radius and fade width.
     void SetRadius(float radius, float fadeWidth = 10.0f);
 
+    /// Set a custom density map (overrides terrain weight map). Red channel = density 0-1.
+    void SetDensityMap(Texture2D* texture);
+
     /// Get the grass node (for visibility control etc).
     Node* GetGrassNode() const { return grassNode_; }
 
@@ -52,6 +55,7 @@ private:
     Node* grassNode_{};
     SharedPtr<Material> grassMat_;
     SharedPtr<Texture2D> heightmapTex_;
+    SharedPtr<Texture2D> densityMapTex_;
 
     float gridSize_{200.0f};
     float cellSize_{0.4f};

@@ -36,8 +36,10 @@
 #include "SchoolState.h"
 #include "GrassSystem.h"
 #include "HUD.h"
+#include "BuildingSystem.h"
 #include <Urho3D/Graphics/TerrainBrush.h>
 #include <Urho3D/Graphics/ProfilerUI.h>
+#include <Urho3D/Game/GameDB.h>
 
 namespace Urho3D
 {
@@ -222,6 +224,7 @@ private:
     void ApplyWeatherToScene();
     WeatherState CalculateSeasonalWeather();
     void HandleWeatherSlider(StringHash eventType, VariantMap& eventData);
+    void HandleHemisphereToggle(StringHash eventType, VariantMap& eventData);
 
     // --- Celestial bodies ---
     void CreateCelestialBodies();
@@ -238,6 +241,8 @@ private:
     Node* moonNode_{};
     SharedPtr<Material> sunMat_;
     SharedPtr<Material> moonMat_;
+    float sunOcclusionFade_{1.0f};
+    float moonOcclusionFade_{1.0f};
     float cloudAngle_{};
     Light* sunLight_{};
     Light* moonLight_{};
@@ -371,6 +376,7 @@ private:
     bool menuOpen_{false};
     int heightFogOverride_{0};  // 0=auto (time-based), 1=forced on, -1=forced off
     bool godRaysEnabled_{true};
+    bool hemisphereEnabled_{true};
 
     // --- Weather state ---
     WeatherState weather_;              // current interpolated state
@@ -530,6 +536,7 @@ private:
     float discoveryInterval_{3.0f};  // retry every 3 seconds
     bool authConnected_{false};
     bool authDiscovering_{true};
+    Window* networkPanel_{};
     Button* authConnectBtn_{};
     Text* authBtnLabel_{};
     Text* networkStatusText_{};
@@ -635,8 +642,12 @@ private:
     bool vitalAlive_{true};
     float vitalSpeedMult_{1.0f};
 
-    /// HUD component (vital bars with fade, critical states)
+    /// HUD component (vital bars with fade, critical states, status icons, context hints)
     WeakPtr<HUD> hud_;
+
+    // --- Context hint raycast (Phase 2 HUD) ---
+    void UpdateContextHintRaycast();
+    static constexpr float INTERACT_DISTANCE = 5.0f;
 
     // --- Inventory UI (driven by MSG_INVENTORY_UPDATE/DELTA from AuthServer) ---
     void HandleInventoryUpdate(MemoryBuffer& msg);
@@ -652,8 +663,9 @@ private:
         int itemId{};
         int quantity{};
         int durability{-1};
-        String slotType;
+        String slotType;       // "bag", "hand", "offhand", "body", "head", "feet", "back"
         String itemName;
+        String itemCategory;   // "weapon", "tool", "armor", "clothing", "food", etc.
         float itemWeight{};
     };
     Vector<ClientInventorySlot> inventory_;
@@ -668,4 +680,131 @@ private:
     Text* inventoryWeightText_{};
     BorderImage* inventoryWeightBar_{};
     int selectedSlotIndex_{-1};
+
+    // --- Equipment Slots (Phase 2) ---
+    void CreateEquipmentUI(UIElement* parent);
+    void RefreshEquipmentSlots();
+    void HandleEquipSlotClick(StringHash eventType, VariantMap& eventData);
+    void HandleBagSlotDoubleClick(StringHash eventType, VariantMap& eventData);
+    void HandleBagSlotClick(StringHash eventType, VariantMap& eventData);
+    void EquipItem(int bagIndex);
+    void UnequipItem(const String& slotType);
+    bool CanEquipToSlot(const String& itemCategory, const String& slotType) const;
+    String FindBestEquipSlot(const String& itemCategory) const;
+    void SendEquip(int itemId, const String& targetSlot);
+    void SendUnequip(const String& slot);
+
+    /// Equipment slot name → Button mapping (6 slots)
+    struct EquipSlotUI
+    {
+        String slotType;       // "hand", "offhand", "body", "head", "feet", "back"
+        String label;          // "Main Hand", "Off Hand", etc.
+        Button* button{};
+        Text* text{};
+    };
+    static const int NUM_EQUIP_SLOTS = 6;
+    EquipSlotUI equipSlots_[6];
+    float lastBagClickTime_{};     // for double-click detection
+    int lastBagClickIndex_{-1};    // which slot was last clicked
+    static constexpr float DOUBLE_CLICK_TIME = 0.4f;
+
+    // --- Consumables & Context Menu (Phase 3) ---
+    void ShowItemContextMenu(int bagIndex, const IntVector2& screenPos);
+    void DismissItemContextMenu();
+    void HandleContextMenuAction(StringHash eventType, VariantMap& eventData);
+    void UseItem(int bagIndex);
+    void DropItem(int bagIndex);
+    void SendUseItem(int itemId);
+    bool IsConsumable(const String& category) const;
+    SharedPtr<Window> itemContextMenu_;
+    int contextMenuBagIndex_{-1};
+
+    // --- Crafting UI (Phase 4) ---
+    void InitGameDB();
+    void CreateCraftingUI();
+    void RefreshRecipeList();
+    void SelectRecipe(int index);
+    void RefreshRecipeDetail();
+    void HandleCraftButton(StringHash eventType, VariantMap& eventData);
+    void HandleRecipeSelect(StringHash eventType, VariantMap& eventData);
+    void ToggleCrafting();
+    void UpdateCraftTimer(float timeStep);
+    HashMap<int, int> BuildInventoryMap() const;
+    void SendCraft(int recipeId);
+
+    SharedPtr<class GameDB> gameDB_;
+    Vector<struct RecipeInfo> recipes_;
+    int selectedRecipeIndex_{-1};
+    bool craftingOpen_{false};
+    float craftTimer_{};          // countdown during crafting
+    float craftDuration_{};       // total craft time for current recipe
+    int craftingRecipeId_{-1};    // recipe being crafted (-1 = idle)
+
+    SharedPtr<Window> craftingWindow_;
+    ListView* recipeList_{};
+    UIElement* recipeDetail_{};
+    Text* recipeTitle_{};
+    Text* recipeDesc_{};
+    UIElement* recipeInputs_{};   // container for ingredient rows
+    Text* recipeOutput_{};
+    Button* craftBtn_{};
+    Text* craftBtnText_{};
+    BorderImage* craftProgressBar_{};
+    BorderImage* craftProgressFill_{};
+
+    // --- Storage UI (Phase 5) ---
+    void CreateStorageUI();
+    void OpenStorage(int buildingId);
+    void CloseStorage();
+    void ToggleStorage();
+    void RefreshStorageGrid();
+    void HandleStorageSlotClick(StringHash eventType, VariantMap& eventData);
+    void HandleStorageContents(MemoryBuffer& msg);
+    void TransferToStorage(int bagIndex);
+    void TransferFromStorage(int storageIndex);
+    void SendOpenStorage(int buildingId);
+    void SendCloseStorage(int buildingId);
+    void SendTransfer(int itemId, int qty, bool toStorage);
+
+    struct StorageSlot
+    {
+        int itemId{};
+        int quantity{};
+        String itemName;
+    };
+    Vector<StorageSlot> storageContents_;
+    SharedPtr<Window> storageWindow_;
+    Vector<Button*> storageSlotButtons_;
+    Text* storageTitle_{};
+    int openBuildingId_{-1};
+    bool storageOpen_{false};
+    static const int STORAGE_MAX_SLOTS = 20;
+
+    // --- Inventory Polish (Phase 6) ---
+    void SplitStack(int bagIndex);
+    void SortInventory();
+    void HandleSortButton(StringHash eventType, VariantMap& eventData);
+    void ShowItemTooltip(int bagIndex, const IntVector2& screenPos);
+    void HideItemTooltip();
+    void HandleSlotHoverBegin(StringHash eventType, VariantMap& eventData);
+    void HandleSlotHoverEnd(StringHash eventType, VariantMap& eventData);
+    void UpdateWeightBarColor();
+
+    SharedPtr<Window> itemTooltip_;
+    Button* sortButton_{};
+
+    // --- Building System (Phase 1) ---
+    void InitBuildingSystem();
+    void LoadBuildingTypes();
+    void CreateBuildMenuUI();
+    void RefreshBuildMenu();
+    void ToggleBuildMode();
+    void HandleBuildMenuSelect(StringHash eventType, VariantMap& eventData);
+    void HandleBuildMessage(int msgID, MemoryBuffer& msg);
+
+    SharedPtr<BuildingSystem> buildingSystem_;
+    SharedPtr<Window> buildMenuWindow_;
+    ListView* buildMenuList_{};
+    Text* buildStatusText_{};
+    bool buildMenuOpen_{false};
 };

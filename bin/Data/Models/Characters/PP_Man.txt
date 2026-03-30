@@ -1,0 +1,6 @@
+Models/Characters/Materials/Shirt.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/Pants.xml
+Models/Characters/Materials/Eyes.xml
+Models/Characters/Materials/Socks.xml
+Models/Characters/Materials/Hair.xml

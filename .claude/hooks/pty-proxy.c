@@ -30,9 +30,12 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <time.h>
+
 #define BUF_SIZE 4096
 #define MAX_INJECT_CLIENTS 8
 #define INJECT_BUF_SIZE 8192
+#define DEATH_LOG "/tmp/urho_claude/pty-proxy-deaths.log"
 
 static volatile sig_atomic_t child_exited = 0;
 static volatile sig_atomic_t winch_received = 0;
@@ -40,6 +43,20 @@ static pid_t child_pid = 0;
 static int master_fd = -1;
 static struct termios orig_termios;
 static int termios_saved = 0;
+
+static const char *g_socket_path = NULL;
+
+static void log_death(const char *reason, int extra) {
+    FILE *f = fopen(DEATH_LOG, "a");
+    if (!f) return;
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    char ts[64];
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", t);
+    fprintf(f, "[%s] pid=%d child=%d socket=%s reason=%s extra=%d\n",
+            ts, getpid(), child_pid, g_socket_path ? g_socket_path : "?", reason, extra);
+    fclose(f);
+}
 
 static void sigchld_handler(int sig) {
     (void)sig;
@@ -143,6 +160,8 @@ int main(int argc, char *argv[]) {
     if (!socket_path || cmd_start < 0 || cmd_start >= argc)
         usage(argv[0]);
 
+    g_socket_path = socket_path;
+
     /* Save original terminal settings */
     if (isatty(STDIN_FILENO)) {
         if (tcgetattr(STDIN_FILENO, &orig_termios) == 0)
@@ -202,6 +221,9 @@ int main(int argc, char *argv[]) {
     char inject_buf[INJECT_BUF_SIZE];
     int inject_len = 0;
 
+    /* Fixed poll array — never use alloca() inside a loop (stack overflow) */
+    struct pollfd pfds[3 + MAX_INJECT_CLIENTS];
+
     /* Main I/O loop */
     while (!child_exited) {
         /* Handle window resize */
@@ -213,7 +235,6 @@ int main(int argc, char *argv[]) {
         /* Build poll set */
         /* slots: 0=stdin, 1=master, 2=listen, 3..N=clients */
         int nfds = 3 + num_clients;
-        struct pollfd *pfds = alloca(nfds * sizeof(struct pollfd));
 
         pfds[0].fd = STDIN_FILENO;
         pfds[0].events = POLLIN;
@@ -245,6 +266,7 @@ int main(int argc, char *argv[]) {
         if (ret < 0) {
             if (errno == EINTR)
                 continue;
+            log_death("poll_error", errno);
             break;
         }
 
@@ -265,6 +287,7 @@ int main(int argc, char *argv[]) {
                     written += w;
                 }
             } else if (n == 0) {
+                log_death("stdin_closed", 0);
                 break;  /* stdin closed */
             }
         }
@@ -285,18 +308,56 @@ int main(int argc, char *argv[]) {
                     written += w;
                 }
             } else if (n == 0) {
+                log_death("master_closed", 0);
                 break;  /* child closed */
             }
         }
 
-        /* Flush injection buffer to master */
+        /* Flush injection buffer to master — only when Claude is idle (ready file exists) */
         if ((pfds[1].revents & POLLOUT) && inject_len > 0) {
-            ssize_t w = write(master_fd, inject_buf, inject_len);
-            if (w > 0) {
-                if (w < inject_len)
-                    memmove(inject_buf, inject_buf + w, inject_len - w);
-                inject_len -= w;
+            /* Check for .ready gate file (Stop hook creates it when Claude is idle) */
+            char ready_path[256];
+            {
+                /* Derive role from socket path: /tmp/.../planner.sock → planner */
+                const char *base = strrchr(g_socket_path, '/');
+                base = base ? base + 1 : g_socket_path;
+                char role[64];
+                strncpy(role, base, sizeof(role) - 1);
+                role[sizeof(role) - 1] = '\0';
+                char *dot = strrchr(role, '.');
+                if (dot) *dot = '\0';
+                snprintf(ready_path, sizeof(ready_path), "/tmp/urho_claude/tty/%s.ready", role);
             }
+
+            struct stat rst;
+            if (stat(ready_path, &rst) == 0) {
+                /* Claude is idle — flush content, hold trailing \r for next cycle */
+                int flush_len = inject_len;
+                int has_trailing_cr = (inject_len > 0 && inject_buf[inject_len - 1] == '\r');
+                if (has_trailing_cr)
+                    flush_len--;  /* hold the \r */
+
+                if (flush_len > 0) {
+                    ssize_t w = write(master_fd, inject_buf, flush_len);
+                    if (w > 0) {
+                        if (w < flush_len)
+                            memmove(inject_buf, inject_buf + w, inject_len - w);
+                        else if (has_trailing_cr) {
+                            inject_buf[0] = '\r';
+                            inject_len = 1;
+                        } else
+                            inject_len = 0;
+                        if (!has_trailing_cr)
+                            inject_len -= w;
+                    }
+                }
+                unlink(ready_path);
+            } else if (inject_len == 1 && inject_buf[0] == '\r') {
+                /* Trailing \r from previous flush — send it now (next poll cycle) */
+                write(master_fd, inject_buf, 1);
+                inject_len = 0;
+            }
+            /* If no .ready file and not a lone \r, hold data until next cycle */
         }
 
         /* Accept new injection clients */
@@ -354,9 +415,15 @@ int main(int argc, char *argv[]) {
         }
 
         /* Check if child is done */
-        if (pfds[1].revents & POLLHUP)
+        if (pfds[1].revents & POLLHUP) {
+            log_death("master_hup", 0);
             break;
+        }
     }
+
+    /* Log if we exited due to SIGCHLD */
+    if (child_exited)
+        log_death("sigchld", 0);
 
     /* Clean up */
     restore_termios();
@@ -375,7 +442,16 @@ int main(int argc, char *argv[]) {
     int status = 0;
     waitpid(child_pid, &status, 0);
 
-    if (WIFEXITED(status))
-        return WEXITSTATUS(status);
+    if (WIFEXITED(status)) {
+        int code = WEXITSTATUS(status);
+        log_death("child_exited", code);
+        return code;
+    }
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        log_death("child_signaled", sig);
+        return 128 + sig;
+    }
+    log_death("child_unknown_status", status);
     return 1;
 }

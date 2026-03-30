@@ -111,6 +111,31 @@ static const int MSG_DROP = 0xD1;
 static const int MSG_INVENTORY_UPDATE = 0xD2;
 /// Server->client: single item add/remove delta.
 static const int MSG_INVENTORY_DELTA = 0xD3;
+/// Client->server: equip item to slot (item_id, slot_name).
+static const int MSG_EQUIP = 0xD4;
+/// Client->server: unequip slot (slot_name).
+static const int MSG_UNEQUIP = 0xD5;
+/// Client->server: craft recipe (recipe_id).
+static const int MSG_CRAFT = 0xD6;
+/// Client->server: open storage container (building_id).
+static const int MSG_OPEN_STORAGE = 0xD7;
+/// Client->server: close storage container (building_id).
+static const int MSG_CLOSE_STORAGE = 0xD8;
+/// Client->server: transfer item between inventory and storage (item_id, qty, direction).
+static const int MSG_TRANSFER = 0xD9;
+/// Server->client: storage contents for a building (building_id, items[]).
+static const int MSG_STORAGE_CONTENTS = 0xDA;
+
+/// Client->server: place building (building_type_id, pos_x, pos_y, pos_z, rotation).
+static const int MSG_BUILD = 0xF0;
+/// Client->server: demolish building (placed_building_id).
+static const int MSG_DEMOLISH = 0xF1;
+/// Server->client: build result (success, placed_building_id or error string).
+static const int MSG_BUILD_RESULT = 0xF2;
+/// Server->broadcast: new building spawned (placed_id, type_id, pos, rotation, hp).
+static const int MSG_BUILDING_SPAWN = 0xF3;
+/// Server->broadcast: building removed (placed_building_id).
+static const int MSG_BUILDING_REMOVE = 0xF4;
 
 /// Used to define custom messages, usually of the form MSG_USER + x, where x is an integer value.
 static const int MSG_USER = 0x200;

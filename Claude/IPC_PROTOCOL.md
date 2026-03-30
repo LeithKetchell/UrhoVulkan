@@ -2,116 +2,102 @@
 
 ## Overview
 
-Multiple Claude Code instances communicate with each other and with the WorkboardManager GUI via a **message spool directory** and wake FIFOs. Messages are atomic files — no FIFO byte-stream issues, no message loss, natural queueing.
+Multiple Claude Code instances coordinate via **TTY injection** through pty-proxy Unix sockets and a shared workboard file. The old spool/FIFO system was replaced (commit 5d25e00, Mar 28 2026).
 
-## Message Spool Architecture
+## Architecture
 
 ### Directory Layout
 
 ```
 /tmp/urho_claude/
-    spool/
-        to_coder/           ← Messages waiting for Coder to read
-            001_manager.msg
-            002_planner.msg
-        to_planner/         ← Messages waiting for Planner to read
-        to_manager/         ← Messages waiting for Manager to read
-        to_unassigned/      ← Messages waiting for Unassigned to read
+    tty/
+        planner.sock        # pty-proxy Unix socket for planner TTY injection
+        coder1.sock         # pty-proxy socket for coder instance 1
+        coder2.sock         # pty-proxy socket for coder instance 2 (etc.)
     instances/
         <role>.pid          # PID of instance owning this role
         <TTY_ID>.role       # Line 1: role name, Line 2: PID
-    wake_<role>             # FIFO: instant notification nudge (optional)
+    locks/                  # File I/O locks (mkdir-based, auto-managed by hooks)
     manager.pid             # WorkboardManager singleton guard
     hook_debug.log          # Debug breadcrumbs
     workboard.lock          # flock for workboard file mutations
 ```
 
-### Message File Format
+### TTY Injection (the IPC mechanism)
 
-Each message is a single file with headers and body:
+Messages are injected directly into Claude Code terminals via pty-proxy Unix sockets. This is the **only** working input injection path on kernel 6.8 (TIOCSTI disabled, /dev/pts/N is output-only).
 
+**How it works:**
+1. Each Claude instance launches through `pty-proxy --socket <path> -- claude`
+2. pty-proxy creates a pseudoterminal and a Unix socket
+3. To send a message to an instance, write bytes to its socket
+4. pty-proxy forwards socket data to the pty's master fd (appears as keyboard input)
+5. Bracketed paste detection: send text as bulk, sleep 150ms, then send `\r` separately
+
+### Launching Instances
+
+Two bash functions in `~/.bashrc`:
+
+**`planner`** — guarded singleton:
+```bash
+planner() {
+    if [ -e "/tmp/urho_claude/tty/planner.sock" ]; then
+        echo "Planner is already running."
+        return 1
+    fi
+    env -u CLAUDECODE gnome-terminal -- .claude/hooks/pty-proxy \
+        --socket /tmp/urho_claude/tty/planner.sock \
+        -- claude "Planner startup..."
+}
 ```
-From: planner
-Time: 2026-03-23T14:30:05+11:00
-Type: chat
----
-The ecosystem plan is ready for review.
+
+**`coder`** — auto-incrementing:
+```bash
+coder() {
+    local n=1
+    while [ -e "/tmp/urho_claude/tty/coder${n}.sock" ]; do
+        n=$((n + 1))
+    done
+    env -u CLAUDECODE gnome-terminal -- .claude/hooks/pty-proxy \
+        --socket "/tmp/urho_claude/tty/coder${n}.sock" \
+        -- claude "Coder startup..."
+}
 ```
 
-- **Filename**: `<seq>_<from>.msg` — zero-padded 3-digit sequence for ordering
-- **Atomic write**: `.tmp` → rename to `.msg`. Readers never see partial files.
-- **Headers**: `From`, `Time`, `Type` (chat/command/status). Extensible.
-- **Body**: Everything after `---` separator. Plain text.
-
-### Message Types
-
-| Type | Meaning | Example |
-|------|---------|---------|
-| `chat` | Human-readable message | "Check the ecosystem plan" |
-| `command` | Structured command | `WB:add-ready:...` workboard mutation |
-| `status` | Heartbeat / turn complete | `[planner] Turn complete at 14:30` |
-
-### Sequence Numbers
-
-Each spool directory has a `.seq` file with the next sequence number. Writers use flock (shell) or single-process guarantee (Manager) to increment atomically.
+**Usage** — from the project directory:
+```
+planner
+coder
+coder
+```
+Three terminals appear. Each gets its own pty-proxy socket, own PID, own IPC registration.
 
 ## Session Startup (every Claude instance)
 
-1. **Auto-registered as `unassigned`** — the `SessionStart` hook writes a TTY-based role file with PID to `/tmp/urho_claude/instances/` and creates spool directories
+1. **Auto-registered as `unassigned`** — the `SessionStart` hook writes a role file with PID to `/tmp/urho_claude/instances/`
 2. **Read the workboard**: `Claude/WORKBOARD.md` — team roles, tasks, what's ready
 3. **Check who's online**: `ls /tmp/urho_claude/instances/*.pid`
-4. **Assume a role**: `.claude/hooks/claude_ipc.sh assume <role>` — creates spool dir for role
-5. **Start the IPC listener**: Launch `.claude/hooks/ipc_listen.sh <role>` as a **background Bash task**
-6. **Re-listen after every wake**: When the listener task completes, read output, respond, re-launch
+4. **Assume a role**: `.claude/hooks/claude_ipc.sh assume <role>`
+5. **React to incoming TTY messages** — messages arrive between prompts via socket injection
 
 ## Message Flow
 
-### Manager → Claude
+### Sending messages to Claude instances
 
-1. User types message in Manager GUI, clicks a role button (Coder/Planner/Broadcast)
-2. Manager writes atomic message file to `spool/to_<role>/`
-3. Manager writes `wake\n` to wake FIFO for instant notification
-4. Claude's background `ipc_listen.sh` unblocks, drains spool directory, outputs all messages
-5. Even if wake signal is missed, `UserPromptSubmit` hook drains the spool on next turn
-6. **Messages cannot be lost** — files persist until consumed
+1. Find the target's socket: `/tmp/urho_claude/tty/<role>.sock`
+2. Write message text to the socket (bulk)
+3. Sleep 150ms (bracketed paste detection window)
+4. Write `\r` to the socket (triggers submit)
 
-### Claude → Manager
+### Claude → Claude
 
-1. Claude's hook writes message file to `spool/to_manager/`
-2. Manager's `PollSpool()` scans `spool/to_manager/` every frame
-3. Manager reads, processes (log/command/relay), deletes consumed files
-
-### Claude → Claude (via spool)
-
-1. Claude can write directly to another role's spool: `spool/to_<target>/`
-2. Or write a relay message to Manager, which copies to target's spool
-3. Wake FIFO pings target for instant delivery
-
-### Broadcast
-
-Manager writes to each alive role's spool directory directly.
-
-## What Changed (V1 → V2)
-
-| Aspect | V1 (FIFO + drop-file) | V2 (Spool) |
-|--------|----------------------|------------|
-| Message storage | Single drop-file per role | Directory of numbered files |
-| Queueing | One message at a time | Unlimited queue |
-| Delivery | FIFO byte stream + delimiter parsing | Atomic files, `ls | sort` |
-| Loss risk | High (overwrite, timing gaps) | Zero (files persist) |
-| Ordering | Within FIFO stream | Filename sequence numbers |
-| Manager→Claude | `PollFIFOs()` with O_RDWR trick | `PollSpool()` with readdir |
-| Claude→Manager | FIFO write with timeout | File write + rename (instant) |
-
+Write to the target's pty-proxy socket directly via `tty-inject.sh` or `claude_ipc.sh send`.
 ## Liveness & Dead Instance Culling
 
-Unchanged from V1:
-
-1. **Sweep `.role` files** — reads PID from line 2, checks `kill(pid, 0)`. Dead? Remove files.
+1. **Sweep `.role` files** — reads PID from line 2, checks `kill(pid, 0)`. Dead? Remove files + socket.
 2. **Sweep orphaned `.pid` files** — checks if PID is alive. Dead? Remove.
 3. **Activity timers** — reset on any message received from a role. 5-minute timeout.
 4. **GUI updates** — status bar shows ONLINE (green) / OFFLINE (gray) per role with PID.
-5. **Beacon broadcast** — UDP port 31337 broadcasts current status.
 
 ## Hook Configuration
 
@@ -119,22 +105,23 @@ Defined in `.claude/settings.local.json`:
 
 | Event | Action | Hook Script |
 |-------|--------|-------------|
-| `SessionStart` | Register instance, create spool dirs | `claude_ipc.sh announce` |
-| `UserPromptSubmit` | Drain spool for messages | `claude_ipc.sh check` |
-| `Notification` | Drain spool for messages | `claude_ipc.sh check` |
-| `Stop` | Write status to manager spool | `claude_ipc.sh report` |
-| `SessionEnd` | Unregister instance | `claude_ipc.sh cleanup` |
+| `SessionStart` | Register instance, start TTY listener | `claude_ipc.sh announce` |
+| `UserPromptSubmit` | Check for pending messages | `claude_ipc.sh check` |
+| `Stop` | Write status | `claude_ipc.sh report` |
+| `SessionEnd` | Unregister instance, remove socket | `claude_ipc.sh cleanup` |
 
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `.claude/hooks/claude_ipc.sh` | Main IPC hook — announce, check, report, cleanup, assume, send, workboard mutations |
-| `.claude/hooks/ipc_listen.sh` | Wake FIFO listener — blocks until wake or 60s timeout, drains spool |
+| `.claude/hooks/claude_ipc.sh` | Main IPC hook — announce, check, report, cleanup, assume, send, wb-* mutations |
+| `.claude/hooks/pty-proxy` | C binary — creates pty + Unix socket for TTY injection |
+| `.claude/hooks/tty-inject.sh` | Send a message to a pty-proxy socket |
+| `.claude/hooks/safe_build.sh` | Per-target flock wrapper around make |
 
 ## Workboard Mutations
 
-Unchanged — still use flock-serialized direct file editing:
+Flock-serialized direct file editing:
 
 ```bash
 .claude/hooks/claude_ipc.sh wb-add-ready <pri> <plan> <file> <owner> <review> <summary>
@@ -143,4 +130,14 @@ Unchanged — still use flock-serialized direct file editing:
 .claude/hooks/claude_ipc.sh wb-move-done <task>
 .claude/hooks/claude_ipc.sh wb-remove <match-text>
 .claude/hooks/claude_ipc.sh wb-update-review <task> <review>
+.claude/hooks/claude_ipc.sh wb-assign <task> <role>
 ```
+
+## History
+
+| Version | Date | Mechanism |
+|---------|------|-----------|
+| V1 | Mar 2026 | FIFO + drop-file per role |
+| V2 | Mar 23 | Atomic spool directories |
+| V3 | Mar 28 | TTY injection via pty-proxy (commit 5d25e00). Spool gutted. |
+| V3.1 | Mar 29 | Bash launch functions (`planner`, `coder`). Planner guard. |

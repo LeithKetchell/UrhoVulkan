@@ -1,0 +1,11 @@
+Models/Characters/Materials/Hair.xml
+Models/Characters/Materials/Eye.xml
+Models/Characters/Materials/Pupil.xml
+Models/Characters/Materials/White.xml
+Models/Characters/Materials/Skin.xml
+Models/Characters/Materials/UnderShirt.xml
+Models/Characters/Materials/Pants.xml
+Models/Characters/Materials/Shirt.xml
+Models/Characters/Materials/Detail.xml
+Models/Characters/Materials/Boots.xml
+Models/Characters/Materials/Material.006.xml

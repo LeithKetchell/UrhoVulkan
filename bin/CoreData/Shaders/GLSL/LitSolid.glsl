@@ -88,7 +88,7 @@ void VS()
             vVertexLight = vec3(0.0, 0.0, 0.0);
             vTexCoord2 = iTexCoord1;
         #else
-            vVertexLight = GetAmbient(GetZonePos(worldPos));
+            vVertexLight = GetHemisphereAmbient(vNormal);
         #endif
 
         #ifdef NUMVERTEXLIGHTS
@@ -174,7 +174,7 @@ void PS()
         #endif
 
         #ifdef AMBIENT
-            finalColor += cAmbientColor.rgb * diffColor.rgb;
+            finalColor += HemisphereAmbient(normal, cSkyAmbient, cGroundAmbient) * diffColor.rgb;
             finalColor += cMatEmissiveColor;
             gl_FragColor = vec4(GetFog(finalColor, fogFactor), diffColor.a);
         #else
@@ -194,7 +194,7 @@ void PS()
         vec3 finalColor = vVertexLight * diffColor.rgb;
         #ifdef AO
             // If using AO, the vertex light ambient is black, calculate occluded ambient here
-            finalColor += texture2D(sEmissiveMap, vTexCoord2).rgb * cAmbientColor.rgb * diffColor.rgb;
+            finalColor += texture2D(sEmissiveMap, vTexCoord2).rgb * HemisphereAmbient(normal, cSkyAmbient, cGroundAmbient) * diffColor.rgb;
         #endif
 
         #ifdef ENVCUBEMAP
@@ -218,7 +218,7 @@ void PS()
         vec3 finalColor = vVertexLight * diffColor.rgb;
         #ifdef AO
             // If using AO, the vertex light ambient is black, calculate occluded ambient here
-            finalColor += texture2D(sEmissiveMap, vTexCoord2).rgb * cAmbientColor.rgb * diffColor.rgb;
+            finalColor += texture2D(sEmissiveMap, vTexCoord2).rgb * HemisphereAmbient(normal, cSkyAmbient, cGroundAmbient) * diffColor.rgb;
         #endif
 
         #ifdef MATERIAL

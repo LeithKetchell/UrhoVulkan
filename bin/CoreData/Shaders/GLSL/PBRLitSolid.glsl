@@ -94,7 +94,7 @@ void VS()
             // If using AO, calculate ambient in the PS
             vVertexLight = vec3(0.0, 0.0, 0.0);
         #else
-            vVertexLight = GetAmbient(GetZonePos(worldPos));
+            vVertexLight = GetHemisphereAmbient(vNormal);
         #endif
 
         #ifdef NUMVERTEXLIGHTS
@@ -203,7 +203,7 @@ void PS()
         finalColor.rgb = BRDF * lightColor * (atten * shadow) / M_PI;
 
         #ifdef AMBIENT
-            finalColor += cAmbientColor.rgb * diffColor.rgb;
+            finalColor += HemisphereAmbient(normal, cSkyAmbient, cGroundAmbient) * diffColor.rgb;
             finalColor += cMatEmissiveColor;
             gl_FragColor = vec4(GetFog(finalColor, fogFactor), diffColor.a);
         #else
@@ -223,7 +223,7 @@ void PS()
         #ifdef AO
             // If using AO, the vertex light ambient is black, calculate occluded ambient here
             ambientOcclusion = texture2D(sEmissiveMap, vTexCoord.xy).rgb;
-            finalColor += ambientOcclusion * cAmbientColor.rgb * diffColor.rgb;
+            finalColor += ambientOcclusion * HemisphereAmbient(normal, cSkyAmbient, cGroundAmbient) * diffColor.rgb;
         #endif
 
         #ifdef MATERIAL

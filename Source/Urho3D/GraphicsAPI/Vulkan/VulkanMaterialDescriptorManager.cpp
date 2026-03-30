@@ -384,6 +384,8 @@ VkDescriptorSet VulkanMaterialDescriptorManager::CreateDescriptorSet(Material* m
             VkSampler sampler = samplerCache->GetSampler(
                 textures[i]->GetFilterMode(),
                 textures[i]->GetAddressMode(COORD_U),
+                textures[i]->GetAddressMode(COORD_V),
+                textures[i]->GetAddressMode(COORD_W),
                 textures[i]->GetAnisotropy()
             );
 
@@ -658,11 +660,12 @@ bool VulkanMaterialDescriptorManager::UpdateTextureBindings(Material* material, 
         if (!textures[i])
             continue;  // Safety check in case fallback texture creation failed
 
-        // Phase 20.3.1 - Get sampler for this texture
-        // Use texture's filter and address modes for sampler cache lookup
+        // Get sampler with per-axis address modes
         VkSampler sampler = samplerCache->GetSampler(
             textures[i]->GetFilterMode(),
             textures[i]->GetAddressMode(COORD_U),
+            textures[i]->GetAddressMode(COORD_V),
+            textures[i]->GetAddressMode(COORD_W),
             textures[i]->GetAnisotropy()
         );
 

@@ -11,9 +11,12 @@
 #include <Urho3D/Math/MathDefs.h>
 #include <Urho3D/IO/Log.h>
 
+unsigned Animal::nextStaggerID_ = 0;
+
 Animal::Animal(Context* context) :
     LogicComponent(context)
 {
+    staggerID_ = nextStaggerID_++;
     SetUpdateEventMask(LogicComponentEvents::FixedUpdate);
 }
 
@@ -48,6 +51,9 @@ void Animal::Start()
 
 void Animal::FixedUpdate(float timeStep)
 {
+    static unsigned frameCounter = 0;
+    ++frameCounter;
+
     stateTimer_ -= timeStep;
 
     switch (state_)
@@ -97,15 +103,16 @@ void Animal::FixedUpdate(float timeStep)
         if (pos.y_ < waterLevel_)
         {
             drownTimer_ += timeStep;
-            // Flee toward nearest dry land
-            if (state_ != ANIMAL_FLEE && terrain_)
+            // Stagger drowning scans: only scan on frames matching our stagger slot
+            // This spreads terrain queries across 3 frames instead of all-at-once
+            if (state_ != ANIMAL_FLEE && terrain_ && (frameCounter % 3 == staggerID_ % 3))
             {
-                // Sample 12 directions, pick the one with highest ground
+                // Sample 4 cardinal directions (down from 12), pick highest ground
                 float bestY = -M_INFINITY;
                 Vector3 bestTarget = pos;
-                for (int i = 0; i < 12; ++i)
+                for (int i = 0; i < 4; ++i)
                 {
-                    float angle = (float)i * 30.0f;
+                    float angle = (float)i * 90.0f;
                     float x = pos.x_ + 10.0f * Cos(angle);
                     float z = pos.z_ + 10.0f * Sin(angle);
                     float y = terrain_->GetHeight(Vector3(x, 0.0f, z));
@@ -298,10 +305,19 @@ void Animal::SnapToTerrain()
         return;
 
     Vector3 pos = node_->GetWorldPosition();
-    float terrainY = terrain_->GetHeight(pos);
-    if (Abs(pos.y_ - terrainY) > 0.01f)
+
+    // Only re-query terrain height if we moved more than 0.5 units horizontally
+    float dx = pos.x_ - cachedHeightPos_.x_;
+    float dz = pos.z_ - cachedHeightPos_.z_;
+    if (dx * dx + dz * dz > 0.25f)
     {
-        pos.y_ = terrainY;
+        cachedHeight_ = terrain_->GetHeight(pos);
+        cachedHeightPos_ = pos;
+    }
+
+    if (Abs(pos.y_ - cachedHeight_) > 0.01f)
+    {
+        pos.y_ = cachedHeight_;
         node_->SetWorldPosition(pos);
     }
 }
