@@ -8875,6 +8875,13 @@ void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vect
         ai.currentTask = STASK_IDLE;
         ai.spawnId = spawnId;  // Self-reference for inventory ops (Phase 4)
         ai.growthProgress = growthProgress;  // 0.0 = newborn baby, 1.0 = adult
+        // Look up species-specific maturity from breeding_rules DB
+        if (gameDB_)
+        {
+            BreedingRules rules;
+            if (gameDB_->GetBreedingRules(creatureId, rules) && rules.maturityDays > 0)
+                ai.maturityDays = rules.maturityDays;
+        }
         // Phase 6: humans get assigned to a shared campfire for night cycle
         if (ai.isHuman)
         {
@@ -9818,7 +9825,7 @@ Vector3 AuthServer::FindWaterEdge(const Vector3& from, float maxRange)
     return best;
 }
 
-void AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
+DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
 {
     // Hunger: steady drain
     ai.hunger = Max(0.0f, ai.hunger - GetTuning("hunger_decay_rate", 0.15f) * dt);
@@ -9875,7 +9882,7 @@ void AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
                 ai.starveDmgTimer -= dmgInterval;
                 cs.hp = Max(0, cs.hp - 1);
                 if (cs.hp <= 0)
-                    BroadcastCreatureDeath(ai.spawnId, cs, nullptr, DEATH_STARVE);
+                    return DEATH_STARVE;
             }
         }
         else
@@ -9890,7 +9897,7 @@ void AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
                 ai.thirstDmgTimer -= dmgInterval;
                 cs.hp = Max(0, cs.hp - 1);
                 if (cs.hp <= 0)
-                    BroadcastCreatureDeath(ai.spawnId, cs, nullptr, DEATH_DEHYDRATE);
+                    return DEATH_DEHYDRATE;
             }
         }
         else
@@ -9913,7 +9920,7 @@ void AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
                     ai.coldDmgTimer -= dmgInterval;
                     cs.hp = Max(0, cs.hp - 1);
                     if (cs.hp <= 0)
-                        BroadcastCreatureDeath(ai.spawnId, cs, nullptr, DEATH_FREEZE);
+                        return DEATH_FREEZE;
                 }
             }
             else
@@ -10026,13 +10033,12 @@ void AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
         ai.morale = Lerp(ai.morale, targetMorale, Min(1.0f, dt * 0.1f));
     }
 
-    // Growth — all creatures grow from baby to adult over time.
-    // Humans: 20 game days. Animals: 10 game days (faster maturation).
+    // Growth — all creatures grow from baby to adult over maturityDays game days.
+    // Rate comes from breeding_rules DB (default 20 for humans, varies per species).
     if (ai.growthProgress < 1.0f)
     {
         float prevGrowth = ai.growthProgress;
-        float gameDays = ai.isHuman ? 20.0f : 10.0f;
-        float growthRate = dt / (gameDays * 300.0f);
+        float growthRate = dt / ((float)ai.maturityDays * 300.0f);
         ai.growthProgress = Min(1.0f, ai.growthProgress + growthRate);
 
         // Phase 30: assign name at maturity (humans only)

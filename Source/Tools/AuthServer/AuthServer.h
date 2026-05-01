@@ -284,15 +284,16 @@ private:
     /// Death cause — appended to MSG_CREATURE_DEATH so clients can pick visuals.
     enum DeathCause : unsigned char
     {
-        DEATH_COMBAT   = 0,
-        DEATH_DROWN    = 1,
-        DEATH_STARVE   = 2,
-        DEATH_AGE      = 3,
-        DEATH_SCAVENGE = 4,
-        DEATH_FALL     = 5,
-        DEATH_FIRE     = 6,
-        DEATH_DEHYDRATE = 7,
-        DEATH_FREEZE   = 8
+        DEATH_NONE     = 0,
+        DEATH_COMBAT   = 1,
+        DEATH_DROWN    = 2,
+        DEATH_STARVE   = 3,
+        DEATH_AGE      = 4,
+        DEATH_SCAVENGE = 5,
+        DEATH_FALL     = 6,
+        DEATH_FIRE     = 7,
+        DEATH_DEHYDRATE = 8,
+        DEATH_FREEZE   = 9
     };
 
     struct ServerCreatureState
@@ -501,7 +502,8 @@ private:
         // Phase 14: Family
         unsigned parentA{0};          // spawnId of parent (0 = no parent / adult)
         unsigned parentB{0};
-        float growthProgress{1.0f};   // 0→1 over 20 game days. < 1 = child.
+        float growthProgress{1.0f};   // 0→1 over maturityDays game days. < 1 = child.
+        int maturityDays{20};         // game days to reach adulthood (from breeding_rules DB)
         float bondCheckTimer{0.0f};   // throttle familiarity updates
 
         // Phase 15: Settlement
@@ -636,7 +638,7 @@ private:
     unsigned FindPreyNearScent(const Vector3& scentPos, float radius);
 
     // Phase 2: AI tick helpers
-    void UpdateCreatureVitals(ServerCreatureAI& ai, float dt);
+    DeathCause UpdateCreatureVitals(ServerCreatureAI& ai, float dt);
     void MoveCreature(ServerCreatureAI& ai, float dt);
     int PickCreatureTask(const ServerCreatureAI& ai);
     void OnCreatureTaskComplete(ServerCreatureAI& ai);
