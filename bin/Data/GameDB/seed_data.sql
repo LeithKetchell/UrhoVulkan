@@ -206,13 +206,7 @@ INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, 
 (416, 'Cloth Tunic',     'clothing',  1,  1.0, 2, 'Proper garment. Decent warmth.'),
 (417, 'Cloth Bandage',   'medical',  10,  0.1, 1, 'Stops bleeding. Heals minor wounds.'),
 (418, 'Fishing Net',     'tool',      1,  1.5, 2, 'Cast net. Area catch in shallow water.'),
-(419, 'Cargo Net',       'tool',      1,  2.0, 2, 'Carry more. +4 inventory slots when equipped.'),
--- Iron Age Textiles: Wool from alpacas
-(420, 'Wool',            'material', 10,  0.3, 2, 'Raw alpaca wool. Warm and soft.'),
-(421, 'Wool Thread',     'material', 10,  0.2, 2, 'Spun wool. Ready for weaving.'),
-(422, 'Wool Cloth',      'material', 10,  0.5, 3, 'Woven wool fabric. Excellent insulation.'),
-(423, 'Wool Tunic',      'clothing',  1,  1.2, 3, 'Warm wool garment. Better than hide.'),
-(424, 'Wool Cloak',      'clothing',  1,  1.8, 3, 'Heavy wool cloak. Best warmth.');
+(419, 'Cargo Net',       'tool',      1,  2.0, 2, 'Carry more. +4 inventory slots when equipped.');
 
 -- ============================================================
 -- RECIPES
@@ -321,19 +315,6 @@ INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity) VALUES
 (156, 414, 3), (156, 412, 2),  -- Fine Cloth x3 + Flax Thread x2
 (158, 412, 10), (158, 41, 4),  -- Flax Thread x10 + Cordage x4
 (159, 412, 8), (159, 41, 6);   -- Flax Thread x8 + Cordage x6
-
--- Tier 4: Wool textiles (station_req = 91 = Loom for cloth/garments, 0 for spinning)
-INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, tool_req, station_req, description) VALUES
-(160, 'Spin Wool',      421, 2, 0,   0,  'Spin raw wool into thread by hand.'),
-(161, 'Wool Cloth',     422, 1, 103, 91, 'Weave wool thread on loom. Warm fabric.'),
-(162, 'Wool Tunic',     423, 1, 103, 91, 'Sew wool garment. Better than hide.'),
-(163, 'Wool Cloak',     424, 1, 103, 91, 'Heavy wool cloak. Best winter protection.');
-
-INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity) VALUES
-(160, 420, 3),                           -- Wool x3 → Wool Thread x2
-(161, 421, 4),                           -- Wool Thread x4 → Wool Cloth x1
-(162, 422, 3), (162, 421, 2),            -- Wool Cloth x3 + Wool Thread x2 → Wool Tunic
-(163, 422, 5), (163, 421, 3), (163, 24, 2);  -- Wool Cloth x5 + Wool Thread x3 + Fur x2 → Wool Cloak
 
 -- Tier assignments for weaving recipes
 UPDATE recipes SET tier = 1 WHERE id IN (150, 151, 152);
@@ -850,9 +831,7 @@ INSERT OR IGNORE INTO clothing_warmth VALUES
 (301, 4.0, 0.2),
 (302, 8.0, 0.3),
 (303, 2.0, 0.1),
-(304, 2.0, 0.1),
-(423, 10.0, 0.2),  -- Wool Tunic: better warmth than fur cloak
-(424, 14.0, 0.3);  -- Wool Cloak: best warmth in game
+(304, 2.0, 0.1);
 
 -- ============================================================
 -- BUILDING RULES
@@ -958,6 +937,48 @@ UPDATE items SET model = 'Models/Weapons/Axe_Double.mdl'     WHERE id = 830;  --
 UPDATE items SET model = 'Models/Weapons/Sword_2.mdl'        WHERE id = 831;  -- Steel Sword (upgraded model)
 UPDATE items SET model = 'Models/Weapons/Spear.mdl'          WHERE id = 833;  -- Steel Spear
 UPDATE items SET model = 'Models/Weapons/Shield_Heater.mdl'  WHERE id = 835;  -- Steel Shield (heater shape)
+
+-- ============================================================
+-- Iron Age Textiles — Wool Production (Phase 1)
+-- ============================================================
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, decay_time, description, tier) VALUES
+    (880, 'Wool',        'material', 20, 0.3, 0, 0.0, 'Raw wool sheared from alpaca.', 3),
+    (881, 'Wool Thread', 'material', 20, 0.2, 0, 0.0, 'Spun wool thread. Ready for weaving.', 3),
+    (882, 'Wool Cloth',  'material', 10, 0.5, 0, 0.0, 'Woven wool fabric. Warm and durable.', 3),
+    (883, 'Wool Tunic',  'clothing',  1, 1.0, 3, 0.0, 'Warm wool tunic. Superior to cloth.', 3),
+    (884, 'Wool Cloak',  'clothing',  1, 1.5, 3, 0.0, 'Heavy wool cloak. Best non-fur warmth.', 3);
+
+-- Recipes: Wool Thread (spin 3 wool → 2 thread, no station)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, craft_time, tool_req, station_req, tier, description) VALUES
+    (160, 'Wool Thread', 881, 2, 3.0, 0, 0, 3, 'Spin raw wool into thread.');
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity, consumed) VALUES
+    (160, 880, 3, 1);
+
+-- Recipes: Wool Cloth (4 wool thread at Loom → 1 cloth)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, craft_time, tool_req, station_req, tier, description) VALUES
+    (161, 'Wool Cloth', 882, 1, 4.0, 0, 91, 3, 'Weave wool thread into cloth at loom.');
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity, consumed) VALUES
+    (161, 881, 4, 1);
+
+-- Recipes: Wool Tunic (2 wool cloth + 1 thread at Loom)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, craft_time, tool_req, station_req, tier, description) VALUES
+    (162, 'Wool Tunic', 883, 1, 5.0, 0, 91, 3, 'Sew wool tunic at loom. Warm garment.');
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity, consumed) VALUES
+    (162, 882, 2, 1),
+    (162, 881, 1, 1);
+
+-- Recipes: Wool Cloak (3 wool cloth + 1 hide + 1 thread at Loom)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, craft_time, tool_req, station_req, tier, description) VALUES
+    (163, 'Wool Cloak', 884, 1, 6.0, 0, 91, 3, 'Heavy wool cloak lined with hide. Best warmth.');
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity, consumed) VALUES
+    (163, 882, 3, 1),
+    (163, 21, 1, 1),
+    (163, 881, 1, 1);
+
+-- Clothing warmth values for wool garments
+INSERT OR IGNORE INTO clothing_warmth (item_id, warmth) VALUES
+    (883, 12),   -- Wool Tunic: better than Cloth Tunic
+    (884, 18);   -- Wool Cloak: best non-fur warmth (Fur Cloak = 20)
 
 -- Props / Resources
 UPDATE items SET model = 'Models/Nature/WoodLog.mdl'         WHERE id = 11;   -- Log
