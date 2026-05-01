@@ -436,6 +436,7 @@ private:
         STASK_PREPARE_FIRE_BUNDLE, // Craft fire bundle when camp has fire + resin (FireMaking 4+)
         STASK_DELIVER_FIRE, // Directed: carry fire to specific cold camp (chieftain/god order)
         STASK_CARRY_WATER,  // Carry water-filled vessel to allied camp with low waterReserve
+        STASK_SHEAR,        // Shear tamed alpaca for wool (Animal Lore 2+)
         STASK_WANDER,       // Short patrol near home
         STASK_IDLE          // Stand around (lowest priority)
     };
@@ -514,6 +515,7 @@ private:
         unsigned tamerId{0};          // spawnId of the NPC who tamed this animal (0 = wild)
         float tameCooldown{0.0f};     // game-seconds until next tame attempt allowed
         float milkTimer{0.0f};        // tamed cow: seconds until next milk production
+        float shearCooldown{0.0f};    // tamed alpaca: seconds until next shear allowed
 
         // Campfire torch patrol
         float patrolAngle{0.0f};      // current angle around campfire (degrees)

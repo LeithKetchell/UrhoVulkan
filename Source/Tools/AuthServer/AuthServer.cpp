@@ -9301,12 +9301,18 @@ void AuthServer::TickCreatureAI(float dt)
         breedingTimer_ = 0.0f;
     }
 
+    Vector<Pair<unsigned, DeathCause>> vitalsDeaths;
     for (auto it = creatureAI_.Begin(); it != creatureAI_.End(); ++it)
     {
         ServerCreatureAI& ai = it->second_;
 
         // Vital decay + movement — all creatures
-        UpdateCreatureVitals(ai, dt);
+        DeathCause vitalsDeath = UpdateCreatureVitals(ai, dt);
+        if (vitalsDeath != DEATH_NONE)
+        {
+            vitalsDeaths.Push(MakePair(it->first_, vitalsDeath));
+            continue;  // skip AI tick for dead creature
+        }
         MoveCreature(ai, dt);
 
         // Phase 3: Hunt sub-state machine (runs every frame while hunting)
@@ -9445,6 +9451,39 @@ void AuthServer::TickCreatureAI(float dt)
             node->SetVar("AIState", (int)ai.state);
             node->SetVar("MoveSpeed", ai.moveSpeed);
         }
+    }
+
+    // Process vitals deaths (starvation, dehydration, freezing) — deferred to avoid
+    // iterator invalidation. Same pattern as drowning deaths below.
+    for (unsigned i = 0; i < vitalsDeaths.Size(); ++i)
+    {
+        unsigned spawnId = vitalsDeaths[i].first_;
+        DeathCause cause = vitalsDeaths[i].second_;
+
+        auto aiIt = creatureAI_.Find(spawnId);
+        if (aiIt == creatureAI_.End())
+            continue;
+        const ServerCreatureAI& ai = aiIt->second_;
+
+        auto csIt = creatureStates_.Find(spawnId);
+        if (csIt != creatureStates_.End())
+        {
+            ServerCreatureState& cs = csIt->second_;
+            cs.hp = 0;
+            BroadcastCreatureDeath(spawnId, cs, nullptr, cause);
+            if (populationManager_ && populationManager_->IsReady() && ai.regionId >= 0)
+            {
+                Vector<ReplacementSpawn> replacements =
+                    populationManager_->RecordKill(ai.regionId, ai.creatureId);
+                for (unsigned j = 0; j < replacements.Size(); ++j)
+                {
+                    Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(replacements[j].regionId);
+                    BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos, 0.0f);
+                }
+            }
+            creatureStates_.Erase(csIt);
+        }
+        creatureAI_.Erase(aiIt);
     }
 
     // Phase 14: Social bonds + breeding (throttled to 1Hz)
@@ -9825,7 +9864,7 @@ Vector3 AuthServer::FindWaterEdge(const Vector3& from, float maxRange)
     return best;
 }
 
-DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
+AuthServer::DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
 {
     // Hunger: steady drain
     ai.hunger = Max(0.0f, ai.hunger - GetTuning("hunger_decay_rate", 0.15f) * dt);
@@ -10054,6 +10093,8 @@ DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
         if (csGrowIt != creatureStates_.End())
             csGrowIt->second_.maxHp = 10 + (int)(10.0f * ai.growthProgress);
     }
+
+    return DEATH_NONE;
 }
 
 void AuthServer::MoveCreature(ServerCreatureAI& ai, float dt)
@@ -10420,6 +10461,7 @@ int AuthServer::PickCreatureTask(const ServerCreatureAI& ai)
             { SKILL_TRACKING,    STASK_SCAVENGE },
             { SKILL_TRADE,       STASK_TRADE },
             { SKILL_ANIMAL_LORE, STASK_TAME },
+            { SKILL_ANIMAL_LORE, STASK_SHEAR },
             { SKILL_MELEE,       STASK_GUARD },
         };
 
@@ -11563,6 +11605,28 @@ void AuthServer::StartCreatureTask(ServerCreatureAI& ai, int task)
             auto tgtIt = creatureAI_.Find(tgtId);
             if (tgtIt != creatureAI_.End())
                 ai.targetPosition = tgtIt->second_.position;
+        }
+        break;
+    }
+
+    case STASK_SHEAR:
+    {
+        // Walk to nearest tamed alpaca (creatureId 11), shear for wool
+        ai.state = 1; // approach
+        ai.moveSpeed = 1.5f;
+        ai.taskTimer = 12.0f;
+        // Find tamed alpaca within range (not recently sheared)
+        for (auto aIt = creatureAI_.Begin(); aIt != creatureAI_.End(); ++aIt)
+        {
+            if (aIt->second_.creatureId == 11 && aIt->second_.tamerId != 0 &&
+                aIt->second_.growthProgress >= 1.0f &&  // adults only
+                aIt->second_.shearCooldown <= 0.0f &&   // not recently sheared
+                (aIt->second_.position - ai.position).Length() < 25.0f)
+            {
+                ai.targetPosition = aIt->second_.position;
+                ai.targetId = aIt->first_;
+                break;
+            }
         }
         break;
     }
@@ -12711,6 +12775,29 @@ void AuthServer::OnCreatureTaskComplete(ServerCreatureAI& ai)
         if (NPCAttemptSkill(ai, SKILL_ANIMAL_LORE, 12, "forage"))
             NPCTame(ai);
         break;
+
+    case STASK_SHEAR:
+    {
+        // Shear tamed alpaca for wool — Animal Lore 2+ skill check
+        if (ai.targetId != 0 && NPCAttemptSkill(ai, SKILL_ANIMAL_LORE, 8, "shear_alpaca"))
+        {
+            int npcPid = GetNPCPlayerId(ai.spawnId);
+            if (npcPid > 0)
+            {
+                int woolQty = 2 + Random(2);  // 2-3 wool per shear
+                AddItemToWorldInventory(npcPid, 420, woolQty);  // 420 = Wool
+                URHO3D_LOGINFOF("[Shear] NPC %u sheared alpaca %u → %d wool",
+                    ai.spawnId, ai.targetId, woolQty);
+
+                // Cooldown: mark alpaca so it can't be re-sheared immediately
+                auto alpacaIt = creatureAI_.Find(ai.targetId);
+                if (alpacaIt != creatureAI_.End())
+                    alpacaIt->second_.shearCooldown = 300.0f;  // 1 game day
+            }
+        }
+        ai.targetId = 0;
+        break;
+    }
 
     case STASK_TRADE:
         if (ai.targetId != 0 && NPCAttemptSkill(ai, SKILL_TRADE, 8, "complete_trade"))
@@ -18461,6 +18548,10 @@ void AuthServer::TickTamedAnimals(float dt)
         // Decrement tame cooldown for all animals
         if (ai.tameCooldown > 0.0f)
             ai.tameCooldown = Max(0.0f, ai.tameCooldown - dt);
+
+        // Tick shear cooldown for alpacas
+        if (ai.shearCooldown > 0.0f)
+            ai.shearCooldown = Max(0.0f, ai.shearCooldown - dt);
 
         // Tamed cows produce milk
         if (ai.tamerId != 0 && ai.creatureId == 7)
