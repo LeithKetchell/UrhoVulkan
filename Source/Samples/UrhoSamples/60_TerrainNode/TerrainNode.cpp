@@ -2013,7 +2013,7 @@ void TerrainNode::SetupViewport()
 
         reflectionCameraNode_ = cameraNode_->CreateChild();
         auto* reflectionCamera = reflectionCameraNode_->CreateComponent<Camera>();
-        reflectionCamera->SetFarClip(200.0f);  // Reflection doesn't need 750m — terrain + sky is enough
+        reflectionCamera->SetFarClip(750.0f);  // Must reach sun/moon billboards for water reflection
         reflectionCamera->SetViewMask(0x7fffffff);
         reflectionCamera->SetAutoAspectRatio(false);
         reflectionCamera->SetUseReflection(true);
@@ -17209,7 +17209,8 @@ void TerrainNode::HandleSpawnCreatureMsg(StringHash /*eventType*/, VariantMap& e
 void TerrainNode::HandleCreatureAIState(MemoryBuffer& msg)
 {
     // Wire format: spawnId u32, state u8, position Vec3, targetId u32, moveSpeed f32,
-    //              hp f32, hunger f32, thirst f32, warmth f32, stamina f32
+    //              hp f32, hunger f32, thirst f32, warmth f32, stamina f32,
+    //              vesselContents u8, growthProgress f32
     unsigned spawnId = msg.ReadU32();
     unsigned char state = static_cast<unsigned char>(msg.ReadByte());
     float px = msg.ReadFloat();
@@ -17262,6 +17263,14 @@ void TerrainNode::HandleCreatureAIState(MemoryBuffer& msg)
     creature->SetVesselContents(vesselContents);
     if (vesselContents != prevVessel)
         UpdateNPCVesselVisual(node, vesselContents);
+
+    // Child growth scale — children render at 0.4 to 1.0 based on growthProgress
+    if (msg.GetSize() >= msg.GetPosition() + sizeof(float))
+    {
+        float growthProgress = msg.ReadFloat();
+        if (growthProgress < 1.0f)
+            node->SetScale(0.4f + 0.6f * growthProgress);
+    }
 
     // Phase 19: record footstep on client ecosystem for visual path wear
     if (ecosystem_ && moveSpeed > 0.5f && serverState != CREATURE_IDLE &&
