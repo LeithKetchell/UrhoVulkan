@@ -6799,7 +6799,7 @@ void AuthServer::HandleAttack(Connection* connection, MemoryBuffer& msg)
             {
                 const ReplacementSpawn& rep = replacements[i];
                 Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(rep.regionId);
-                BroadcastSpawnCreature(rep.regionId, rep.creatureId, spawnPos);
+                BroadcastSpawnCreature(rep.regionId, rep.creatureId, spawnPos, 0.0f);
                 LogMessage("[Population] Replacement (combat death): region " +
                            String(rep.regionId) + " creature " + String(rep.creatureId));
             }
@@ -8826,7 +8826,7 @@ void AuthServer::HandleTrapCheck(Connection* connection, MemoryBuffer& msg)
 #endif
 }
 
-void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vector3& pos)
+void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vector3& pos, float growthProgress)
 {
     // Format must match Protocol.h MSG_SPAWN_CREATURE comment + the client
     // handler in TerrainNode. Y is intentionally 0.0 — clients snap to
@@ -8868,6 +8868,7 @@ void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vect
         ai.warmth = weatherTemperature_;
         ai.currentTask = STASK_IDLE;
         ai.spawnId = spawnId;  // Self-reference for inventory ops (Phase 4)
+        ai.growthProgress = growthProgress;  // 0.0 = newborn baby, 1.0 = adult
         // Phase 6: humans get assigned to a shared campfire for night cycle
         if (ai.isHuman)
         {
@@ -9478,7 +9479,7 @@ void AuthServer::TickCreatureAI(float dt)
                 for (unsigned j = 0; j < replacements.Size(); ++j)
                 {
                     Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(replacements[j].regionId);
-                    BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos);
+                    BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos, 0.0f);
                 }
             }
             creatureStates_.Erase(csIt);
@@ -10019,15 +10020,17 @@ void AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, float dt)
         ai.morale = Lerp(ai.morale, targetMorale, Min(1.0f, dt * 0.1f));
     }
 
-    // Phase 14: Child growth — 0→1 over 20 game days (each game day = 300 real seconds)
-    if (ai.isHuman && ai.growthProgress < 1.0f)
+    // Growth — all creatures grow from baby to adult over time.
+    // Humans: 20 game days. Animals: 10 game days (faster maturation).
+    if (ai.growthProgress < 1.0f)
     {
         float prevGrowth = ai.growthProgress;
-        float growthRate = dt / (20.0f * 300.0f);  // 20 game days
+        float gameDays = ai.isHuman ? 20.0f : 10.0f;
+        float growthRate = dt / (gameDays * 300.0f);
         ai.growthProgress = Min(1.0f, ai.growthProgress + growthRate);
 
-        // Phase 30: assign name at maturity
-        if (prevGrowth < 1.0f && ai.growthProgress >= 1.0f && ai.npcName.Empty())
+        // Phase 30: assign name at maturity (humans only)
+        if (ai.isHuman && prevGrowth < 1.0f && ai.growthProgress >= 1.0f && ai.npcName.Empty())
         {
             ai.npcName = GenerateNPCName(ai.campfireId);
             URHO3D_LOGINFOF("[Naming] NPC %u named '%s' at maturity (campfire %u)",
@@ -12042,11 +12045,30 @@ void AuthServer::StartCreatureTask(ServerCreatureAI& ai, int task)
 
     case STASK_IDLE:
     default:
+    {
         ai.state = 0; // CREATURE_IDLE
         ai.moveSpeed = 0.0f;
         ai.targetPosition = ai.position;
         ai.taskTimer = Random(3.0f, 8.0f);
+
+        // Family grouping: mated NPCs drift toward mate when idle
+        if (ai.isHuman && worldDB_)
+        {
+            for (auto mIt = creatureAI_.Begin(); mIt != creatureAI_.End(); ++mIt)
+            {
+                if (mIt->first_ == ai.spawnId || !mIt->second_.isHuman)
+                    continue;
+                String bond = worldDB_->GetBondType(ai.spawnId, mIt->first_);
+                if (bond == "mate")
+                {
+                    // Bias home position toward mate (30% pull)
+                    ai.homePosition = ai.homePosition.Lerp(mIt->second_.position, 0.3f);
+                    break;
+                }
+            }
+        }
         break;
+    }
     }
 
     // Phase 29: morale affects task speed — high morale = faster, low = slower
@@ -12191,7 +12213,7 @@ void AuthServer::OnCreatureTaskComplete(ServerCreatureAI& ai)
                     for (unsigned j = 0; j < replacements.Size(); ++j)
                     {
                         Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(replacements[j].regionId);
-                        BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos);
+                        BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos, 0.0f);
                     }
                 }
                 creatureStates_.Erase(csIt);
@@ -13030,7 +13052,7 @@ void AuthServer::TickHunt(ServerCreatureAI& ai, float dt)
                             {
                                 const ReplacementSpawn& rep = replacements[i];
                                 Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(rep.regionId);
-                                BroadcastSpawnCreature(rep.regionId, rep.creatureId, spawnPos);
+                                BroadcastSpawnCreature(rep.regionId, rep.creatureId, spawnPos, 0.0f);
                             }
                         }
                         creatureStates_.Erase(stateIt);
@@ -13506,7 +13528,7 @@ void AuthServer::TickDefense(ServerCreatureAI& ai, float dt)
                 {
                     const ReplacementSpawn& rep = replacements[i];
                     Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(rep.regionId);
-                    BroadcastSpawnCreature(rep.regionId, rep.creatureId, spawnPos);
+                    BroadcastSpawnCreature(rep.regionId, rep.creatureId, spawnPos, 0.0f);
                 }
             }
             creatureStates_.Erase(stateIt);
