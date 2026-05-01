@@ -10340,6 +10340,44 @@ int AuthServer::PickCreatureTask(const ServerCreatureAI& ai)
     if (ai.hunger < GetTuning("hunger_gather_threshold", 60.0f))
         return STASK_GATHER;
 
+    // ── Child behavior gate (Family Life Phase 3) ──────────────────────
+    // Children can't craft, build, fight, mine, trade, or do skilled work.
+    // Young children (< 0.5) only survive: wander near parent, eat, drink, sleep.
+    // Older children (0.5–1.0) can also gather and eat from inventory.
+    // All survival tasks above this point (flee, defend, eat, drink, sleep, fire)
+    // are already handled — if we reach here, no survival need is pressing.
+    if (ai.isHuman && ai.growthProgress < 1.0f)
+    {
+        // Older children can gather
+        if (ai.growthProgress >= 0.5f && ai.hunger < 60.0f)
+            return STASK_GATHER;
+
+        // Follow nearest parent — bias wander toward parent position
+        Vector3 followTarget = ai.homePosition;
+        if (ai.parentA != 0 || ai.parentB != 0)
+        {
+            unsigned parentId = ai.parentA != 0 ? ai.parentA : ai.parentB;
+            auto parentIt = creatureAI_.Find(parentId);
+            if (parentIt != creatureAI_.End())
+                followTarget = parentIt->second_.position;
+            else if (ai.parentB != 0 && ai.parentA != 0)
+            {
+                // First parent dead, try second
+                parentIt = creatureAI_.Find(ai.parentB);
+                if (parentIt != creatureAI_.End())
+                    followTarget = parentIt->second_.position;
+            }
+        }
+
+        // Wander radius scales: 5m at birth → 10m at 0.5 → full at 1.0
+        float childWander = 5.0f + 15.0f * ai.growthProgress;
+        float distToParent = (ai.position - followTarget).Length();
+        if (distToParent > childWander)
+            return STASK_WARM;  // walk toward parent/home
+
+        return STASK_IDLE;  // stay near parent, play
+    }
+
     // ── Division of Labor (Phase 11) ─────────────────────────────────────
     // When no survival need is pressing, NPC gravitates toward their emerging
     // specialty. Even level 2 creates a bias — you don't need mastery to prefer
@@ -12752,7 +12790,8 @@ void AuthServer::BroadcastCreatureAIState(unsigned spawnId, const ServerCreature
 {
     // Wire format matches Protocol.h MSG_CREATURE_AI_STATE:
     //   spawnId u32, state u8, position Vec3, targetId u32, moveSpeed f32,
-    //   hp f32, hunger f32, thirst f32, warmth f32, stamina f32, vesselContents u8
+    //   hp f32, hunger f32, thirst f32, warmth f32, stamina f32, vesselContents u8,
+    //   growthProgress f32
     VectorBuffer buf;
     buf.WriteU32(spawnId);
     buf.WriteByte(static_cast<std::byte>(ai.state));
@@ -12771,6 +12810,7 @@ void AuthServer::BroadcastCreatureAIState(unsigned spawnId, const ServerCreature
     buf.WriteFloat(ai.warmth);
     buf.WriteFloat(ai.stamina);
     buf.WriteByte(static_cast<std::byte>(ai.vesselContents));  // 0=empty, 1=fire, 2=water
+    buf.WriteFloat(ai.growthProgress);  // child scale: 0.0 (newborn) to 1.0 (adult)
 
     for (auto it = sessions_.Begin(); it != sessions_.End(); ++it)
     {
@@ -18947,26 +18987,10 @@ void AuthServer::CheckNPCBreeding()
             }
 
             float familiarity = worldDB_->GetBondFamiliarity(itA->first_, itB->first_);
-            if (familiarity < 70.0f) continue;  // threshold
+            if (familiarity < 40.0f) continue;  // threshold (lowered from 70 for early-game breeding)
 
             // Both fed (hunger > 60)
             if (a.hunger < 60.0f || b.hunger < 60.0f) continue;
-
-            // Shelter with bed nearby (any owned building)
-            int pidA = GetNPCPlayerId(itA->first_);
-            if (pidA <= 0) continue;
-            Vector<PlacedBuildingDBInfo> buildings = worldDB_->GetAllPlacedBuildings();
-            bool hasShelter = false;
-            for (unsigned i = 0; i < buildings.Size(); ++i)
-            {
-                if (buildings[i].ownerId == pidA)
-                {
-                    auto typeIt = cachedBuildingTypes_.Find(buildings[i].buildingId);
-                    if (typeIt != cachedBuildingTypes_.End() && typeIt->second_.category == "shelter")
-                    { hasShelter = true; break; }
-                }
-            }
-            if (!hasShelter) continue;
 
             // All conditions met — become mates and spawn child
             worldDB_->SetBondType(itA->first_, itB->first_, "mate");
