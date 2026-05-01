@@ -48,7 +48,7 @@
 #include "FishSpatialHash.h"
 #include "LandAnimalSpatialHash.h"
 #include "SchoolState.h"
-// #include "GrassSystem.h"  // QUARANTINED
+#include "GrassSystem.h"
 #include "EcosystemManager.h"
 #include "HUD.h"
 #include "BuildingSystem.h"
@@ -646,9 +646,9 @@ private:
     HashMap<unsigned, WeakPtr<Node>> activePickupNodes_;
     float resourceStreamTimer_{};
 
-    // --- Grass (GPU-driven) --- QUARANTINED
-    // void CreateGrass();
-    // SharedPtr<class GrassSystem> grassSystem_;
+    // --- Grass (GPU-driven) ---
+    void CreateGrass();
+    SharedPtr<GrassSystem> grassSystem_;
 
     // --- Water ripples ---
     SharedPtr<class WaterRippleSystem> rippleSystem_;

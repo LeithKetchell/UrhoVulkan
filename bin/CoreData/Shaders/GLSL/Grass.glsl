@@ -2,6 +2,7 @@
 #include "Samplers.glsl"
 #include "Transform.glsl"
 #include "ScreenPos.glsl"
+#include "Lighting.glsl"
 #include "Fog.glsl"
 
 // Grass uniforms

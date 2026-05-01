@@ -476,7 +476,7 @@ void TerrainNode::Start()
     CaveWoman::RegisterObject(context_);
     Fish::RegisterObject(context_);
     SchoolFish::RegisterObject(context_);
-    // GrassSystem::RegisterObject(context_);  // QUARANTINED — grass not rendering
+    GrassSystem::RegisterObject(context_);
     HUD::RegisterObject(context_);
     ResourcePickup::RegisterObject(context_);
     BuildingSystem::RegisterObject(context_);  // Re-enabled: needed for network replication
@@ -1055,6 +1055,18 @@ void TerrainNode::EnterWorld()
     loggedIn_ = true;
     DestroyLoginUI();
 
+    // Show loading overlay while world builds
+    {
+        auto* ui = GetSubsystem<UI>();
+        auto* cache = GetSubsystem<ResourceCache>();
+        loadingText_ = ui->GetRoot()->CreateChild<Text>();
+        loadingText_->SetFont(font_, 18);
+        loadingText_->SetText("Loading world...");
+        loadingText_->SetColor(Color(0.9f, 0.85f, 0.7f));
+        loadingText_->SetHorizontalAlignment(HA_CENTER);
+        loadingText_->SetVerticalAlignment(VA_CENTER);
+    }
+
     // Wait for GPU to finish all commands referencing login scene resources
 #ifdef URHO3D_VULKAN
     auto* graphics = GetSubsystem<Graphics>();
@@ -1183,6 +1195,7 @@ void TerrainNode::CreateLocalVisuals()
     CreateFish();
     CreateSchoolFish();
     CreateEcosystem();
+    CreateGrass();
     InitTreeModels();
     CreateRain();
     CreateSnow();
@@ -9958,24 +9971,23 @@ void TerrainNode::UpdateSeasonalEffects()
         if (terrainMat)
             terrainMat->SetShaderParameter("MatDiffColor", cachedTerrainTint_);
 
-        // QUARANTINED — grass not rendering
-        // if (grassSystem_)
-        // {
-        //     Color grassSpring(0.5f, 0.85f, 0.35f, 1.0f);
-        //     Color grassSummer(0.75f, 0.8f, 0.3f, 1.0f);
-        //     Color grassAutumn(0.7f, 0.55f, 0.2f, 1.0f);
-        //     Color grassWinter(0.5f, 0.45f, 0.3f, 1.0f);
-        //     Color grassTint;
-        //     if (seasonAngle < 0.25f)
-        //         grassTint = grassSpring.Lerp(grassSummer, seasonAngle / 0.25f);
-        //     else if (seasonAngle < 0.5f)
-        //         grassTint = grassSummer.Lerp(grassAutumn, (seasonAngle - 0.25f) / 0.25f);
-        //     else if (seasonAngle < 0.75f)
-        //         grassTint = grassAutumn.Lerp(grassWinter, (seasonAngle - 0.5f) / 0.25f);
-        //     else
-        //         grassTint = grassWinter.Lerp(grassSpring, (seasonAngle - 0.75f) / 0.25f);
-        //     grassSystem_->SetSeasonalTint(grassTint);
-        // }
+        if (grassSystem_)
+        {
+            Color grassSpring(0.5f, 0.85f, 0.35f, 1.0f);
+            Color grassSummer(0.75f, 0.8f, 0.3f, 1.0f);
+            Color grassAutumn(0.7f, 0.55f, 0.2f, 1.0f);
+            Color grassWinter(0.5f, 0.45f, 0.3f, 1.0f);
+            Color grassTint;
+            if (seasonAngle < 0.25f)
+                grassTint = grassSpring.Lerp(grassSummer, seasonAngle / 0.25f);
+            else if (seasonAngle < 0.5f)
+                grassTint = grassSummer.Lerp(grassAutumn, (seasonAngle - 0.25f) / 0.25f);
+            else if (seasonAngle < 0.75f)
+                grassTint = grassAutumn.Lerp(grassWinter, (seasonAngle - 0.5f) / 0.25f);
+            else
+                grassTint = grassWinter.Lerp(grassSpring, (seasonAngle - 0.75f) / 0.25f);
+            grassSystem_->SetSeasonalTint(grassTint);
+        }
 
         // Ecosystem seasonal growth multiplier: spring 1.5, summer 1.0, autumn 0.5, winter 0.0
         if (ecosystem_)
@@ -11174,12 +11186,11 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
             UpdateSelectedVitalsPanel();
         }
         accumMinimap += sectionTimer.GetUSec(true);
-        // QUARANTINED — grass not rendering
-        // if (grassSystem_ && characterNode_)
-        // {
-        //     Vector3 charPos = characterNode_->GetWorldPosition();
-        //     grassSystem_->SetPhysicsShape(0, Vector4(charPos.x_, charPos.y_, charPos.z_, 1.5f));
-        // }
+        if (grassSystem_ && characterNode_)
+        {
+            Vector3 charPos = characterNode_->GetWorldPosition();
+            grassSystem_->SetPhysicsShape(0, Vector4(charPos.x_, charPos.y_, charPos.z_, 1.5f));
+        }
 
         // Water ripples — propagate and feed character splashes
         sectionTimer.GetUSec(true);
@@ -11618,12 +11629,11 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
         }
     }
 
-    // QUARANTINED — grass not rendering
-    // if (grassRayVisible_ && grassSystem_ && grassSystem_->GetGrassNode() && debug)
-    // {
-    //     Vector3 origin = grassSystem_->GetGrassNode()->GetWorldPosition();
-    //     debug->AddLine(origin, origin + Vector3::UP * 5.0f, Color::YELLOW, false);
-    // }
+    if (grassRayVisible_ && grassSystem_ && grassSystem_->GetGrassNode() && debug)
+    {
+        Vector3 origin = grassSystem_->GetGrassNode()->GetWorldPosition();
+        debug->AddLine(origin, origin + Vector3::UP * 5.0f, Color::YELLOW, false);
+    }
 
     // Gizmo — always draw when a tool is active and a node is selected (not gated by drawDebug_)
     DrawGizmo();
@@ -15000,19 +15010,18 @@ void TerrainNode::UpdateTreeLOD()
 // Grass — cross-billboard clumps written as UMDL .mdl, loaded via cache
 // ============================================================================
 
-// QUARANTINED — grass not rendering, 160K blades generated but zero visible in game
-// void TerrainNode::CreateGrass()
-// {
-//     if (!terrain_)
-//         return;
-//     Node* grassHost = scene_->CreateChild("GrassHost", LOCAL);
-//     grassSystem_ = grassHost->CreateComponent<GrassSystem>();
-//     grassSystem_->Initialize(terrain_, 200.0f, 0.5f, 100.0f);
-//     grassSystem_->SetWind(0.5f, Vector2(1.0f, 0.3f));
-//     grassSystem_->SetSeasonalTint(Color(1.0f, 1.0f, 1.0f, 1.0f));
-//     if (ecosystem_ && ecosystem_->GetVegetationTexture())
-//         grassSystem_->SetDensityMap(ecosystem_->GetVegetationTexture());
-// }
+void TerrainNode::CreateGrass()
+{
+    if (!terrain_)
+        return;
+    Node* grassHost = scene_->CreateChild("GrassHost", LOCAL);
+    grassSystem_ = grassHost->CreateComponent<GrassSystem>();
+    grassSystem_->Initialize(terrain_, 200.0f, 0.5f, 100.0f);
+    grassSystem_->SetWind(0.5f, Vector2(1.0f, 0.3f));
+    grassSystem_->SetSeasonalTint(Color(1.0f, 1.0f, 1.0f, 1.0f));
+    if (ecosystem_ && ecosystem_->GetVegetationTexture())
+        grassSystem_->SetDensityMap(ecosystem_->GetVegetationTexture());
+}
 
 // --- Font / Theme ---
 
