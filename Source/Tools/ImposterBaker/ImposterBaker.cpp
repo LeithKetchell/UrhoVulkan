@@ -1,4 +1,5 @@
 #include "ImposterBaker.h"
+#include "LTreeGenerator.h"
 
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Core/ProcessUtils.h>
@@ -11,9 +12,11 @@
 #include <Urho3D/Graphics/Octree.h>
 #include <Urho3D/Graphics/Renderer.h>
 #include <Urho3D/Graphics/StaticModel.h>
+#include <Urho3D/Graphics/Technique.h>
 #include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Graphics/Material.h>
 #include <Urho3D/Graphics/Viewport.h>
+#include <Urho3D/GraphicsAPI/Texture2D.h>
 #include <Urho3D/Math/BoundingBox.h>
 #include <Urho3D/IO/FileSystem.h>
 #include <Urho3D/Resource/Image.h>
@@ -60,14 +63,18 @@ bool ImposterBaker::ParseArgs()
         }
         else if (arg == "-output" && i + 1 < args.Size())
             outputPrefix_ = args[++i];
+        else if (arg == "-ltree" && i + 1 < args.Size())
+            ltreeSpecies_ = args[++i].ToLower();
     }
 
-    if (modelPath_.Empty())
+    if (modelPath_.Empty() && ltreeSpecies_.Empty())
     {
         PrintLine("Usage: ImposterBaker -model <path> [-material <path>] [-views N] [-size WxH] [-output prefix]");
+        PrintLine("       ImposterBaker -ltree <oak|pine|eucalyptus> [-views N] [-size WxH] [-output prefix]");
         PrintLine("");
-        PrintLine("  -model     Model file relative to resource dirs (required)");
-        PrintLine("  -material  Material override (optional, uses model default)");
+        PrintLine("  -model     Model file relative to resource dirs");
+        PrintLine("  -ltree     Generate L-system tree (oak, pine, eucalyptus)");
+        PrintLine("  -material  Material override (model mode only)");
         PrintLine("  -views     Number of snapshots around Y axis (default: 8)");
         PrintLine("  -size      Output image dimensions WxH (default: 512x1024)");
         PrintLine("  -output    Output filename prefix (default: imposter_)");
@@ -96,29 +103,51 @@ void ImposterBaker::Setup()
 
 void ImposterBaker::Start()
 {
-    // Hide the window — we only need it as a Vulkan surface
+    // Keep window visible during baking — hidden windows produce blank captures
+    // on many GPU drivers. Window is minimized instead to stay out of the way.
     auto* graphics = GetSubsystem<Graphics>();
-    SDL_HideWindow(graphics->GetWindow());
+    SDL_MinimizeWindow(graphics->GetWindow());
 
     auto* cache = GetSubsystem<ResourceCache>();
 
-    // Load model
-    auto* model = cache->GetResource<Model>(modelPath_);
-    if (!model)
-    {
-        PrintLine("ERROR: Failed to load model: " + modelPath_);
-        exitCode_ = EXIT_FAILURE;
-        engine_->Exit();
-        return;
-    }
+    SharedPtr<Model> model;
+    SharedPtr<Material> barkMat;
+    SharedPtr<Material> leafMat;
+    bool isLTree = !ltreeSpecies_.Empty();
 
-    // Load optional material
-    Material* material = nullptr;
-    if (!materialPath_.Empty())
+    if (isLTree)
     {
-        material = cache->GetResource<Material>(materialPath_);
-        if (!material)
-            PrintLine("WARNING: Failed to load material: " + materialPath_ + ", using default");
+        // Generate L-system tree model + materials
+        model = GenerateLTree(barkMat, leafMat);
+        if (!model)
+        {
+            PrintLine("ERROR: Unknown L-system species: " + ltreeSpecies_);
+            PrintLine("  Valid species: oak, pine, eucalyptus");
+            exitCode_ = EXIT_FAILURE;
+            engine_->Exit();
+            return;
+        }
+        PrintLine("Generated L-system tree: " + ltreeSpecies_);
+    }
+    else
+    {
+        // Load model from file
+        model = cache->GetResource<Model>(modelPath_);
+        if (!model)
+        {
+            PrintLine("ERROR: Failed to load model: " + modelPath_);
+            exitCode_ = EXIT_FAILURE;
+            engine_->Exit();
+            return;
+        }
+
+        // Load optional material
+        if (!materialPath_.Empty())
+        {
+            barkMat = cache->GetResource<Material>(materialPath_);
+            if (!barkMat)
+                PrintLine("WARNING: Failed to load material: " + materialPath_ + ", using default");
+        }
     }
 
     // Create scene
@@ -135,9 +164,11 @@ void ImposterBaker::Start()
     // Model node at origin
     Node* modelNode = scene->CreateChild("Model");
     auto* staticModel = modelNode->CreateComponent<StaticModel>();
-    staticModel->SetModel(model);
-    if (material)
-        staticModel->SetMaterial(material);
+    staticModel->SetModel(model, true);  // allow oversized — L-system trees can exceed 10 units
+    if (barkMat)
+        staticModel->SetMaterial(0, barkMat);
+    if (leafMat)
+        staticModel->SetMaterial(1, leafMat);
 
     // Compute camera orbit from bounding box
     BoundingBox bbox = model->GetBoundingBox();
@@ -191,6 +222,9 @@ void ImposterBaker::Start()
     PrintLine("  Views: " + String(numViews_) + "  Size: " + String(outputWidth_) + "x" + String(outputHeight_));
     PrintLine("  BBox center: " + center.ToString() + "  Distance: " + String(distance));
 
+    // Warm-up frame — ensures scene, materials, and GPU state are fully initialized
+    engine_->RunFrame();
+
     // Capture loop
     float angleStep = 360.0f / (float)numViews_;
 
@@ -204,7 +238,8 @@ void ImposterBaker::Start()
         cameraNode->SetPosition(Vector3(cx, cy, cz));
         cameraNode->LookAt(center);
 
-        // Render one frame
+        // Render two frames — first updates transforms, second produces final image
+        engine_->RunFrame();
         engine_->RunFrame();
 
         // Capture RGBA screenshot
@@ -225,6 +260,62 @@ void ImposterBaker::Start()
 
     PrintLine("Done.");
     engine_->Exit();
+}
+
+SharedPtr<Model> ImposterBaker::GenerateLTree(SharedPtr<Material>& barkMat, SharedPtr<Material>& leafMat)
+{
+    TreePreset preset;
+    String barkTexPath = "Textures/Bark_NormalTree.png";
+    String leafTexPath = "Textures/Leaves_NormalTree_C.png";
+
+    if (ltreeSpecies_ == "oak")
+        preset = LTreeGenerator::Oak();
+    else if (ltreeSpecies_ == "pine")
+    {
+        preset = LTreeGenerator::Pine();
+        leafTexPath = "Textures/Leaf_Pine_C.png";
+    }
+    else if (ltreeSpecies_ == "eucalyptus")
+    {
+        preset = LTreeGenerator::Eucalyptus();
+        barkTexPath = "Textures/Bark_TwistedTree.png";
+    }
+    else if (ltreeSpecies_ == "acacia")
+    {
+        preset = LTreeGenerator::Acacia();
+        barkTexPath = "Textures/Bark_DeadTree.png";
+    }
+    else if (ltreeSpecies_ == "willow")
+        preset = LTreeGenerator::Willow();
+    else if (ltreeSpecies_ == "sheoak")
+    {
+        preset = LTreeGenerator::SheOak();
+        barkTexPath = "Textures/Bark_TwistedTree.png";
+        leafTexPath = "Textures/Leaf_Pine_C.png";
+    }
+    else
+        return nullptr;
+
+    SharedPtr<Model> model = LTreeGenerator::Generate(context_, preset);
+    if (!model)
+        return nullptr;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* diffTech = cache->GetResource<Technique>("Techniques/Diff.xml");
+
+    barkMat = new Material(context_);
+    barkMat->SetTechnique(0, diffTech);
+    barkMat->SetTexture(TU_DIFFUSE, cache->GetResource<Texture2D>(barkTexPath));
+    barkMat->SetShaderParameter("MatDiffColor", Color::WHITE);
+    barkMat->SetShaderParameter("MatSpecColor", Vector4(0.15f, 0.15f, 0.15f, 8.0f));
+
+    leafMat = new Material(context_);
+    leafMat->SetTechnique(0, diffTech);
+    leafMat->SetTexture(TU_DIFFUSE, cache->GetResource<Texture2D>(leafTexPath));
+    leafMat->SetShaderParameter("MatDiffColor", Color::WHITE);
+    leafMat->SetShaderParameter("MatSpecColor", Vector4(0.1f, 0.1f, 0.1f, 4.0f));
+
+    return model;
 }
 
 void ImposterBaker::Stop()

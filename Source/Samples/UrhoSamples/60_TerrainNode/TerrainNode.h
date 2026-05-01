@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include <Urho3D/Container/HashSet.h>
 #include <Urho3D/Math/Plane.h>
 #include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/UI/DropDownList.h>
 #include <Urho3D/UI/BorderImage.h>
+#include <Urho3D/UI/Sprite.h>
 #include <Urho3D/UI/Menu.h>
 #include <Urho3D/UI/Window.h>
 #include <Urho3D/UI/DockManager.h>
@@ -24,28 +26,49 @@
 
 #include "Sample.h"
 #include "OOFO.h"
+#include <Urho3D/Audio/SoundSource3D.h>
 #include <Urho3D/Graphics/ParticleEmitter.h>
 #include <Urho3D/Graphics/ParticleEffect.h>
-#include "PlayerCharacter.h"
 #include "Rabbit.h"
 #include "Deer.h"
 #include "Fox.h"
+#include "Wolf.h"
+#include "Stag.h"
+#include "Bull.h"
+#include "Cow.h"
+#include "Horse.h"
+#include "Donkey.h"
+#include "Alpaca.h"
+#include "Husky.h"
+#include "ShibaInu.h"
+#include "CaveMan.h"
+#include "CaveWoman.h"
 #include "Fish.h"
 #include "SchoolFish.h"
 #include "FishSpatialHash.h"
+#include "LandAnimalSpatialHash.h"
 #include "SchoolState.h"
-#include "GrassSystem.h"
+// #include "GrassSystem.h"  // QUARANTINED
+#include "EcosystemManager.h"
 #include "HUD.h"
 #include "BuildingSystem.h"
+#include "HabitatRules.h"
+#include "ResourcePickup.h"
+#include "ResourceMap.h"
 #include <Urho3D/Graphics/TerrainBrush.h>
 #include <Urho3D/Graphics/ProfilerUI.h>
 #include <Urho3D/Game/GameDB.h>
+#include <Urho3D/Game/CombatResolver.h>
+#include <Urho3D/Game/PopulationManager.h>
+#include <Urho3D/Scene/DrivenKey.h>
 
 namespace Urho3D
 {
 
 class Node;
 class Scene;
+class ParticleEmitter;
+class Slider;
 
 }
 
@@ -87,6 +110,23 @@ struct UndoAction
     SharedPtr<Image> afterHM;
 };
 
+/// Biome classification for world spawning.
+enum BiomeType
+{
+    BIOME_WATER,        ///< Below water surface
+    BIOME_RIVERBANK,    ///< Near water edge, low elevation
+    BIOME_GRASSLAND,    ///< Flat terrain, high grass weight
+    BIOME_FOREST,       ///< Moderate slope, high vegetation, mid-elevation
+    BIOME_MOUNTAIN,     ///< Steep slope or high elevation, rock dominant
+    BIOME_ANY           ///< Fallback — everything can spawn
+};
+
+/// Convert BiomeType to gather_sources.terrain string.
+String BiomeToString(BiomeType biome);
+
+/// Check if a gather source terrain requirement matches a biome.
+bool TerrainMatchesSource(const String& sourceTerrain, BiomeType biome);
+
 /// TerrainNode example with dropdown menus, terrain editing, and celestial day/night cycle.
 class TerrainNode : public Sample
 {
@@ -105,6 +145,10 @@ private:
     void CreateLoginUI();
     void DestroyLoginUI();
     void EnterWorld();
+    /// Called when server's scene finishes async loading — adds local-only visuals.
+    void OnGameSceneLoaded(StringHash eventType, VariantMap& eventData);
+    /// Create client-only visual entities (lights, skybox, water, celestials, fish, etc.)
+    void CreateLocalVisuals();
     void FinishEnterWorld();
     void ReturnToLogin();
     void HandleLoginButton(StringHash eventType, VariantMap& eventData);
@@ -121,6 +165,8 @@ private:
     String serverSceneName_;  // scene filename received from AuthServer
     bool loggedIn_{false};
     bool asyncSceneLoading_{false};  // true while waiting for async scene load
+    SharedPtr<Scene> gameScene_;     // empty scene assigned to connection on connect
+    bool gameSceneReady_{false};     // true once gameScene_ is created and assigned
     bool loginTimerActive_{false};   // debug: timing login-to-render
     bool firstFramePending_{false};  // debug: waiting for first rendered frame
     HiresTimer loginTimer_;          // debug: measures login-to-render time
@@ -131,24 +177,33 @@ private:
     bool OwnsThisPatch(int px, int pz) const;
     SharedPtr<Text> loadingText_;    // "Loading..." overlay during async scene load
 
-    void CreateScene();
+    void CreateScene();          // calls CreateSceneGraph() + SetupSceneBindings()
+    void CreateSceneGraph();     // builds serializable scene objects
+    void SetupSceneBindings();   // binds app state — safe after create OR load
+    SharedPtr<Scene> pendingScene_;  // deferred scene swap — set by load, applied next frame
     void OnSceneLoaded();
     void CreateInstructions();
     void SetupViewport();
     void SubscribeToEvents();
     void MoveCamera(float timeStep);
+    void HandleBeginFrame(StringHash eventType, VariantMap& eventData);
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
     void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
+    void HandleDrivenKeyOutput(StringHash eventType, VariantMap& eventData);
 
     // --- Menu bar ---
     void CreateMenuBar();
     DropDownList* CreateMenuDropdown(const String& label, const Vector<String>& items);
     void HandleFileMenu(StringHash eventType, VariantMap& eventData);
     void HandleEditMenu(StringHash eventType, VariantMap& eventData);
-    void HandleViewMenu(StringHash eventType, VariantMap& eventData);
     void HandleEnvironmentAction(StringHash eventType, VariantMap& eventData);
     void HandleFishWiggleSlider(StringHash eventType, VariantMap& eventData);
     void HandleFishSpeedSlider(StringHash eventType, VariantMap& eventData);
+    void HandleWaterSlider(StringHash eventType, VariantMap& eventData);
+    void HandleHabitatSlider(StringHash eventType, VariantMap& eventData);
+    void HandleHabitatButton(StringHash eventType, VariantMap& eventData);
+    void RespawnSpecies(const String& species);
+    void RespawnAllAnimals();
     void HandleMenuButton(StringHash eventType, VariantMap& eventData);
     void HandleCollapsibleToggle(StringHash eventType, VariantMap& eventData);
     void CreateTerrainPanel();
@@ -161,18 +216,34 @@ private:
     SharedPtr<DockManager> dockManager_;
     SharedPtr<DropDownList> fileMenu_;
     SharedPtr<DropDownList> editMenu_;
-    SharedPtr<DropDownList> viewMenu_;
+    Menu* viewMenu_{};
     Menu* environmentMenu_{};
     SharedPtr<Window> terrainPanel_;
     Text* fishWiggleLabel_{};
     Text* fishSpeedLabel_{};
+    Text* waterHeightLabel_{};
+    Text* waterNoiseLabel_{};
+    Text* waterFresnelLabel_{};
+    Text* waterDepthLabel_{};
+    Text* waterRippleLabel_{};
+    Text* waterDecayLabel_{};
+
+    // --- AI Tuning panel (admin-only) ---
+    SharedPtr<Window> tuningPanel_;
+    struct TuningEntry { String key; float value; String label; String category; float minVal; float maxVal; };
+    Vector<TuningEntry> tuningEntries_;
+    void CreateTuningPanel();
+    void PopulateTuningPanel();
+    void HandleTuningSliderChanged(StringHash eventType, VariantMap& eventData);
+    void HandleTuningResetDefaults(StringHash eventType, VariantMap& eventData);
+    void RequestTuningData();
 
     // --- Patch boundaries ---
-    void CreatePatchBoundary(Node*& node, int patchX, int patchZ, const Color& color);
+    Node* CreatePatchBoundary(Node* oldNode, int patchX, int patchZ, const Color& color);
     void CreateOwnedPatchBoundaries();
     void UpdateCurrentPatchBoundary();
-    Vector<Node*> ownedPatchBoundaries_;
-    Node* currentPatchBoundary_{};
+    Vector<WeakPtr<Node>> ownedPatchBoundaries_;
+    WeakPtr<Node> currentPatchBoundary_;
     int currentPatchX_{0x7FFFFFFF};  // force first update
     int currentPatchZ_{0x7FFFFFFF};
 
@@ -199,6 +270,14 @@ private:
     SharedPtr<Image> editableHeightMap_;
     SharedPtr<Image> waterMap_;
     SharedPtr<Texture2D> waterMapTex_;
+
+    // Weather Phase 4: rainfall accumulation (reduced resolution)
+    // R = surface water (0-255), G = soil moisture (0-255)
+    SharedPtr<Image> rainfallMap_;
+    int rainfallFrameCounter_{0};
+    static constexpr int RAINFALL_MAP_SIZE = 256;
+    static constexpr int RAINFALL_UPDATE_INTERVAL = 30;
+    void UpdateRainfallAccumulation();
     int brushMode_{0};         // 0=off, 1=raise, 2=lower, 3=smooth, 4=flatten, 5=erosion, 6=river
     int brushShape_{0};        // 0=circle, 1=square, 2=triangle, 3=star, 4=pentagon, 5=hexagon, 6=octagon
     float brushRotation_{0.0f}; // degrees
@@ -223,6 +302,7 @@ private:
     void UpdateWeather(float timeStep);
     void ApplyWeatherToScene();
     WeatherState CalculateSeasonalWeather();
+    void HandleAudioSlider(StringHash eventType, VariantMap& eventData);
     void HandleWeatherSlider(StringHash eventType, VariantMap& eventData);
     void HandleHemisphereToggle(StringHash eventType, VariantMap& eventData);
 
@@ -237,15 +317,20 @@ private:
     float CalculateMoonAzimuth(float moonAlt);
     Vector3 AltAzToFlatEarth(float altitude, float azimuth, float distance = 500.0f);
 
-    Node* sunNode_{};
-    Node* moonNode_{};
+    WeakPtr<Node> sunNode_;
+    WeakPtr<Node> moonNode_;
     SharedPtr<Material> sunMat_;
     SharedPtr<Material> moonMat_;
     float sunOcclusionFade_{1.0f};
     float moonOcclusionFade_{1.0f};
+    bool cachedSunOccluded_{false};
+    bool cachedMoonOccluded_{false};
+    unsigned occlusionFrameSkip_{0};
+    unsigned contextHintFrameSkip_{0};
+    unsigned fishHashFrameSkip_{0};
     float cloudAngle_{};
-    Light* sunLight_{};
-    Light* moonLight_{};
+    WeakPtr<Light> sunLight_;
+    WeakPtr<Light> moonLight_;
     SharedPtr<Material> skyboxMat_;
 
     // --- Melbourne time (computed locally via tzdata) ---
@@ -350,6 +435,20 @@ private:
     ScrollView* inspectorScroll_{};
     UIElement* inspectorContent_{};
 
+    // --- Creature Inspect HUD ---
+    void ShowInspectPanel(Creature* creature);
+    void HideInspectPanel();
+    void UpdateInspectPanel();
+    SharedPtr<Window> inspectPanel_;
+    Text* inspectNameText_{};
+    BorderImage* inspectHpBar_{};
+    BorderImage* inspectHungerBar_{};
+    BorderImage* inspectThirstBar_{};
+    BorderImage* inspectWarmthBar_{};
+    BorderImage* inspectStaminaBar_{};
+    Text* inspectStateText_{};
+    WeakPtr<Node> inspectedNode_;
+
     // --- Debug Log window ---
     void CreateDebugLogWindow();
     void ToggleDebugLogWindow();
@@ -375,7 +474,10 @@ private:
     Text* clockText_{};
     bool menuOpen_{false};
     int heightFogOverride_{0};  // 0=auto (time-based), 1=forced on, -1=forced off
-    bool godRaysEnabled_{true};
+    bool godRaysEnabled_{false};
+    bool shadowsEnabled_{false};
+    bool waterReflectionEnabled_{true};
+    bool postProcessEnabled_{true};
     bool hemisphereEnabled_{true};
 
     // --- Weather state ---
@@ -391,6 +493,12 @@ private:
     Text* rainLabel_{};
     float rainOverride_{-1.0f};  // -1 = auto (follows precipitation), 0..1 = manual override
 
+    // --- Drought visual system (client-derived from weather) ---
+    float droughtSeverity_{0.0f};   // 0.0 = normal, 1.0 = severe drought
+    float baseWaterY_{5.0f};        // original water surface height
+    WeakPtr<Node> dustEmitterNode_;
+    void UpdateDroughtVisuals(float timeStep);
+
     // --- Cached seasonal state (only recomputed when dayOfYear_ changes) ---
     int lastSeasonDay_{-1};
     float cachedSeasonFactor_{};
@@ -403,6 +511,8 @@ private:
     // Seasonal skybox cubemaps: spring=0, summer=1, autumn=2, winter=3
     SharedPtr<TextureCube> seasonSkyboxes_[4];
     int lastSeasonIndex_{-1};
+    // Weather skybox cubemaps: clear, overcast, storm
+    SharedPtr<TextureCube> weatherSkyboxes_[3]; // 0=clear, 1=overcast, 2=storm
 
     // --- Weather system (Phase 1: cloud density sampling) ---
     float SampleCloudDensity(const Vector3& worldPos);
@@ -425,7 +535,7 @@ private:
     void HandlePrefabExportChosen(StringHash eventType, VariantMap& eventData);
     void ShowLoadPrefabDialog();
     void HandlePrefabLoadChosen(StringHash eventType, VariantMap& eventData);
-    SharedPtr<Node> prefabBrush_;   // loaded prefab template, cloned on each instance
+    WeakPtr<Node> prefabBrush_;   // loaded prefab template, cloned on each instance
     void HandleRigidBodySleep(StringHash eventType, VariantMap& eventData);
     Text* prefabBrushLabel_{};      // "Object Brush: X" label in File menu
     void UpdatePrefabBrushLabel();
@@ -445,13 +555,25 @@ private:
     // --- Minimap ---
     void CreateMinimap();
     void UpdateMinimapCamera();
-    BorderImage* minimap_{};
-    BorderImage* minimapCameraDot_{};
-    SharedPtr<Texture2D> minimapTex_;
-    SharedPtr<Node> minimapCameraNode_;
+    void UpdateMinimapBlips();
+    void RefreshMinimap();
+    Sprite* minimap_{};
+    Sprite* minimapCameraDot_{};
 
-    // --- Compute shader / Erosion ---
-    void TestComputeShader();
+    // Floating vitals panel — tracks selected creature in screen space
+    void CreateSelectedVitalsPanel();
+    void UpdateSelectedVitalsPanel();
+    UIElement* vitalsPanel_{};
+    BorderImage* vitalHungerBar_{};
+    BorderImage* vitalThirstBar_{};
+    BorderImage* vitalStaminaBar_{};
+    BorderImage* vitalWarmthBar_{};
+    Vector<Sprite*> minimapBlips_;
+    unsigned minimapBlipUsed_{0};
+    SharedPtr<Texture2D> minimapTex_;
+    WeakPtr<Node> minimapCameraNode_;
+
+    // --- Erosion ---
     void RunErosion(int iterations);
     void WakeSleepingBodiesOnTerrain();
     void HandleErosionSlider(StringHash eventType, VariantMap& eventData);
@@ -473,12 +595,21 @@ private:
     // --- Animals ---
     void CreateAnimals();
     Vector<WeakPtr<Node>> animalNodes_;
+    /// Replicated creature components — driven manually since LogicComponent
+    /// event subscriptions don't work for components on replicated nodes.
+    Vector<WeakPtr<Creature>> replicatedCreatures_;
+
+    // --- Loose Resources ---
+    void CreateResourceMap();
+    void UpdateResourceStreaming();
+    void TryPickupAtCursor(const Ray& pickRay);
+    void HandleResourceDepleted(MemoryBuffer& msg);
 
     // --- Rain particles ---
     void CreateRain();
     void UpdateRain(float timeStep);
-    SharedPtr<Node> rainNode_;
-    ParticleEmitter* rainEmitter_{};
+    WeakPtr<Node> rainNode_;
+    WeakPtr<ParticleEmitter> rainEmitter_;
     SharedPtr<ParticleEffect> rainEffect_;
 
     // --- Snow particles ---
@@ -486,25 +617,144 @@ private:
     void UpdateSnow(float timeStep);
     float CalculateTemperature() const;
     float CalculateEffectiveTemperature() const;
-    SharedPtr<Node> snowNode_;
-    ParticleEmitter* snowEmitter_{};
+    WeakPtr<Node> snowNode_;
+    WeakPtr<ParticleEmitter> snowEmitter_;
     SharedPtr<ParticleEffect> snowEffect_;
 
-    // --- Grass (GPU-driven) ---
-    void CreateGrass();
-    SharedPtr<class GrassSystem> grassSystem_;
+    // --- Ecosystem ---
+    void CreateEcosystem();
+    // CreateTrees removed — trees are server-authoritative (see InitTreeModels + HandleSpawnTree)
+    SharedPtr<EcosystemManager> ecosystem_;
+    SharedPtr<ResourceMap> resourceMap_;
+
+    // --- Trees (server-authoritative, client caches models) ---
+    void InitTreeModels();
+    void UpdateTreeSeason(float seasonAngle);
+    void UpdateTreeLOD();
+    static constexpr int NUM_TREE_SPECIES = 6;  // 0=oak,1=pine,2=eucalyptus,3=acacia,4=willow,5=sheoak
+    SharedPtr<Model> treeModel_[NUM_TREE_SPECIES];
+    SharedPtr<Model> treeModelLOD1_[NUM_TREE_SPECIES];
+    SharedPtr<Material> treeBarkMat_[NUM_TREE_SPECIES];
+    SharedPtr<Material> treeLeafMat_[NUM_TREE_SPECIES];
+    SharedPtr<Material> treeImposterMat_[NUM_TREE_SPECIES];
+    SharedPtr<Model> treeImposterQuad_;
+    Color treeBaseLeafColor_[NUM_TREE_SPECIES];
+    bool treeEvergreen_[NUM_TREE_SPECIES]{};
+    bool treeModelsReady_{false};
+    float treeLodTimer_{0.0f};
+    /// Active resource pickup nodes spawned by streaming LOD.
+    HashMap<unsigned, WeakPtr<Node>> activePickupNodes_;
+    float resourceStreamTimer_{};
+
+    // --- Grass (GPU-driven) --- QUARANTINED
+    // void CreateGrass();
+    // SharedPtr<class GrassSystem> grassSystem_;
+
+    // --- Water ripples ---
+    SharedPtr<class WaterRippleSystem> rippleSystem_;
+
+    // --- Soundscape ---
+    WeakPtr<class Soundscape> soundscape_;
+
+    // --- Metal deposits ---
+    WeakPtr<class MetalDeposits> metalDeposits_;
 
     // --- Fish ---
     void CreateFish();
     void CreateSchoolFish();
     void RebuildFishSpatialHash();
     FishSpatialHash fishSpatialHash_;
+
+    void RebuildLandAnimalSpatialHash();
+    LandAnimalSpatialHash landAnimalHash_;
+    Vector<WeakPtr<Node>> fishNodes_;
     SchoolStateCache schoolStateCache_;
+
+    /// Server-provided fish spawn points (from water body analysis).
+    struct FishSpawnInfo { float x, z, depth; };
+    Vector<FishSpawnInfo> serverFishSpawns_;
     int frameNumber_{0};
+
+    // --- Settlement Patch Ownership ---
+    HashMap<unsigned long long, unsigned> patchClaims_;  // (sx<<16|sz) → settlement ID
+    Vector<WeakPtr<Node>> patchOverlayNodes_;
+    bool showTerritoryOverlay_{false};
+    void HandleSettlementClaims(MemoryBuffer& msg);
+    void UpdateTerritoryOverlay();
+    /// Get a unique color for a settlement ID.
+    Color SettlementColor(unsigned settlementId);
 
     // --- Campfire ---
     void CreateCampfire();
-    Node* campfireNode_{};
+    WeakPtr<Node> campfireNode_;
+    WeakPtr<Light> campfireLight_;
+    float fireBrightnessTarget_{1.5f};
+    float fireBrightnessCurrent_{1.5f};
+    Color fireColorTarget_{1.0f, 0.6f, 0.2f};
+    Color fireColorCurrent_{1.0f, 0.6f, 0.2f};
+    float fireFadeTime_{0.3f};
+    float fireFadeTimer_{0.0f};
+    bool campfireRayVisible_{false};
+    WeakPtr<ParticleEmitter> campfireFireEmitter_;
+    WeakPtr<ParticleEmitter> campfireSmokeEmitter_;
+    WeakPtr<ParticleEmitter> campfireEmbersEmitter_;
+    float embersPhase_{0.0f};  // pulsation phase [0..2π]
+    // Fuel system — real wallclock seconds, immune to day-cycle scrub
+    float fuelSeconds_{270.0f};      // current remaining fuel (≈3 sticks at startup)
+    float maxFuelSeconds_{1800.0f};  // capacity cap (~30 min of stored burn)
+    float fireIntensity_{1.0f};      // derived [0..1], drives visuals
+    // Cached "max" baseline values, captured at CreateCampfire() and modulated by intensity each frame
+    float cfBaseFireRateMin_{0.0f};
+    float cfBaseFireRateMax_{0.0f};
+    float cfBaseSmokeRateMin_{0.0f};
+    float cfBaseSmokeRateMax_{0.0f};
+    float cfBaseLightBrightness_{1.5f};
+    float cfBaseLightRange_{5.0f};
+    bool fireOut_{false};            // latched true when fuel runs out, false on relight
+    // Fire System Phase 3 — server-authoritative pit state. When set, the
+    // local Campfire mirrors server burnUnits + burnRate (extrapolating between
+    // E_PIT_STATE_CHANGED broadcasts). Local UpdateCampfireFuel still runs but
+    // serves as the extrapolation step; broadcasts snap us back to truth.
+    unsigned activeFirePitId_{0};
+    float activeFirePitBurnRate_{1.0f};
+    float activeFirePitDist_{999.0f};       // XZ distance to adopted pit (for nearest-pit switching)
+    unsigned char activeFirePitState_{0};   // mirrors server FirePitState (0=UNLIT,1=LIT,2=EMBERS,3=COLD)
+    DrivenKey burnCurveKey_;  // Non-linear burn rate — matches server's campfire_burn.json
+    float activeFirePitWetness_{0.0f};
+    void HandlePitStateChanged(StringHash eventType, VariantMap& eventData);
+    void UpdateCampfireFuel(float realTimeStep);
+    void TryCampfireInteract();
+    void TryPlantCrop();
+    void TryHarvestCrop();
+    // Phase 4a: friction ignition client-side tracking
+    bool ignitionActive_{false};     // server confirmed ignition is running
+    float ignitionProgress_{0.0f};   // 0.0-1.0 progress (from server status events)
+    void HandlePitIgnitionStatus(StringHash eventType, VariantMap& eventData);
+    // Woodpile server sync — receive authoritative pile state from server
+    void HandleWoodpileState(StringHash eventType, VariantMap& eventData);
+    // Phase 1 fuel item burn durations (real seconds). Phase 2 will read these from GameDB.
+    static constexpr float STICK_BURN_SECONDS = 90.0f;
+    static constexpr float CHARCOAL_BURN_SECONDS = 600.0f;
+    void HandleCampfireSlider(StringHash eventType, VariantMap& eventData);
+    void HandleCampfireSettingsChanged(StringHash eventType, VariantMap& eventData);
+    void HandleAnimationTextKey(StringHash eventType, VariantMap& eventData);
+    Text* cfFireRateLabel_{};
+    Text* cfFireSizeLabel_{};
+    Text* cfSmokeRateLabel_{};
+    Text* cfSmokeSizeLabel_{};
+    Text* cfLightRangeLabel_{};
+    Text* cfBrightnessLabel_{};
+    Text* cfVelocityLabel_{};
+    Text* cfUpdraftLabel_{};
+    Text* cfLifetimeLabel_{};
+    Text* cfSmokeEmitSizeLabel_{};
+    Text* cfSmokeGrowLabel_{};
+    Text* cfSmokeLifeLabel_{};
+    Text* cfSmokeRiseLabel_{};
+    Text* cfSmokeDampLabel_{};
+    // Slider pointers for syncing UI from loaded scene state
+    HashMap<int, Slider*> campfireSliders_;
+    void SyncCampfireUI();
 
     // --- OOFO fleet ---
     void CreateOOFOs();
@@ -517,8 +767,40 @@ private:
     bool oofoRayVisible_{false};
     bool landAnimalRayVisible_{false};
     bool waterAnimalRayVisible_{false};
+    // Per-species ray toggles
+    bool rabbitRayVisible_{false};
+    bool deerRayVisible_{false};
+    bool foxRayVisible_{false};
+    bool wolfRayVisible_{false};
+    bool stagRayVisible_{false};
+    bool bullRayVisible_{false};
+    bool cowRayVisible_{false};
+    bool horseRayVisible_{false};
+    bool donkeyRayVisible_{false};
+    bool alpacaRayVisible_{false};
+    bool huskyRayVisible_{false};
+    bool shibaInuRayVisible_{false};
+    bool caveManRayVisible_{false};
+    bool caveWomanRayVisible_{false};
+    bool fishRayVisible_{false};
+    bool schoolFishRayVisible_{false};
     bool fireRayVisible_{false};
     bool grassRayVisible_{false};
+    // Per-species visibility toggles (default all visible)
+    bool rabbitVisible_{true};
+    bool deerVisible_{true};
+    bool foxVisible_{true};
+    bool wolfVisible_{true};
+    bool stagVisible_{true};
+    bool bullVisible_{true};
+    bool cowVisible_{true};
+    bool horseVisible_{true};
+    bool donkeyVisible_{true};
+    bool alpacaVisible_{true};
+    bool huskyVisible_{true};
+    bool shibaInuVisible_{true};
+    bool caveManVisible_{true};
+    bool caveWomanVisible_{true};
 
     // --- AuthServer discovery & connection ---
     void DiscoverAuthServer();
@@ -531,7 +813,7 @@ private:
     void HandleAuthConnectButton(StringHash eventType, VariantMap& eventData);
     void UpdateAuthButtonState();
     String authServerAddress_{"127.0.0.1"};
-    unsigned short authServerPort_{9090};
+    unsigned short authServerPort_{63697};  // Game server (cosmic prime)
     float discoveryTimer_{0.0f};
     float discoveryInterval_{3.0f};  // retry every 3 seconds
     bool authConnected_{false};
@@ -568,6 +850,7 @@ private:
     void HandleEditReject(MemoryBuffer& msg);
     void HandleEditBroadcast(MemoryBuffer& msg);
     void HandleResourcePatch(MemoryBuffer& msg);
+    void HandleNewTerrain(MemoryBuffer& msg);
     void SendPatchPosition(int patchX, int patchZ);
     int lastReportedPatchX_{0x7FFFFFFF};
     int lastReportedPatchZ_{0x7FFFFFFF};
@@ -578,6 +861,7 @@ private:
         IntVector2 regionMin;   // top-left in heightmap coords
         IntVector2 regionSize;  // width x height of snapshotted region
         Vector<unsigned char> heightData;  // raw pixel data of the region before edit
+        Vector<unsigned char> waterData;   // water map region snapshot (mode 6 only)
     };
     unsigned nextEditID_{1};
     HashMap<unsigned, TerrainEditSnapshot> terrainEditSnapshots_;
@@ -596,26 +880,60 @@ private:
     static constexpr float EDIT_SEND_INTERVAL = 0.1f;  // 100ms rate limit
     bool replayingBroadcast_{false};  // true while replaying a remote edit — suppresses re-send
 
-    // --- Player avatar & camera modes ---
-    Node* CreatePlayerAvatar();
+    // --- Camera modes & possession ---
     void UpdateCharacterCamera();
     void HandlePhysicsPreStep(StringHash eventType, VariantMap& eventData);
     void HandleClientConnected(StringHash eventType, VariantMap& eventData);
     void HandleClientDisconnected(StringHash eventType, VariantMap& eventData);
     void HandleClientObjectID(StringHash eventType, VariantMap& eventData);
+    /// Attach creature logic component to a replicated node by creatureId.
+    void AttachCreatureComponent(Node* creatureNode, int creatureId);
+    /// Detect server-replicated creature nodes and attach client-side logic components.
+    void HandleNodeAdded(StringHash eventType, VariantMap& eventData);
 
     // cameraMode_ is inherited from Sample (CAM_GOD, CAM_CHASE, CAM_FIRSTPERSON)
     unsigned clientObjectID_{};
     WeakPtr<Node> characterNode_;
     HashMap<Connection*, WeakPtr<Node>> serverObjects_;
 
+    // --- God mode camera + possession ---
+    void TogglePossession();             // Legacy toggle (P key) — retained for backward compat
+    void PossessNPC(Node* npcNode);      // Possess a specific HumanNPC
+    void UnpossessNPC();                 // Return to god cam
+    void UpdatePossessionLerp(float timeStep);
+    WeakPtr<Node> possessedNPC_;         // Currently possessed HumanNPC node (null = god cam)
+    bool possessing_{false};             // true = player controls character, false = god mode
+    int possessedNPCPlayerId_{-1};       // Server-assigned playerId for possessed NPC's inventory (-1 = none)
+    bool possessionLerping_{false};      // true during camera transition
+    float possessionLerpTime_{0.0f};
+    static constexpr float POSSESSION_LERP_DURATION = 0.3f;
+    Vector3 possessionLerpStartPos_;
+    Quaternion possessionLerpStartRot_;
+    Vector3 possessionLerpEndPos_;
+    Quaternion possessionLerpEndRot_;
+
+    // --- 3D Audio listener ---
+    Node* listenerNode_{};               // Owns the SoundListener component
+    void UpdateListenerPosition();       // Called after possession lerp completes
+
     // --- Water / rendering ---
     SharedPtr<Node> reflectionCameraNode_;
-    SharedPtr<Node> waterNode_;
+    WeakPtr<Node> waterNode_;
     Plane waterPlane_;
     Plane waterClipPlane_;
     SharedPtr<ProfilerUI> profilerUI_;
     RenderPath* renderPath_{};
+
+    /// Performance Phase 4 — shader parameter deduplication.
+    /// Wraps `renderPath_->SetShaderParameter` and skips uploads when the
+    /// value is identical to the last one. Per-frame god-ray spam (8 calls
+    /// in the sun update path, most of which are static literals like 0.5,
+    /// 0.97, 0.4) becomes 0 uploads after the first frame.
+    void SetShaderParamCached(const String& name, const Variant& value);
+    /// Cache invalidation hook for the cached shader params.
+    /// Call after a render path swap (e.g. when post-process effects change).
+    void InvalidateShaderParamCache() { shaderParamCache_.Clear(); }
+    HashMap<String, Variant> shaderParamCache_;
     RenderPath* reflectionRenderPath_{};
     WeakPtr<Zone> zone_;
     WeakPtr<Terrain> terrain_;
@@ -656,7 +974,15 @@ private:
     void RefreshInventoryGrid();
     void ToggleInventory();
     void SendPickup(unsigned nodeId);
+    void SendResourceHarvest(const Vector3& worldPos, int itemId);
     void SendDrop(int itemId, int qty);
+
+    // Combat
+    void TryMeleeAttack();
+    void HandleCombatResult(int msgID, MemoryBuffer& msg);
+    /// Combat Phase 2: server-authoritative creature death message handler.
+    /// Triggers the death animation and fires E_CREATUREDIED on the local node.
+    void HandleCreatureDeath(MemoryBuffer& msg);
 
     struct ClientInventorySlot
     {
@@ -721,6 +1047,47 @@ private:
 
     // --- Crafting UI (Phase 4) ---
     void InitGameDB();
+    void HandleAnimalDied(StringHash eventType, VariantMap& eventData);
+
+    /// Spawn one creature of the given species at the given position.
+    /// Used by both the initial CreateAnimals loop and the Phase 1
+    /// MSG_SPAWN_CREATURE handler. Returns the created LandAnimal* or
+    /// nullptr if the species is unknown / scene is missing.
+    /// pos.y is used as-is — caller is responsible for snapping to terrain
+    /// (the spawn-loop has already done so; the message handler does it
+    /// just before calling).
+    class LandAnimal* SpawnCreatureAt(int creatureId, const Vector3& pos);
+
+    /// Server→client MSG_SPAWN_CREATURE handler. Reads regionId, creatureId,
+    /// and (x, 0, z) from the message; snaps Y to terrain; calls SpawnCreatureAt.
+    void HandleSpawnCreatureMsg(StringHash eventType, VariantMap& eventData);
+
+    // ── Server-Authoritative Creature AI (NPC AI Phase 1) ──────────────
+    /// Handle MSG_CREATURE_AI_STATE — server pushes authoritative creature state.
+    void HandleCreatureAIState(MemoryBuffer& msg);
+    /// Map server-assigned spawnId → local scene node for AI state correlation.
+    HashMap<unsigned, WeakPtr<Node>> spawnIdToNode_;
+
+    // ── Server-Authoritative Trees ──────────────────────────────────────
+    void HandleSpawnTree(MemoryBuffer& msg);
+    /// Map server tree ID → local scene node for removal on harvest.
+    HashMap<unsigned, WeakPtr<Node>> treeIdToNode_;
+    unsigned focusedTreeId_{0};
+    void SendChopTree(unsigned treeId);
+    // Arrow HUD — shows ammo count when bow equipped
+    void UpdateArrowHUD();
+    WeakPtr<Text> arrowCountText_;
+
+    // ── Torch Visual System (Fire Carrying Phase 2) ─────────────────────
+    void UpdateTorchVisual();
+    void CreateTorchFlame(int fireItemId);
+    void RemoveTorchFlame(bool showExtinguish);
+    WeakPtr<Node> torchFlameNode_;
+    int equippedTorchItem_{0};  // 0=none, 109=basic, 871=resin
+
+    // ── Bark Vessel Visual States (Water Phase 1) ���───────────────────
+    /// Update NPC's bark vessel visual: fire glow, water shimmer, or nothing.
+    void UpdateNPCVesselVisual(Node* npcNode, unsigned char contents);
     void CreateCraftingUI();
     void RefreshRecipeList();
     void SelectRecipe(int index);
@@ -733,6 +1100,7 @@ private:
     void SendCraft(int recipeId);
 
     SharedPtr<class GameDB> gameDB_;
+    SharedPtr<class PopulationManager> popManager_;
     Vector<struct RecipeInfo> recipes_;
     int selectedRecipeIndex_{-1};
     bool craftingOpen_{false};
@@ -793,18 +1161,146 @@ private:
     SharedPtr<Window> itemTooltip_;
     Button* sortButton_{};
 
-    // --- Building System (Phase 1) ---
+    // --- Biome Classification ---
+    BiomeType ClassifyTerrain(const Vector3& worldPos) const;
+    void SampleWeightMap(const Vector2& uv, float& outR, float& outG, float& outB) const;
+    void CacheWeightMapImage();
+    SharedPtr<Image> weightMapImage_;   ///< CPU-side weight map for biome sampling
+    bool biomeDebugOverlay_{false};     ///< F7 toggles biome name at crosshair
+
+    // --- Water Distance Map (for habitat spawning) ---
+    void BuildWaterDistanceMap();
+    float SampleWaterDistance(float worldX, float worldZ) const;
+    Vector<float> waterDistMap_;        ///< Low-res grid of distances to nearest water
+    int waterDistMapW_{0};              ///< Grid width (cells)
+    int waterDistMapH_{0};              ///< Grid height (cells)
+    float waterDistCellSize_{0.0f};     ///< World units per cell
+    Vector3 waterDistOrigin_;           ///< World-space origin of the grid
+
+    // --- Building System ---
     void InitBuildingSystem();
     void LoadBuildingTypes();
+    void LoadSnapRules();
     void CreateBuildMenuUI();
     void RefreshBuildMenu();
     void ToggleBuildMode();
     void HandleBuildMenuSelect(StringHash eventType, VariantMap& eventData);
     void HandleBuildMessage(int msgID, MemoryBuffer& msg);
+    void TryGateInteract();
+    void TryBuildingInteract();
+    /// Fire system Phase 2b: deposit available softwood/hardwood from inventory
+    /// into the named woodpile, respecting per-type capacity. Client-only
+    /// state until Phase 3 wires server authority.
+    void DepositToWoodpile(int placedId);
 
     SharedPtr<BuildingSystem> buildingSystem_;
+    HabitatRules habitatRules_;
     SharedPtr<Window> buildMenuWindow_;
     ListView* buildMenuList_{};
     Text* buildStatusText_{};
     bool buildMenuOpen_{false};
+    int focusedGateId_{-1};
+    // Fire system Phase 2b — focused woodpile (set by hint scanner, consumed by E-key)
+    int focusedWoodpileId_{-1};
+
+    // Resource Chain Phase 2 — focused harvest target (set by hint scanner, consumed by E-key)
+    unsigned focusedHarvestNodeId_{0};
+    int      focusedHarvestCreatureId_{0};
+
+    // Resource Chain Phase 2 — trap state lookup. Server trap node id → local PlacedTrap node.
+    // Populated in MSG_TRAP_SPAWNED, looked up in MSG_TRAP_REMOVED + the trap-check scanner.
+    // Replaces a per-removal scene walk (Planner fix-now from TASK_RESOURCE_CHAIN_PHASE_2.md addendum).
+    HashMap<unsigned, WeakPtr<Node>> trapNodes_;
+    /// Placed crops: cropId → scene node. Populated by MSG_CROP_SPAWNED, removed by MSG_CROP_REMOVED.
+    HashMap<int, WeakPtr<Node>> cropNodes_;
+    // Trap-check scanner: per (trap, creature) dedupe so a creature standing in range only
+    // generates one MSG_TRAP_CHECK round-trip. Cleared per-trap when the creature leaves range
+    // or the trap is removed.
+    HashMap<unsigned, HashSet<unsigned>> trapCheckSent_;
+    float    trapCheckTimer_{0.0f};
+    static constexpr float TRAP_CHECK_INTERVAL = 1.0f;  // scan at 1 Hz
+    // Conservative outer bound — covers the widest seed_data.sql attract_range (40m for Meat Trap
+    // Wolf and Berry Trap Deer). Server enforces the real per-(trap,creature) range from GameDB,
+    // so this only needs to be ≥ the max seed value. Future Phase 3 polish: cache the actual
+    // range per placed trap from GameDB at spawn time so the scanner can be tighter per trap.
+    static constexpr float TRAP_CHECK_RADIUS   = 40.0f;
+    /// Scan placed traps against local animals; send MSG_TRAP_CHECK for any new pair in range.
+    void ScanTrapsForCatches();
+
+    // Respawn
+    int respawnBuildingId_{0};
+    Vector3 respawnPosition_;
+
+    // Combat fumble effect — floating text + camera shake on nat 1
+    WeakPtr<Text> fumbleText_;
+    float fumbleTextTimer_{0.0f};
+    float fumbleTextStartY_{0.0f};
+    float cameraShakeTimer_{0.0f};
+    void ShowFumbleEffect();
+
+    // Offline mode — auto-launch local AuthServer + connect with reserved login.
+    // State machine driven by HandleOfflineButton, HandleConnectFailed,
+    // HandleServerConnected, and TickOfflineConnect (called from HandleUpdate).
+    enum OfflineMode
+    {
+        OFFLINE_NONE = 0,         ///< Not in an offline-mode flow.
+        OFFLINE_TRY_CONNECT,      ///< First connect attempt; if it fails we'll spawn.
+        OFFLINE_SPAWN_PENDING,    ///< AuthServer just spawned; waiting for retry timer.
+        OFFLINE_RETRY_CONNECT,    ///< Post-spawn retry attempt.
+    };
+    OfflineMode offlineMode_{OFFLINE_NONE};
+    float offlineRetryTimer_{0.0f};
+    int   offlineRetriesLeft_{0};
+    static constexpr int   OFFLINE_MAX_RETRIES   = 30;   // 30 × 1s = 30s window for AuthServer startup
+    static constexpr float OFFLINE_RETRY_INTERVAL = 1.0f;  // seconds between retries
+    void TickOfflineConnect(float timeStep);
+    void OfflineSpawnAuthServer();
+    void OfflineDial();
+
+    // --- Trade System (Client UI) ---
+    void SendTradeRequest(unsigned targetNodeId);
+    void SendTradeOffer(int itemId, int qty, bool adding);
+    void SendTradeLock();
+    void SendTradeCancel();
+    void SendTradeAccept();
+    void SendTradeReject();
+    void HandleTradeIncoming(MemoryBuffer& msg);
+    void HandleTradeAccepted(MemoryBuffer& msg);
+    void HandleTradeUpdate(MemoryBuffer& msg);
+    void HandleTradeLock(MemoryBuffer& msg);
+    void HandleTradeComplete(MemoryBuffer& msg);
+    void HandleTradeCancel(MemoryBuffer& msg);
+    void CreateTradeUI();
+    void RefreshTradeOffers();
+    void CloseTradeWindow();
+    void HandleTradeOfferSlotClick(StringHash eventType, VariantMap& eventData);
+    void HandleTradeBagSlotClick(StringHash eventType, VariantMap& eventData);
+
+    struct TradeOfferItem
+    {
+        int itemId{};
+        int quantity{};
+        String itemName;
+    };
+    bool tradeOpen_{false};
+    bool tradePending_{false};
+    bool tradeLocked_{false};
+    bool tradePartnerLocked_{false};
+    SharedPtr<Window> tradeWindow_;
+    Vector<Button*> tradeMyOfferSlots_;
+    Vector<Button*> tradeTheirOfferSlots_;
+    Vector<TradeOfferItem> myTradeOffer_;
+    Vector<TradeOfferItem> theirTradeOffer_;
+    Text* tradeStatusText_{};
+    Button* tradeLockBtn_{};
+    Button* tradeCancelBtn_{};
+    // Incoming trade request prompt
+    bool tradeIncomingPending_{false};
+    int tradeIncomingPlayerId_{-1};
+    String tradeIncomingName_;
+    SharedPtr<Window> tradePromptWindow_;
+    // Phase 2: proximity warning
+    unsigned tradePartnerNodeId_{0};
+    float tradeProximityCheckTimer_{0.0f};
+
 };

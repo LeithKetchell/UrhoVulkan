@@ -1,6 +1,7 @@
 // Copyright (c) 2008-2022 the Urho3D project
 // License: MIT
 
+#include <cstring>
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Graphics/BillboardSet.h>
@@ -20,6 +21,8 @@
 #include <Urho3D/Graphics/AnimatedModel.h>
 #include <Urho3D/Graphics/Animation.h>
 #include <Urho3D/Graphics/AnimationController.h>
+#include <Urho3D/Graphics/Animation.h>
+#include <Urho3D/Graphics/DrawableEvents.h>
 #include <Urho3D/Graphics/ParticleEffect.h>
 #include <Urho3D/Graphics/ParticleEmitter.h>
 #include <Urho3D/Graphics/Terrain.h>
@@ -41,8 +44,23 @@
 #include <Urho3D/Physics/CollisionShape.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Resource/XMLFile.h>
+#include <Urho3D/Resource/JSONFile.h>
 #include <Urho3D/Scene/Scene.h>
 #include <Urho3D/Scene/SceneEvents.h>
+#include <Urho3D/Scene/SmoothedTransform.h>
+#include <Urho3D/Scene/DrivenKeySystem.h>
+#include <Urho3D/Scene/DrivenKeyEvents.h>
+#include <Urho3D/Audio/Audio.h>
+#include <Urho3D/Audio/AudioDefs.h>
+#include <Urho3D/Audio/SoundListener.h>
+#include "MetalDeposits.h"
+#include "Soundscape.h"
+#include "WaterRippleSystem.h"
+#include "CampfireEvents.h"
+#include "ScentRegistry.h"
+#include "Creature.h"
+#include "LTreeGenerator.h"
+// Game settings stored as Vars on scene root node — auto-serialize with scene
 #include <Urho3D/UI/Font.h>
 #include <Urho3D/UI/Slider.h>
 #include <Urho3D/UI/Text.h>
@@ -89,6 +107,17 @@ TerrainNode::TerrainNode(Context* context) :
 
 void TerrainNode::Stop()
 {
+    // Clean up possession state before shutdown
+    if (possessedNPC_)
+    {
+        auto* npc = possessedNPC_->GetDerivedComponent<HumanNPC>(false);
+        if (npc)
+            npc->SetPossessed(false);
+        possessedNPC_ = nullptr;
+        possessing_ = false;
+        characterNode_ = nullptr;
+    }
+
     skyboxMat_.Reset();
     for (int i = 0; i < 4; ++i)
         seasonSkyboxes_[i].Reset();
@@ -195,6 +224,13 @@ void TerrainNode::SelectNode(Node* node)
     HighlightInHierarchy(node);
     if (inspectorWindow_ && inspectorWindow_->IsVisible())
         RebuildInspector();
+
+    // Show inspect HUD if this is a creature
+    auto* creature = node->GetDerivedComponent<Creature>(true);
+    if (creature)
+        ShowInspectPanel(creature);
+    else
+        HideInspectPanel();
 }
 
 void TerrainNode::DeselectNode()
@@ -219,7 +255,143 @@ void TerrainNode::DeselectNode()
     // Clear inspector
     if (inspectorWindow_ && inspectorWindow_->IsVisible())
         RebuildInspector();
+
+    HideInspectPanel();
 }
+
+// ── Creature Inspect HUD ─────────────────────────────────────────────────────
+
+static const char* CreatureStateName(CreatureState s)
+{
+    switch (s)
+    {
+    case CREATURE_IDLE:     return "IDLE";
+    case CREATURE_WANDER:   return "WANDER";
+    case CREATURE_EAT:      return "EAT";
+    case CREATURE_FLEE:     return "FLEE";
+    case CREATURE_FIGHT:    return "FIGHT";
+    case CREATURE_DIE:      return "DIE";
+    case CREATURE_SIT:      return "SIT";
+    case CREATURE_SLEEP:    return "SLEEP";
+    case CREATURE_HUNT:     return "HUNT";
+    case CREATURE_ALERT:    return "ALERT";
+    case CREATURE_SCAVENGE: return "SCAVENGE";
+    case CREATURE_CORPSE:   return "CORPSE";
+    case CREATURE_TRAPPED:  return "TRAPPED";
+    case CREATURE_VICTORY:  return "VICTORY";
+    default:                return "???";
+    }
+}
+
+static BorderImage* CreateVitalBar(Context* ctx, UIElement* parent, Font* font, const String& label, const Color& color, int yPos)
+{
+    auto* row = parent->CreateChild<UIElement>();
+    row->SetPosition(8, yPos);
+    row->SetFixedSize(180, 16);
+
+    auto* lbl = row->CreateChild<Text>();
+    lbl->SetFont(font, 10);
+    lbl->SetText(label);
+    lbl->SetColor(Color(0.87f, 0.8f, 0.73f));
+    lbl->SetPosition(0, 0);
+
+    auto* bg = row->CreateChild<BorderImage>();
+    bg->SetPosition(65, 2);
+    bg->SetFixedSize(110, 12);
+    bg->SetColor(Color(0.15f, 0.15f, 0.15f));
+
+    auto* fill = bg->CreateChild<BorderImage>();
+    fill->SetPosition(0, 0);
+    fill->SetFixedSize(110, 12);
+    fill->SetColor(color);
+
+    return fill;
+}
+
+void TerrainNode::ShowInspectPanel(Creature* creature)
+{
+    if (!creature || !creature->GetNode())
+        return;
+
+    inspectedNode_ = creature->GetNode();
+
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    if (!inspectPanel_)
+    {
+        inspectPanel_ = new Window(context_);
+        ui->GetRoot()->AddChild(inspectPanel_);
+        inspectPanel_->SetStyleAuto();
+        inspectPanel_->SetFixedSize(196, 140);
+        inspectPanel_->SetPosition(10, 80);
+        inspectPanel_->SetOpacity(0.85f);
+        inspectPanel_->SetMovable(true);
+
+        inspectNameText_ = inspectPanel_->CreateChild<Text>();
+        inspectNameText_->SetFont(font, 11);
+        inspectNameText_->SetColor(Color(0.95f, 0.9f, 0.8f));
+        inspectNameText_->SetPosition(8, 4);
+
+        inspectHpBar_ = CreateVitalBar(context_, inspectPanel_, font, "HP", Color(0.8f, 0.2f, 0.2f), 22);
+        inspectHungerBar_ = CreateVitalBar(context_, inspectPanel_, font, "Hunger", Color(0.7f, 0.5f, 0.2f), 40);
+        inspectThirstBar_ = CreateVitalBar(context_, inspectPanel_, font, "Thirst", Color(0.2f, 0.5f, 0.8f), 58);
+        inspectWarmthBar_ = CreateVitalBar(context_, inspectPanel_, font, "Warmth", Color(0.8f, 0.6f, 0.1f), 76);
+        inspectStaminaBar_ = CreateVitalBar(context_, inspectPanel_, font, "Stamina", Color(0.2f, 0.7f, 0.3f), 94);
+
+        inspectStateText_ = inspectPanel_->CreateChild<Text>();
+        inspectStateText_->SetFont(font, 10);
+        inspectStateText_->SetColor(Color(0.7f, 0.7f, 0.7f));
+        inspectStateText_->SetPosition(8, 116);
+    }
+
+    inspectPanel_->SetVisible(true);
+    inspectNameText_->SetText(creature->GetNode()->GetName());
+    UpdateInspectPanel();
+}
+
+void TerrainNode::HideInspectPanel()
+{
+    if (inspectPanel_)
+        inspectPanel_->SetVisible(false);
+    inspectedNode_.Reset();
+}
+
+void TerrainNode::UpdateInspectPanel()
+{
+    if (!inspectPanel_ || !inspectPanel_->IsVisible())
+        return;
+    if (inspectedNode_.Expired())
+    {
+        HideInspectPanel();
+        return;
+    }
+
+    auto* creature = inspectedNode_->GetDerivedComponent<Creature>(true);
+    if (!creature)
+    {
+        HideInspectPanel();
+        return;
+    }
+
+    float hunger = creature->GetHunger();
+    float thirst = creature->GetThirst();
+    float warmth = creature->GetWarmth();
+    float stamina = creature->GetStamina();
+    float hp = (float)creature->GetHp();
+    float maxHp = (float)Max(creature->GetMaxHp(), 1);
+
+    inspectHpBar_->SetFixedSize((int)(110.0f * Clamp(hp / maxHp, 0.0f, 1.0f)), 12);
+    inspectHungerBar_->SetFixedSize((int)(110.0f * Clamp(hunger / 100.0f, 0.0f, 1.0f)), 12);
+    inspectThirstBar_->SetFixedSize((int)(110.0f * Clamp(thirst / 100.0f, 0.0f, 1.0f)), 12);
+    inspectWarmthBar_->SetFixedSize((int)(110.0f * Clamp(warmth / 100.0f, 0.0f, 1.0f)), 12);
+    inspectStaminaBar_->SetFixedSize((int)(110.0f * Clamp(stamina / 100.0f, 0.0f, 1.0f)), 12);
+
+    inspectStateText_->SetText(String("State: ") + CreatureStateName(creature->GetState()));
+}
+
+// ── End Creature Inspect HUD ─────────────────────────────────────────────────
 
 // Custom message IDs (must match AuthServer)
 static const int MSG_AUTH_LOGIN      = 100;
@@ -235,21 +407,93 @@ static const StringHash P_ID("ID");
 // Edit messages: MSG_EDIT_TERRAIN (0xA2), MSG_EDIT_OBJECT (0xA3),
 // MSG_EDIT_REJECT (0xA4), MSG_EDIT_BROADCAST (0xA5) — defined in Protocol.h
 
+// Fire System Phase 3 — server pit state replication via remote event.
+// Strings must match AuthServer.cpp definitions.
+static const StringHash E_PIT_STATE_CHANGED("PitStateChanged");
+static const StringHash P_PIT_ID("PitId");
+static const StringHash P_PIT_STATE("State");
+static const StringHash P_PIT_BURN_UNITS("BurnUnits");
+static const StringHash P_PIT_BURN_RATE("BurnRate");
+static const StringHash P_PIT_WETNESS("Wetness");
+static const StringHash P_PIT_POS_X("PosX");
+static const StringHash P_PIT_POS_Z("PosZ");
+static const StringHash P_PIT_UTC_MS("UtcMs");
+static const StringHash P_PIT_MAX_FUEL("MaxFuel");
+
+// Fire System Phase 4b — client→server tend request (embers revival).
+// Strings must match AuthServer.cpp.
+static const StringHash E_PIT_TEND_REQUEST("PitTendRequest");
+static const StringHash P_PIT_TEND_ITEM("ItemId");
+static const StringHash P_PIT_TEND_QTY("Quantity");
+
+// Fire System Phase 4a — friction ignition events. Strings match AuthServer.cpp.
+static const StringHash E_PIT_IGNITE_REQUEST("PitIgniteRequest");
+static const StringHash E_PIT_IGNITION_STATUS("PitIgnitionStatus");
+static const StringHash P_PIT_IGNITION_ACTIVE("Active");
+static const StringHash P_PIT_IGNITION_PROGRESS("Progress");
+
+// Fire System Phase 4c — torch events. Strings match AuthServer.cpp.
+static const StringHash E_TORCH_LIGHT_REQUEST("TorchLightRequest");
+static const StringHash E_TORCH_IGNITE_REQUEST("TorchIgniteRequest");
+
+// Woodpile server sync — strings match AuthServer.cpp.
+static const StringHash E_WOODPILE_DEPOSIT("WoodpileDeposit");
+static const StringHash E_WOODPILE_STATE("WoodpileState");
+static const StringHash P_PILE_BUILDING_ID("BuildingId");
+static const StringHash P_PILE_SOFTWOOD("Softwood");
+static const StringHash P_PILE_HARDWOOD("Hardwood");
+static const StringHash P_PILE_CAPACITY("Capacity");
+
 void TerrainNode::Start()
 {
     Sample::Start();
 
-    // Register player character component for scene replication
-    PlayerCharacter::RegisterObject(context_);
+    // Replace the Sample base's generic window icon + title with our custom
+    // stone-age icon for this app. Sample::Start calls SetWindowTitleAndIcon
+    // which hardcodes Textures/UrhoIcon.png — override here.
+    {
+        auto* graphics = GetSubsystem<Graphics>();
+        auto* cache = GetSubsystem<ResourceCache>();
+        if (auto* icon = cache->GetResource<Image>("Icons/60_TerrainNode.png"))
+            graphics->SetWindowIcon(icon);
+        graphics->SetWindowTitle("Urho3D — TerrainNode");
+    }
 
     // Register animal types
     Rabbit::RegisterObject(context_);
     Deer::RegisterObject(context_);
     Fox::RegisterObject(context_);
+    Wolf::RegisterObject(context_);
+    Stag::RegisterObject(context_);
+    Bull::RegisterObject(context_);
+    Cow::RegisterObject(context_);
+    Horse::RegisterObject(context_);
+    Donkey::RegisterObject(context_);
+    Alpaca::RegisterObject(context_);
+    Husky::RegisterObject(context_);
+    ShibaInu::RegisterObject(context_);
+    CaveMan::RegisterObject(context_);
+    CaveWoman::RegisterObject(context_);
     Fish::RegisterObject(context_);
     SchoolFish::RegisterObject(context_);
-    GrassSystem::RegisterObject(context_);
+    // GrassSystem::RegisterObject(context_);  // QUARANTINED — grass not rendering
     HUD::RegisterObject(context_);
+    ResourcePickup::RegisterObject(context_);
+    BuildingSystem::RegisterObject(context_);  // Re-enabled: needed for network replication
+    Soundscape::RegisterObject(context_);
+    MetalDeposits::RegisterObject(context_);
+
+    // Driven key / response curve system
+    {
+        context_->RegisterSubsystem(new DrivenKeySystem(context_));
+        auto* dks = GetSubsystem<DrivenKeySystem>();
+        if (dks->LoadSet("DrivenKeys/test_curves.json"))
+        {
+            URHO3D_LOGINFO("DrivenKeySystem: test_curves.json loaded OK");
+        }
+        else
+            URHO3D_LOGWARNING("DrivenKeySystem: test_curves.json load FAILED");
+    }
 
     // Fallback RNG seed — local time + favourite prime.
     SetRandomSeed((unsigned)time(nullptr) + 25773u);
@@ -271,6 +515,9 @@ void TerrainNode::Start()
     CreateLoginUI();
 
     Sample::InitMouseMode(MM_FREE);
+
+    // Prevent 10fps throttle when REQUIRE_CLICK_TO_FOCUS blocks re-focus in MM_RELATIVE
+    GetSubsystem<Engine>()->SetMaxInactiveFps(60);
 
     auto* graphics = GetSubsystem<Graphics>();
     auto* ui = GetSubsystem<UI>();
@@ -323,6 +570,9 @@ void TerrainNode::CreateLoginScene()
     seasonSkyboxes_[1] = cache->GetResource<TextureCube>("Textures/SkyboxSummer.xml");
     seasonSkyboxes_[2] = cache->GetResource<TextureCube>("Textures/SkyboxAutumn.xml");
     seasonSkyboxes_[3] = cache->GetResource<TextureCube>("Textures/SkyboxWinter.xml");
+    weatherSkyboxes_[0] = cache->GetResource<TextureCube>("Textures/SkyboxClear.xml");
+    weatherSkyboxes_[1] = cache->GetResource<TextureCube>("Textures/SkyboxOvercast.xml");
+    weatherSkyboxes_[2] = cache->GetResource<TextureCube>("Textures/SkyboxStorm.xml");
 
     // Load cloud map faces for CPU-side weather sampling (BrightDay1 has alpha channel)
     {
@@ -542,8 +792,17 @@ void TerrainNode::HandleLoginButton(StringHash eventType, VariantMap& eventData)
         authConnected_ = false;
     }
 
-    // Connect with PAKE — key exchange will include username and mix password hash
-    network->Connect(authServerAddress_, authServerPort_, scene_);
+    // Create empty game scene for the connection — server will load TestScene.xml
+    // into it via MSG_LOADSCENE. Login scene stays visible until EnterWorld.
+    if (!gameSceneReady_)
+    {
+        gameScene_ = new Scene(context_);
+        SubscribeToEvent(gameScene_, E_ASYNCLOADFINISHED, URHO3D_HANDLER(TerrainNode, OnGameSceneLoaded));
+        // Creature attachment handled by per-frame scan in HandleUpdate
+        gameSceneReady_ = true;
+    }
+    // Connect with the game scene — MSG_LOADSCENE will target this scene
+    network->Connect(authServerAddress_, authServerPort_, gameScene_);
 }
 
 void TerrainNode::HandleRegisterButton(StringHash eventType, VariantMap& eventData)
@@ -578,7 +837,13 @@ void TerrainNode::HandleRegisterButton(StringHash eventType, VariantMap& eventDa
         // Store credentials for sending after connect
         pendingRegisterUsername_ = username;
         pendingRegisterPassword_ = password;
-        network->Connect(authServerAddress_, authServerPort_, scene_);
+        if (!gameSceneReady_)
+        {
+            gameScene_ = new Scene(context_);
+            SubscribeToEvent(gameScene_, E_ASYNCLOADFINISHED, URHO3D_HANDLER(TerrainNode, OnGameSceneLoaded));
+            gameSceneReady_ = true;
+        }
+        network->Connect(authServerAddress_, authServerPort_, gameScene_);
         return;
     }
 
@@ -595,12 +860,189 @@ void TerrainNode::HandleRegisterButton(StringHash eventType, VariantMap& eventDa
 
 void TerrainNode::HandleOfflineButton(StringHash eventType, VariantMap& eventData)
 {
-    loggedInUsername_ = "Offline";
-    URHO3D_LOGINFO("Playing offline — bypassing auth");
-    loginTimer_.Reset();
-    loginTimerActive_ = true;
-    firstFramePending_ = true;
-    EnterWorld();
+    // Offline mode is no longer a hard bypass of AuthServer. The game's
+    // server-authoritative systems (combat HP, harvest, inventory, replacement
+    // spawns, trap-catch, ...) all require an AuthServer connection — there is
+    // no parallel offline code path. Instead, "offline" means: dial the local
+    // AuthServer, and if no process is bound to the port, spawn one ourselves
+    // and retry. The reserved login bypasses the password prompt.
+
+    auto* network = GetSubsystem<Network>();
+    if (!network)
+        return;
+
+    // CRITICAL: turn off LAN discovery before doing anything else. The login
+    // screen's per-frame update loop forcibly overwrites loginStatusText_ to
+    // "Scanning for server..." every frame as long as authDiscovering_ is true,
+    // which would make our offline status text invisible. Also stops the periodic
+    // UDP discovery ping from interfering with our explicit localhost dial.
+    authDiscovering_ = false;
+    discoveryTimer_  = 999999.0f;  // belt + braces — make sure it never re-fires
+
+    // Offline mode: skip PAKE encryption for localhost. The PAKE key
+    // derivation has a server→client key mismatch bug that causes the client
+    // to decrypt server messages as garbage → instant disconnect. Loopback
+    // doesn't need encryption anyway. The auth still uses MSG_AUTH_LOGIN
+    // with the reserved credentials; it's just not wrapped in PAKE.
+    // TODO: fix the SodiumCipher key derivation asymmetry and re-enable PAKE.
+    // network->SetCredentials(String(OFFLINE_RESERVED_USERNAME),
+    //                         String(OFFLINE_RESERVED_PASSWORD));
+    URHO3D_LOGINFO("[NetDebug] Offline mode: PAKE disabled for localhost (crypto bypass)");
+
+    authServerAddress_ = "127.0.0.1";
+    // authServerPort_ keeps its existing value (set during DiscoverAuthServer or
+    // from defaults). The local AuthServer binds to the same port.
+
+    if (loginStatusText_)
+    {
+        loginStatusText_->SetText("Offline mode — connecting to local AuthServer...");
+        loginStatusText_->SetColor(Color(0.7f, 0.7f, 0.9f));
+    }
+    URHO3D_LOGINFOF("Offline mode: button pressed — dialing 127.0.0.1:%u (max %d retries × %.1fs)",
+                     (unsigned)authServerPort_, OFFLINE_MAX_RETRIES, OFFLINE_RETRY_INTERVAL);
+
+    // Spawn a local AuthServer FIRST if none is running. Don't try to
+    // connect before the server exists — that wastes the first attempt,
+    // occupies SLikeNet's connection state, and causes "already in progress"
+    // races on the retry loop.
+    auto* fs = GetSubsystem<FileSystem>();
+    bool serverAlreadyRunning = false;
+    if (fs)
+    {
+        // Quick probe: can we connect to the port? If yes, server is already up.
+        // SLikeNet doesn't have a non-blocking probe, so we check if the binary
+        // is already in the process table. This isn't perfect but avoids spawning
+        // a duplicate.
+        String binaryName = "AuthServer";
+        unsigned probe = fs->SystemRun(
+            "/bin/sh", {"-c", "pgrep -x " + binaryName + " >/dev/null 2>&1"});
+        serverAlreadyRunning = (probe == 0);
+    }
+
+    if (!serverAlreadyRunning)
+    {
+        URHO3D_LOGINFO("[NetDebug] No local AuthServer detected — spawning before connect");
+        OfflineSpawnAuthServer();
+    }
+    else
+        URHO3D_LOGINFO("[NetDebug] Local AuthServer already running — skipping spawn");
+
+    offlineMode_ = OFFLINE_SPAWN_PENDING;
+    offlineRetriesLeft_ = OFFLINE_MAX_RETRIES;
+    offlineRetryTimer_  = 2.0f;  // give the server 2s head start before first dial
+}
+
+void TerrainNode::OfflineDial()
+{
+    auto* network = GetSubsystem<Network>();
+    if (!network)
+        return;
+
+    // If a stale connection is open, drop it before dialing again.
+    if (authConnected_)
+    {
+        network->Disconnect(100);
+        authConnected_ = false;
+    }
+
+    URHO3D_LOGINFOF("Offline mode: Connect(%s, %u) [state=%d retriesLeft=%d]",
+                     authServerAddress_.CString(), (unsigned)authServerPort_,
+                     (int)offlineMode_, offlineRetriesLeft_);
+    if (!gameSceneReady_)
+    {
+        gameScene_ = new Scene(context_);
+        SubscribeToEvent(gameScene_, E_ASYNCLOADFINISHED, URHO3D_HANDLER(TerrainNode, OnGameSceneLoaded));
+        // Creature attachment handled by per-frame scan in HandleUpdate
+        gameSceneReady_ = true;
+    }
+    network->Connect(authServerAddress_, authServerPort_, gameScene_);
+}
+
+void TerrainNode::OfflineSpawnAuthServer()
+{
+    auto* fs = GetSubsystem<FileSystem>();
+    if (!fs)
+    {
+        URHO3D_LOGERROR("Offline mode: no FileSystem subsystem; cannot spawn AuthServer");
+        return;
+    }
+
+    // AuthServer binary lives next to the running 60_TerrainNode binary.
+    String binaryPath = fs->GetProgramDir() + "AuthServer";
+#ifdef _WIN32
+    binaryPath += ".exe";
+#endif
+
+    if (!fs->FileExists(binaryPath))
+    {
+        URHO3D_LOGERRORF("Offline mode: AuthServer binary not found at %s", binaryPath.CString());
+        if (loginStatusText_)
+        {
+            loginStatusText_->SetText("AuthServer binary not found next to client");
+            loginStatusText_->SetColor(Color(1.0f, 0.3f, 0.3f));
+        }
+        offlineMode_ = OFFLINE_NONE;
+        return;
+    }
+
+    Vector<String> args;
+    // Pass the same log level to the child AuthServer so debug diagnostics
+    // are visible in its log file (AuthServer.log in the binary directory).
+    args.Push("-LogLevel");
+    args.Push("1");
+    unsigned pid = fs->SystemRunAsync(binaryPath, args);
+    if (pid == 0)
+    {
+        URHO3D_LOGERROR("Offline mode: SystemRunAsync(AuthServer) returned 0");
+        if (loginStatusText_)
+        {
+            loginStatusText_->SetText("Failed to launch AuthServer process");
+            loginStatusText_->SetColor(Color(1.0f, 0.3f, 0.3f));
+        }
+        offlineMode_ = OFFLINE_NONE;
+        return;
+    }
+
+    URHO3D_LOGINFOF("Offline mode: spawned local AuthServer (pid %u, %s)", pid, binaryPath.CString());
+    if (loginStatusText_)
+    {
+        loginStatusText_->SetText("Spawned local AuthServer — retrying...");
+        loginStatusText_->SetColor(Color(0.7f, 0.7f, 0.9f));
+    }
+}
+
+void TerrainNode::TickOfflineConnect(float timeStep)
+{
+    if (offlineMode_ == OFFLINE_NONE)
+        return;
+    if (offlineRetryTimer_ > 0.0f)
+    {
+        offlineRetryTimer_ -= timeStep;
+        if (offlineRetryTimer_ > 0.0f)
+            return;
+    }
+
+    if (offlineMode_ == OFFLINE_SPAWN_PENDING || offlineMode_ == OFFLINE_RETRY_CONNECT)
+    {
+        if (offlineRetriesLeft_ <= 0)
+        {
+            URHO3D_LOGERROR("Offline mode: gave up after retries — local AuthServer never came up");
+            if (loginStatusText_)
+            {
+                loginStatusText_->SetText("Local AuthServer did not come up");
+                loginStatusText_->SetColor(Color(1.0f, 0.3f, 0.3f));
+            }
+            offlineMode_ = OFFLINE_NONE;
+            return;
+        }
+        --offlineRetriesLeft_;
+        offlineMode_ = OFFLINE_RETRY_CONNECT;
+        OfflineDial();
+        // Set the timer so the next CONNECTFAILED-or-quiet window has a budget.
+        // The actual retry decrement happens on the next CONNECTFAILED event;
+        // this timer prevents us from spinning if the failure is silent.
+        offlineRetryTimer_ = OFFLINE_RETRY_INTERVAL;
+    }
 }
 
 // ============================================================================
@@ -609,11 +1051,11 @@ void TerrainNode::HandleOfflineButton(StringHash eventType, VariantMap& eventDat
 
 void TerrainNode::EnterWorld()
 {
+    URHO3D_LOGINFO("[NetDebug] EnterWorld() — setting loggedIn=true, destroying login UI");
     loggedIn_ = true;
     DestroyLoginUI();
 
     // Wait for GPU to finish all commands referencing login scene resources
-    // before destroying the login scene (prevents use-after-free on textures/imageViews)
 #ifdef URHO3D_VULKAN
     auto* graphics = GetSubsystem<Graphics>();
     if (graphics)
@@ -624,11 +1066,152 @@ void TerrainNode::EnterWorld()
     }
 #endif
 
-    // Build the entire world scene procedurally (matching proven Sample 23 pattern)
-    CreateScene();
+    // The game scene was created and assigned to the connection in
+    // HandleServerConnected (before auth). Switch scene_ to it.
+    // MSG_LOADSCENE may have already loaded TestScene.xml into gameScene_.
+    scene_ = gameScene_;
 
-    // Go straight to the world — no async loading needed
+    if (!scene_)
+    {
+        URHO3D_LOGERROR("[NetDebug] EnterWorld: no game scene — connection setup failed");
+        return;
+    }
+
+    // Check if server scene has already loaded (MSG_LOADSCENE arrived during auth)
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (serverConn && serverConn->IsSceneLoaded())
+    {
+        URHO3D_LOGINFO("[NetDebug] Scene already loaded — setting up world");
+        VariantMap dummy;
+        OnGameSceneLoaded(StringHash::ZERO, dummy);
+    }
+    else
+    {
+        URHO3D_LOGINFO("[NetDebug] Waiting for MSG_LOADSCENE from server...");
+    }
+}
+
+void TerrainNode::OnGameSceneLoaded(StringHash, VariantMap&)
+{
+    URHO3D_LOGINFO("[NetDebug] OnGameSceneLoaded — server scene loaded, adding local visuals");
+
+    // Switch to the game scene — this is now the active rendered scene
+    if (gameScene_)
+        scene_ = gameScene_;
+
+    if (!scene_)
+    {
+        URHO3D_LOGERROR("[NetDebug] OnGameSceneLoaded: no scene!");
+        return;
+    }
+
+    // Verify terrain loaded
+    terrain_ = scene_->GetComponent<Terrain>(true);
+    URHO3D_LOGINFOF("[NetDebug] Scene has %u children, terrain=%s",
+        scene_->GetNumChildren(), terrain_ ? "YES" : "NO");
+
+    // Connection::HandleAsyncLoadFinished sends MSG_SCENELOADED to the server.
+    // No explicit send needed — verified working.
+
+    // Bind cached pointers from the loaded scene (terrain_, zone_, etc.)
+    URHO3D_LOGINFO("[NetDebug] Calling SetupSceneBindings...");
+    SetupSceneBindings();
+    URHO3D_LOGINFO("[NetDebug] SetupSceneBindings done");
+
+    // Create client-only visual entities (LOCAL nodes — not replicated)
+    URHO3D_LOGINFO("[NetDebug] Calling CreateLocalVisuals...");
+    CreateLocalVisuals();
+    URHO3D_LOGINFO("[NetDebug] CreateLocalVisuals done");
+
+    // Enter the world — UI, camera, HUD
+    URHO3D_LOGINFO("[NetDebug] Calling FinishEnterWorld...");
     FinishEnterWorld();
+    URHO3D_LOGINFO("[NetDebug] FinishEnterWorld done — world is live");
+}
+
+void TerrainNode::CreateLocalVisuals()
+{
+    if (!scene_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    // Directional light — client derives from UTC (server sends time)
+    Node* lightNode = scene_->CreateChild("DirectionalLight", LOCAL);
+    lightNode->SetRotation(Quaternion(60.0f, 30.0f, 0.0f));
+    sunLight_ = lightNode->CreateComponent<Light>();
+    sunLight_->SetLightType(LIGHT_DIRECTIONAL);
+    sunLight_->SetColor(Color(1.0f, 0.95f, 0.8f));
+    sunLight_->SetCastShadows(true);
+    sunLight_->SetShadowCascade(CascadeParameters(20.0f, 60.0f, 180.0f, 560.0f, 0.1f));
+    sunLight_->SetShadowBias(BiasParameters(0.00025f, 0.0f));
+
+    // Moon light
+    Node* moonNode = scene_->CreateChild("MoonLight", LOCAL);
+    moonNode->SetRotation(Quaternion(120.0f, -30.0f, 0.0f));
+    auto* moonLight = moonNode->CreateComponent<Light>();
+    moonLight->SetLightType(LIGHT_DIRECTIONAL);
+    moonLight->SetColor(Color(0.3f, 0.35f, 0.5f));
+    moonLight->SetBrightness(0.0f);
+
+    // Skybox
+    Node* skyNode = scene_->CreateChild("Sky", LOCAL);
+    auto* skybox = skyNode->CreateComponent<Skybox>();
+    skybox->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
+    skyboxMat_ = cache->GetResource<Material>("Materials/Skybox.xml");
+    if (skyboxMat_)
+        skybox->SetMaterial(skyboxMat_);
+
+    // Water plane
+    Node* waterNode = scene_->CreateChild("Water", LOCAL);
+    waterNode->SetPosition(Vector3(0.0f, 5.0f, 0.0f));
+    waterNode->SetScale(Vector3(2048.0f, 1.0f, 2048.0f));
+    auto* waterModel = waterNode->CreateComponent<StaticModel>();
+    waterModel->SetModel(cache->GetResource<Model>("Models/Plane.mdl"));
+    waterModel->SetMaterial(cache->GetResource<Material>("Materials/Water.xml"));
+
+    // Camera node (LOCAL — each client has their own)
+    cameraNode_ = scene_->CreateChild("Camera", LOCAL);
+    auto* camera = cameraNode_->CreateComponent<Camera>();
+    camera->SetFarClip(750.0f);
+    cameraNode_->SetPosition(Vector3(0.0f, 50.0f, 0.0f));
+
+    // Client-only entities
+    CreateCelestialBodies();
+    CreateOOFOs();
+    CreateFish();
+    CreateSchoolFish();
+    CreateEcosystem();
+    InitTreeModels();
+    CreateRain();
+    CreateSnow();
+
+    // Weight map + biome cache
+    CacheWeightMapImage();
+
+    // GameDB + building system
+    InitGameDB();
+    InitBuildingSystem();
+
+    // Resource map (client receives from server via protocol, but needs local init)
+    CreateResourceMap();
+
+    // Ambient soundscape (client-only — server has no audio)
+    Node* soundNode = scene_->CreateChild("Soundscape", LOCAL);
+    soundscape_ = soundNode->CreateComponent<Soundscape>();
+
+    // 3D audio listener on camera node
+    listenerNode_ = cameraNode_->CreateChild("Listener");
+    listenerNode_->CreateComponent<SoundListener>();
+    GetSubsystem<Audio>()->SetListener(listenerNode_->GetComponent<SoundListener>());
+
+    // HUD — vital bars
+    Node* hudNode = scene_->CreateChild("HUD", LOCAL);
+    hud_ = hudNode->CreateComponent<HUD>();
+    hud_->SetFont(font_, 9);
+
+    SyncCampfireUI();
 }
 
 void TerrainNode::FinishEnterWorld()
@@ -643,10 +1226,14 @@ void TerrainNode::FinishEnterWorld()
     CreateInstructions();
     SetupViewport();
 
-    Sample::InitMouseMode(MM_RELATIVE);
+    // Phase 5a: start in god cam with free cursor — player clicks NPCs to possess.
+    Sample::InitMouseMode(MM_FREE);
+    cameraMode_ = CAM_GOD;
+    menuOpen_ = true;
 
     CreateMenuBar();
     CreateMinimap();
+    CreateSelectedVitalsPanel();
 
     // AuthServer network panel (top-right) — shows connected status
     {
@@ -748,23 +1335,11 @@ void TerrainNode::FinishEnterWorld()
     // Show owned patch boundaries (green)
     CreateOwnedPatchBoundaries();
 
-    // Spawn avatar: standalone creates locally, connected waits for server replication
-    auto* network = GetSubsystem<Network>();
-    if (!network || !network->GetServerConnection())
-    {
-        Node* avatar = CreatePlayerAvatar();
-        if (avatar)
-        {
-            characterNode_ = avatar;
-            clientObjectID_ = avatar->GetID();
-            cameraMode_ = CAM_CHASE;
-        }
-    }
-    else
-    {
-        // Server creates and replicates our avatar — HandleClientObjectID will set characterNode_
-        cameraMode_ = CAM_CHASE;
-    }
+    // Start in god cam — no player avatar spawned.
+    // Player possesses HumanNPCs by clicking on them.
+    cameraMode_ = CAM_GOD;
+    possessing_ = false;
+
 }
 
 // ============================================================================
@@ -803,7 +1378,7 @@ void TerrainNode::ReturnToLogin()
     }
     fileMenu_.Reset();
     editMenu_.Reset();
-    viewMenu_.Reset();
+    viewMenu_ = nullptr;
     environmentMenu_ = nullptr;
 
     // Remove terrain panel
@@ -853,6 +1428,15 @@ void TerrainNode::ReturnToLogin()
     loggedInUsername_.Clear();
     serverSceneName_.Clear();
     adminLevel_ = 0;
+
+    // Hide admin-only UI on logout
+    if (menuBar_)
+    {
+        auto* btn = menuBar_->GetChild("AITuningBtn", false);
+        if (btn) btn->SetVisible(false);
+    }
+    if (tuningPanel_)
+        tuningPanel_->SetVisible(false);
 
     // Reset cached pointers that refer to world scene nodes/components
     selectedNode_.Reset();
@@ -907,15 +1491,242 @@ void TerrainNode::ReturnToLogin()
 
 void TerrainNode::CreateScene()
 {
+    // Phase 1: Build the scene graph (all serializable nodes/components)
+    CreateSceneGraph();
+    // Phase 2: Bind app state (caches, pointers, non-serializable systems)
+    SetupSceneBindings();
+}
+
+void TerrainNode::SetupSceneBindings()
+{
+    // Re-bind cached pointers from the scene graph. Safe to call after
+    // CreateSceneGraph() or Scene::LoadXML() — finds everything by name.
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    zone_ = scene_->GetComponent<Zone>(true);
+    if (zone_)
+    {
+        origFogColor_ = zone_->GetFogColor();
+        origFogStart_ = zone_->GetFogStart();
+        origFogEnd_ = zone_->GetFogEnd();
+    }
+
+    Node* dlNode = scene_->GetChild("DirectionalLight", true);
+    sunLight_ = dlNode ? dlNode->GetComponent<Light>() : nullptr;
+
+    skyboxMat_ = cache->GetResource<Material>("Materials/Skybox.xml");
+
+    // Preload seasonal skybox cubemaps
+    seasonSkyboxes_[0] = cache->GetResource<TextureCube>("Textures/SkyboxSpring.xml");
+    seasonSkyboxes_[1] = cache->GetResource<TextureCube>("Textures/SkyboxSummer.xml");
+    seasonSkyboxes_[2] = cache->GetResource<TextureCube>("Textures/SkyboxAutumn.xml");
+    seasonSkyboxes_[3] = cache->GetResource<TextureCube>("Textures/SkyboxWinter.xml");
+    weatherSkyboxes_[0] = cache->GetResource<TextureCube>("Textures/SkyboxClear.xml");
+    weatherSkyboxes_[1] = cache->GetResource<TextureCube>("Textures/SkyboxOvercast.xml");
+    weatherSkyboxes_[2] = cache->GetResource<TextureCube>("Textures/SkyboxStorm.xml");
+
+    // Load cloud map faces for CPU-side weather sampling
+    {
+        const char* cloudFaceNames[] = {
+            "Textures/BrightDay1_PosX.png", "Textures/BrightDay1_NegX.png",
+            "Textures/BrightDay1_PosY.png", "Textures/BrightDay1_NegY.png",
+            "Textures/BrightDay1_PosZ.png", "Textures/BrightDay1_NegZ.png"
+        };
+        for (int i = 0; i < 6; ++i)
+            cloudFaces_[i] = cache->GetResource<Image>(cloudFaceNames[i]);
+    }
+
+    terrain_ = scene_->GetComponent<Terrain>(true);
+    if (terrain_)
+    {
+        // Editable heightmap (RGBA)
+        Image* origHM = terrain_->GetHeightMap();
+        if (origHM)
+        {
+            int w = origHM->GetWidth(), h = origHM->GetHeight();
+            int origComps = origHM->GetComponents();
+            editableHeightMap_ = new Image(context_);
+            editableHeightMap_->SetSize(w, h, 4);
+            editableHeightMap_->SetName(origHM->GetName());
+            unsigned char* src = origHM->GetData();
+            unsigned char* dst = editableHeightMap_->GetData();
+            for (int i = 0; i < w * h; ++i)
+            {
+                dst[i * 4] = src[i * origComps];
+                dst[i * 4 + 1] = (origComps >= 2) ? src[i * origComps + 1] : 0;
+                dst[i * 4 + 2] = (origComps >= 3) ? src[i * origComps + 2] : 0;
+                dst[i * 4 + 3] = (origComps >= 4) ? src[i * origComps + 3] : 0;
+            }
+            terrain_->SetHeightMap(editableHeightMap_);
+
+            // Water map
+            waterMap_ = cache->GetResource<Image>("Textures/WaterHeightMap.png");
+            if (!waterMap_ || waterMap_->GetWidth() != w || waterMap_->GetHeight() != h)
+            {
+                waterMap_ = new Image(context_);
+                waterMap_->SetSize(w, h, 1);
+                memset(waterMap_->GetData(), 0, w * h);
+            }
+        }
+
+        // Water map GPU texture
+        waterMapTex_ = new Texture2D(context_);
+        waterMapTex_->SetFilterMode(FILTER_BILINEAR);
+        waterMapTex_->SetAddressMode(COORD_U, ADDRESS_CLAMP);
+        waterMapTex_->SetAddressMode(COORD_V, ADDRESS_CLAMP);
+        waterMapTex_->SetData(waterMap_);
+        auto* terrainMat = terrain_->GetMaterial();
+        if (terrainMat)
+        {
+            terrainMat->SetTexture(TU_ENVIRONMENT, waterMapTex_);
+            terrainMat->SetShaderParameter("WaterLevel", 5.0f);
+            terrainMat->SetShaderParameter("TerrainSpacingY", terrain_->GetSpacing().y_);
+        }
+
+        // Rainfall accumulation map (Weather Phase 4)
+        rainfallMap_ = new Image(context_);
+        rainfallMap_->SetSize(RAINFALL_MAP_SIZE, RAINFALL_MAP_SIZE, 4);  // RGBA
+        memset(rainfallMap_->GetData(), 0, RAINFALL_MAP_SIZE * RAINFALL_MAP_SIZE * 4);
+
+        // Brush
+        brush_ = new TerrainBrush(context_);
+        brush_->SetTerrain(terrain_, editableHeightMap_);
+        brush_->SetWaterMap(waterMap_);
+
+        // Habitat rules + water distance map
+        habitatRules_.Load(context_, "GameDB/habitat_rules.json");
+        BuildWaterDistanceMap();
+    }
+
+    // Camera — create if it doesn't exist (startup from saved scene)
+    if (!cameraNode_)
+    {
+        cameraNode_ = new Node(context_);
+        auto* camera = cameraNode_->CreateComponent<Camera>();
+        camera->SetFarClip(750.0f);
+        // Place above terrain center
+        float startY = 60.0f;
+        if (terrain_)
+            startY = Max(startY, terrain_->GetHeight(Vector3(64.0f, 0.0f, 64.0f)) + 10.0f);
+        cameraNode_->SetPosition(Vector3(64.0f, startY, 64.0f));
+    }
+
+    waterNode_ = scene_->GetChild("Water", true);
+    sunNode_ = scene_->GetChild("Sun", true);
+    moonNode_ = scene_->GetChild("Moon", true);
+
+    // Water reflection plane
+    if (waterNode_)
+    {
+        waterPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
+        waterClipPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
+    }
+
+    // Water ripple system
+    rippleSystem_ = new WaterRippleSystem(context_);
+    rippleSystem_->Initialize();
+    {
+        auto* waterMat = cache->GetResource<Material>("Materials/Water.xml");
+        if (waterMat)
+            waterMat->SetTexture(TU_EMISSIVE, rippleSystem_->GetTexture());
+    }
+
+    // Campfire pointers
+    campfireNode_ = scene_->GetChild("Campfire", true);
+    campfireLight_ = nullptr;
+    campfireFireEmitter_ = nullptr;
+    campfireSmokeEmitter_ = nullptr;
+    if (campfireNode_)
+    {
+        Node* fl = campfireNode_->GetChild("FireLight");
+        if (fl) campfireLight_ = fl->GetComponent<Light>();
+        Node* fn = campfireNode_->GetChild("Fire");
+        if (fn) campfireFireEmitter_ = fn->GetComponent<ParticleEmitter>();
+        Node* sn = campfireNode_->GetChild("Smoke");
+        if (sn) campfireSmokeEmitter_ = sn->GetComponent<ParticleEmitter>();
+        // Capture intensity baselines from the loaded scene's effect/light values
+        if (campfireLight_)
+        {
+            cfBaseLightBrightness_ = campfireLight_->GetBrightness();
+            cfBaseLightRange_ = campfireLight_->GetRange();
+        }
+        if (campfireFireEmitter_ && campfireFireEmitter_->GetEffect())
+        {
+            cfBaseFireRateMin_ = campfireFireEmitter_->GetEffect()->GetMinEmissionRate();
+            cfBaseFireRateMax_ = campfireFireEmitter_->GetEffect()->GetMaxEmissionRate();
+        }
+        if (campfireSmokeEmitter_ && campfireSmokeEmitter_->GetEffect())
+        {
+            cfBaseSmokeRateMin_ = campfireSmokeEmitter_->GetEffect()->GetMinEmissionRate();
+            cfBaseSmokeRateMax_ = campfireSmokeEmitter_->GetEffect()->GetMaxEmissionRate();
+        }
+        fireBrightnessTarget_ = cfBaseLightBrightness_;
+        fireBrightnessCurrent_ = fireBrightnessTarget_;
+        fireColorTarget_ = campfireLight_ ? campfireLight_->GetColor() : Color(1.0f, 0.6f, 0.2f);
+        fireColorCurrent_ = fireColorTarget_;
+        fireOut_ = false;
+    }
+    SyncCampfireUI();
+
+    // Soundscape
+    soundscape_ = scene_->GetDerivedComponent<Soundscape>(true);
+
+    // HUD
+    hud_ = scene_->GetDerivedComponent<HUD>(true);
+
+    // Metal deposits — must be cached so terrain brush can expose buried deposits
+    metalDeposits_ = scene_->GetDerivedComponent<MetalDeposits>(true);
+
+    // Restore settings from scene Vars (auto-serialized with scene)
+    godRaysEnabled_ = scene_->GetVar("GodRays").GetBool();
+    shadowsEnabled_ = scene_->GetVar("Shadows").GetBool();
+    {
+        const Variant& wr = scene_->GetVar("WaterReflection");
+        waterReflectionEnabled_ = wr.IsEmpty() ? true : wr.GetBool();
+    }
+    {
+        const Variant& pp = scene_->GetVar("PostProcess");
+        postProcessEnabled_ = pp.IsEmpty() ? true : pp.GetBool();
+    }
+    {
+        const Variant& hl = scene_->GetVar("HemisphereLighting");
+        hemisphereEnabled_ = hl.IsEmpty() ? true : hl.GetBool();
+    }
+
+    // Deselect stale selection
+    selectedNode_.Reset();
+    originalMaterials_.Clear();
+
+    // DebugRenderer (LOCAL — survives network Clear)
+    if (!scene_->GetComponent<DebugRenderer>())
+        scene_->CreateComponent<DebugRenderer>(LOCAL);
+
+    // Weight map cache for biome classification
+    CacheWeightMapImage();
+
+    // GameDB + building system
+    InitGameDB();
+    InitBuildingSystem();
+
+    // Entity creation moved to CreateLocalVisuals() — called from OnGameSceneLoaded
+    // after SetupSceneBindings. This method only binds pointers now.
+}
+
+void TerrainNode::CreateSceneGraph()
+{
     // Full procedural scene creation — matching proven Sample 23 (Water) pattern.
     // Everything built synchronously, no async XML loading.
 
     auto* cache = GetSubsystem<ResourceCache>();
 
     scene_ = new Scene(context_);
-    scene_->CreateComponent<Octree>();
-    scene_->CreateComponent<PhysicsWorld>();
-    scene_->CreateComponent<DebugRenderer>();
+    // LOCAL components survive Connection::HandleAsyncLoadFinished Clear(true, false)
+    if (!scene_->GetComponent<Octree>())
+        scene_->CreateComponent<Octree>(LOCAL);
+    if (!scene_->GetComponent<PhysicsWorld>())
+        scene_->CreateComponent<PhysicsWorld>(LOCAL);
+    if (!scene_->GetComponent<DebugRenderer>())
+        scene_->CreateComponent<DebugRenderer>(LOCAL);
 
     // Zone
     Node* zoneNode = scene_->CreateChild("Zone");
@@ -929,19 +1740,15 @@ void TerrainNode::CreateScene()
     float fogMaxHeight = 18.0f;
     zone->SetFogHeight(fogMinHeight);
     zone->SetFogHeightScale(1.0f / Max(fogMaxHeight - fogMinHeight, M_EPSILON));
-    zone_ = zone;
-    origFogColor_ = zone->GetFogColor();
-    origFogStart_ = zone->GetFogStart();
-    origFogEnd_ = zone->GetFogEnd();
 
     // Directional light (sun)
     Node* lightNode = scene_->CreateChild("DirectionalLight", LOCAL);
     lightNode->SetDirection(Vector3(0.6f, -1.0f, 0.8f));
     sunLight_ = lightNode->CreateComponent<Light>();
     sunLight_->SetLightType(LIGHT_DIRECTIONAL);
-    sunLight_->SetCastShadows(true);
+    sunLight_->SetCastShadows(false);  // Default off — user enables via perf toggles
     sunLight_->SetShadowBias(BiasParameters(0.00025f, 0.5f));
-    sunLight_->SetShadowCascade(CascadeParameters(10.0f, 50.0f, 200.0f, 0.0f, 0.8f));
+    sunLight_->SetShadowCascade(CascadeParameters(10.0f, 40.0f, 100.0f, 0.0f, 0.8f));
     sunLight_->SetSpecularIntensity(0.5f);
     sunLight_->SetColor(Color(1.2f, 1.2f, 1.2f));
 
@@ -950,25 +1757,7 @@ void TerrainNode::CreateScene()
     skyNode->SetScale(500.0f);
     auto* skybox = skyNode->CreateComponent<Skybox>();
     skybox->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-    skyboxMat_ = cache->GetResource<Material>("Materials/Skybox.xml");
-    skybox->SetMaterial(skyboxMat_);
-
-    // Preload seasonal skybox cubemaps
-    seasonSkyboxes_[0] = cache->GetResource<TextureCube>("Textures/SkyboxSpring.xml");
-    seasonSkyboxes_[1] = cache->GetResource<TextureCube>("Textures/SkyboxSummer.xml");
-    seasonSkyboxes_[2] = cache->GetResource<TextureCube>("Textures/SkyboxAutumn.xml");
-    seasonSkyboxes_[3] = cache->GetResource<TextureCube>("Textures/SkyboxWinter.xml");
-
-    // Load cloud map faces for CPU-side weather sampling (BrightDay1 has alpha channel)
-    {
-        const char* cloudFaceNames[] = {
-            "Textures/BrightDay1_PosX.png", "Textures/BrightDay1_NegX.png",
-            "Textures/BrightDay1_PosY.png", "Textures/BrightDay1_NegY.png",
-            "Textures/BrightDay1_PosZ.png", "Textures/BrightDay1_NegZ.png"
-        };
-        for (int i = 0; i < 6; ++i)
-            cloudFaces_[i] = cache->GetResource<Image>(cloudFaceNames[i]);
-    }
+    skybox->SetMaterial(cache->GetResource<Material>("Materials/Skybox.xml"));
 
     // Terrain
     Node* terrainNode = scene_->CreateChild("Terrain");
@@ -980,7 +1769,6 @@ void TerrainNode::CreateScene()
     terrain->SetHeightMap(cache->GetResource<Image>("Textures/HeightMap.png"));
     terrain->SetMaterial(cache->GetResource<Material>("Materials/Terrain.xml"));
     terrain->SetOccluder(true);
-    terrain_ = terrain;
 
     auto* terrainBody = terrainNode->CreateComponent<RigidBody>();
     terrainBody->SetCollisionLayer(2);
@@ -988,50 +1776,13 @@ void TerrainNode::CreateScene()
     auto* terrainShape = terrainNode->CreateComponent<CollisionShape>();
     terrainShape->SetTerrain();
 
-    // 32-bit editable heightmap (RGBA — R + G/256 + B/65536 + A/16M)
+    // Metal deposits (scene component — serializable)
     {
-        Image* origHM = terrain->GetHeightMap();
-        int w = origHM->GetWidth();
-        int h = origHM->GetHeight();
-        int origComps = origHM->GetComponents();
-        editableHeightMap_ = new Image(context_);
-        editableHeightMap_->SetSize(w, h, 4);
-        editableHeightMap_->SetName(origHM->GetName());
-        unsigned char* src = origHM->GetData();
-        unsigned char* dst = editableHeightMap_->GetData();
-        for (int i = 0; i < w * h; ++i)
-        {
-            dst[i * 4] = src[i * origComps];
-            dst[i * 4 + 1] = (origComps >= 2) ? src[i * origComps + 1] : 0;
-            dst[i * 4 + 2] = (origComps >= 3) ? src[i * origComps + 2] : 0;
-            dst[i * 4 + 3] = (origComps >= 4) ? src[i * origComps + 3] : 0;
-        }
-        terrain->SetHeightMap(editableHeightMap_);
-
-        // Create water map (same resolution, single-channel, zeroed)
-        waterMap_ = new Image(context_);
-        waterMap_->SetSize(w, h, 1);
-        memset(waterMap_->GetData(), 0, w * h);
+        auto* md = terrainNode->CreateComponent<MetalDeposits>();
+        int hmSize = terrain->GetHeightMap()->GetWidth();
+        if (md->LoadMap("Textures/MetalDeposits.png", hmSize))
+            md->SpawnOutcrops(scene_, terrain, 5.0f);
     }
-
-    // Create GPU texture from water map and bind to terrain material unit 4
-    waterMapTex_ = new Texture2D(context_);
-    waterMapTex_->SetFilterMode(FILTER_BILINEAR);
-    waterMapTex_->SetAddressMode(COORD_U, ADDRESS_CLAMP);
-    waterMapTex_->SetAddressMode(COORD_V, ADDRESS_CLAMP);
-    waterMapTex_->SetData(waterMap_);
-    auto* terrainMat = terrain->GetMaterial();
-    if (terrainMat)
-    {
-        terrainMat->SetTexture(TU_ENVIRONMENT, waterMapTex_);
-        terrainMat->SetShaderParameter("WaterLevel", 5.0f);
-        terrainMat->SetShaderParameter("TerrainSpacingY", terrain->GetSpacing().y_);
-    }
-
-    // Initialize shared brush
-    brush_ = new TerrainBrush(context_);
-    brush_->SetTerrain(terrain, editableHeightMap_);
-    brush_->SetWaterMap(waterMap_);
 
     // 1000 boxes
     for (unsigned i = 0; i < 1000; ++i)
@@ -1053,14 +1804,70 @@ void TerrainNode::CreateScene()
         shape->SetBox(Vector3::ONE);
     }
 
-    // Water plane
-    waterNode_ = scene_->CreateChild("Water");
-    waterNode_->SetScale(Vector3(2048.0f, 1.0f, 2048.0f));
-    waterNode_->SetPosition(Vector3(0.0f, 5.0f, 0.0f));
-    auto* water = waterNode_->CreateComponent<StaticModel>();
-    water->SetModel(cache->GetResource<Model>("Models/Plane.mdl"));
-    water->SetMaterial(cache->GetResource<Material>("Materials/Water.xml"));
-    water->SetViewMask(0x80000000);
+    // Water — per-patch quads, only where terrain dips below water level.
+    // Each patch is individually frustum-cullable, unlike a single giant quad.
+    {
+        const float waterY = 5.0f;
+        waterNode_ = scene_->CreateChild("Water");
+        waterNode_->SetPosition(Vector3(0.0f, waterY, 0.0f));
+        baseWaterY_ = waterY;  // cache for drought recession
+
+        auto* planeModel = cache->GetResource<Model>("Models/Plane.mdl");
+        auto* waterMat = cache->GetResource<Material>("Materials/Water.xml");
+        IntVector2 numPatches = terrain->GetNumPatches();
+        Vector2 patchWorld = Vector2(terrain->GetSpacing().x_ * terrain->GetPatchSize(),
+                                     terrain->GetSpacing().z_ * terrain->GetPatchSize());
+        Vector3 terrainPos = terrainNode->GetWorldPosition();
+        float halfTerrainX = numPatches.x_ * patchWorld.x_ * 0.5f;
+        float halfTerrainZ = numPatches.y_ * patchWorld.y_ * 0.5f;
+
+        int samplesPerEdge = 5;  // 5×5 sample grid per patch
+        for (int pz = 0; pz < numPatches.y_; ++pz)
+        {
+            for (int px = 0; px < numPatches.x_; ++px)
+            {
+                float patchMinX = terrainPos.x_ - halfTerrainX + px * patchWorld.x_;
+                float patchMinZ = terrainPos.z_ - halfTerrainZ + pz * patchWorld.y_;
+
+                // Sample terrain heights across this patch
+                bool hasWater = false;
+                for (int sz = 0; sz <= samplesPerEdge && !hasWater; ++sz)
+                {
+                    for (int sx = 0; sx <= samplesPerEdge && !hasWater; ++sx)
+                    {
+                        float wx = patchMinX + (sx / (float)samplesPerEdge) * patchWorld.x_;
+                        float wz = patchMinZ + (sz / (float)samplesPerEdge) * patchWorld.y_;
+                        float h = terrain->GetHeight(Vector3(wx, 0.0f, wz));
+                        if (h < waterY)
+                            hasWater = true;
+                    }
+                }
+
+                if (hasWater)
+                {
+                    float cx = patchMinX + patchWorld.x_ * 0.5f;
+                    float cz = patchMinZ + patchWorld.y_ * 0.5f;
+                    Node* tile = waterNode_->CreateChild("WaterTile");
+                    tile->SetPosition(Vector3(cx, 0.0f, cz));
+                    tile->SetScale(Vector3(patchWorld.x_, 1.0f, patchWorld.y_));
+                    auto* sm = tile->CreateComponent<StaticModel>();
+                    sm->SetModel(planeModel);
+                    sm->SetMaterial(waterMat);
+                    sm->SetViewMask(0x80000000);
+                }
+            }
+        }
+        URHO3D_LOGINFOF("Water: %d/%d patches have water tiles", waterNode_->GetNumChildren(), numPatches.x_ * numPatches.y_);
+    }
+
+    // Ambient soundscape
+    Node* soundNode = scene_->CreateChild("Soundscape");
+    soundscape_ = soundNode->CreateComponent<Soundscape>();
+
+    // 3D audio listener — starts on camera (god mode), moves to NPC on possession
+    listenerNode_ = cameraNode_->CreateChild("Listener");
+    listenerNode_->CreateComponent<SoundListener>();
+    GetSubsystem<Audio>()->SetListener(listenerNode_->GetComponent<SoundListener>());
 
     // Initialize time from system clock (Melbourne AEDT = UTC+11)
     {
@@ -1110,30 +1917,12 @@ void TerrainNode::CreateScene()
     camera->SetFarClip(750.0f);
     cameraNode_->SetPosition(Vector3(64.0f, 60.0f, 64.0f));
 
-    // Create entities
-    CreateCelestialBodies();
-    CreateOOFOs();
-    CreateFish();
-    CreateSchoolFish();
-    CreateAnimals();
-    CreateGrass();
-    CreateRain();
-    CreateSnow();
-    CreateCampfire();
+    // HUD — vital bars
+    Node* hudNode = scene_->CreateChild("HUD");
+    auto* hud = hudNode->CreateComponent<HUD>();
+    hud->SetFont(font_, 9);
 
-    // HUD — vital bars (HP, Hunger, Thirst, Stamina)
-    {
-        Node* hudNode = scene_->CreateChild("HUD");
-        auto* hud = hudNode->CreateComponent<HUD>();
-        hud->SetFont(font_, 9);
-        hud_ = hud;
-    }
-
-    // GameDB — client-side read-only for recipe/item lookups
-    InitGameDB();
-
-    // Building system
-    InitBuildingSystem();
+    // Entities are created in SetupSceneBindings() after terrain_/habitat rules are bound
 }
 
 // OnSceneLoaded() — DEAD CODE, preserved for future network scene loading reintegration.
@@ -1151,7 +1940,7 @@ void TerrainNode::CreateInstructions()
 
     instructionText_ = ui->GetRoot()->CreateChild<Text>();
     instructionText_->SetText(
-        "WASD move, Mouse look, Tab cursor mode\n"
+        "WASD move, Mouse look, Tab cursor, P possess\n"
         "LMB raise, RMB lower, Scroll brush size\n"
         "F5 debug, F fill, H fog, F11 fullscreen\n"
         "NumPad Enter hide UI, 1 sun, 2 moon");
@@ -1201,6 +1990,7 @@ void TerrainNode::SetupViewport()
     RenderPath* rp = viewport->GetRenderPath();
 
     // Water-dependent setup — only when the full world is loaded
+    URHO3D_LOGINFOF("[NetDebug] SetupViewport: waterNode_=%p", (void*)waterNode_.Get());
     if (waterNode_)
     {
         rp->Append(cache->GetResource<XMLFile>("PostProcess/Underwater.xml"));
@@ -1223,7 +2013,7 @@ void TerrainNode::SetupViewport()
 
         reflectionCameraNode_ = cameraNode_->CreateChild();
         auto* reflectionCamera = reflectionCameraNode_->CreateComponent<Camera>();
-        reflectionCamera->SetFarClip(750.0);
+        reflectionCamera->SetFarClip(200.0f);  // Reflection doesn't need 750m — terrain + sky is enough
         reflectionCamera->SetViewMask(0x7fffffff);
         reflectionCamera->SetAutoAspectRatio(false);
         reflectionCamera->SetUseReflection(true);
@@ -1232,14 +2022,17 @@ void TerrainNode::SetupViewport()
         reflectionCamera->SetClipPlane(waterClipPlane_);
         reflectionCamera->SetAspectRatio((float)graphics->GetWidth() / (float)graphics->GetHeight());
 
-        int texSize = 1024;
+        // RTT at half resolution — full-res reflection doubles GPU cost for marginal quality
+        int rttW = graphics->GetWidth() / 2;
+        int rttH = graphics->GetHeight() / 2;
         SharedPtr<Texture2D> renderTexture(new Texture2D(context_));
-        renderTexture->SetSize(texSize, texSize, Graphics::GetRGBFormat(), TEXTURE_RENDERTARGET);
+        renderTexture->SetSize(rttW, rttH, Graphics::GetRGBFormat(), TEXTURE_RENDERTARGET);
         renderTexture->SetFilterMode(FILTER_BILINEAR);
         RenderSurface* surface = renderTexture->GetRenderSurface();
         SharedPtr<Viewport> rttViewport(new Viewport(context_, scene_, reflectionCamera));
         rttViewport->SetDrawDebug(false);
         surface->SetViewport(0, rttViewport);
+        surface->SetUpdateMode(SURFACE_UPDATEALWAYS);
         auto* waterMat = cache->GetResource<Material>("Materials/Water.xml");
         waterMat->SetTexture(TU_DIFFUSE, renderTexture);
     }
@@ -1252,8 +2045,12 @@ void TerrainNode::SetupViewport()
 
 void TerrainNode::SubscribeToEvents()
 {
+    SubscribeToEvent(E_BEGINFRAME, URHO3D_HANDLER(TerrainNode, HandleBeginFrame));
     SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(TerrainNode, HandleUpdate));
     SubscribeToEvent(E_POSTRENDERUPDATE, URHO3D_HANDLER(TerrainNode, HandlePostRenderUpdate));
+    SubscribeToEvent(E_CAMPFIRE_SETTINGS_CHANGED, URHO3D_HANDLER(TerrainNode, HandleCampfireSettingsChanged));
+    SubscribeToEvent(E_ANIMATIONTEXTKEY, URHO3D_HANDLER(TerrainNode, HandleAnimationTextKey));
+    SubscribeToEvent(E_DRIVENKEY_OUTPUT, URHO3D_HANDLER(TerrainNode, HandleDrivenKeyOutput));
 
     // AuthServer discovery & connection
     SubscribeToEvent(E_NETWORKHOSTDISCOVERED, URHO3D_HANDLER(TerrainNode, HandleHostDiscovered));
@@ -1267,12 +2064,45 @@ void TerrainNode::SubscribeToEvents()
     SubscribeToEvent(E_PEERDISCONNECTED, URHO3D_HANDLER(TerrainNode, HandlePeerDisconnected));
     SubscribeToEvent(E_NETWORKNATPUNCHTROUGHFAILED, URHO3D_HANDLER(TerrainNode, HandleNATPunchFailed));
 
+    // Detect server-replicated creature nodes and attach client-side logic
+    // Creature attachment handled by per-frame scan in HandleUpdate
+
     // Player avatar network events
     SubscribeToEvent(E_PHYSICSPRESTEP, URHO3D_HANDLER(TerrainNode, HandlePhysicsPreStep));
     SubscribeToEvent(E_CLIENTCONNECTED, URHO3D_HANDLER(TerrainNode, HandleClientConnected));
     SubscribeToEvent(E_CLIENTDISCONNECTED, URHO3D_HANDLER(TerrainNode, HandleClientDisconnected));
     SubscribeToEvent(E_CLIENTOBJECTID, URHO3D_HANDLER(TerrainNode, HandleClientObjectID));
     GetSubsystem<Network>()->RegisterRemoteEvent(E_CLIENTOBJECTID);
+
+    // Fire System Phase 3 — server pit state broadcasts
+    SubscribeToEvent(E_PIT_STATE_CHANGED, URHO3D_HANDLER(TerrainNode, HandlePitStateChanged));
+    GetSubsystem<Network>()->RegisterRemoteEvent(E_PIT_STATE_CHANGED);
+
+    // Load campfire burn curve (matches server's campfire_burn.json)
+    {
+        auto* rc = GetSubsystem<ResourceCache>();
+        auto* burnJson = rc->GetResource<JSONFile>("DrivenKeys/campfire_burn.json");
+        if (burnJson)
+        {
+            DrivenKeySet burnSet;
+            if (burnSet.LoadJSON(burnJson->GetRoot()) && !burnSet.keys.Empty())
+                burnCurveKey_ = burnSet.keys[0];
+        }
+    }
+
+    // Fire System Phase 4a — friction ignition status
+    SubscribeToEvent(E_PIT_IGNITION_STATUS, URHO3D_HANDLER(TerrainNode, HandlePitIgnitionStatus));
+    GetSubsystem<Network>()->RegisterRemoteEvent(E_PIT_IGNITION_STATUS);
+    GetSubsystem<Network>()->RegisterRemoteEvent(E_PIT_IGNITE_REQUEST);
+
+    // Fire System Phase 4c — torch events
+    GetSubsystem<Network>()->RegisterRemoteEvent(E_TORCH_LIGHT_REQUEST);
+    GetSubsystem<Network>()->RegisterRemoteEvent(E_TORCH_IGNITE_REQUEST);
+
+    // Woodpile server sync
+    SubscribeToEvent(E_WOODPILE_STATE, URHO3D_HANDLER(TerrainNode, HandleWoodpileState));
+    GetSubsystem<Network>()->RegisterRemoteEvent(E_WOODPILE_STATE);
+    GetSubsystem<Network>()->RegisterRemoteEvent(E_WOODPILE_DEPOSIT);
 
     // Debug log capture
     SubscribeToEvent(E_LOGMESSAGE, URHO3D_HANDLER(TerrainNode, HandleLogMessage));
@@ -1364,24 +2194,196 @@ void TerrainNode::CreateMenuBar()
         SubscribeToEvent(editMenu_, E_ITEMSELECTED, URHO3D_HANDLER(TerrainNode, HandleEditMenu));
     }
 
-    // View (merged with former Overlay menu)
+    // View (Menu + popup Window with collapsible sections, same pattern as Environment)
     {
-        Vector<String> items;
-        items.Push("Hierarchy");                        // 0
-        items.Push("Inspector");                        // 1
-        items.Push("Debug Log");                        // 2
-        items.Push("Toggle Fullscreen  (F11)");         // 3
-        items.Push("Toggle Wireframe  (F)");            // 4
-        items.Push("Toggle Debug Geometry  (F5)");      // 5
-        items.Push("Toggle Height Fog  (H)");           // 6
-        items.Push("Toggle Profiler");                  // 7
-        items.Push("Toggle OOFO Detector");             // 8
-        items.Push("Toggle Land Animal Rays");           // 9
-        items.Push("Toggle Water Animal Rays");          // 10
-        items.Push("Toggle God Rays");                   // 11
-        items.Push("Toggle Grass Rays");                 // 12
-        viewMenu_ = CreateMenuDropdown("View", items);
-        SubscribeToEvent(viewMenu_, E_ITEMSELECTED, URHO3D_HANDLER(TerrainNode, HandleViewMenu));
+        Font* font = font_;
+        viewMenu_ = menuBar_->CreateChild<Menu>();
+        viewMenu_->SetStyle("DropDownList");
+        viewMenu_->SetFixedHeight(24);
+        viewMenu_->SetMinWidth(50);
+
+        auto* viewLabel = viewMenu_->CreateChild<Text>();
+        viewLabel->SetFont(font, 12);
+        viewLabel->SetText("View");
+        viewLabel->SetColor(Color::WHITE);
+
+        auto* viewPopup = new Window(context_);
+        viewPopup->SetStyleAuto();
+        viewPopup->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
+        viewPopup->SetMinWidth(280);
+        viewPopup->SetDefaultStyle(GetSubsystem<UI>()->GetRoot()->GetDefaultStyle());
+        viewPopup->SetOpacity(0.85f);
+        viewMenu_->SetPopup(viewPopup);
+        viewMenu_->SetPopupOffset(0, viewMenu_->GetHeight());
+
+        CreateMenuItem(viewPopup, "Hierarchy", 200);
+        CreateMenuItem(viewPopup, "Inspector", 201);
+        CreateMenuItem(viewPopup, "Debug Log", 202);
+        CreateMenuItem(viewPopup, "Toggle Fullscreen  (F11)", 203);
+        CreateMenuItem(viewPopup, "Toggle Wireframe  (F)", 204);
+        CreateMenuItem(viewPopup, "Toggle Debug Geometry  (F5)", 205);
+        CreateMenuItem(viewPopup, "Toggle Height Fog  (H)", 206);
+        CreateMenuItem(viewPopup, "Toggle Profiler", 207);
+        CreateMenuItem(viewPopup, "Toggle OOFO Detector", 208);
+        CreateMenuItem(viewPopup, "Toggle God Rays", 209);
+        // CreateMenuItem(viewPopup, "Toggle Grass Rays", 210);  // QUARANTINED
+        CreateMenuItem(viewPopup, "Toggle Campfire Ray", 211);
+
+        // --- Animal Rays collapsible section ---
+        auto* animalRaySection = CreateCollapsibleSection(viewPopup, font, "Animal Rays", false);
+        {
+            auto makeRayCb = [&](UIElement* parent, const String& label, bool* target, const Color& swatch)
+            {
+                auto* row = parent->CreateChild<UIElement>();
+                row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 1, 4, 1));
+                row->SetMinHeight(20);
+
+                auto* cb = row->CreateChild<CheckBox>();
+                cb->SetStyleAuto();
+                cb->SetChecked(*target);
+                cb->SetVar("BoolPtr", (void*)target);
+                SubscribeToEvent(cb, E_TOGGLED, [](StringHash, VariantMap& ed) {
+                    auto* box = static_cast<CheckBox*>(ed[Toggled::P_ELEMENT].GetPtr());
+                    if (box) {
+                        bool* ptr = static_cast<bool*>(box->GetVar("BoolPtr").GetVoidPtr());
+                        if (ptr) *ptr = box->IsChecked();
+                    }
+                });
+
+                auto* sw = row->CreateChild<BorderImage>();
+                sw->SetFixedSize(12, 12);
+                sw->SetColor(swatch);
+
+                auto* lbl = row->CreateChild<Text>();
+                lbl->SetFont(font, 11);
+                lbl->SetText(label);
+                lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+            };
+
+            // Land Animals — ray + visibility toggle per species
+            auto* landRays = CreateCollapsibleSection(animalRaySection, font, "Land Animals", false);
+            {
+                auto makeRayVisCb = [&](UIElement* parent, const String& label, bool* rayTarget, bool* visTarget, const Color& swatch)
+                {
+                    makeRayCb(parent, label, rayTarget, swatch);
+                    // Add visibility checkbox on the same section
+                    auto* row = parent->CreateChild<UIElement>();
+                    row->SetLayout(LM_HORIZONTAL, 4, IntRect(20, 1, 4, 1));
+                    row->SetMinHeight(20);
+                    auto* cb = row->CreateChild<CheckBox>();
+                    cb->SetStyleAuto();
+                    cb->SetChecked(*visTarget);
+                    cb->SetVar("BoolPtr", (void*)visTarget);
+                    SubscribeToEvent(cb, E_TOGGLED, [](StringHash, VariantMap& ed) {
+                        auto* box = static_cast<CheckBox*>(ed[Toggled::P_ELEMENT].GetPtr());
+                        if (box) {
+                            bool* ptr = static_cast<bool*>(box->GetVar("BoolPtr").GetVoidPtr());
+                            if (ptr) *ptr = box->IsChecked();
+                        }
+                    });
+                    auto* lbl = row->CreateChild<Text>();
+                    lbl->SetFont(font, 10);
+                    lbl->SetText("Visible");
+                    lbl->SetColor(Color(0.7f, 0.7f, 0.7f));
+                };
+
+                makeRayVisCb(landRays, "Rabbit",     &rabbitRayVisible_,     &rabbitVisible_,     Color(0.2f, 1.0f, 0.2f));
+                makeRayVisCb(landRays, "Deer",       &deerRayVisible_,       &deerVisible_,       Color(0.8f, 0.4f, 1.0f));
+                makeRayVisCb(landRays, "Fox",        &foxRayVisible_,        &foxVisible_,        Color(1.0f, 0.4f, 0.1f));
+                makeRayVisCb(landRays, "Wolf",       &wolfRayVisible_,       &wolfVisible_,       Color(0.6f, 0.0f, 0.0f));
+                makeRayVisCb(landRays, "Stag",       &stagRayVisible_,       &stagVisible_,       Color(0.6f, 0.3f, 1.0f));
+                makeRayVisCb(landRays, "Bull",       &bullRayVisible_,       &bullVisible_,       Color(0.5f, 0.25f, 0.0f));
+                makeRayVisCb(landRays, "Cow",        &cowRayVisible_,        &cowVisible_,        Color(0.9f, 0.9f, 0.7f));
+                makeRayVisCb(landRays, "Horse",      &horseRayVisible_,      &horseVisible_,      Color(0.4f, 0.3f, 0.2f));
+                makeRayVisCb(landRays, "Donkey",     &donkeyRayVisible_,     &donkeyVisible_,     Color(0.5f, 0.5f, 0.5f));
+                makeRayVisCb(landRays, "Alpaca",     &alpacaRayVisible_,     &alpacaVisible_,     Color(1.0f, 0.9f, 0.8f));
+                makeRayVisCb(landRays, "Husky",      &huskyRayVisible_,      &huskyVisible_,      Color(0.3f, 0.5f, 0.8f));
+                makeRayVisCb(landRays, "Shiba Inu",  &shibaInuRayVisible_,   &shibaInuVisible_,   Color(1.0f, 0.6f, 0.2f));
+                makeRayVisCb(landRays, "CaveMan",    &caveManRayVisible_,    &caveManVisible_,    Color(0.0f, 1.0f, 1.0f));
+                makeRayVisCb(landRays, "CaveWoman",  &caveWomanRayVisible_,  &caveWomanVisible_,  Color(1.0f, 0.0f, 1.0f));
+            }
+
+            // Water Animals
+            auto* waterRays = CreateCollapsibleSection(animalRaySection, font, "Water Animals", false);
+            {
+                makeRayCb(waterRays, "All Water",    &waterAnimalRayVisible_, Color(0.7f, 0.7f, 0.7f));
+                makeRayCb(waterRays, "Fish",         &fishRayVisible_,        Color(0.2f, 0.7f, 1.0f));
+                makeRayCb(waterRays, "School Fish",  &schoolFishRayVisible_,  Color(0.1f, 1.0f, 0.8f));
+            }
+        }
+
+        // --- Perf Toggles collapsible section ---
+        auto* perfSection = CreateCollapsibleSection(viewPopup, font, "Perf Toggles", false);
+        {
+            auto makePerfCb = [&](UIElement* parent, const String& label, bool* target)
+            {
+                auto* row = parent->CreateChild<UIElement>();
+                row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 1, 4, 1));
+                row->SetMinHeight(20);
+
+                auto* cb = row->CreateChild<CheckBox>();
+                cb->SetStyleAuto();
+                cb->SetChecked(*target);
+                cb->SetVar("BoolPtr", (void*)target);
+                SubscribeToEvent(cb, E_TOGGLED, [](StringHash, VariantMap& ed) {
+                    auto* box = static_cast<CheckBox*>(ed[Toggled::P_ELEMENT].GetPtr());
+                    if (box) {
+                        bool* ptr = static_cast<bool*>(box->GetVar("BoolPtr").GetVoidPtr());
+                        if (ptr) *ptr = box->IsChecked();
+                    }
+                });
+
+                auto* lbl = row->CreateChild<Text>();
+                lbl->SetFont(font, 11);
+                lbl->SetText(label);
+                lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+            };
+
+            makePerfCb(perfSection, "Shadows",          &shadowsEnabled_);
+            makePerfCb(perfSection, "God Rays",          &godRaysEnabled_);
+            makePerfCb(perfSection, "Water Reflection",  &waterReflectionEnabled_);
+            makePerfCb(perfSection, "Post-Processing",   &postProcessEnabled_);
+        }
+
+        // --- Audio volume sliders ---
+        auto* audioSection = CreateCollapsibleSection(viewPopup, font, "Audio", false);
+        {
+            auto* audio = GetSubsystem<Audio>();
+            auto makeVolSlider = [&](UIElement* parent, const String& label, const String& soundType)
+            {
+                auto* row = parent->CreateChild<UIElement>();
+                row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 1, 4, 1));
+                row->SetMinHeight(20);
+
+                auto* lbl = row->CreateChild<Text>();
+                lbl->SetFont(font, 10);
+                lbl->SetText(label);
+                lbl->SetColor(Color(0.8f, 0.8f, 0.8f));
+                lbl->SetMinWidth(60);
+
+                auto* slider = row->CreateChild<Slider>();
+                slider->SetStyleAuto();
+                slider->SetRange(1.0f);
+                slider->SetValue(audio ? audio->GetMasterGain(soundType) : 1.0f);
+                slider->SetMinSize(120, 16);
+                slider->SetVar("SoundType", soundType);
+                SubscribeToEvent(slider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleAudioSlider));
+
+                auto* val = row->CreateChild<Text>();
+                val->SetFont(font, 10);
+                char buf[8];
+                snprintf(buf, sizeof(buf), "%d%%", (int)(slider->GetValue() * 100));
+                val->SetText(String(buf));
+                val->SetColor(Color(0.6f, 0.8f, 0.6f));
+                val->SetName("AudioValueLabel");
+                slider->SetVar("ValueLabel", val);
+            };
+
+            makeVolSlider(audioSection, "Master",  SOUND_MASTER);
+            makeVolSlider(audioSection, "Effects", SOUND_EFFECT);
+            makeVolSlider(audioSection, "Ambient", SOUND_AMBIENT);
+            makeVolSlider(audioSection, "Music",   SOUND_MUSIC);
+        }
     }
 
     // Settings (font + size selection)
@@ -1428,6 +2430,7 @@ void TerrainNode::CreateMenuBar()
         envPopup->SetMinWidth(320);
         envPopup->SetDefaultStyle(GetSubsystem<UI>()->GetRoot()->GetDefaultStyle());
         envPopup->SetOpacity(0.85f);
+        envPopup->SetLayoutFlexScale(Vector2(1.0f, 0.0f));  // don't stretch height
         environmentMenu_->SetPopup(envPopup);
         environmentMenu_->SetPopupOffset(0, environmentMenu_->GetHeight());
 
@@ -1435,7 +2438,7 @@ void TerrainNode::CreateMenuBar()
             CreateMenuItem(envPopup, "Terrain Tools", 104);
 
         // --- Time Scrub section (expanded by default) ---
-        auto* timeScrubSection = CreateCollapsibleSection(envPopup, font, "Time Scrub", true);
+        auto* timeScrubSection = CreateCollapsibleSection(envPopup, font, "Time Scrub", false);
         {
             // Time of day slider
             auto* todRow = timeScrubSection->CreateChild<UIElement>();
@@ -1566,64 +2569,593 @@ void TerrainNode::CreateMenuBar()
             hemiLabel->SetColor(Color(0.9f, 0.9f, 0.9f));
         }
 
-        // --- Fish section (collapsed by default) ---
-        auto* fishSection = CreateCollapsibleSection(envPopup, font, "Fish", false);
+        // --- Animals section (collapsed by default) ---
+        auto* animalsSection = CreateCollapsibleSection(envPopup, font, "Animals", false);
         {
-            // Wiggle amplitude
-            auto* fishAmpRow = fishSection->CreateChild<UIElement>();
-            fishAmpRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
-            fishAmpRow->SetMinHeight(22);
+            // --- Fish sub-section ---
+            auto* fishSection = CreateCollapsibleSection(animalsSection, font, "Fish", false);
+            {
+                // Fish type breakdown
+                struct FishRow { const char* name; int count; };
+                FishRow fishTypes[] = {
+                    {"Fish", 50},
+                    {"School Fish", 45}   // 3 schools x 15
+                };
+                for (const auto& f : fishTypes)
+                {
+                    auto* row = fishSection->CreateChild<UIElement>();
+                    row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+                    row->SetMinHeight(20);
 
-            auto* fishAmpText = fishAmpRow->CreateChild<Text>();
-            fishAmpText->SetFont(font, 12);
-            fishAmpText->SetText("Wiggle:");
-            fishAmpText->SetColor(Color(0.9f, 0.9f, 0.9f));
-            fishAmpText->SetMinWidth(55);
+                    auto* nameText = row->CreateChild<Text>();
+                    nameText->SetFont(font, 11);
+                    nameText->SetText(f.name);
+                    nameText->SetColor(Color(0.9f, 0.9f, 0.9f));
+                    nameText->SetMinWidth(80);
 
-            auto* fishAmpSlider = fishAmpRow->CreateChild<Slider>();
-            fishAmpSlider->SetStyleAuto();
-            fishAmpSlider->SetFixedHeight(16);
-            fishAmpSlider->SetMinWidth(200);
-            fishAmpSlider->SetRange(1.0f);
-            fishAmpSlider->SetValue(0.3f);
-            SubscribeToEvent(fishAmpSlider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleFishWiggleSlider));
+                    auto* countText = row->CreateChild<Text>();
+                    countText->SetFont(font, 11);
+                    countText->SetText(String("x") + String(f.count));
+                    countText->SetColor(Color(0.7f, 0.9f, 0.7f));
+                }
 
-            fishWiggleLabel_ = fishAmpRow->CreateChild<Text>();
-            fishWiggleLabel_->SetFont(font, 12);
-            fishWiggleLabel_->SetText("0.030");
-            fishWiggleLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
-            fishWiggleLabel_->SetMinWidth(50);
+                // Wiggle amplitude
+                auto* fishAmpRow = fishSection->CreateChild<UIElement>();
+                fishAmpRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+                fishAmpRow->SetMinHeight(22);
 
-            // Speed
-            auto* fishSpdRow = fishSection->CreateChild<UIElement>();
-            fishSpdRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
-            fishSpdRow->SetMinHeight(22);
+                auto* fishAmpText = fishAmpRow->CreateChild<Text>();
+                fishAmpText->SetFont(font, 12);
+                fishAmpText->SetText("Wiggle:");
+                fishAmpText->SetColor(Color(0.9f, 0.9f, 0.9f));
+                fishAmpText->SetMinWidth(55);
 
-            auto* fishSpdText = fishSpdRow->CreateChild<Text>();
-            fishSpdText->SetFont(font, 12);
-            fishSpdText->SetText("Speed:");
-            fishSpdText->SetColor(Color(0.9f, 0.9f, 0.9f));
-            fishSpdText->SetMinWidth(55);
+                auto* fishAmpSlider = fishAmpRow->CreateChild<Slider>();
+                fishAmpSlider->SetStyleAuto();
+                fishAmpSlider->SetFixedHeight(16);
+                fishAmpSlider->SetMinWidth(200);
+                fishAmpSlider->SetRange(1.0f);
+                fishAmpSlider->SetValue(0.3f);
+                SubscribeToEvent(fishAmpSlider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleFishWiggleSlider));
 
-            auto* fishSpdSlider = fishSpdRow->CreateChild<Slider>();
-            fishSpdSlider->SetStyleAuto();
-            fishSpdSlider->SetFixedHeight(16);
-            fishSpdSlider->SetMinWidth(200);
-            fishSpdSlider->SetRange(1.0f);
-            fishSpdSlider->SetValue(0.25f);
-            SubscribeToEvent(fishSpdSlider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleFishSpeedSlider));
+                fishWiggleLabel_ = fishAmpRow->CreateChild<Text>();
+                fishWiggleLabel_->SetFont(font, 12);
+                fishWiggleLabel_->SetText("0.030");
+                fishWiggleLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
+                fishWiggleLabel_->SetMinWidth(50);
 
-            fishSpeedLabel_ = fishSpdRow->CreateChild<Text>();
-            fishSpeedLabel_->SetFont(font, 12);
-            fishSpeedLabel_->SetText("2.0 Hz");
-            fishSpeedLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
-            fishSpeedLabel_->SetMinWidth(50);
+                // Speed
+                auto* fishSpdRow = fishSection->CreateChild<UIElement>();
+                fishSpdRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+                fishSpdRow->SetMinHeight(22);
+
+                auto* fishSpdText = fishSpdRow->CreateChild<Text>();
+                fishSpdText->SetFont(font, 12);
+                fishSpdText->SetText("Speed:");
+                fishSpdText->SetColor(Color(0.9f, 0.9f, 0.9f));
+                fishSpdText->SetMinWidth(55);
+
+                auto* fishSpdSlider = fishSpdRow->CreateChild<Slider>();
+                fishSpdSlider->SetStyleAuto();
+                fishSpdSlider->SetFixedHeight(16);
+                fishSpdSlider->SetMinWidth(200);
+                fishSpdSlider->SetRange(1.0f);
+                fishSpdSlider->SetValue(0.25f);
+                SubscribeToEvent(fishSpdSlider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleFishSpeedSlider));
+
+                fishSpeedLabel_ = fishSpdRow->CreateChild<Text>();
+                fishSpeedLabel_->SetFont(font, 12);
+                fishSpeedLabel_->SetText("2.0 Hz");
+                fishSpeedLabel_->SetColor(Color(0.9f, 0.9f, 0.9f));
+                fishSpeedLabel_->SetMinWidth(50);
+            }
+
+            // --- Land sub-section (data-driven from habitat_rules.json) ---
+            auto* landSection = CreateCollapsibleSection(animalsSection, font, "Land", false);
+            {
+                // Land species names (Fish/SchoolFish excluded)
+                const char* landSpecies[] = {
+                    "Rabbit", "Deer", "Fox", "Wolf", "Stag", "Bull",
+                    "Cow", "Horse", "Donkey", "Alpaca", "Husky", "ShibaInu"
+                };
+
+                for (const char* speciesName : landSpecies)
+                {
+                    const HabitatRule* rule = habitatRules_.GetRule(speciesName);
+                    int density = rule ? rule->density : 0;
+                    float altMin = rule ? rule->altitudeMin : 5.5f;
+                    float altMax = rule ? rule->altitudeMax : 100.0f;
+
+                    // Collapsible per-species section
+                    String title = String(speciesName) + " (x" + String(density) + ")";
+                    auto* speciesSection = CreateCollapsibleSection(landSection, font, title, false);
+
+                    // Density slider
+                    {
+                        auto* row = speciesSection->CreateChild<UIElement>();
+                        row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+                        row->SetMinHeight(22);
+
+                        auto* lbl = row->CreateChild<Text>();
+                        lbl->SetFont(font, 11);
+                        lbl->SetText("Density:");
+                        lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+                        lbl->SetMinWidth(65);
+
+                        auto* slider = row->CreateChild<Slider>();
+                        slider->SetStyleAuto();
+                        slider->SetFixedHeight(16);
+                        slider->SetMinWidth(140);
+                        slider->SetRange(20.0f);
+                        slider->SetValue((float)density);
+                        slider->SetVar("HabitatSpecies", String(speciesName));
+                        slider->SetVar("HabitatParam", String("density"));
+                        SubscribeToEvent(slider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleHabitatSlider));
+
+                        auto* valText = row->CreateChild<Text>();
+                        valText->SetFont(font, 11);
+                        valText->SetText(String(density));
+                        valText->SetColor(Color(0.7f, 0.9f, 0.7f));
+                        valText->SetMinWidth(30);
+                        valText->SetName(String(speciesName) + "_density_val");
+                    }
+
+                    // Altitude min/max row
+                    {
+                        auto* row = speciesSection->CreateChild<UIElement>();
+                        row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+                        row->SetMinHeight(22);
+
+                        auto* lbl = row->CreateChild<Text>();
+                        lbl->SetFont(font, 11);
+                        lbl->SetText("Alt:");
+                        lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+                        lbl->SetMinWidth(35);
+
+                        auto* minSlider = row->CreateChild<Slider>();
+                        minSlider->SetStyleAuto();
+                        minSlider->SetFixedHeight(16);
+                        minSlider->SetMinWidth(70);
+                        minSlider->SetRange(100.0f);
+                        minSlider->SetValue(altMin);
+                        minSlider->SetVar("HabitatSpecies", String(speciesName));
+                        minSlider->SetVar("HabitatParam", String("altMin"));
+                        SubscribeToEvent(minSlider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleHabitatSlider));
+
+                        auto* dash = row->CreateChild<Text>();
+                        dash->SetFont(font, 11);
+                        dash->SetText("-");
+                        dash->SetColor(Color(0.7f, 0.7f, 0.7f));
+
+                        auto* maxSlider = row->CreateChild<Slider>();
+                        maxSlider->SetStyleAuto();
+                        maxSlider->SetFixedHeight(16);
+                        maxSlider->SetMinWidth(70);
+                        maxSlider->SetRange(100.0f);
+                        maxSlider->SetValue(Min(altMax, 100.0f));
+                        maxSlider->SetVar("HabitatSpecies", String(speciesName));
+                        maxSlider->SetVar("HabitatParam", String("altMax"));
+                        SubscribeToEvent(maxSlider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleHabitatSlider));
+
+                        auto* valText = row->CreateChild<Text>();
+                        valText->SetFont(font, 11);
+                        valText->SetText(String((int)altMin) + "-" + String((int)altMax));
+                        valText->SetColor(Color(0.7f, 0.9f, 0.7f));
+                        valText->SetMinWidth(50);
+                        valText->SetName(String(speciesName) + "_alt_val");
+                    }
+
+                    // Respawn button for this species
+                    {
+                        auto* btn = speciesSection->CreateChild<Button>();
+                        btn->SetStyleAuto();
+                        btn->SetFixedHeight(20);
+                        btn->SetMinWidth(80);
+                        btn->SetVar("HabitatAction", String("respawn"));
+                        btn->SetVar("HabitatSpecies", String(speciesName));
+                        SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleHabitatButton));
+
+                        auto* btnText = btn->CreateChild<Text>();
+                        btnText->SetFont(font, 11);
+                        btnText->SetText("Respawn");
+                        btnText->SetAlignment(HA_CENTER, VA_CENTER);
+                    }
+                }
+
+                // --- Global buttons at bottom of Land section ---
+                auto* btnRow = landSection->CreateChild<UIElement>();
+                btnRow->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 4, 4, 4));
+                btnRow->SetMinHeight(26);
+
+                // Save Rules
+                {
+                    auto* btn = btnRow->CreateChild<Button>();
+                    btn->SetStyleAuto();
+                    btn->SetFixedHeight(22);
+                    btn->SetMinWidth(60);
+                    btn->SetVar("HabitatAction", String("save"));
+                    SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleHabitatButton));
+                    auto* t = btn->CreateChild<Text>();
+                    t->SetFont(font, 11);
+                    t->SetText("Save");
+                    t->SetAlignment(HA_CENTER, VA_CENTER);
+                }
+                // Reset Rules
+                {
+                    auto* btn = btnRow->CreateChild<Button>();
+                    btn->SetStyleAuto();
+                    btn->SetFixedHeight(22);
+                    btn->SetMinWidth(60);
+                    btn->SetVar("HabitatAction", String("reset"));
+                    SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleHabitatButton));
+                    auto* t = btn->CreateChild<Text>();
+                    t->SetFont(font, 11);
+                    t->SetText("Reset");
+                    t->SetAlignment(HA_CENTER, VA_CENTER);
+                }
+                // Respawn All
+                {
+                    auto* btn = btnRow->CreateChild<Button>();
+                    btn->SetStyleAuto();
+                    btn->SetFixedHeight(22);
+                    btn->SetMinWidth(80);
+                    btn->SetVar("HabitatAction", String("respawnAll"));
+                    SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleHabitatButton));
+                    auto* t = btn->CreateChild<Text>();
+                    t->SetFont(font, 11);
+                    t->SetText("Respawn All");
+                    t->SetAlignment(HA_CENTER, VA_CENTER);
+                }
+            }
+
+        }
+
+        // --- Water section (collapsed by default) ---
+        auto* waterSection = CreateCollapsibleSection(envPopup, font, "Water", false);
+        {
+            // Helper lambda: one slider row
+            auto makeRow = [&](UIElement* parent, const String& label, float range, float defaultVal,
+                               int sliderId, Text*& outLabel) -> Slider*
+            {
+                auto* row = parent->CreateChild<UIElement>();
+                row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+                row->SetMinHeight(22);
+
+                auto* lbl = row->CreateChild<Text>();
+                lbl->SetFont(font, 12);
+                lbl->SetText(label);
+                lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+                lbl->SetMinWidth(80);
+
+                auto* slider = row->CreateChild<Slider>();
+                slider->SetStyleAuto();
+                slider->SetFixedHeight(16);
+                slider->SetMinWidth(180);
+                slider->SetRange(range);
+                slider->SetValue(defaultVal);
+                slider->SetVar("SliderID", sliderId);
+                SubscribeToEvent(slider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleWaterSlider));
+
+                outLabel = row->CreateChild<Text>();
+                outLabel->SetFont(font, 12);
+                outLabel->SetColor(Color(0.9f, 0.9f, 0.9f));
+                outLabel->SetMinWidth(55);
+
+                return slider;
+            };
+
+            // Water Height    (ID 45)  0 → 50, default 5 (Y position of the water plane)
+            makeRow(waterSection, "Height:", 50.0f, 5.0f, 45, waterHeightLabel_)->SetValue(5.0f);
+            waterHeightLabel_->SetText("5.0");
+
+            // Noise Strength  (ID 40)  0 → 0.08, default 0.02
+            makeRow(waterSection, "Noise:", 0.08f, 0.02f, 40, waterNoiseLabel_)->SetValue(0.02f);
+            waterNoiseLabel_->SetText("0.020");
+
+            // Fresnel Power   (ID 41)  1 → 8, default 3
+            makeRow(waterSection, "Fresnel:", 7.0f, 2.0f, 41, waterFresnelLabel_)->SetValue(2.0f);
+            waterFresnelLabel_->SetText("3.0");
+
+            // Depth Scale     (ID 42)  0 → 5, default 1.5
+            makeRow(waterSection, "Depth:", 5.0f, 1.5f, 42, waterDepthLabel_)->SetValue(1.5f);
+            waterDepthLabel_->SetText("1.50");
+
+            // Ripple Strength (ID 43)  0 → 1.5, default 0.4
+            makeRow(waterSection, "Ripple:", 1.5f, 0.4f, 43, waterRippleLabel_)->SetValue(0.4f);
+            waterRippleLabel_->SetText("0.40");
+
+            // Ripple Decay    (ID 44)  0 (slow) → 1 (fast), maps to baseDamping 0.995 → 0.900
+            makeRow(waterSection, "Decay:", 1.0f, 0.43f, 44, waterDecayLabel_)->SetValue(0.43f);
+            waterDecayLabel_->SetText("0.97");
+        }
+
+        // --- Campfire Settings section ---
+        auto* campfireSection = CreateCollapsibleSection(envPopup, font, "Campfire", false);
+        {
+            auto makeRow = [&](UIElement* parent, const String& label, float range, float defaultVal,
+                               int sliderId, Text*& outLabel) -> Slider*
+            {
+                auto* row = parent->CreateChild<UIElement>();
+                row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+                row->SetMinHeight(22);
+
+                auto* lbl = row->CreateChild<Text>();
+                lbl->SetFont(font, 12);
+                lbl->SetText(label);
+                lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+                lbl->SetMinWidth(80);
+
+                auto* slider = row->CreateChild<Slider>();
+                slider->SetStyleAuto();
+                slider->SetFixedHeight(16);
+                slider->SetMinWidth(180);
+                slider->SetRange(range);
+                slider->SetValue(defaultVal);
+                slider->SetVar("SliderID", sliderId);
+                SubscribeToEvent(slider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleCampfireSlider));
+                campfireSliders_[sliderId] = slider;
+
+                outLabel = row->CreateChild<Text>();
+                outLabel->SetFont(font, 12);
+                outLabel->SetColor(Color(0.9f, 0.9f, 0.9f));
+                outLabel->SetMinWidth(55);
+
+                return slider;
+            };
+
+            // Fire emission rate  (ID 50)  0 → 100, default 45
+            makeRow(campfireSection, "Fire Rate:", 100.0f, 45.0f, 50, cfFireRateLabel_);
+            cfFireRateLabel_->SetText("45");
+
+            // Fire particle size  (ID 51)  0.01 → 1.0, default 0.25
+            makeRow(campfireSection, "Fire Size:", 1.0f, 0.25f, 51, cfFireSizeLabel_);
+            cfFireSizeLabel_->SetText("0.25");
+
+            // Smoke emission rate (ID 52)  0 → 200, default 150
+            makeRow(campfireSection, "Smoke Rate:", 200.0f, 150.0f, 52, cfSmokeRateLabel_);
+            cfSmokeRateLabel_->SetText("150");
+
+            // Smoke particle size (ID 53)  0.01 → 1.5, default 0.4
+            makeRow(campfireSection, "Smoke Size:", 1.5f, 0.4f, 53, cfSmokeSizeLabel_);
+            cfSmokeSizeLabel_->SetText("0.40");
+
+            // Smoke emitter size  (ID 75)  0 → 2, default 1.0 (box radius)
+            makeRow(campfireSection, "Smoke Emit R:", 2.0f, 1.0f, 75, cfSmokeEmitSizeLabel_);
+            cfSmokeEmitSizeLabel_->SetText("1.00");
+
+            // Smoke size multiplier (ID 76) 0.1 → 3, default 1.3 (grows over lifetime)
+            makeRow(campfireSection, "Smoke Grow:", 3.0f, 1.3f, 76, cfSmokeGrowLabel_);
+            cfSmokeGrowLabel_->SetText("1.30");
+
+            // Smoke lifetime      (ID 77)  0.5 → 8, default 4
+            makeRow(campfireSection, "Smoke Life:", 8.0f, 4.0f, 77, cfSmokeLifeLabel_);
+            cfSmokeLifeLabel_->SetText("4.0");
+
+            // Smoke updraft       (ID 78)  0 → 10, default 2
+            makeRow(campfireSection, "Smoke Rise:", 10.0f, 2.0f, 78, cfSmokeRiseLabel_);
+            cfSmokeRiseLabel_->SetText("2.0");
+
+            // Smoke damping       (ID 79)  0 → 5, default 2
+            makeRow(campfireSection, "Smoke Damp:", 5.0f, 2.0f, 79, cfSmokeDampLabel_);
+            cfSmokeDampLabel_->SetText("2.0");
+
+            // Light range         (ID 54)  0.5 → 20, default 5
+            makeRow(campfireSection, "Light Range:", 20.0f, 5.0f, 54, cfLightRangeLabel_);
+            cfLightRangeLabel_->SetText("5.0");
+
+            // Light brightness    (ID 55)  0.1 → 5, default 1.5
+            makeRow(campfireSection, "Brightness:", 5.0f, 1.5f, 55, cfBrightnessLabel_);
+            cfBrightnessLabel_->SetText("1.50");
+
+            // Fire velocity       (ID 56)  0 → 5, default 1.5
+            makeRow(campfireSection, "Velocity:", 5.0f, 1.5f, 56, cfVelocityLabel_);
+            cfVelocityLabel_->SetText("1.5");
+
+            // Fire upward force   (ID 57)  0 → 10, default 2
+            makeRow(campfireSection, "Updraft:", 10.0f, 2.0f, 57, cfUpdraftLabel_);
+            cfUpdraftLabel_->SetText("2.0");
+
+            // Fire time to live   (ID 58)  0.1 → 4, default 1
+            makeRow(campfireSection, "Lifetime:", 4.0f, 1.0f, 58, cfLifetimeLabel_);
+            cfLifetimeLabel_->SetText("1.0");
+
+            // --- Fire color frames: Birth / Mid / Death ---
+            // Each frame has R, G, B, A sliders (IDs 60-71)
+            // Birth color: default (0.1, 0.5, 1.0, 1.0) — the blue you see
+            auto makeColorRow = [&](UIElement* parent, const String& label, int baseId,
+                                    float defR, float defG, float defB, float defA)
+            {
+                auto* header = parent->CreateChild<Text>();
+                header->SetFont(font, 11);
+                header->SetText(label);
+                header->SetColor(Color(0.8f, 0.8f, 0.5f));
+                header->SetFixedHeight(18);
+
+                Text* dummy;
+                makeRow(parent, "  R:", 1.0f, defR, baseId,     dummy);
+                makeRow(parent, "  G:", 1.0f, defG, baseId + 1, dummy);
+                makeRow(parent, "  B:", 1.0f, defB, baseId + 2, dummy);
+                makeRow(parent, "  A:", 1.0f, defA, baseId + 3, dummy);
+            };
+
+            // Birth (t=0)    IDs 60-63
+            makeColorRow(campfireSection, "Birth Color:", 60, 0.1f, 0.5f, 1.0f, 1.0f);
+            // Mid   (t=0.5)  IDs 64-67
+            makeColorRow(campfireSection, "Mid Color:", 64, 1.0f, 0.63f, 0.45f, 1.0f);
+            // Death (t=1.0)  IDs 68-71
+            makeColorRow(campfireSection, "Death Color:", 68, 0.0f, 0.0f, 0.0f, 0.0f);
+        }
+    }
+
+    // AI Tuning button (admin-only, hidden until login)
+    {
+        auto* btn = menuBar_->CreateChild<Button>("AITuningBtn");
+        btn->SetStyleAuto();
+        btn->SetFixedHeight(24);
+        btn->SetMinWidth(80);
+        btn->SetVisible(false); // shown after admin login
+        auto* lbl = btn->CreateChild<Text>();
+        lbl->SetFont(font_, 12);
+        lbl->SetText("AI Tuning");
+        lbl->SetColor(Color::WHITE);
+        lbl->SetAlignment(HA_CENTER, VA_CENTER);
+        SubscribeToEvent(btn, E_RELEASED, [this](StringHash, VariantMap&) {
+            if (!tuningPanel_)
+                CreateTuningPanel();
+            tuningPanel_->SetVisible(!tuningPanel_->IsVisible());
+            if (tuningPanel_->IsVisible())
+                RequestTuningData();
+        });
+    }
+}
+
+void TerrainNode::RequestTuningData()
+{
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network->GetServerConnection();
+    if (!serverConn) return;
+    VectorBuffer buf;
+    serverConn->SendMessage(MSG_TUNING_REQUEST, true, true, buf);
+}
+
+void TerrainNode::CreateTuningPanel()
+{
+    auto* uiRoot = GetSubsystem<UI>()->GetRoot();
+    tuningPanel_ = new Window(context_);
+    uiRoot->AddChild(tuningPanel_);
+    tuningPanel_->SetStyleAuto();
+    tuningPanel_->SetLayout(LM_VERTICAL, 4, IntRect(6, 6, 6, 6));
+    tuningPanel_->SetMinSize(360, 200);
+    tuningPanel_->SetMaxSize(400, 600);
+    tuningPanel_->SetPosition(100, 60);
+    tuningPanel_->SetMovable(true);
+    tuningPanel_->SetResizable(true);
+    tuningPanel_->SetOpacity(0.9f);
+
+    auto* title = tuningPanel_->CreateChild<Text>();
+    title->SetFont(font_, 13);
+    title->SetText("AI Tuning");
+    title->SetColor(Color(1.0f, 0.9f, 0.6f));
+
+    // Content area — populated when data arrives
+    auto* content = tuningPanel_->CreateChild<UIElement>("TuningContent");
+    content->SetLayout(LM_VERTICAL, 2, IntRect(0, 0, 0, 0));
+
+    // Reset Defaults button
+    auto* resetBtn = tuningPanel_->CreateChild<Button>();
+    resetBtn->SetStyleAuto();
+    resetBtn->SetFixedHeight(24);
+    resetBtn->SetMinWidth(120);
+    auto* resetLbl = resetBtn->CreateChild<Text>();
+    resetLbl->SetFont(font_, 11);
+    resetLbl->SetText("Reset Defaults");
+    resetLbl->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(resetBtn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleTuningResetDefaults));
+}
+
+void TerrainNode::PopulateTuningPanel()
+{
+    if (!tuningPanel_) return;
+    auto* content = tuningPanel_->GetChild("TuningContent", false);
+    if (!content) return;
+    content->RemoveAllChildren();
+
+    // Group by category
+    Vector<String> categories;
+    for (const auto& e : tuningEntries_)
+    {
+        if (!categories.Contains(e.category))
+            categories.Push(e.category);
+    }
+
+    for (const auto& cat : categories)
+    {
+        // Category header
+        auto* catLabel = content->CreateChild<Text>();
+        catLabel->SetFont(font_, 12);
+        catLabel->SetText(cat.ToUpper());
+        catLabel->SetColor(Color(0.6f, 0.8f, 1.0f));
+
+        for (unsigned i = 0; i < tuningEntries_.Size(); ++i)
+        {
+            const auto& e = tuningEntries_[i];
+            if (e.category != cat) continue;
+
+            auto* row = content->CreateChild<UIElement>();
+            row->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 1, 4, 1));
+            row->SetMinHeight(20);
+
+            auto* lbl = row->CreateChild<Text>();
+            lbl->SetFont(font_, 10);
+            lbl->SetText(e.label);
+            lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+            lbl->SetMinWidth(160);
+
+            auto* slider = row->CreateChild<Slider>();
+            slider->SetStyleAuto();
+            slider->SetFixedHeight(14);
+            slider->SetMinWidth(120);
+            slider->SetRange(e.maxVal - e.minVal);
+            slider->SetValue(e.value - e.minVal);
+            slider->SetVar("TuningIndex", i);
+            SubscribeToEvent(slider, E_SLIDERCHANGED, URHO3D_HANDLER(TerrainNode, HandleTuningSliderChanged));
+
+            auto* valText = row->CreateChild<Text>();
+            valText->SetFont(font_, 10);
+            valText->SetColor(Color(0.9f, 0.9f, 0.9f));
+            valText->SetMinWidth(50);
+            char buf[16]; snprintf(buf, sizeof(buf), "%.2f", e.value);
+            valText->SetText(buf);
         }
     }
 }
 
+void TerrainNode::HandleTuningSliderChanged(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    auto* slider = static_cast<Slider*>(eventData[P_ELEMENT].GetPtr());
+    if (!slider) return;
+
+    int idx = slider->GetVar("TuningIndex").GetI32();
+    if (idx < 0 || idx >= (int)tuningEntries_.Size()) return;
+
+    auto& e = tuningEntries_[idx];
+    float newValue = slider->GetValue() + e.minVal;
+    e.value = newValue;
+
+    // Update value text (next sibling)
+    auto* parent = slider->GetParent();
+    if (parent && parent->GetNumChildren() >= 3)
+    {
+        auto* valText = parent->GetChildStaticCast<Text>(2);
+        if (valText)
+        {
+            char buf[16]; snprintf(buf, sizeof(buf), "%.2f", newValue);
+            valText->SetText(buf);
+        }
+    }
+
+    // Send update to server
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network->GetServerConnection();
+    if (serverConn)
+    {
+        VectorBuffer buf;
+        buf.WriteString(e.key);
+        buf.WriteFloat(newValue);
+        serverConn->SendMessage(MSG_TUNING_UPDATE, true, true, buf);
+    }
+}
+
+void TerrainNode::HandleTuningResetDefaults(StringHash eventType, VariantMap& eventData)
+{
+    // Re-request fresh data from server (server will have original DB values
+    // after next restart; for live reset, Phase 5 could add a reset command)
+    RequestTuningData();
+}
+
 static const char* DEFAULT_INSTRUCTIONS =
-    "WASD move, Mouse look, Tab cursor mode\n"
+    "WASD move, Mouse look, Tab cursor, P possess\n"
     "LMB raise, RMB lower, Scroll brush size\n"
     "F5 debug, F fill, H fog, F11 fullscreen\n"
     "NumPad Enter hide UI, 1 sun, 2 moon";
@@ -1710,79 +3242,6 @@ void TerrainNode::HandleEditMenu(StringHash eventType, VariantMap& eventData)
     }
 }
 
-void TerrainNode::HandleViewMenu(StringHash eventType, VariantMap& eventData)
-{
-    unsigned sel = eventData[ItemSelected::P_SELECTION].GetU32();
-    viewMenu_->SetSelection(M_MAX_UNSIGNED);
-
-    if (sel >= viewMenu_->GetNumItems())
-        return;
-
-    if (sel <= 2)
-    {
-        if (instructionText_)
-            instructionText_->SetText(
-                "Hierarchy: scene node tree, double-click to focus\n"
-                "Inspector: edit selected node properties");
-    }
-    else
-    {
-        if (instructionText_)
-            instructionText_->SetText(
-                "F5 debug, F fill mode, H height fog\n"
-                "F11 fullscreen, NumPad Enter hide all");
-    }
-
-    switch (sel)
-    {
-    case 0: ToggleHierarchyWindow(); break;
-    case 1: ToggleInspectorWindow(); break;
-    case 2: ToggleDebugLogWindow(); break;
-    case 3: // Toggle Fullscreen
-        GetSubsystem<Graphics>()->ToggleFullscreen();
-        break;
-    case 4: // Toggle Wireframe
-    {
-        auto* camera = cameraNode_ ? cameraNode_->GetComponent<Camera>() : nullptr;
-        if (camera)
-            camera->SetFillMode(camera->GetFillMode() == FILL_SOLID ? FILL_WIREFRAME : FILL_SOLID);
-        break;
-    }
-    case 5: // Toggle Debug Geometry
-        drawDebug_ = !drawDebug_;
-        break;
-    case 6: // Toggle Height Fog
-        if (zone_)
-        {
-            bool on = !zone_->GetHeightFog();
-            zone_->SetHeightFog(on);
-            heightFogOverride_ = on ? 1 : -1;
-        }
-        break;
-    case 7: // Toggle Profiler
-        if (profilerUI_)
-            profilerUI_->SetVisible(!profilerUI_->IsVisible());
-        break;
-    case 8: // Toggle OOFO Detector
-        oofoRayVisible_ = !oofoRayVisible_;
-        break;
-    case 9: // Toggle Land Animal Rays
-        landAnimalRayVisible_ = !landAnimalRayVisible_;
-        URHO3D_LOGINFOF("Land animal rays: %s", landAnimalRayVisible_ ? "ON" : "OFF");
-        break;
-    case 10: // Toggle Water Animal Rays
-        waterAnimalRayVisible_ = !waterAnimalRayVisible_;
-        URHO3D_LOGINFOF("Water animal rays: %s", waterAnimalRayVisible_ ? "ON" : "OFF");
-        break;
-    case 11: // Toggle God Rays
-        godRaysEnabled_ = !godRaysEnabled_;
-        break;
-    case 12: // Toggle Grass Rays
-        grassRayVisible_ = !grassRayVisible_;
-        URHO3D_LOGINFOF("Grass rays: %s", grassRayVisible_ ? "ON" : "OFF");
-        break;
-    }
-}
 
 Menu* TerrainNode::CreateMenuItem(UIElement* parent, const String& text, int actionId)
 {
@@ -1872,11 +3331,61 @@ void TerrainNode::HandleEnvironmentAction(StringHash eventType, VariantMap& even
     case 104:
         ToggleTerrainPanel();
         break;
+
+    // View menu actions (200-series)
+    case 200: ToggleHierarchyWindow(); break;
+    case 201: ToggleInspectorWindow(); break;
+    case 202: ToggleDebugLogWindow(); break;
+    case 203: GetSubsystem<Graphics>()->ToggleFullscreen(); break;
+    case 204:
+    {
+        auto* camera = cameraNode_ ? cameraNode_->GetComponent<Camera>() : nullptr;
+        if (camera)
+            camera->SetFillMode(camera->GetFillMode() == FILL_SOLID ? FILL_WIREFRAME : FILL_SOLID);
+        break;
+    }
+    case 205: drawDebug_ = !drawDebug_; break;
+    case 206:
+        if (zone_)
+        {
+            bool on = !zone_->GetHeightFog();
+            zone_->SetHeightFog(on);
+            heightFogOverride_ = on ? 1 : -1;
+        }
+        break;
+    case 207:
+        if (profilerUI_)
+            profilerUI_->SetVisible(!profilerUI_->IsVisible());
+        break;
+    case 208: oofoRayVisible_ = !oofoRayVisible_; break;
+    case 209:
+    {
+        godRaysEnabled_ = !godRaysEnabled_;
+        auto* gfx = GetSubsystem<Graphics>();
+        ProfilerTimeline* tl = gfx ? gfx->GetProfilerTimeline() : nullptr;
+        if (tl) tl->AddMarker(godRaysEnabled_ ? "GodRays ON" : "GodRays OFF");
+        break;
+    }
+    // case 210:  // QUARANTINED — grass not rendering
+    case 211:
+    {
+        campfireRayVisible_ = !campfireRayVisible_;
+        URHO3D_LOGINFOF("Campfire ray: %s", campfireRayVisible_ ? "ON" : "OFF");
+        auto* gfx = GetSubsystem<Graphics>();
+        ProfilerTimeline* tl = gfx ? gfx->GetProfilerTimeline() : nullptr;
+        if (tl) tl->AddMarker(campfireRayVisible_ ? "CampfireRay ON" : "CampfireRay OFF");
+        break;
+    }
+    //     grassRayVisible_ = !grassRayVisible_;
+    //     URHO3D_LOGINFOF("Grass rays: %s", grassRayVisible_ ? "ON" : "OFF");
+    //     break;
     }
 
-    // Close the top-level popup
+    // Close whichever popup is showing
     if (environmentMenu_ && environmentMenu_->GetShowPopup())
         environmentMenu_->ShowPopup(false);
+    if (viewMenu_ && viewMenu_->GetShowPopup())
+        viewMenu_->ShowPopup(false);
 }
 
 void TerrainNode::HandleTimeOfDaySlider(StringHash eventType, VariantMap& eventData)
@@ -1893,6 +3402,21 @@ void TerrainNode::HandleTimeOfDaySlider(StringHash eventType, VariantMap& eventD
         char buf[16];
         snprintf(buf, sizeof(buf), "%+d:%02d", hours, mins);
         todLabel_->SetText(buf);
+    }
+
+    // Send admin time override to server — god of gods only
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (serverConn && loggedIn_)
+    {
+        float overrideHour = timeOfDay_ + timeOfDayOffset_;
+        if (overrideHour < 0.0f) overrideHour += 24.0f;
+        if (overrideHour >= 24.0f) overrideHour -= 24.0f;
+
+        VectorBuffer buf;
+        buf.WriteFloat(overrideHour);
+        buf.WriteI32(dayOfYear_);
+        serverConn->SendMessage(MSG_ADMIN_TIME_OVERRIDE, true, true, buf);
     }
 }
 
@@ -1998,6 +3522,507 @@ void TerrainNode::HandleFishSpeedSlider(StringHash eventType, VariantMap& eventD
 
     if (fishSpeedLabel_)
         fishSpeedLabel_->SetText(String((double)freq, 1) + " Hz");
+}
+
+void TerrainNode::HandleWaterSlider(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    auto* slider = static_cast<Slider*>(eventData[P_ELEMENT].GetPtr());
+    if (!slider) return;
+
+    float val = eventData[P_VALUE].GetFloat();
+    int id = slider->GetVar("SliderID").GetI32();
+
+    // Get water material via ResourceCache (shared across all water tiles)
+    Material* mat = nullptr;
+    if (waterNode_)
+        mat = GetSubsystem<ResourceCache>()->GetResource<Material>("Materials/Water.xml");
+
+    switch (id)
+    {
+    case 45: // Water Height  0 → 50
+    {
+        if (waterNode_)
+        {
+            Vector3 pos = waterNode_->GetPosition();
+            pos.y_ = val;
+            waterNode_->SetPosition(pos);
+            // Update reflection + clip planes
+            waterPlane_ = Plane(Vector3::UP, pos);
+            waterClipPlane_ = Plane(Vector3::UP, pos);
+            if (reflectionCameraNode_)
+            {
+                auto* reflCam = reflectionCameraNode_->GetComponent<Camera>();
+                if (reflCam)
+                {
+                    reflCam->SetReflectionPlane(waterPlane_);
+                    reflCam->SetClipPlane(waterClipPlane_);
+                }
+            }
+            // Update render path WaterLevel
+            if (renderPath_)
+                renderPath_->SetShaderParameter("WaterLevel", val);
+        }
+        if (waterHeightLabel_) waterHeightLabel_->SetText(String((double)val, 1));
+        break;
+    }
+
+    case 40: // Noise Strength  0 → 0.08
+        if (mat) mat->SetShaderParameter("NoiseStrength", val);
+        if (waterNoiseLabel_) waterNoiseLabel_->SetText(String((double)val, 3));
+        break;
+
+    case 41: // Fresnel Power  slider 0→7 → value 1→8
+    {
+        float fp = val + 1.0f;
+        if (mat) mat->SetShaderParameter("FresnelPower", fp);
+        if (waterFresnelLabel_) waterFresnelLabel_->SetText(String((double)fp, 1));
+        break;
+    }
+
+    case 42: // Depth Scale  0 → 5
+        if (mat) mat->SetShaderParameter("DepthScale", val);
+        if (waterDepthLabel_) waterDepthLabel_->SetText(String((double)val, 2));
+        break;
+
+    case 43: // Ripple Strength  0 → 1.5
+        if (mat) mat->SetShaderParameter("RippleStrength", val);
+        if (waterRippleLabel_) waterRippleLabel_->SetText(String((double)val, 2));
+        break;
+
+    case 44: // Ripple Decay  slider 0→1 maps to baseDamping 0.995→0.900
+    {
+        float damping = 0.995f - val * 0.095f;
+        if (rippleSystem_) rippleSystem_->SetBaseDamping(damping);
+        if (waterDecayLabel_) waterDecayLabel_->SetText(String((double)damping, 3));
+        break;
+    }
+
+    default: break;
+    }
+}
+
+void TerrainNode::HandleCampfireSlider(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    auto* slider = static_cast<Slider*>(eventData[P_ELEMENT].GetPtr());
+    if (!slider) return;
+
+    float val = eventData[P_VALUE].GetFloat();
+    int id = slider->GetVar("SliderID").GetI32();
+
+    // Update label text
+    switch (id)
+    {
+    case 50: if (cfFireRateLabel_) cfFireRateLabel_->SetText(String((int)val)); break;
+    case 51: if (cfFireSizeLabel_) cfFireSizeLabel_->SetText(String((double)val, 2)); break;
+    case 52: if (cfSmokeRateLabel_) cfSmokeRateLabel_->SetText(String((int)val)); break;
+    case 53: if (cfSmokeSizeLabel_) cfSmokeSizeLabel_->SetText(String((double)val, 2)); break;
+    case 54: if (cfLightRangeLabel_) cfLightRangeLabel_->SetText(String((double)val, 1)); break;
+    case 55: if (cfBrightnessLabel_) cfBrightnessLabel_->SetText(String((double)val, 2)); break;
+    case 56: if (cfVelocityLabel_) cfVelocityLabel_->SetText(String((double)val, 1)); break;
+    case 57: if (cfUpdraftLabel_) cfUpdraftLabel_->SetText(String((double)val, 1)); break;
+    case 58: if (cfLifetimeLabel_) cfLifetimeLabel_->SetText(String((double)Max(val, 0.1f), 1)); break;
+    case 75: if (cfSmokeEmitSizeLabel_) cfSmokeEmitSizeLabel_->SetText(String((double)val, 2)); break;
+    case 76: if (cfSmokeGrowLabel_) cfSmokeGrowLabel_->SetText(String((double)val, 2)); break;
+    case 77: if (cfSmokeLifeLabel_) cfSmokeLifeLabel_->SetText(String((double)Max(val, 0.5f), 1)); break;
+    case 78: if (cfSmokeRiseLabel_) cfSmokeRiseLabel_->SetText(String((double)val, 1)); break;
+    case 79: if (cfSmokeDampLabel_) cfSmokeDampLabel_->SetText(String((double)val, 1)); break;
+    default: break;
+    }
+
+    // Broadcast to all campfires — fire once, forget
+    VariantMap& data = GetEventDataMap();
+    data[CampfireSettingsChanged::P_SLIDERID] = id;
+    data[CampfireSettingsChanged::P_VALUE] = val;
+    SendEvent(E_CAMPFIRE_SETTINGS_CHANGED, data);
+}
+
+void TerrainNode::HandleAnimationTextKey(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace AnimationTextKeyEvent;
+    Node* node = static_cast<Node*>(eventData[P_NODE].GetPtr());
+    Animation* anim = static_cast<Animation*>(eventData[P_ANIMATION].GetPtr());
+    String name = eventData[P_NAME].GetString();
+    float time = eventData[P_TIME].GetFloat();
+    String data = eventData[P_DATA].ToString();
+
+    // The model node fires the event; walk up to the parent (creature node) for naming
+    Node* parent = node ? node->GetParent() : nullptr;
+    String parentName = parent ? parent->GetName() : String("?");
+    String animName = anim ? GetFileName(anim->GetName()) : String("?");
+
+    URHO3D_LOGDEBUGF("[TextKey] %s: %s @ %.2fs in %s  data=%s",
+        parentName.CString(), name.CString(), time, animName.CString(), data.CString());
+
+    // Text key → driven key bridge: key name "drive", data = "paramName=value"
+    // Feeds the named parameter into DrivenKeySystem as a driver input.
+    // Example text key: name="drive", data="flame_intensity=0.8"
+    if (name == "drive")
+    {
+        auto* dks = GetSubsystem<DrivenKeySystem>();
+        if (dks && !data.Empty())
+        {
+            unsigned eq = data.Find('=');
+            if (eq != String::NPOS)
+            {
+                String paramName = data.Substring(0, eq).Trimmed();
+                float value = ToFloat(data.Substring(eq + 1).Trimmed());
+                dks->SetDriver(StringHash(paramName), value);
+            }
+        }
+        return;
+    }
+
+    // Text key driven sound: key name "sound", data = resource path
+    // Also accept "sfx", "footstep", "vocal", "death" as aliases — all play 3D sound on the creature node
+    if (name == "sound" || name == "sfx" || name == "footstep" || name == "vocal" || name == "death")
+    {
+        if (data.Empty() || !parent)
+            return;
+
+        auto* source = parent->GetComponent<SoundSource3D>();
+        if (!source)
+            source = (node ? node->GetComponent<SoundSource3D>() : nullptr);
+        if (!source)
+            return;
+
+        auto* cache = GetSubsystem<ResourceCache>();
+        auto* sound = cache->GetResource<Sound>(data);
+        if (sound)
+            source->Play(sound);
+    }
+
+    // Equipment attach: text key name="equip", data="bone:model_path[:material_path]"
+    // Optional offset/rotation after material: "bone:model:mat:ox,oy,oz:rx,ry,rz:sx,sy,sz"
+    if (name == "equip" && parent)
+    {
+        // Parse: bone:model[:material[:offset[:rotation[:scale]]]]
+        Vector<String> parts = data.Split(':');
+        if (parts.Size() < 2)
+            return;
+
+        String boneName = parts[0].Trimmed();
+        String modelPath = parts[1].Trimmed();
+
+        // Find the bone node on the model node (child of creature parent)
+        Node* modelNode = parent->GetChildren().Size() > 0 ? parent->GetChildren()[0].Get() : nullptr;
+        if (!modelNode)
+            return;
+        Node* boneNode = modelNode->GetChild(boneName, true);
+        if (!boneNode)
+        {
+            URHO3D_LOGWARNINGF("[Equip] Bone '%s' not found on %s", boneName.CString(), parentName.CString());
+            return;
+        }
+
+        // Remove existing attachment on this bone (re-equip)
+        Node* existing = boneNode->GetChild("Equip_" + boneName);
+        if (existing)
+            existing->Remove();
+
+        auto* cache = GetSubsystem<ResourceCache>();
+        auto* mdl = cache->GetResource<Model>(modelPath);
+        if (!mdl)
+        {
+            URHO3D_LOGWARNINGF("[Equip] Model '%s' not found", modelPath.CString());
+            return;
+        }
+
+        Node* equipNode = boneNode->CreateChild("Equip_" + boneName);
+        auto* sm = equipNode->CreateComponent<StaticModel>();
+        sm->SetModel(mdl);
+        sm->SetCastShadows(false);
+
+        // Optional material
+        if (parts.Size() >= 3 && !parts[2].Trimmed().Empty())
+        {
+            auto* mat = cache->GetResource<Material>(parts[2].Trimmed());
+            if (mat)
+                sm->SetMaterial(mat);
+        }
+
+        // Optional offset: ox,oy,oz
+        if (parts.Size() >= 4 && !parts[3].Trimmed().Empty())
+        {
+            Vector<String> ov = parts[3].Split(',');
+            if (ov.Size() == 3)
+                equipNode->SetPosition(Vector3(ToFloat(ov[0]), ToFloat(ov[1]), ToFloat(ov[2])));
+        }
+
+        // Optional rotation: rx,ry,rz (euler degrees)
+        if (parts.Size() >= 5 && !parts[4].Trimmed().Empty())
+        {
+            Vector<String> rv = parts[4].Split(',');
+            if (rv.Size() == 3)
+                equipNode->SetRotation(Quaternion(ToFloat(rv[0]), ToFloat(rv[1]), ToFloat(rv[2])));
+        }
+
+        // Optional scale: sx,sy,sz or uniform s
+        if (parts.Size() >= 6 && !parts[5].Trimmed().Empty())
+        {
+            Vector<String> sv = parts[5].Split(',');
+            if (sv.Size() == 3)
+                equipNode->SetScale(Vector3(ToFloat(sv[0]), ToFloat(sv[1]), ToFloat(sv[2])));
+            else if (sv.Size() == 1)
+                equipNode->SetScale(ToFloat(sv[0]));
+        }
+
+        URHO3D_LOGINFOF("[Equip] Attached '%s' to bone '%s' on %s",
+            modelPath.CString(), boneName.CString(), parentName.CString());
+        return;
+    }
+
+    // Equipment detach: text key name="unequip", data="bone"
+    if (name == "unequip" && parent)
+    {
+        String boneName = data.Trimmed();
+        Node* modelNode = parent->GetChildren().Size() > 0 ? parent->GetChildren()[0].Get() : nullptr;
+        if (!modelNode)
+            return;
+        Node* boneNode = modelNode->GetChild(boneName, true);
+        if (boneNode)
+        {
+            Node* equipNode = boneNode->GetChild("Equip_" + boneName);
+            if (equipNode)
+            {
+                equipNode->Remove();
+                URHO3D_LOGINFOF("[Equip] Detached from bone '%s' on %s",
+                    boneName.CString(), parentName.CString());
+            }
+        }
+        return;
+    }
+}
+
+void TerrainNode::HandleCampfireSettingsChanged(StringHash eventType, VariantMap& eventData)
+{
+    using namespace CampfireSettingsChanged;
+    int id = eventData[P_SLIDERID].GetI32();
+    float val = eventData[P_VALUE].GetFloat();
+
+    // Find all campfire nodes and apply the setting
+    Vector<Node*> campfires;
+    {
+        const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
+        for (unsigned i = 0; i < children.Size(); ++i)
+            if (children[i]->GetName() == "Campfire")
+                campfires.Push(children[i].Get());
+    }
+
+    for (Node* cf : campfires)
+    {
+        Node* fireNode = cf->GetChild("Fire");
+        Node* smokeNode = cf->GetChild("Smoke");
+        Node* lightNode = cf->GetChild("FireLight");
+        ParticleEmitter* fireEmit = fireNode ? fireNode->GetComponent<ParticleEmitter>() : nullptr;
+        ParticleEmitter* smokeEmit = smokeNode ? smokeNode->GetComponent<ParticleEmitter>() : nullptr;
+        Light* light = lightNode ? lightNode->GetComponent<Light>() : nullptr;
+        ParticleEffect* fe = fireEmit ? fireEmit->GetEffect() : nullptr;
+        ParticleEffect* se = smokeEmit ? smokeEmit->GetEffect() : nullptr;
+
+        switch (id)
+        {
+        // Fire settings
+        case 50:
+            // Fire rate: update both the live effect (so the slider feels responsive)
+            // AND the cached baseline so UpdateCampfireFuel modulates the new max.
+            cfBaseFireRateMin_ = val * 0.9f;
+            cfBaseFireRateMax_ = val * 1.1f;
+            if (fe) { fe->SetMinEmissionRate(val * 0.9f); fe->SetMaxEmissionRate(val * 1.1f); }
+            break;
+        case 51:
+        {
+            float lo = Max(val * 0.4f, 0.01f), hi = Max(val, 0.02f);
+            if (fe) { fe->SetMinParticleSize(Vector2(lo, lo)); fe->SetMaxParticleSize(Vector2(hi, hi)); }
+            break;
+        }
+        case 56: if (fe) { fe->SetMinVelocity(val * 0.5f); fe->SetMaxVelocity(val * 1.5f); } break;
+        case 57: if (fe) fe->SetConstantForce(Vector3(0.0f, val, 0.0f)); break;
+        case 58: { float t = Max(val, 0.1f); if (fe) { fe->SetMinTimeToLive(t); fe->SetMaxTimeToLive(t); } break; }
+
+        // Fire color frames
+        case 60: case 61: case 62: case 63:
+        case 64: case 65: case 66: case 67:
+        case 68: case 69: case 70: case 71:
+        {
+            if (!fe || fe->GetNumColorFrames() < 3) break;
+            int frameIdx = (id - 60) / 4;
+            int channel  = (id - 60) % 4;
+            const ColorFrame* existing = fe->GetColorFrame(frameIdx);
+            if (!existing) break;
+            Color c = existing->color_;
+            if (channel == 0) c.r_ = val;
+            else if (channel == 1) c.g_ = val;
+            else if (channel == 2) c.b_ = val;
+            else c.a_ = val;
+            float times[] = {0.0f, 0.5f, 1.0f};
+            fe->SetColorFrame(frameIdx, ColorFrame(c, times[frameIdx]));
+            break;
+        }
+
+        // Smoke settings
+        case 52:
+            cfBaseSmokeRateMin_ = val * 0.5f;
+            cfBaseSmokeRateMax_ = val;
+            if (se) { se->SetMinEmissionRate(val * 0.5f); se->SetMaxEmissionRate(val); }
+            break;
+        case 53:
+        {
+            float lo = Max(val * 0.25f, 0.01f), hi = Max(val, 0.02f);
+            if (se) { se->SetMinParticleSize(Vector2(lo, lo * 1.5f)); se->SetMaxParticleSize(Vector2(hi, hi * 1.2f)); }
+            break;
+        }
+        case 75: if (se) se->SetEmitterSize(Vector3(val, val, val)); break;
+        case 76: if (se) se->SetSizeMul(Max(val, 0.1f)); break;
+        case 77: { float t = Max(val, 0.5f); if (se) { se->SetMinTimeToLive(t); se->SetMaxTimeToLive(t); } break; }
+        case 78: if (se) se->SetConstantForce(Vector3(0.0f, val, 0.0f)); break;
+        case 79: if (se) se->SetDampingForce(val); break;
+
+        // Light settings
+        case 54:
+            cfBaseLightRange_ = Max(val, 0.5f);
+            if (light) light->SetRange(Max(val, 0.5f));
+            break;
+        case 55:
+            cfBaseLightBrightness_ = val;
+            if (light) light->SetBrightness(val);
+            break;
+
+        default: break;
+        }
+    }
+
+    // Keep flicker state in sync for brightness changes
+    if (id == 55) { fireBrightnessCurrent_ = val; fireBrightnessTarget_ = val; }
+}
+
+// ============================================================================
+// Habitat Rules UI handlers
+// ============================================================================
+
+void TerrainNode::HandleHabitatSlider(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    auto* slider = static_cast<Slider*>(eventData[P_ELEMENT].GetPtr());
+    if (!slider) return;
+
+    String species = slider->GetVar("HabitatSpecies").GetString();
+    String param = slider->GetVar("HabitatParam").GetString();
+    float val = eventData[P_VALUE].GetFloat();
+
+    // Find the mutable rule
+    auto& allRules = const_cast<HashMap<String, HabitatRule>&>(habitatRules_.GetAllRules());
+    auto it = allRules.Find(species);
+    if (it == allRules.End())
+        return;
+
+    HabitatRule& rule = it->second_;
+
+    if (param == "density")
+    {
+        rule.density = (int)val;
+        // Update value label
+        auto* ui = GetSubsystem<UI>();
+        auto* valText = ui->GetRoot()->GetChildStaticCast<Text>(species + "_density_val", true);
+        if (valText)
+            valText->SetText(String(rule.density));
+    }
+    else if (param == "altMin")
+    {
+        rule.altitudeMin = val;
+        auto* ui = GetSubsystem<UI>();
+        auto* valText = ui->GetRoot()->GetChildStaticCast<Text>(species + "_alt_val", true);
+        if (valText)
+            valText->SetText(String((int)rule.altitudeMin) + "-" + String((int)rule.altitudeMax));
+    }
+    else if (param == "altMax")
+    {
+        rule.altitudeMax = val;
+        auto* ui = GetSubsystem<UI>();
+        auto* valText = ui->GetRoot()->GetChildStaticCast<Text>(species + "_alt_val", true);
+        if (valText)
+            valText->SetText(String((int)rule.altitudeMin) + "-" + String((int)rule.altitudeMax));
+    }
+}
+
+void TerrainNode::HandleHabitatButton(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace Released;
+    auto* btn = static_cast<Button*>(eventData[P_ELEMENT].GetPtr());
+    if (!btn) return;
+
+    String action = btn->GetVar("HabitatAction").GetString();
+    String species = btn->GetVar("HabitatSpecies").GetString();
+
+    if (action == "respawn" && !species.Empty())
+    {
+        RespawnSpecies(species);
+    }
+    else if (action == "respawnAll")
+    {
+        RespawnAllAnimals();
+    }
+    else if (action == "save")
+    {
+        if (habitatRules_.Save(context_, "GameDB/habitat_rules.json"))
+            URHO3D_LOGINFO("Habitat rules saved");
+    }
+    else if (action == "reset")
+    {
+        habitatRules_.Load(context_, "GameDB/habitat_rules.json");
+        URHO3D_LOGINFO("Habitat rules reloaded from disk");
+        // Re-spawn all with fresh rules
+        RespawnAllAnimals();
+    }
+}
+
+void TerrainNode::RespawnSpecies(const String& species)
+{
+    // Per-species respawn: remove all, rebuild all (CreateAnimals spawns everything from rules)
+    URHO3D_LOGINFOF("Respawning species: %s (full rebuild)", species.CString());
+    RespawnAllAnimals();
+}
+
+void TerrainNode::RespawnAllAnimals()
+{
+    // Remove all land animals
+    for (unsigned i = 0; i < animalNodes_.Size(); ++i)
+    {
+        Node* node = animalNodes_[i];
+        if (node)
+            node->Remove();
+    }
+    animalNodes_.Clear();
+
+    // Animals respawn via server-side PopulationManager + BroadcastSpawnCreature.
+    URHO3D_LOGINFO("Cleared local animal nodes — server handles respawning");
+}
+
+void TerrainNode::HandleAudioSlider(StringHash eventType, VariantMap& eventData)
+{
+    using namespace SliderChanged;
+    auto* slider = static_cast<Slider*>(eventData[P_ELEMENT].GetPtr());
+    if (!slider) return;
+
+    float val = eventData[P_VALUE].GetFloat();
+    String soundType = slider->GetVar("SoundType").GetString();
+
+    auto* audio = GetSubsystem<Audio>();
+    if (audio)
+        audio->SetMasterGain(soundType, val);
+
+    // Update percentage label
+    auto* label = static_cast<Text*>(slider->GetVar("ValueLabel").GetPtr());
+    if (label)
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d%%", (int)(val * 100));
+        label->SetText(String(buf));
+    }
+
+    // Persist audio gains across sessions
+    SaveThemePrefs();
 }
 
 void TerrainNode::HandleWeatherSlider(StringHash eventType, VariantMap& eventData)
@@ -2106,7 +4131,6 @@ void TerrainNode::HandleMenuButton(StringHash eventType, VariantMap& eventData)
 
     // Compute shaders
     case 240: RunErosion(erosionIterations_); break;
-    case 241: TestComputeShader(); break;
     }
 
     // Highlight selected mode/shape button
@@ -2890,7 +4914,7 @@ void TerrainNode::ShowSaveSceneDialog()
 
     auto* fs = GetSubsystem<FileSystem>();
     fileSelector_->SetPath(fs->GetProgramDir() + "Data/Scenes/");
-    fileSelector_->SetFileName("Scene.xml");
+    fileSelector_->SetFileName("TestScene.xml");
 
     SubscribeToEvent(fileSelector_, E_FILESELECTED, URHO3D_HANDLER(TerrainNode, HandleSceneSaveChosen));
 }
@@ -2925,6 +4949,26 @@ void TerrainNode::HandleSceneSaveChosen(StringHash eventType, VariantMap& eventD
 
     if (!ok || path.Empty()) return;
 
+    // Flush current state to scene Vars before save
+    if (scene_)
+    {
+        scene_->SetVar("GodRays", godRaysEnabled_);
+        scene_->SetVar("Shadows", shadowsEnabled_);
+        scene_->SetVar("WaterReflection", waterReflectionEnabled_);
+        scene_->SetVar("PostProcess", postProcessEnabled_);
+        scene_->SetVar("HemisphereLighting", hemisphereEnabled_);
+        if (cameraNode_)
+        {
+            Vector3 pos = cameraNode_->GetWorldPosition();
+            scene_->SetVar("CameraX", pos.x_);
+            scene_->SetVar("CameraY", pos.y_);
+            scene_->SetVar("CameraZ", pos.z_);
+            scene_->SetVar("CameraYaw", yaw_);
+            scene_->SetVar("CameraPitch", pitch_);
+            scene_->SetVar("CameraMode", (int)cameraMode_);
+        }
+    }
+
     File file(context_, path, FILE_WRITE);
     if (scene_->SaveXML(file))
         URHO3D_LOGINFOF("Scene saved to %s", path.CString());
@@ -2948,103 +4992,13 @@ void TerrainNode::HandleSceneLoadChosen(StringHash eventType, VariantMap& eventD
         return;
     }
 
-    if (scene_->LoadXML(file))
+    // Load into a NEW scene object — defer swap to next frame start so the
+    // renderer finishes drawing the current frame with the old scene's resources.
+    SharedPtr<Scene> newScene(new Scene(context_));
+    if (newScene->LoadXML(file))
     {
-        // Re-bind cached pointers after scene load
-        zone_ = scene_->GetComponent<Zone>(true);
-        terrain_ = scene_->GetComponent<Terrain>(true);
-        if (terrain_)
-        {
-            Image* origHM = terrain_->GetHeightMap();
-            if (origHM)
-            {
-                int w = origHM->GetWidth();
-                int h = origHM->GetHeight();
-                int origComps = origHM->GetComponents();
-                editableHeightMap_ = new Image(context_);
-                editableHeightMap_->SetSize(w, h, 4);
-                editableHeightMap_->SetName(origHM->GetName());
-                unsigned char* src = origHM->GetData();
-                unsigned char* dst = editableHeightMap_->GetData();
-                for (int i = 0; i < w * h; ++i)
-                {
-                    dst[i * 4] = src[i * origComps];
-                    dst[i * 4 + 1] = (origComps >= 2) ? src[i * origComps + 1] : 0;
-                    dst[i * 4 + 2] = (origComps >= 3) ? src[i * origComps + 2] : 0;
-                    dst[i * 4 + 3] = (origComps >= 4) ? src[i * origComps + 3] : 0;
-                }
-                terrain_->SetHeightMap(editableHeightMap_);
-
-                // Create water map (same resolution, single-channel, zeroed)
-                waterMap_ = new Image(context_);
-                waterMap_->SetSize(w, h, 1);
-                memset(waterMap_->GetData(), 0, w * h);
-            }
-
-            // Create GPU texture from water map and bind to terrain material unit 4
-            waterMapTex_ = new Texture2D(context_);
-            waterMapTex_->SetFilterMode(FILTER_BILINEAR);
-            waterMapTex_->SetAddressMode(COORD_U, ADDRESS_CLAMP);
-            waterMapTex_->SetAddressMode(COORD_V, ADDRESS_CLAMP);
-            waterMapTex_->SetData(waterMap_);
-            auto* tMat = terrain_->GetMaterial();
-            if (tMat)
-            {
-                tMat->SetTexture(TU_ENVIRONMENT, waterMapTex_);
-                tMat->SetShaderParameter("WaterLevel", 5.0f);
-                tMat->SetShaderParameter("TerrainSpacingY", terrain_->GetSpacing().y_);
-            }
-
-            // Initialize shared brush
-            brush_ = new TerrainBrush(context_);
-            brush_->SetTerrain(terrain_, editableHeightMap_);
-            brush_->SetWaterMap(waterMap_);
-        }
-        sunNode_ = scene_->GetChild("Sun", true);
-        moonNode_ = scene_->GetChild("Moon", true);
-        // sunLight_ is on "DirectionalLight" node, NOT the "Sun" billboard node
-        Node* dlNode = scene_->GetChild("DirectionalLight", true);
-        sunLight_ = dlNode ? dlNode->GetComponent<Light>() : nullptr;
-        Node* mlNode = scene_->GetChild("MoonLight", true);
-        moonLight_ = mlNode ? mlNode->GetComponent<Light>() : nullptr;
-
-        // Re-bind water node (it's a scene child, destroyed by LoadXML)
-        waterNode_ = scene_->GetChild("Water", true);
-        if (waterNode_)
-        {
-            // Re-derive water planes from loaded water node transform
-            waterPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
-            waterClipPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
-
-            // Update reflection camera planes
-            if (reflectionCameraNode_)
-            {
-                auto* reflectionCamera = reflectionCameraNode_->GetComponent<Camera>();
-                if (reflectionCamera)
-                {
-                    reflectionCamera->SetReflectionPlane(waterPlane_);
-                    reflectionCamera->SetClipPlane(waterClipPlane_);
-                }
-            }
-
-            // Update render path WaterLevel parameter
-            if (renderPath_)
-                renderPath_->SetShaderParameter("WaterLevel", waterNode_->GetWorldPosition().y_);
-        }
-
-        // Re-bind fog parameters from loaded zone
-        if (zone_)
-        {
-            origFogColor_ = zone_->GetFogColor();
-            origFogStart_ = zone_->GetFogStart();
-            origFogEnd_ = zone_->GetFogEnd();
-        }
-
-        // Deselect any previously selected node (it's gone now)
-        selectedNode_.Reset();
-        originalMaterials_.Clear();
-
-        URHO3D_LOGINFOF("Scene loaded from %s", path.CString());
+        pendingScene_ = newScene;
+        URHO3D_LOGINFO("Scene loaded — swap deferred to next frame");
     }
     else
         URHO3D_LOGERRORF("Failed to load scene from %s", path.CString());
@@ -3422,15 +5376,15 @@ void TerrainNode::HandleImportModelChosen(StringHash eventType, VariantMap& even
     String outputDir = fs->GetProgramDir() + "Data/Models/";
     String outputMdl = outputDir + baseName + ".mdl";
 
-    // Run AssetImporter
-    String toolPath = fs->GetProgramDir() + "tool/AssetImporter";
+    // Run AssetTool
+    String toolPath = fs->GetProgramDir() + "tool/AssetTool";
     String cmd = "\"" + toolPath + "\" model \"" + path + "\" \"" + outputMdl + "\" -t";
     URHO3D_LOGINFOF("Running: %s", cmd.CString());
 
     int result = fs->SystemCommand(cmd);
     if (result != 0)
     {
-        URHO3D_LOGERRORF("AssetImporter failed (exit code %d)", result);
+        URHO3D_LOGERRORF("AssetTool failed (exit code %d)", result);
         return;
     }
 
@@ -3877,12 +5831,124 @@ void TerrainNode::EndTerrainStroke()
             PushUndo(action);
         }
         terrainStrokeBefore_.Reset();
+        RefreshMinimap();
     }
 }
 
 // ============================================================================
 // Minimap
 // ============================================================================
+
+void TerrainNode::CreateSelectedVitalsPanel()
+{
+    auto* uiRoot = GetSubsystem<UI>()->GetRoot();
+    Font* font = font_;
+
+    vitalsPanel_ = uiRoot->CreateChild<BorderImage>("VitalsPanel");
+    auto* panel = static_cast<BorderImage*>(vitalsPanel_);
+    panel->SetStyle("Window");
+    panel->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
+    panel->SetFixedSize(140, 64);
+    panel->SetOpacity(0.85f);
+    panel->SetVisible(false);
+    panel->SetPriority(100);  // above other UI
+
+    auto makeBar = [&](const String& label, const Color& color) -> BorderImage*
+    {
+        auto* row = panel->CreateChild<UIElement>();
+        row->SetLayout(LM_HORIZONTAL, 2, IntRect(0, 0, 0, 0));
+        row->SetFixedHeight(11);
+
+        auto* lbl = row->CreateChild<Text>();
+        lbl->SetFont(font, 9);
+        lbl->SetText(label);
+        lbl->SetColor(Color(0.9f, 0.9f, 0.9f));
+        lbl->SetMinWidth(36);
+
+        auto* track = row->CreateChild<BorderImage>();
+        track->SetStyle("Window");
+        track->SetFixedSize(90, 9);
+        track->SetColor(Color(0.05f, 0.05f, 0.05f, 0.8f));
+
+        auto* fill = track->CreateChild<BorderImage>();
+        fill->SetTexture(GetSubsystem<ResourceCache>()->GetResource<Texture2D>("Textures/UI.png"));
+        fill->SetImageRect(IntRect(48, 0, 64, 16));
+        fill->SetBorder(IntRect(0, 0, 0, 0));
+        fill->SetColor(color);
+        fill->SetSize(90, 9);
+        fill->SetPosition(0, 0);
+        return fill;
+    };
+
+    vitalHungerBar_  = makeBar("Hunger",  Color(0.9f, 0.7f, 0.2f));
+    vitalThirstBar_  = makeBar("Thirst",  Color(0.3f, 0.6f, 0.9f));
+    vitalStaminaBar_ = makeBar("Stamina", Color(0.4f, 0.9f, 0.4f));
+    vitalWarmthBar_  = makeBar("Warmth",  Color(0.9f, 0.4f, 0.2f));
+}
+
+void TerrainNode::UpdateSelectedVitalsPanel()
+{
+    if (!vitalsPanel_)
+        return;
+
+    // Hide if nothing selected or selected node has no vitals
+    if (!selectedNode_ || selectedNode_.Expired())
+    {
+        vitalsPanel_->SetVisible(false);
+        return;
+    }
+
+    auto* creature = selectedNode_->GetDerivedComponent<Creature>();
+    if (!creature || !creature->HasVitals())
+    {
+        vitalsPanel_->SetVisible(false);
+        return;
+    }
+
+    // Project the creature's head position to screen coords
+    auto* camera = cameraNode_ ? cameraNode_->GetComponent<Camera>() : nullptr;
+    auto* graphics = GetSubsystem<Graphics>();
+    if (!camera || !graphics)
+    {
+        vitalsPanel_->SetVisible(false);
+        return;
+    }
+
+    Vector3 worldPos = selectedNode_->GetWorldPosition() + Vector3(0.0f, 2.5f, 0.0f);
+
+    // Behind-camera test using camera-space Z
+    Vector3 viewSpace = camera->GetView() * worldPos;
+    if (viewSpace.z_ <= 0.0f)
+    {
+        vitalsPanel_->SetVisible(false);
+        return;
+    }
+
+    Vector2 screenPos = camera->WorldToScreenPoint(worldPos);
+    int sw = graphics->GetWidth();
+    int sh = graphics->GetHeight();
+    int px = (int)(screenPos.x_ * sw) - vitalsPanel_->GetWidth() / 2;
+    int py = (int)(screenPos.y_ * sh) - vitalsPanel_->GetHeight();
+
+    // Clamp to screen
+    px = Clamp(px, 0, sw - vitalsPanel_->GetWidth());
+    py = Clamp(py, 0, sh - vitalsPanel_->GetHeight());
+
+    vitalsPanel_->SetPosition(px, py);
+    vitalsPanel_->SetVisible(true);
+
+    // Update fill widths
+    auto setBar = [](BorderImage* bar, float value)
+    {
+        if (!bar) return;
+        float frac = Clamp(value / 100.0f, 0.0f, 1.0f);
+        bar->SetSize((int)(90 * frac), 9);
+    };
+    setBar(vitalHungerBar_,  creature->GetHunger());
+    setBar(vitalThirstBar_,  creature->GetThirst());
+    setBar(vitalStaminaBar_, creature->GetStamina());
+    setBar(vitalWarmthBar_,  creature->GetWarmth());
+}
 
 void TerrainNode::CreateMinimap()
 {
@@ -3899,52 +5965,161 @@ void TerrainNode::CreateMinimap()
     minimapTex_->SetSize(texSize, texSize, Graphics::GetRGBFormat(), TEXTURE_RENDERTARGET);
     minimapTex_->SetFilterMode(FILTER_BILINEAR);
 
-    // Create top-down orthographic camera
-    minimapCameraNode_ = scene_->CreateChild("MinimapCamera", LOCAL);
+    // Fixed top-down orthographic camera covering the full terrain — rendered once
+    IntVector2 numPatches = terrain_->GetNumPatches();
+    float terrainWorldSize = numPatches.x_ * terrain_->GetSpacing().x_ * terrain_->GetPatchSize();
+    minimapCameraNode_ = scene_->CreateTemporaryChild("MinimapCamera", LOCAL);
     auto* minimapCam = minimapCameraNode_->CreateComponent<Camera>();
     minimapCam->SetOrthographic(true);
-    minimapCam->SetOrthoSize(320.0f);  // world units visible (160 in each direction)
+    minimapCam->SetOrthoSize(terrainWorldSize);
     minimapCam->SetFarClip(500.0f);
     minimapCam->SetNearClip(1.0f);
     minimapCam->SetFlipVertical(true);  // Vulkan RTT Y-flip compensation
-    // Look straight down
+    // Look straight down, centered on terrain
+    Vector3 terrainCenter = terrain_->GetNode()->GetWorldPosition();
+    minimapCameraNode_->SetPosition(Vector3(terrainCenter.x_, 200.0f, terrainCenter.z_));
     minimapCameraNode_->SetRotation(Quaternion(90.0f, 0.0f, 0.0f));
 
-    // Set up RTT viewport
+    // Render once via manual update mode — re-render only on heightmap edits
     RenderSurface* surface = minimapTex_->GetRenderSurface();
     SharedPtr<Viewport> minimapViewport(new Viewport(context_, scene_, minimapCam));
     minimapViewport->SetDrawDebug(false);
     surface->SetViewport(0, minimapViewport);
-    surface->SetUpdateMode(SURFACE_UPDATEALWAYS);
+    surface->SetUpdateMode(SURFACE_MANUALUPDATE);
+    surface->QueueUpdate();
 
-    // BorderImage in bottom-right corner
-    minimap_ = uiRoot->CreateChild<BorderImage>("Minimap");
+    // Sprite in bottom-right corner — rotated by yaw each frame
+    minimap_ = uiRoot->CreateChild<Sprite>("Minimap");
     minimap_->SetTexture(minimapTex_);
     minimap_->SetImageRect(IntRect(0, 0, texSize, texSize));
     minimap_->SetFixedSize(displaySize, displaySize);
     minimap_->SetAlignment(HA_RIGHT, VA_BOTTOM);
-    minimap_->SetPosition(-8, -8);
+    minimap_->SetHotSpot(displaySize / 2, displaySize / 2);  // rotate around center
+    minimap_->SetPosition(Vector2(-(displaySize / 2.0f + 8.0f), -(displaySize / 2.0f + 8.0f)));
     minimap_->SetOpacity(0.85f);
 
-    // Camera dot (always centered)
-    minimapCameraDot_ = minimap_->CreateChild<BorderImage>("CameraDot");
+    // Camera dot — child Sprite, repositioned each frame based on player world XZ
+    minimapCameraDot_ = minimap_->CreateChild<Sprite>("CameraDot");
     minimapCameraDot_->SetFixedSize(6, 6);
     minimapCameraDot_->SetColor(Color::RED);
-    minimapCameraDot_->SetEnabled(false);
-    minimapCameraDot_->SetPosition(displaySize / 2 - 3, displaySize / 2 - 3);
+    minimapCameraDot_->SetPosition(Vector2(displaySize / 2.0f - 3.0f, displaySize / 2.0f - 3.0f));
 }
 
 void TerrainNode::UpdateMinimapCamera()
 {
-    if (!minimapCameraNode_ || !cameraNode_)
+    if (!minimap_ || !cameraNode_ || !terrain_)
         return;
 
-    // Position minimap camera above the main camera, looking straight down
+    const int displaySize = 192;
+
+    // Rotate the minimap image so camera forward = "up"
+    minimap_->SetRotation(-yaw_);
+
+    // Map player world XZ to minimap pixel coords
     Vector3 camPos = cameraNode_->GetWorldPosition();
-    minimapCameraNode_->SetPosition(Vector3(camPos.x_, 200.0f, camPos.z_));
-    // Rotate to match camera yaw so forward is always "up" on the minimap
-    // +180 because at pitch=90 (looking down), screen "up" is -Z, but camera forward at yaw=0 is +Z
-    minimapCameraNode_->SetRotation(Quaternion(90.0f, yaw_, 0.0f));
+    Vector3 terrainPos = terrain_->GetNode()->GetWorldPosition();
+    IntVector2 numPatches = terrain_->GetNumPatches();
+    float terrainWorldSize = numPatches.x_ * terrain_->GetSpacing().x_ * terrain_->GetPatchSize();
+    float halfSize = terrainWorldSize * 0.5f;
+
+    // Normalise to 0..1 across terrain
+    float u = (camPos.x_ - terrainPos.x_ + halfSize) / terrainWorldSize;
+    float v = 1.0f - (camPos.z_ - terrainPos.z_ + halfSize) / terrainWorldSize;  // Z flipped for screen coords
+
+    float dotX = u * displaySize - 3.0f;
+    float dotY = v * displaySize - 3.0f;
+    if (minimapCameraDot_)
+        minimapCameraDot_->SetPosition(Vector2(dotX, dotY));
+}
+
+void TerrainNode::RefreshMinimap()
+{
+    if (minimapTex_)
+    {
+        RenderSurface* surface = minimapTex_->GetRenderSurface();
+        if (surface)
+            surface->QueueUpdate();
+    }
+}
+
+void TerrainNode::UpdateMinimapBlips()
+{
+    if (!minimap_ || !cameraNode_ || !terrain_)
+        return;
+
+    const int displaySize = 192;
+    const int dotSize = 4;
+
+    // Terrain mapping constants
+    Vector3 terrainPos = terrain_->GetNode()->GetWorldPosition();
+    IntVector2 numPatches = terrain_->GetNumPatches();
+    float terrainWorldSize = numPatches.x_ * terrain_->GetSpacing().x_ * terrain_->GetPatchSize();
+    float halfSize = terrainWorldSize * 0.5f;
+
+    auto* camera = cameraNode_->GetComponent<Camera>();
+    if (!camera)
+        return;
+    const Frustum& frustum = camera->GetFrustum();
+
+    // Reset pool index — reuse existing sprites
+    minimapBlipUsed_ = 0;
+
+    // Helper: place a blip if the object is in the frustum
+    auto placeBlip = [&](const Vector3& worldPos, const Color& color)
+    {
+        if (frustum.IsInside(worldPos) == OUTSIDE)
+            return;
+
+        float u = (worldPos.x_ - terrainPos.x_ + halfSize) / terrainWorldSize;
+        float v = 1.0f - (worldPos.z_ - terrainPos.z_ + halfSize) / terrainWorldSize;
+
+        // Get or create a sprite from the pool
+        Sprite* blip;
+        if (minimapBlipUsed_ < minimapBlips_.Size())
+        {
+            blip = minimapBlips_[minimapBlipUsed_];
+        }
+        else
+        {
+            blip = minimap_->CreateChild<Sprite>("Blip");
+            blip->SetFixedSize(dotSize, dotSize);
+            minimapBlips_.Push(blip);
+        }
+        blip->SetColor(color);
+        blip->SetPosition(Vector2(u * displaySize - dotSize * 0.5f, v * displaySize - dotSize * 0.5f));
+        blip->SetVisible(true);
+        ++minimapBlipUsed_;
+    };
+
+    // Animals — green tones by species
+    for (unsigned i = 0; i < animalNodes_.Size(); ++i)
+    {
+        Node* n = animalNodes_[i].Get();
+        if (!n || !n->IsEnabled()) continue;
+        const String& name = n->GetName();
+        Color c(0.2f, 0.8f, 0.2f);  // default green
+        if (name == "Fox" || name == "Wolf")
+            c = Color(1.0f, 0.4f, 0.1f);  // predators orange
+        else if (name == "Deer" || name == "Stag")
+            c = Color(0.6f, 0.3f, 1.0f);  // purple
+        placeBlip(n->GetWorldPosition(), c);
+    }
+
+    // Fish — blue
+    for (unsigned i = 0; i < fishNodes_.Size(); ++i)
+    {
+        Node* n = fishNodes_[i].Get();
+        if (!n || !n->IsEnabled()) continue;
+        placeBlip(n->GetWorldPosition(), Color(0.3f, 0.6f, 1.0f));
+    }
+
+    // Campfire — color matches its flickering light
+    if (campfireNode_ && campfireLight_)
+        placeBlip(campfireNode_->GetWorldPosition(), campfireLight_->GetColor());
+
+    // Hide unused pool sprites
+    for (unsigned i = minimapBlipUsed_; i < minimapBlips_.Size(); ++i)
+        minimapBlips_[i]->SetVisible(false);
 }
 
 static void DrawLineOnImage(Image* img, int x0, int y0, int x1, int y1, const Color& color)
@@ -4098,8 +6273,55 @@ void TerrainNode::MoveCamera(float timeStep)
         URHO3D_LOGINFOF("Camera mode: %s", modeNames[cameraMode_]);
     }
 
-    // Tab = toggle cursor/camera mode (checked before UI focus guard)
+    // Tab = unpossess if possessing, otherwise toggle cursor/menu mode
     if (input->GetKeyPress(KEY_TAB))
+    {
+        if (possessing_)
+        {
+            UnpossessNPC();
+        }
+        else
+        {
+            menuOpen_ = !menuOpen_;
+            if (menuOpen_)
+            {
+                input->SetMouseMode(MM_FREE);
+                input->SetMouseVisible(true);
+                useMouseMode_ = MM_FREE;
+            }
+            else
+            {
+                GetSubsystem<UI>()->SetFocusElement(nullptr);
+                input->SetMouseMode(MM_RELATIVE);
+                input->SetMouseVisible(false);
+                useMouseMode_ = MM_RELATIVE;
+                // Clear gizmo when leaving edit mode
+                if (gizmoMode_ != 0)
+                {
+                    WakeSelectedNode();
+                    gizmoMode_ = 0;
+                }
+            }
+        }
+    }
+
+    // P = possess selected HumanNPC / unpossess current
+    if (input->GetKeyPress(KEY_P))
+    {
+        if (possessing_)
+        {
+            UnpossessNPC();
+        }
+        else if (selectedNode_ && !selectedNode_.Expired())
+        {
+            auto* npc = selectedNode_->GetDerivedComponent<HumanNPC>(false);
+            if (npc)
+                PossessNPC(npc->GetNode());
+        }
+    }
+
+    // Tilde/Backtick = also toggle cursor mode (convenience alias)
+    if (input->GetKeyPress(KEY_BACKQUOTE))
     {
         menuOpen_ = !menuOpen_;
         if (menuOpen_)
@@ -4128,6 +6350,178 @@ void TerrainNode::MoveCamera(float timeStep)
     // B = toggle build mode
     if (input->GetKeyPress(KEY_B))
         ToggleBuildMode();
+
+    // T = trade (if looking at another player's HumanNPC) or place trap (on terrain).
+    if (input->GetKeyPress(KEY_T))
+    {
+        // Accept/reject incoming trade prompt
+        if (tradeIncomingPending_)
+        {
+            SendTradeAccept();
+            tradeIncomingPending_ = false;
+        }
+        else if (!tradeOpen_ && !tradePending_)
+        {
+            auto* camera = cameraNode_ ? cameraNode_->GetComponent<Camera>() : nullptr;
+            auto* octree = scene_ ? scene_->GetComponent<Octree>() : nullptr;
+            if (camera && octree)
+            {
+                Ray cameraRay = camera->GetScreenRay(0.5f, 0.5f);
+                Vector<RayQueryResult> results;
+                RayOctreeQuery query(results, cameraRay, RAY_TRIANGLE, 100.0f);
+                octree->Raycast(query);
+
+                bool sentTrade = false;
+                for (unsigned i = 0; i < results.Size(); ++i)
+                {
+                    if (dynamic_cast<TerrainPatch*>(results[i].drawable_))
+                        continue;
+
+                    Node* hitNode = results[i].node_;
+                    // Walk up to scene-level parent
+                    while (hitNode && hitNode->GetParent() && hitNode->GetParent() != scene_)
+                        hitNode = hitNode->GetParent();
+
+                    if (!hitNode || hitNode == scene_)
+                        continue;
+
+                    // Check if it's a HumanNPC (not our own possessed one)
+                    auto* npc = hitNode->GetDerivedComponent<HumanNPC>(false);
+                    if (npc && hitNode != possessedNPC_.Get())
+                    {
+                        // Check proximity (3m)
+                        if (possessedNPC_)
+                        {
+                            float dist = (hitNode->GetWorldPosition() - possessedNPC_->GetWorldPosition()).Length();
+                            if (dist > 3.0f)
+                            {
+                                URHO3D_LOGINFO("Too far to trade (must be within 3m)");
+                                break;
+                            }
+                        }
+                        tradePartnerNodeId_ = hitNode->GetID();
+                        SendTradeRequest(hitNode->GetID());
+                        sentTrade = true;
+                        break;
+                    }
+                }
+
+                // Fall through to trap placement if no NPC was targeted
+                if (!sentTrade)
+                {
+                    for (unsigned i = 0; i < results.Size(); ++i)
+                    {
+                        if (!dynamic_cast<TerrainPatch*>(results[i].drawable_))
+                            continue;
+
+                        Vector3 hitPos = results[i].position_;
+                        auto* network = GetSubsystem<Network>();
+                        auto* serverConn = network ? network->GetServerConnection() : nullptr;
+                        if (serverConn)
+                        {
+                            VectorBuffer buf;
+                            buf.WriteI32(400);
+                            buf.WriteFloat(hitPos.x_);
+                            buf.WriteFloat(hitPos.y_);
+                            buf.WriteFloat(hitPos.z_);
+                            buf.WriteFloat(0.0f);
+                            serverConn->SendMessage(MSG_PLACE_TRAP, true, true, buf);
+                            URHO3D_LOGINFOF("Sent MSG_PLACE_TRAP at (%.1f,%.1f,%.1f)",
+                                             hitPos.x_, hitPos.y_, hitPos.z_);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Y/N for incoming trade prompts
+    if (tradeIncomingPending_)
+    {
+        if (input->GetKeyPress(KEY_Y))
+        {
+            SendTradeAccept();
+            tradeIncomingPending_ = false;
+            if (tradePromptWindow_)
+            {
+                tradePromptWindow_->Remove();
+                tradePromptWindow_ = nullptr;
+            }
+        }
+        if (input->GetKeyPress(KEY_N))
+        {
+            SendTradeReject();
+            tradeIncomingPending_ = false;
+            if (tradePromptWindow_)
+            {
+                tradePromptWindow_->Remove();
+                tradePromptWindow_ = nullptr;
+            }
+        }
+    }
+
+    // Escape closes trade window
+    if (tradeOpen_ && input->GetKeyPress(KEY_ESCAPE))
+    {
+        SendTradeCancel();
+        CloseTradeWindow();
+    }
+
+    // Phase 4: proximity warning while trade is open
+    if (tradeOpen_ && possessedNPC_ && tradePartnerNodeId_ != 0)
+    {
+        tradeProximityCheckTimer_ += timeStep;
+        if (tradeProximityCheckTimer_ >= 0.5f)
+        {
+            tradeProximityCheckTimer_ = 0.0f;
+            Node* partner = scene_ ? scene_->GetNode(tradePartnerNodeId_) : nullptr;
+            if (partner)
+            {
+                float dist = (partner->GetWorldPosition() - possessedNPC_->GetWorldPosition()).Length();
+                if (dist > 4.0f && tradeStatusText_)
+                    tradeStatusText_->SetText("Moving too far — trade will cancel!");
+                else if (tradeStatusText_ && tradeStatusText_->GetText() == "Moving too far — trade will cancel!")
+                    tradeStatusText_->SetText("");
+            }
+        }
+    }
+
+    // E = interact (harvest dead/trapped creature, campfire feed, gate toggle, shelter sleep/respawn, repair)
+    if (input->GetKeyPress(KEY_E))
+    {
+        // Harvest is highest priority — if a dead/trapped creature is focused, take it.
+        // Resource Chain Phase 2: server validates and rolls loot from GameDB.
+        if (focusedHarvestNodeId_ != 0 && focusedHarvestCreatureId_ != 0)
+        {
+            auto* network = GetSubsystem<Network>();
+            auto* serverConn = network ? network->GetServerConnection() : nullptr;
+            if (serverConn)
+            {
+                VectorBuffer buf;
+                buf.WriteU32(focusedHarvestNodeId_);
+                buf.WriteI32(focusedHarvestCreatureId_);
+                serverConn->SendMessage(MSG_HARVEST, true, true, buf);
+                URHO3D_LOGINFOF("Sent MSG_HARVEST: nodeId=%u creatureId=%d",
+                                 focusedHarvestNodeId_, focusedHarvestCreatureId_);
+            }
+        }
+        // Campfire reach is 3m and only fires when fuel is needed — try it first,
+        // fall through to building interact if player isn't near the fire.
+        TryCampfireInteract();
+        TryBuildingInteract();
+        TryHarvestCrop();
+
+        // Tree chopping
+        if (focusedTreeId_ != 0)
+            SendChopTree(focusedTreeId_);
+    }
+
+    // P = plant crop (if player has seeds + digging stick)
+    if (input->GetKeyPress(KEY_P))
+    {
+        TryPlantCrop();
+    }
 
     // R = rotate ghost in build mode
     if (input->GetKeyPress(KEY_R) && buildingSystem_ && buildingSystem_->IsBuildMode())
@@ -4210,6 +6604,9 @@ void TerrainNode::MoveCamera(float timeStep)
     if (input->GetKeyPress(KEY_F5))
         drawDebug_ = !drawDebug_;
 
+    if (input->GetKeyPress(KEY_F7))
+        biomeDebugOverlay_ = !biomeDebugOverlay_;
+
     if (input->GetKeyPress(KEY_F11))
         GetSubsystem<Graphics>()->ToggleFullscreen();
 
@@ -4219,22 +6616,22 @@ void TerrainNode::MoveCamera(float timeStep)
     if ((input->GetQualifiers() & QUAL_CTRL) && input->GetKeyPress(KEY_Y))
         Redo();
 
-    // Gizmo mode shortcuts — only in editor mode, wake physics when exiting the tool entirely
-    if (cameraMode_ == CAM_GOD && input->GetKeyPress(KEY_T))
+    // Gizmo mode shortcuts — only in editor/cursor mode (menuOpen_), not during normal play
+    if (cameraMode_ == CAM_GOD && menuOpen_ && input->GetKeyPress(KEY_T))
     {
         int prev = gizmoMode_;
         gizmoMode_ = (prev == 1) ? 0 : 1;
         if (prev != 0 && gizmoMode_ == 0)
             WakeSelectedNode();
     }
-    if (cameraMode_ == CAM_GOD && input->GetKeyPress(KEY_R))
+    if (cameraMode_ == CAM_GOD && menuOpen_ && input->GetKeyPress(KEY_R))
     {
         int prev = gizmoMode_;
         gizmoMode_ = (prev == 2) ? 0 : 2;
         if (prev != 0 && gizmoMode_ == 0)
             WakeSelectedNode();
     }
-    if (cameraMode_ == CAM_GOD && input->GetKeyPress(KEY_S))
+    if (cameraMode_ == CAM_GOD && menuOpen_ && input->GetKeyPress(KEY_S))
     {
         int prev = gizmoMode_;
         gizmoMode_ = (prev == 3) ? 0 : 3;
@@ -4318,10 +6715,10 @@ void TerrainNode::MoveCamera(float timeStep)
     // Camera positioning depends on mode
     if (cameraMode_ == CAM_GOD)
     {
-        // Editor mode: free-fly camera with WASD + sphere cast collision
+        // Free-fly camera with WASD + sphere cast collision
         cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
 
-        const float MOVE_SPEED = 20.0f;
+        const float MOVE_SPEED = input->GetKeyDown(KEY_SHIFT) ? 100.0f : 20.0f;
         Vector3 oldPos = cameraNode_->GetPosition();
 
         if (input->GetKeyDown(KEY_W))
@@ -4624,8 +7021,12 @@ void TerrainNode::MoveCamera(float timeStep)
         }
     }
 
+    // Melee attack — LMB while possessing a character
+    if (possessing_ && input->GetMouseButtonPress(MOUSEB_LEFT))
+        TryMeleeAttack();
+
     // Object selection raycast (when no brush mode active, and not gizmo dragging)
-    if (brushMode_ == 0 && !gizmoDragging_ && input->GetMouseButtonPress(MOUSEB_LEFT))
+    if (!possessing_ && brushMode_ == 0 && !gizmoDragging_ && input->GetMouseButtonPress(MOUSEB_LEFT))
     {
         auto* uiElem = GetSubsystem<UI>()->GetElementAt(input->GetMousePosition());
         if (!uiElem)
@@ -4653,21 +7054,75 @@ void TerrainNode::MoveCamera(float timeStep)
                     Vector<PhysicsRaycastResult> results;
                     physicsWorld->Raycast(results, pickRay, 300.0f);
 
+                    // Check for resource pickups first
+                    bool pickedUp = false;
                     Node* hitNode = nullptr;
                     for (unsigned i = 0; i < results.Size(); ++i)
                     {
                         Node* node = results[i].body_->GetNode();
-                        if (node && !node->HasComponent<Terrain>())
+                        if (!node || node->HasComponent<Terrain>())
+                            continue;
+                        if (node->GetComponent<ResourcePickup>())
                         {
-                            hitNode = node;
+                            TryPickupAtCursor(pickRay);
+                            pickedUp = true;
                             break;
+                        }
+                        if (!hitNode)
+                            hitNode = node;
+                    }
+
+                    // Octree fallback — select nodes without physics bodies (campfires, etc.)
+                    if (!pickedUp && !hitNode)
+                    {
+                        auto* octree = scene_->GetComponent<Octree>();
+                        if (octree)
+                        {
+                            Vector<RayQueryResult> octreeResults;
+                            RayOctreeQuery oq(octreeResults, pickRay, RAY_OBB, 300.0f);
+                            octree->Raycast(oq);
+                            for (unsigned j = 0; j < octreeResults.Size(); ++j)
+                            {
+                                Node* node = octreeResults[j].node_;
+                                if (!node || dynamic_cast<TerrainPatch*>(octreeResults[j].drawable_))
+                                    continue;
+                                // Walk up to scene's direct child
+                                Node* candidate = node;
+                                while (candidate && candidate->GetParent() && candidate->GetParent() != scene_)
+                                    candidate = candidate->GetParent();
+                                if (!candidate || candidate == scene_)
+                                    continue;
+                                // Only accept nodes with game components we can interact with
+                                if (candidate->GetDerivedComponent<Creature>(false) ||
+                                    candidate->GetComponent<StaticModel>())
+                                {
+                                    hitNode = candidate;
+                                    break;
+                                }
+                            }
                         }
                     }
 
-                    if (hitNode)
-                        SelectNode(hitNode);
-                    else
-                        DeselectNode();
+                    if (!pickedUp)
+                    {
+                        if (hitNode)
+                        {
+                            // In god cam: click on a HumanNPC → possess it directly
+                            if (cameraMode_ == CAM_GOD)
+                            {
+                                auto* npc = hitNode->GetDerivedComponent<HumanNPC>(false);
+                                if (npc)
+                                {
+                                    PossessNPC(hitNode);
+                                    hitNode = nullptr;  // Don't also select
+                                }
+                            }
+                            if (hitNode)
+                                SelectNode(hitNode);
+                        }
+                        else
+                            DeselectNode();
+                    }
                 }
             }
         }
@@ -4772,6 +7227,45 @@ void TerrainNode::ApplyBrush(const Vector3& worldPos, float timeStep)
 
     if (!modified)
         return;
+
+    // Check for newly exposed metal deposits after terrain lowering
+    if (metalDeposits_ && terrain_ && (brushMode_ == 1 || brushMode_ == 5))
+    {
+        Vector3 spacing = terrain_->GetSpacing();
+        int brushPixels = (int)(brushRadius_ / spacing.x_) + 1;
+        IntVector2 center = terrain_->WorldToHeightMap(worldPos);
+
+        for (int dz = -brushPixels; dz <= brushPixels; ++dz)
+        {
+            for (int dx = -brushPixels; dx <= brushPixels; ++dx)
+            {
+                int gx = center.x_ + dx;
+                int gz = center.y_ + dz;
+                unsigned char type, purity, qty, depth;
+                if (!metalDeposits_->Sample(gx, gz, type, purity, qty, depth))
+                    continue;
+
+                // Deposit depth: A channel, 1 unit ≈ 0.1m world height
+                float depositWorldDepth = depth * 0.1f;
+                // Original terrain height at this grid point (from heightmap)
+                IntVector2 hmPos(gx, gz);
+                Vector3 worldPt = terrain_->HeightMapToWorld(hmPos);
+                float surfaceHeight = worldPt.y_;
+                // Original surface was higher — deposit is at (originalSurface - depositWorldDepth)
+                // But we only have current height. Approximate: if current terrain height
+                // is low enough that we've dug past the deposit depth, expose it.
+                float waterLevel = 5.0f;
+                float depthBelowWater = waterLevel + depositWorldDepth;
+                if (surfaceHeight <= depthBelowWater && depth > 5)
+                {
+                    // Newly exposed — spawn an outcrop if one doesn't exist
+                    metalDeposits_->SpawnOutcrops(scene_, terrain_, waterLevel, (int)depth);
+                    break;  // one spawn pass per brush stroke is enough
+                }
+            }
+            if (dz > brushPixels) break;  // already spawned
+        }
+    }
 
     // Re-upload water map to GPU after river brush edits
     if (brushMode_ == 6 && waterMapTex_ && waterMap_)
@@ -4941,17 +7435,14 @@ void TerrainNode::UpdateCameraTransition(float timeStep)
 // Patch boundary visualization
 // ---------------------------------------------------------------------------
 
-void TerrainNode::CreatePatchBoundary(Node*& node, int patchX, int patchZ, const Color& color)
+Node* TerrainNode::CreatePatchBoundary(Node* oldNode, int patchX, int patchZ, const Color& color)
 {
     if (!scene_ || !terrain_)
-        return;
+        return nullptr;
 
     // Remove old boundary node if it exists
-    if (node)
-    {
-        node->Remove();
-        node = nullptr;
-    }
+    if (oldNode)
+        oldNode->Remove();
 
     const float patchWorldSize = 128.0f;
     float x0 = patchX * patchWorldSize;
@@ -4994,7 +7485,7 @@ void TerrainNode::CreatePatchBoundary(Node*& node, int patchX, int patchZ, const
     }
 
     // Build triangle strip ribbon — inner and outer edges offset perpendicular to boundary
-    node = scene_->CreateChild("PatchBoundary");
+    Node* node = scene_->CreateChild("PatchBoundary");
     auto* cg = node->CreateComponent<CustomGeometry>();
     cg->SetNumGeometries(1);
     cg->BeginGeometry(0, TRIANGLE_STRIP);
@@ -5025,6 +7516,7 @@ void TerrainNode::CreatePatchBoundary(Node*& node, int patchX, int patchZ, const
     cg->Commit();
     cg->SetOccludee(false);
     cg->SetCastShadows(false);
+    return node;
 }
 
 bool TerrainNode::OwnsThisPatch(int px, int pz) const
@@ -5053,10 +7545,9 @@ void TerrainNode::CreateOwnedPatchBoundaries()
     // Create gold boundary for each owned patch
     for (unsigned i = 0; i < ownedPatches_.Size(); ++i)
     {
-        Node* node = nullptr;
-        CreatePatchBoundary(node, ownedPatches_[i].x_, ownedPatches_[i].y_, Color(1.0f, 0.84f, 0.0f, 1.0f));  // gold = owned
+        Node* node = CreatePatchBoundary(nullptr, ownedPatches_[i].x_, ownedPatches_[i].y_, Color(1.0f, 0.84f, 0.0f, 1.0f));
         URHO3D_LOGINFOF("  patch (%d,%d) -> node=%s", ownedPatches_[i].x_, ownedPatches_[i].y_, node ? "created" : "NULL");
-        ownedPatchBoundaries_.Push(node);
+        ownedPatchBoundaries_.Push(WeakPtr<Node>(node));
     }
 }
 
@@ -5091,7 +7582,7 @@ void TerrainNode::UpdateCurrentPatchBoundary()
         return;
     }
 
-    CreatePatchBoundary(currentPatchBoundary_, px, pz, Color(1.0f, 1.0f, 1.0f, 1.0f));  // white = current (not owned)
+    currentPatchBoundary_ = CreatePatchBoundary(currentPatchBoundary_, px, pz, Color(1.0f, 1.0f, 1.0f, 1.0f));
 }
 
 void TerrainNode::DrawBrushOutline(const Vector3& worldPos)
@@ -5217,7 +7708,7 @@ void TerrainNode::DrawBrushOutline(const Vector3& worldPos)
 void TerrainNode::CreateCelestialBodies()
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    sunNode_ = scene_->CreateChild("Sun", LOCAL);
+    sunNode_ = scene_->CreateTemporaryChild("Sun", LOCAL);
     auto* sunTech = cache->GetResource<Technique>("Techniques/CelestialBodyDiffMap.xml");
     sunMat_ = new Material(context_);
     sunMat_->SetTechnique(0, sunTech);
@@ -5234,10 +7725,12 @@ void TerrainNode::CreateCelestialBodies()
     sunQuad->enabled_ = true;
     sunBB->Commit();
 
-    moonNode_ = scene_->CreateChild("Moon", LOCAL);
+    moonNode_ = scene_->CreateTemporaryChild("Moon", LOCAL);
     moonMat_ = new Material(context_);
-    moonMat_->SetTechnique(0, sunTech);
+    auto* moonTech = cache->GetResource<Technique>("Techniques/MoonPhaseDiffMap.xml");
+    moonMat_->SetTechnique(0, moonTech ? moonTech : sunTech);
     moonMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, 1.0f));
+    moonMat_->SetShaderParameter("MoonPhase", 0.0f);
     moonMat_->SetTexture(TU_DIFFUSE, cache->GetResource<Texture2D>("Textures/Moon.png"));
     auto* moonBB = moonNode_->CreateComponent<BillboardSet>();
     moonBB->SetNumBillboards(1);
@@ -5253,13 +7746,11 @@ void TerrainNode::CreateCelestialBodies()
     // Reuse MoonLight from loaded scene XML if present, else create
     Node* moonLightNode = scene_->GetChild("MoonLight", true);
     if (!moonLightNode)
-        moonLightNode = scene_->CreateChild("MoonLight", LOCAL);
+        moonLightNode = scene_->CreateTemporaryChild("MoonLight", LOCAL);
     moonLight_ = moonLightNode->GetOrCreateComponent<Light>();
     moonLight_->SetLightType(LIGHT_DIRECTIONAL);
     moonLight_->SetColor(Color(0.6f, 0.6f, 1.0f));
-    moonLight_->SetCastShadows(true);
-    moonLight_->SetShadowBias(BiasParameters(0.00025f, 0.5f));
-    moonLight_->SetShadowCascade(CascadeParameters(10.0f, 50.0f, 200.0f, 0.0f, 0.8f));
+    moonLight_->SetCastShadows(false);  // One shadow-casting light is enough — two doubles shadow pass cost
     moonLight_->SetEnabled(false);
 
     float sunAlt = CalculateSunAltitude();
@@ -5362,6 +7853,10 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
     moonAge_ += timeStep * CELESTIAL_TIME_SCALE / 86400.0f;
     if (moonAge_ >= 29.53f) moonAge_ -= 29.53f;
 
+    // Phase 1 lunar cycle: pass phase to moon material shader
+    if (moonMat_)
+        moonMat_->SetShaderParameter("MoonPhase", moonAge_ / 29.53f);
+
     cloudAngle_ += timeStep * CELESTIAL_TIME_SCALE * 6.2831853f / (18.0f * 3600.0f);
     if (cloudAngle_ > 6.2831853f) cloudAngle_ -= 6.2831853f;
     // Cloud angle includes time offset so scrubbing visibly rotates clouds
@@ -5403,7 +7898,10 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
         moonLight_->GetNode()->SetDirection(-moonOffset.Normalized());
 
     // --- Occlusion test: fade sun/moon when behind terrain ---
+    // Rate-limited to every 6 frames — raycasts are expensive, fade is smooth enough
+    if (occlusionFrameSkip_++ >= 6)
     {
+        occlusionFrameSkip_ = 0;
         auto* octree = scene_->GetComponent<Octree>();
         if (octree)
         {
@@ -5416,22 +7914,17 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                 Vector<RayQueryResult> results;
                 RayOctreeQuery query(results, sunRay, RAY_TRIANGLE, sunDist);
                 octree->Raycast(query);
-                bool occluded = false;
+                cachedSunOccluded_ = false;
                 for (unsigned i = 0; i < results.Size(); ++i)
                 {
-                    // Only terrain can occlude — skip billboards, skybox, animals, etc.
                     if (!dynamic_cast<TerrainPatch*>(results[i].drawable_))
                         continue;
                     if (results[i].distance_ < sunDist)
                     {
-                        occluded = true;
+                        cachedSunOccluded_ = true;
                         break;
                     }
                 }
-                float target = occluded ? 0.0f : 1.0f;
-                sunOcclusionFade_ = Lerp(sunOcclusionFade_, target, Min(1.0f, timeStep * 2.0f));
-                if (sunMat_)
-                    sunMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, sunOcclusionFade_));
             }
 
             // Moon occlusion
@@ -5443,23 +7936,34 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                 Vector<RayQueryResult> results;
                 RayOctreeQuery query(results, moonRay, RAY_TRIANGLE, moonDist);
                 octree->Raycast(query);
-                bool occluded = false;
+                cachedMoonOccluded_ = false;
                 for (unsigned i = 0; i < results.Size(); ++i)
                 {
-                    // Only terrain can occlude — skip billboards, skybox, animals, etc.
                     if (!dynamic_cast<TerrainPatch*>(results[i].drawable_))
                         continue;
                     if (results[i].distance_ < moonDist)
                     {
-                        occluded = true;
+                        cachedMoonOccluded_ = true;
                         break;
                     }
                 }
-                float target = occluded ? 0.0f : 1.0f;
-                moonOcclusionFade_ = Lerp(moonOcclusionFade_, target, Min(1.0f, timeStep * 2.0f));
-                if (moonMat_)
-                    moonMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, moonOcclusionFade_));
             }
+        }
+    }
+    // Smooth fade applied every frame from cached results
+    {
+        float sunTarget = cachedSunOccluded_ ? 0.0f : 1.0f;
+        sunOcclusionFade_ = Lerp(sunOcclusionFade_, sunTarget, Min(1.0f, timeStep * 2.0f));
+        if (sunMat_)
+            sunMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, sunOcclusionFade_));
+
+        float moonTarget = cachedMoonOccluded_ ? 0.0f : 1.0f;
+        moonOcclusionFade_ = Lerp(moonOcclusionFade_, moonTarget, Min(1.0f, timeStep * 2.0f));
+        if (moonMat_)
+        {
+            moonMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, moonOcclusionFade_));
+            // Phase 1 lunar cycle: pass phase to terminator shader
+            moonMat_->SetShaderParameter("MoonPhase", moonAge_ / 29.53f);
         }
     }
 
@@ -5524,14 +8028,18 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
 
                 float screenRadius = (30.0f / sunDist) / tanHalf * 0.5f * radiusMult;
 
-                renderPath_->SetShaderParameter("LightScreenPos", screenPos);
-                renderPath_->SetShaderParameter("LightRadius", screenRadius);
-                renderPath_->SetShaderParameter("GodRayColor", sunColor);
-                renderPath_->SetShaderParameter("GodRayDensity", 0.5f);
-                renderPath_->SetShaderParameter("GodRayDecay", 0.97f);
-                renderPath_->SetShaderParameter("GodRayWeight", 0.4f);
-                renderPath_->SetShaderParameter("GodRayExposure", exposure * sunOcclusionFade_);
-                renderPath_->SetShaderParameter("GodRayIntensity", intensity * sunOcclusionFade_);
+                // Performance Phase 4 — dedup. Density/Decay/Weight are
+                // literals that never change, so they upload once and then
+                // skip every subsequent frame. The dynamic values still
+                // upload only when they actually change.
+                SetShaderParamCached("LightScreenPos", screenPos);
+                SetShaderParamCached("LightRadius", screenRadius);
+                SetShaderParamCached("GodRayColor", sunColor);
+                SetShaderParamCached("GodRayDensity", 0.5f);
+                SetShaderParamCached("GodRayDecay", 0.97f);
+                SetShaderParamCached("GodRayWeight", 0.4f);
+                SetShaderParamCached("GodRayExposure", exposure * sunOcclusionFade_);
+                SetShaderParamCached("GodRayIntensity", intensity * sunOcclusionFade_);
                 sunRayActive = sunOcclusionFade_ > 0.01f;
             }
         }
@@ -5565,8 +8073,10 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                         cmd->SetShaderParameter("GodRayDensity", 0.5f);
                         cmd->SetShaderParameter("GodRayDecay", 0.97f);
                         cmd->SetShaderParameter("GodRayWeight", 0.4f);
-                        cmd->SetShaderParameter("GodRayExposure", 0.4f * moonOcclusionFade_);
-                        cmd->SetShaderParameter("GodRayIntensity", 0.8f * moonFade * moonOcclusionFade_);
+                        // Phase 3 lunar cycle: god rays scale with phase illumination
+                        float phaseIntensity = (1.0f - cosf(moonAge_ / 29.53f * 2.0f * M_PI)) * 0.5f;
+                        cmd->SetShaderParameter("GodRayExposure", 0.4f * moonOcclusionFade_ * phaseIntensity);
+                        cmd->SetShaderParameter("GodRayIntensity", 0.8f * moonFade * moonOcclusionFade_ * phaseIntensity);
                         break;
                     }
                 }
@@ -5587,7 +8097,7 @@ void TerrainNode::CreateRain()
     auto* cache = GetSubsystem<ResourceCache>();
 
     // Create rain emitter node (will be repositioned above camera each frame)
-    rainNode_ = scene_->CreateChild("Rain");
+    rainNode_ = scene_->CreateTemporaryChild("Rain");
 
     // Create particle effect programmatically so we can update wind force dynamically
     rainEffect_ = new ParticleEffect(context_);
@@ -5711,7 +8221,7 @@ void TerrainNode::CreateSnow()
 {
     auto* cache = GetSubsystem<ResourceCache>();
 
-    snowNode_ = scene_->CreateChild("Snow");
+    snowNode_ = scene_->CreateTemporaryChild("Snow");
 
     snowEffect_ = new ParticleEffect(context_);
 
@@ -5876,10 +8386,14 @@ void TerrainNode::CreateCampfire()
     auto* cache = GetSubsystem<ResourceCache>();
     const float waterY = 5.0f;
 
-    // Scan terrain for a shoreline position: find a spot just above water
-    // Sample in a grid pattern and pick the first point that's 0.5–2.0 above water
+    // Scan terrain for a shoreline position: find a spot just above water.
+    // Pass 1: strict band (0.5–2.0 above water) for ideal beach placement.
+    // Pass 2: wider band (0.5–5.0) if no strict match — catches steeper terrain.
+    // Pass 3: any dry land — pick the lowest point above water as fallback.
     Vector3 bestPos;
     bool found = false;
+
+    // Pass 1: ideal shoreline
     for (float x = -200.0f; x < 200.0f && !found; x += 10.0f)
     {
         for (float z = -200.0f; z < 200.0f && !found; z += 10.0f)
@@ -5893,24 +8407,76 @@ void TerrainNode::CreateCampfire()
         }
     }
 
+    // Pass 2: wider band
     if (!found)
     {
-        URHO3D_LOGWARNING("CreateCampfire: no suitable shoreline position found");
-        return;
+        for (float x = -200.0f; x < 200.0f && !found; x += 10.0f)
+        {
+            for (float z = -200.0f; z < 200.0f && !found; z += 10.0f)
+            {
+                float h = terrain_->GetHeight(Vector3(x, 0.0f, z));
+                if (h > waterY + 0.5f && h < waterY + 5.0f)
+                {
+                    bestPos = Vector3(x, h, z);
+                    found = true;
+                }
+            }
+        }
+    }
+
+    // Pass 3: any dry land — pick the lowest point above water
+    if (!found)
+    {
+        float lowestAboveWater = 9999.0f;
+        for (float x = -200.0f; x < 200.0f; x += 10.0f)
+        {
+            for (float z = -200.0f; z < 200.0f; z += 10.0f)
+            {
+                float h = terrain_->GetHeight(Vector3(x, 0.0f, z));
+                if (h > waterY + 0.3f && h < lowestAboveWater)
+                {
+                    lowestAboveWater = h;
+                    bestPos = Vector3(x, h, z);
+                    found = true;
+                }
+            }
+        }
+        if (found)
+            URHO3D_LOGINFOF("CreateCampfire: no shoreline — using lowest dry land at height %.1f", lowestAboveWater);
+    }
+
+    if (!found)
+    {
+        URHO3D_LOGWARNING("CreateCampfire: no dry land found — placing at origin");
+        bestPos = Vector3(0.0f, terrain_->GetHeight(Vector3::ZERO), 0.0f);
     }
 
     // Create campfire node
     campfireNode_ = scene_->CreateChild("Campfire");
     campfireNode_->SetPosition(bestPos);
 
+    // Fire pit base — small dark cylinder for selection, bounding box, and visual grounding
+    Node* pitNode = campfireNode_->CreateChild("Pit");
+    pitNode->SetScale(Vector3(0.4f, 0.4f, 0.4f));
+    auto* pitModel = pitNode->CreateComponent<StaticModel>();
+    Model* pitMdl = cache->GetResource<Model>("Models/Props/Anvil_Log.mdl");
+    if (!pitMdl) pitMdl = cache->GetResource<Model>("Models/Cylinder.mdl");  // fallback
+    pitModel->SetModel(pitMdl);
+    pitModel->SetMaterial(0, cache->GetResource<Material>("Materials/MI_Trim_Furniture.xml"));
+    pitModel->SetMaterial(1, cache->GetResource<Material>("Materials/MI_Trim_Props.xml"));
+    pitModel->SetMaterial(2, cache->GetResource<Material>("Materials/MI_Trim_Metal.xml"));
+
     // Fire emitter — load existing Fire.xml particle effect
     auto* fireEffect = cache->GetResource<ParticleEffect>("Particle/Fire.xml");
     if (fireEffect)
     {
         Node* fireNode = campfireNode_->CreateChild("Fire");
-        auto* fireEmitter = fireNode->CreateComponent<ParticleEmitter>();
-        fireEmitter->SetEffect(fireEffect);
-        fireEmitter->SetEmitting(true);
+        campfireFireEmitter_ = fireNode->CreateComponent<ParticleEmitter>();
+        campfireFireEmitter_->SetEffect(fireEffect);
+        campfireFireEmitter_->SetEmitting(true);
+        // Capture baseline rates so intensity modulation has a "max" to scale against
+        cfBaseFireRateMin_ = fireEffect->GetMinEmissionRate();
+        cfBaseFireRateMax_ = fireEffect->GetMaxEmissionRate();
     }
 
     // Smoke emitter — SmokeStack is continuous (activetime=0), Smoke.xml bursts then stops
@@ -5919,23 +8485,579 @@ void TerrainNode::CreateCampfire()
     {
         Node* smokeNode = campfireNode_->CreateChild("Smoke");
         smokeNode->SetPosition(Vector3(0.0f, 0.3f, 0.0f));  // slightly above fire
-        auto* smokeEmitter = smokeNode->CreateComponent<ParticleEmitter>();
-        smokeEmitter->SetEffect(smokeEffect);
-        smokeEmitter->SetEmitting(true);
+        campfireSmokeEmitter_ = smokeNode->CreateComponent<ParticleEmitter>();
+        campfireSmokeEmitter_->SetEffect(smokeEffect);
+        campfireSmokeEmitter_->SetEmitting(true);
+        cfBaseSmokeRateMin_ = smokeEffect->GetMinEmissionRate();
+        cfBaseSmokeRateMax_ = smokeEffect->GetMaxEmissionRate();
     }
 
-    // Point light for fire glow
+    // Embers emitter — small glowing particles at ground level, only active in EMBERS state.
+    // Pulsates red/yellow to give a distinct visual for the EMBERS window.
+    {
+        Node* embersNode = campfireNode_->CreateChild("Embers");
+        embersNode->SetPosition(Vector3(0.0f, 0.05f, 0.0f));
+        campfireEmbersEmitter_ = embersNode->CreateComponent<ParticleEmitter>();
+        // Clone the fire effect and reconfigure for embers
+        SharedPtr<ParticleEffect> embersEffect = fireEffect ? fireEffect->Clone() : cache->GetResource<ParticleEffect>("Particle/Fire.xml")->Clone();
+        if (embersEffect)
+        {
+            embersEffect->SetMinEmissionRate(3.0f);
+            embersEffect->SetMaxEmissionRate(6.0f);
+            embersEffect->SetMinParticleSize(Vector2(0.08f, 0.08f));
+            embersEffect->SetMaxParticleSize(Vector2(0.15f, 0.15f));
+            embersEffect->SetMinTimeToLive(0.5f);
+            embersEffect->SetMaxTimeToLive(1.2f);
+            embersEffect->SetMinVelocity(0.1f);
+            embersEffect->SetMaxVelocity(0.3f);
+            embersEffect->SetMinDirection(Vector3(-0.3f, 0.5f, -0.3f));
+            embersEffect->SetMaxDirection(Vector3(0.3f, 1.0f, 0.3f));
+            embersEffect->SetConstantForce(Vector3(0.0f, 0.05f, 0.0f));
+            // Start color: bright orange-red → End color: dim red, fades out
+            embersEffect->SetNumColorFrames(2);
+            embersEffect->SetColorFrame(0, ColorFrame(Color(1.0f, 0.3f, 0.05f, 0.9f), 0.0f));
+            embersEffect->SetColorFrame(1, ColorFrame(Color(0.6f, 0.1f, 0.0f, 0.0f), 1.0f));
+            campfireEmbersEmitter_->SetEffect(embersEffect);
+        }
+        campfireEmbersEmitter_->SetEmitting(false);  // off until EMBERS state
+    }
+
+    // Point light for fire glow — pulsates and shifts color
     Node* lightNode = campfireNode_->CreateChild("FireLight");
     lightNode->SetPosition(Vector3(0.0f, 1.0f, 0.0f));
-    auto* light = lightNode->CreateComponent<Light>();
-    light->SetLightType(LIGHT_POINT);
-    light->SetRange(12.0f);
-    light->SetColor(Color(1.0f, 0.6f, 0.2f));
-    light->SetBrightness(1.5f);
-    light->SetCastShadows(false);
+    campfireLight_ = lightNode->CreateComponent<Light>();
+    campfireLight_->SetLightType(LIGHT_POINT);
+    campfireLight_->SetRange(5.0f);
+    campfireLight_->SetColor(Color(1.0f, 0.6f, 0.2f));
+    campfireLight_->SetBrightness(1.5f);
+    campfireLight_->SetCastShadows(true);
+    cfBaseLightBrightness_ = 1.5f;
+    cfBaseLightRange_ = 5.0f;
+    fireOut_ = false;
+    // Seed the flicker state
+    fireBrightnessTarget_ = cfBaseLightBrightness_ * Random(0.55f, 1.20f);
+    fireBrightnessCurrent_ = fireBrightnessTarget_;
+    fireColorTarget_ = Color(1.0f, Random(0.3f, 0.6f), Random(0.0f, 0.2f));
+    fireFadeTime_ = Random(0.2f, 0.5f);
+    fireFadeTimer_ = 0.0f;
 
     URHO3D_LOGINFOF("Campfire placed at (%.1f, %.1f, %.1f) near shoreline",
         bestPos.x_, bestPos.y_, bestPos.z_);
+}
+
+void TerrainNode::SyncCampfireUI()
+{
+    // Helper: set a slider value by ID (fires the change event to update label)
+    auto setSlider = [&](int id, float val)
+    {
+        auto it = campfireSliders_.Find(id);
+        if (it != campfireSliders_.End() && it->second_)
+            it->second_->SetValue(val);
+    };
+
+    // Fire emitter
+    if (campfireFireEmitter_)
+    {
+        auto* fe = campfireFireEmitter_->GetEffect();
+        if (fe)
+        {
+            setSlider(50, (fe->GetMinEmissionRate() + fe->GetMaxEmissionRate()) * 0.5f);  // fire rate
+            setSlider(51, fe->GetMaxParticleSize().x_);  // fire size
+            setSlider(56, (fe->GetMinVelocity() + fe->GetMaxVelocity()) * 0.5f);  // velocity
+            setSlider(57, fe->GetConstantForce().y_);  // updraft
+            setSlider(58, fe->GetMinTimeToLive());  // lifetime
+
+            // Color frames
+            if (fe->GetNumColorFrames() >= 3)
+            {
+                for (int f = 0; f < 3; ++f)
+                {
+                    const ColorFrame* cf = fe->GetColorFrame(f);
+                    if (cf)
+                    {
+                        int base = 60 + f * 4;
+                        setSlider(base, cf->color_.r_);
+                        setSlider(base + 1, cf->color_.g_);
+                        setSlider(base + 2, cf->color_.b_);
+                        setSlider(base + 3, cf->color_.a_);
+                    }
+                }
+            }
+        }
+    }
+
+    // Smoke emitter
+    if (campfireSmokeEmitter_)
+    {
+        auto* se = campfireSmokeEmitter_->GetEffect();
+        if (se)
+        {
+            setSlider(52, (se->GetMinEmissionRate() + se->GetMaxEmissionRate()) * 0.5f);  // smoke rate
+            setSlider(53, se->GetMaxParticleSize().x_);  // smoke size
+            setSlider(75, se->GetEmitterSize().x_);  // emitter radius
+            setSlider(76, se->GetSizeMul());  // grow multiplier
+            setSlider(77, se->GetMinTimeToLive());  // lifetime
+            setSlider(78, se->GetConstantForce().y_);  // rise
+            setSlider(79, se->GetDampingForce());  // damping
+        }
+    }
+
+    // Light
+    if (campfireLight_)
+    {
+        setSlider(54, campfireLight_->GetRange());
+        setSlider(55, campfireLight_->GetBrightness());
+    }
+}
+
+void TerrainNode::HandlePitStateChanged(StringHash, VariantMap& eventData)
+{
+    // Phase 3: server pit state arrived. Adopt the pit nearest our local Campfire
+    // node (Sample 60 only has one campfire — multi-pit comes with Phase 4 ignition).
+    if (!campfireNode_)
+        return;
+
+    unsigned pitId    = eventData[P_PIT_ID].GetU32();
+    unsigned state    = eventData[P_PIT_STATE].GetU32();
+    float burnUnits   = eventData[P_PIT_BURN_UNITS].GetFloat();
+    float burnRate    = eventData[P_PIT_BURN_RATE].GetFloat();
+    float wetness     = eventData[P_PIT_WETNESS].GetFloat();
+    float posX        = eventData[P_PIT_POS_X].GetFloat();
+    float posZ        = eventData[P_PIT_POS_Z].GetFloat();
+    long long utcMs   = (long long)eventData[P_PIT_UTC_MS].GetI64();
+
+    // Adopt the nearest pit within range. If a closer pit broadcasts, switch to it.
+    // This handles multi-pit scenarios where the player builds a second Stone Ring.
+    Node* charNode = characterNode_ ? characterNode_ : campfireNode_;
+    Vector3 ref = charNode->GetWorldPosition();
+    float dist = Sqrt((posX - ref.x_) * (posX - ref.x_) + (posZ - ref.z_) * (posZ - ref.z_));
+    if (dist < 25.0f && (activeFirePitId_ == 0 || pitId == activeFirePitId_ || dist < activeFirePitDist_))
+    {
+        activeFirePitId_ = pitId;
+        activeFirePitDist_ = dist;
+    }
+    if (pitId != activeFirePitId_)
+        return; // Not the nearest pit
+
+    // Extrapolate forward from the broadcast's UTC timestamp.
+    long long nowMs = (long long)time(nullptr) * 1000LL;
+    float deltaSec = (float)(nowMs - utcMs) / 1000.0f;
+    if (deltaSec < 0.0f) deltaSec = 0.0f;
+    if (state == 1 /* PIT_LIT */ || state == 2 /* PIT_EMBERS */)
+    {
+        burnUnits -= burnRate * deltaSec;
+        if (burnUnits < 0.0f) burnUnits = 0.0f;
+    }
+
+    // Sync max fuel from server so burn curve fuelRatio matches
+    float serverMax = eventData[P_PIT_MAX_FUEL].GetFloat();
+    if (serverMax > 0.0f)
+        maxFuelSeconds_ = serverMax;
+
+    fuelSeconds_ = Min(burnUnits, maxFuelSeconds_);
+    activeFirePitBurnRate_ = burnRate;
+    activeFirePitWetness_ = wetness;
+    activeFirePitState_ = (unsigned char)state;
+    // PIT_COLD or PIT_UNLIT — fire is out. Release adoption so player can auto-switch
+    // to a nearby active pit on next broadcast.
+    if (state == 0 /* PIT_UNLIT */ || state == 3 /* PIT_COLD */)
+    {
+        fuelSeconds_ = 0.0f;
+        activeFirePitId_ = 0;
+        activeFirePitDist_ = 999.0f;
+    }
+
+    URHO3D_LOGINFOF("PitState pitId=%u state=%u burnUnits=%.0f rate=%.2f (extrapolated %.1fs)",
+        pitId, state, fuelSeconds_, burnRate, deltaSec);
+}
+
+void TerrainNode::HandlePitIgnitionStatus(StringHash, VariantMap& eventData)
+{
+    unsigned pitId = eventData[P_PIT_ID].GetU32();
+    if (pitId != activeFirePitId_)
+        return;
+
+    bool active = eventData[P_PIT_IGNITION_ACTIVE].GetBool();
+    float progress = eventData[P_PIT_IGNITION_PROGRESS].GetFloat();
+
+    ignitionActive_ = active;
+    ignitionProgress_ = progress;
+
+    if (active)
+    {
+        URHO3D_LOGINFOF("Ignition started on pit %u", pitId);
+        if (hud_)
+            hud_->SetContextHint("Fire-making started — stay close!");
+    }
+    else if (progress >= 1.0f)
+    {
+        URHO3D_LOGINFOF("Ignition COMPLETE on pit %u", pitId);
+        if (hud_)
+            hud_->SetContextHint("Fire lit!");
+    }
+    else
+    {
+        URHO3D_LOGINFOF("Ignition RUINED on pit %u", pitId);
+        if (hud_)
+            hud_->SetContextHint("Fire-making failed — wood lost!");
+    }
+}
+
+// Real-wallclock fuel decay. Drives fireIntensity_, modulates emitters and light.
+// Consumables are immune to time scrub — uses raw engine timeStep, never the scaled clock.
+// Phase 3: when activeFirePitId_ is set, server is authoritative for the BURN
+// RATE — we use it instead of the raw 1.0/sec local rate, but the local decay
+// still runs to extrapolate between server broadcasts.
+void TerrainNode::UpdateCampfireFuel(float realTimeStep)
+{
+    if (!campfireNode_)
+        return;
+
+    // Decay fuel using the same non-linear burn curve as the server.
+    // Server formula: burnRate * curve(fuelRatio) * (1 - 0.7*wetness), burnRate=1.0.
+    // Client evaluates the curve per-frame so rate tracks changing fuelRatio.
+    float rate;
+    if (!burnCurveKey_.points.Empty() && maxFuelSeconds_ > 0.0f && activeFirePitId_ != 0)
+    {
+        float fuelRatio = fuelSeconds_ / maxFuelSeconds_;
+        float curveMultiplier = burnCurveKey_.Evaluate(fuelRatio);
+        rate = curveMultiplier * (1.0f - 0.7f * activeFirePitWetness_);
+        if (rate < 0.05f) rate = 0.05f;
+    }
+    else
+        rate = (activeFirePitId_ != 0) ? activeFirePitBurnRate_ : 1.0f;
+
+    if (fuelSeconds_ > 0.0f)
+    {
+        fuelSeconds_ -= rate * realTimeStep;
+        if (fuelSeconds_ < 0.0f)
+            fuelSeconds_ = 0.0f;
+    }
+
+    // Compute intensity from burn curve: roaring fire at full fuel, dim embers when low.
+    // The curve gives a smooth visual arc that matches the non-linear burn rate.
+    // Below TAPER_WINDOW, apply an additional linear fade so the fire visibly dies.
+    const float TAPER_WINDOW = 30.0f;
+    float prevIntensity = fireIntensity_;
+    if (fuelSeconds_ <= 0.0f)
+        fireIntensity_ = 0.0f;
+    else if (!burnCurveKey_.points.Empty() && maxFuelSeconds_ > 0.0f)
+    {
+        float fuelRatio = fuelSeconds_ / maxFuelSeconds_;
+        fireIntensity_ = burnCurveKey_.Evaluate(fuelRatio);
+        // Final taper in last 30s so the fire visibly gutters out
+        if (fuelSeconds_ < TAPER_WINDOW)
+            fireIntensity_ *= fuelSeconds_ / TAPER_WINDOW;
+    }
+    else
+    {
+        // Fallback: legacy behavior when no curve loaded
+        if (fuelSeconds_ >= TAPER_WINDOW)
+            fireIntensity_ = 1.0f;
+        else
+            fireIntensity_ = fuelSeconds_ / TAPER_WINDOW;
+    }
+
+    // Apply intensity to fire emitter rates (smoke/fire scale together)
+    if (campfireFireEmitter_)
+    {
+        if (auto* fe = campfireFireEmitter_->GetEffect())
+        {
+            fe->SetMinEmissionRate(cfBaseFireRateMin_ * fireIntensity_);
+            fe->SetMaxEmissionRate(cfBaseFireRateMax_ * fireIntensity_);
+        }
+        // Hard-stop emitter when fully out, restart on relight
+        bool shouldEmit = fireIntensity_ > 0.0f;
+        if (campfireFireEmitter_->IsEmitting() != shouldEmit)
+            campfireFireEmitter_->SetEmitting(shouldEmit);
+    }
+
+    if (campfireSmokeEmitter_)
+    {
+        if (auto* se = campfireSmokeEmitter_->GetEffect())
+        {
+            // Smoke lingers slightly past fire-out — use sqrt curve so it tapers slower
+            float smokeMul = Sqrt(fireIntensity_);
+            se->SetMinEmissionRate(cfBaseSmokeRateMin_ * smokeMul);
+            se->SetMaxEmissionRate(cfBaseSmokeRateMax_ * smokeMul);
+        }
+    }
+
+    // Embers emitter — pulsating red/yellow glow only during EMBERS state
+    if (campfireEmbersEmitter_)
+    {
+        bool isEmbers = (activeFirePitState_ == 2 /* PIT_EMBERS */);
+        if (campfireEmbersEmitter_->IsEmitting() != isEmbers)
+            campfireEmbersEmitter_->SetEmitting(isEmbers);
+
+        if (isEmbers)
+        {
+            // Pulsate emission rate with a slow sine wave (period ~2s)
+            embersPhase_ += realTimeStep * 3.14159f;
+            if (embersPhase_ > 6.28318f) embersPhase_ -= 6.28318f;
+            float pulse = 0.5f + 0.5f * Sin(embersPhase_ * 57.2958f);  // Sin expects degrees
+            if (auto* ee = campfireEmbersEmitter_->GetEffect())
+            {
+                ee->SetMinEmissionRate(2.0f + pulse * 4.0f);
+                ee->SetMaxEmissionRate(4.0f + pulse * 6.0f);
+                // Shift color between red and yellow-orange
+                Color startCol(1.0f, 0.2f + pulse * 0.4f, 0.05f * pulse, 0.8f + 0.2f * pulse);
+                ee->SetColorFrame(0, ColorFrame(startCol, 0.0f));
+            }
+            // Dim light to embers glow — warm red, low brightness
+            if (campfireLight_)
+            {
+                campfireLight_->SetColor(Color(1.0f, 0.25f + pulse * 0.15f, 0.05f));
+                campfireLight_->SetBrightness(0.3f + pulse * 0.2f);
+                campfireLight_->SetRange(2.0f + pulse * 0.5f);
+            }
+        }
+    }
+
+    // Track latched fire-out state for log spam control + future events
+    if (!fireOut_ && fireIntensity_ <= 0.0f)
+    {
+        fireOut_ = true;
+        URHO3D_LOGINFO("Campfire: fuel exhausted — fire is out");
+    }
+    else if (fireOut_ && fireIntensity_ > 0.0f)
+    {
+        fireOut_ = false;
+        URHO3D_LOGINFO("Campfire: relit");
+    }
+}
+
+// P-key: attempt to plant a crop at the player's position.
+// Finds the first seed item in inventory, sends MSG_PLANT_CROP to server.
+// Server does full validation (terrain, season, water, tool).
+void TerrainNode::TryPlantCrop()
+{
+    if (!characterNode_)
+        return;
+
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    // Find first seed in inventory (700=Wheat, 701=Flax, 702=Berry Bush)
+    int seedItemId = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        int id = inventory_[i].itemId;
+        if (id == 700 || id == 701 || id == 702)
+        {
+            seedItemId = id;
+            break;
+        }
+    }
+
+    if (seedItemId == 0)
+    {
+        URHO3D_LOGINFO("[Farming] No seeds in inventory");
+        return;
+    }
+
+    Vector3 pos = characterNode_->GetWorldPosition();
+
+    VectorBuffer buf;
+    buf.WriteI32(seedItemId);
+    buf.WriteFloat(pos.x_);
+    buf.WriteFloat(pos.y_);
+    buf.WriteFloat(pos.z_);
+    serverConn->SendMessage(MSG_PLANT_CROP, true, true, buf);
+
+    URHO3D_LOGINFOF("[Farming] Sent MSG_PLANT_CROP: seed=%d at (%.1f,%.1f,%.1f)",
+        seedItemId, pos.x_, pos.y_, pos.z_);
+}
+
+// E-key: harvest nearest mature crop within 3m.
+void TerrainNode::TryHarvestCrop()
+{
+    if (!characterNode_)
+        return;
+
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    Vector3 playerPos = characterNode_->GetWorldPosition();
+    int nearestCropId = -1;
+    float nearestDist = 9.0f;  // 3m squared
+
+    for (auto it = cropNodes_.Begin(); it != cropNodes_.End(); ++it)
+    {
+        if (!it->second_)
+            continue;
+
+        Node* cropNode = it->second_;
+        int stage = cropNode->GetVar("GrowthStage").GetI32();
+        if (stage < 3)
+            continue;  // Not mature
+
+        float distSq = (cropNode->GetWorldPosition() - playerPos).LengthSquared();
+        if (distSq < nearestDist)
+        {
+            nearestDist = distSq;
+            nearestCropId = it->first_;
+        }
+    }
+
+    if (nearestCropId < 0)
+        return;  // No mature crops nearby
+
+    VectorBuffer buf;
+    buf.WriteI32(nearestCropId);
+    serverConn->SendMessage(MSG_HARVEST_CROP, true, true, buf);
+
+    URHO3D_LOGINFOF("[Farming] Sent MSG_HARVEST_CROP: cropId=%d", nearestCropId);
+}
+
+// E-key handler when crosshair/proximity targets the campfire pit.
+// Phase 4b: send E_PIT_TEND_REQUEST when adopted pit is in EMBERS state and
+// player has Softwood. Server validates inventory + proximity + state, applies
+// tend, broadcasts new state. Falls back to legacy free-fuel for offline mode
+// (no server pit adopted) so single-player testing still works.
+void TerrainNode::TryCampfireInteract()
+{
+    if (!campfireNode_ || !characterNode_)
+        return;
+
+    Vector3 playerPos = characterNode_->GetWorldPosition();
+    Vector3 firePos = campfireNode_->GetWorldPosition();
+    float dist = (playerPos - firePos).Length();
+    const float REACH = 3.0f;
+    if (dist > REACH)
+        return;
+
+    // Phase 4a/4b: server-authoritative path when a pit has been adopted.
+    if (activeFirePitId_ != 0)
+    {
+        // Phase 4a/4c: COLD or UNLIT pit — try torch first (instant), fall back to friction (2hr)
+        if (activeFirePitState_ == 0 /* PIT_UNLIT */ || activeFirePitState_ == 3 /* PIT_COLD */)
+        {
+            // Phase 4c: Burning Torch (109) = instant ignition — always preferred
+            bool haveBurningTorch = false;
+            for (unsigned i = 0; i < inventory_.Size(); ++i)
+            {
+                if (inventory_[i].itemId == 109 && inventory_[i].quantity > 0)
+                {
+                    haveBurningTorch = true;
+                    break;
+                }
+            }
+            if (haveBurningTorch)
+            {
+                auto* network = GetSubsystem<Network>();
+                Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+                if (!serverConn)
+                    return;
+                VariantMap data;
+                data[P_PIT_ID] = (unsigned)activeFirePitId_;
+                serverConn->SendRemoteEvent(E_TORCH_IGNITE_REQUEST, true, data);
+                URHO3D_LOGINFOF("Sent torch-ignite request for pit %u", activeFirePitId_);
+                return;
+            }
+
+            // Phase 4a: friction ignition fallback
+            if (ignitionActive_)
+            {
+                if (hud_)
+                    hud_->SetContextHint("Fire-making in progress...");
+                return;
+            }
+            // Need both Softwood (15) and Hardwood (16)
+            bool haveSoftwood = false, haveHardwood = false;
+            for (unsigned i = 0; i < inventory_.Size(); ++i)
+            {
+                if (inventory_[i].itemId == 15 && inventory_[i].quantity > 0)
+                    haveSoftwood = true;
+                if (inventory_[i].itemId == 16 && inventory_[i].quantity > 0)
+                    haveHardwood = true;
+            }
+            if (!haveSoftwood || !haveHardwood)
+            {
+                if (hud_)
+                    hud_->SetContextHint("Need Burning Torch, or Softwood + Hardwood");
+                return;
+            }
+            auto* network = GetSubsystem<Network>();
+            Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+            if (!serverConn)
+                return;
+            VariantMap data;
+            data[P_PIT_ID] = (unsigned)activeFirePitId_;
+            serverConn->SendRemoteEvent(E_PIT_IGNITE_REQUEST, true, data);
+            URHO3D_LOGINFOF("Sent friction-ignite request for pit %u", activeFirePitId_);
+            return;
+        }
+
+        // Phase 4b: EMBERS → cheap revival (Softwood only)
+        if (activeFirePitState_ == 2 /* PIT_EMBERS */)
+        {
+            bool haveSoftwood = false;
+            for (unsigned i = 0; i < inventory_.Size(); ++i)
+            {
+                if (inventory_[i].itemId == 15 && inventory_[i].quantity > 0)
+                {
+                    haveSoftwood = true;
+                    break;
+                }
+            }
+            if (!haveSoftwood)
+            {
+                if (hud_)
+                    hud_->SetContextHint("Need Softwood to revive embers");
+                return;
+            }
+            auto* network = GetSubsystem<Network>();
+            Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+            if (!serverConn)
+                return;
+            VariantMap data;
+            data[P_PIT_ID] = (unsigned)activeFirePitId_;
+            data[P_PIT_TEND_ITEM] = (int)15;
+            data[P_PIT_TEND_QTY] = (int)1;
+            serverConn->SendRemoteEvent(E_PIT_TEND_REQUEST, true, data);
+            URHO3D_LOGINFOF("Sent embers-revival request for pit %u", activeFirePitId_);
+            return;
+        }
+
+        // PIT_LIT — Phase 4c: if player has unlit Torch (108), light it
+        {
+            bool haveUnlitTorch = false;
+            for (unsigned i = 0; i < inventory_.Size(); ++i)
+            {
+                if (inventory_[i].itemId == 108 && inventory_[i].quantity > 0)
+                {
+                    haveUnlitTorch = true;
+                    break;
+                }
+            }
+            if (haveUnlitTorch)
+            {
+                auto* network = GetSubsystem<Network>();
+                Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+                if (!serverConn)
+                    return;
+                serverConn->SendRemoteEvent(E_TORCH_LIGHT_REQUEST, true, VariantMap());
+                URHO3D_LOGINFO("Sent torch-light request");
+                if (hud_)
+                    hud_->SetContextHint("Lighting torch...");
+                return;
+            }
+            if (hud_)
+                hud_->SetContextHint("Fire is burning");
+        }
+        return;
+    }
+
+    // Offline fallback: no server pit adopted, keep the Phase 1 free-fuel hack
+    // so single-player Sample 60 testing still works.
+    fuelSeconds_ = Min(fuelSeconds_ + STICK_BURN_SECONDS, maxFuelSeconds_);
+    URHO3D_LOGINFOF("Campfire (local): +%.0fs fuel (now %.0f / %.0f)",
+        STICK_BURN_SECONDS, fuelSeconds_, maxFuelSeconds_);
 }
 
 // ============================================================================
@@ -5965,41 +9087,76 @@ void TerrainNode::CreateFish()
 
     const int NUM_FISH = 50;
     const float waterY = 5.0f;
-    const float spawnRadius = 80.0f;
     const float MIN_DEPTH = 1.0f;
     Terrain* t = terrain_;
+    Node* sunLightNode = scene_->GetChild("DirectionalLight", true);
 
-    Vector3 camPos = cameraNode_ ? cameraNode_->GetPosition() : Vector3::ZERO;
-    float centerX = camPos.x_;
-    float centerZ = camPos.z_;
+    // Use server-provided spawn points if available (from water body flood-fill).
+    // Otherwise fall back to local grid scan (offline mode).
+    struct WaterPoint { float x, z, terrainH; };
+    Vector<WaterPoint> waterPoints;
+
+    if (!serverFishSpawns_.Empty())
+    {
+        // Server already did the flood-fill — use its spawn points
+        for (unsigned i = 0; i < serverFishSpawns_.Size(); ++i)
+        {
+            float h = t ? t->GetHeight(Vector3(serverFishSpawns_[i].x, 0.0f, serverFishSpawns_[i].z)) : 0.0f;
+            waterPoints.Push({serverFishSpawns_[i].x, serverFishSpawns_[i].z, h});
+        }
+        URHO3D_LOGINFOF("CreateFish: using %u server-provided spawn points", waterPoints.Size());
+    }
+    else
+    {
+        // Fallback: local grid scan
+        Vector3 terrainOrigin = t ? t->GetNode()->GetWorldPosition() : Vector3::ZERO;
+        Vector3 spacing = t ? t->GetSpacing() : Vector3::ONE;
+        IntVector2 numVerts = t ? t->GetNumVertices() : IntVector2::ZERO;
+        float terrainW = (float)(numVerts.x_ - 1) * spacing.x_;
+        float terrainH = (float)(numVerts.y_ - 1) * spacing.z_;
+        float halfW = terrainW * 0.5f;
+        float halfH = terrainH * 0.5f;
+        const float GRID_STEP = 16.0f;
+
+        for (float gx = terrainOrigin.x_ - halfW; gx < terrainOrigin.x_ + halfW; gx += GRID_STEP)
+        {
+            for (float gz = terrainOrigin.z_ - halfH; gz < terrainOrigin.z_ + halfH; gz += GRID_STEP)
+            {
+                float h = t ? t->GetHeight(Vector3(gx, 0.0f, gz)) : 0.0f;
+                if (waterY - h >= MIN_DEPTH + 0.5f)
+                    waterPoints.Push({gx, gz, h});
+            }
+        }
+        URHO3D_LOGINFOF("CreateFish: %u local grid points found", waterPoints.Size());
+    }
+
+    if (waterPoints.Empty())
+    {
+        URHO3D_LOGWARNING("CreateFish: no underwater points found");
+        return;
+    }
+
+    // Distribute fish proportionally across all water — stride ensures coverage
+    const float stride = (float)waterPoints.Size() / (float)NUM_FISH;
 
     for (int i = 0; i < NUM_FISH; ++i)
     {
-        Node* fishNode = scene_->CreateChild("Fish", LOCAL);
+        Node* fishNode = scene_->CreateTemporaryChild("Fish", LOCAL);
 
-        // Pick a random position that's actually underwater with enough depth
-        Vector3 pos;
-        int tries = 0;
-        for (;;)
-        {
-            float x = centerX + Random(-spawnRadius, spawnRadius);
-            float z = centerZ + Random(-spawnRadius, spawnRadius);
-            float terrainH = t ? t->GetHeight(Vector3(x, 0.0f, z)) : 0.0f;
-            float availableDepth = waterY - terrainH;
-
-            if (availableDepth >= MIN_DEPTH + 0.5f || ++tries > 50)
-            {
-                float minY = Max(terrainH + 0.5f, waterY - 4.0f);
-                float maxY = waterY - MIN_DEPTH;
-                if (minY > maxY) minY = maxY;
-                pos = Vector3(x, Random(minY, maxY), z);
-                break;
-            }
-        }
+        // Strided pick with jitter — ensures coverage of all water areas
+        unsigned baseIdx = (unsigned)(i * stride) % waterPoints.Size();
+        unsigned jitterRange = Max(1u, (unsigned)(stride * 0.5f));
+        unsigned idx = (baseIdx + (unsigned)Random(0, (int)jitterRange)) % waterPoints.Size();
+        const WaterPoint& wp = waterPoints[idx];
+        float x = wp.x + Random(-8.0f, 8.0f);
+        float z = wp.z + Random(-8.0f, 8.0f);
+        float groundH = t ? t->GetHeight(Vector3(x, 0.0f, z)) : wp.terrainH;
+        float minY = Max(groundH + 0.5f, waterY - 4.0f);
+        float maxY = waterY - MIN_DEPTH;
+        if (minY > maxY) minY = maxY;
+        Vector3 pos(x, Random(minY, maxY), z);
         fishNode->SetPosition(pos);
         fishNode->SetRotation(Quaternion(0.0f, Random(0.0f, 360.0f), 0.0f));
-        fishNode->SetScale(0.001f);
-
         auto* sm = fishNode->CreateComponent<StaticModel>();
         sm->SetModel(fishModel, true);
         sm->SetMaterial(fishMat);
@@ -6010,6 +9167,9 @@ void TerrainNode::CreateFish()
         fish->SetMaterials(baseMat, orbitMat, stareMat);
         fish->SetCameraNode(cameraNode_);
         fish->SetSpatialHash(&fishSpatialHash_);
+        if (sunLightNode)
+            fish->SetSunLightNode(sunLightNode);
+        fishNodes_.Push(WeakPtr<Node>(fishNode));
     }
 
     URHO3D_LOGINFOF("Spawned %d fish", NUM_FISH);
@@ -6030,33 +9190,51 @@ void TerrainNode::CreateSchoolFish()
     schoolMat->SetShaderParameter("WiggleFrequency", 8.0f);
 
     const float waterY = 5.0f;
-    const float TINY_SCALE = 0.0003f;  // ~1/3 of regular fish scale (0.001)
+    const float TINY_SCALE = 0.3f;  // ~1/3 of regular fish size
     const int NUM_SCHOOLS = 3;
     const int FISH_PER_SCHOOL = 15;
     Terrain* t = terrain_;
+    Node* sunLightNode = scene_->GetChild("DirectionalLight", true);
+
+    // Build deep-water candidate list across the terrain (reuse terrain bounds)
+    Vector3 tOrigin = t ? t->GetNode()->GetWorldPosition() : Vector3::ZERO;
+    Vector3 tSpacing = t ? t->GetSpacing() : Vector3::ONE;
+    IntVector2 tVerts = t ? t->GetNumVertices() : IntVector2::ZERO;
+    float tW = (float)(tVerts.x_ - 1) * tSpacing.x_ * 0.5f;
+    float tH = (float)(tVerts.y_ - 1) * tSpacing.z_ * 0.5f;
+
+    struct DeepPoint { float x, z, groundH; };
+    Vector<DeepPoint> deepPoints;
+    for (float gx = tOrigin.x_ - tW; gx < tOrigin.x_ + tW; gx += 16.0f)
+    {
+        for (float gz = tOrigin.z_ - tH; gz < tOrigin.z_ + tH; gz += 16.0f)
+        {
+            float h = t ? t->GetHeight(Vector3(gx, 0.0f, gz)) : 0.0f;
+            if (waterY - h >= 2.0f)
+                deepPoints.Push({gx, gz, h});
+        }
+    }
+
+    // Distribute schools evenly across all deep water, not random clustering
+    const float schoolStride = deepPoints.Empty() ? 1.0f : (float)deepPoints.Size() / (float)NUM_SCHOOLS;
 
     for (int school = 0; school < NUM_SCHOOLS; ++school)
     {
-        // Pick a school center — random deep-water location
+        // Strided pick — each school gets a different region of deep water
         Vector3 schoolCenter;
-        for (int tries = 0; tries < 50; ++tries)
+        if (!deepPoints.Empty())
         {
-            float x = Random(-60.0f, 60.0f);
-            float z = Random(-60.0f, 60.0f);
-            float terrainH = t ? t->GetHeight(Vector3(x, 0.0f, z)) : 0.0f;
-            if (waterY - terrainH >= 2.0f)
-            {
-                schoolCenter = Vector3(x, Lerp(terrainH + 0.5f, waterY - 0.5f, 0.5f), z);
-                break;
-            }
-            if (tries == 49)
-                schoolCenter = Vector3(0.0f, waterY - 2.0f, 0.0f);
+            unsigned idx = (unsigned)(school * schoolStride) % deepPoints.Size();
+            const DeepPoint& dp = deepPoints[idx];
+            schoolCenter = Vector3(dp.x, Lerp(dp.groundH + 0.5f, waterY - 0.5f, 0.5f), dp.z);
         }
+        else
+            schoolCenter = Vector3(0.0f, waterY - 2.0f, 0.0f);
 
         // Spawn fish in a tight cluster around school center
         for (int i = 0; i < FISH_PER_SCHOOL; ++i)
         {
-            Node* fishNode = scene_->CreateChild("SchoolFish", LOCAL);
+            Node* fishNode = scene_->CreateTemporaryChild("SchoolFish", LOCAL);
             Vector3 offset(Random(-2.0f, 2.0f), Random(-0.3f, 0.3f), Random(-2.0f, 2.0f));
             fishNode->SetPosition(schoolCenter + offset);
             fishNode->SetRotation(Quaternion(0.0f, Random(0.0f, 360.0f), 0.0f));
@@ -6072,6 +9250,9 @@ void TerrainNode::CreateSchoolFish()
             fish->SetCameraNode(cameraNode_);
             fish->SetSpatialHash(&fishSpatialHash_);
             fish->SetSchoolCache(&schoolStateCache_);
+            if (sunLightNode)
+                fish->SetSunLightNode(sunLightNode);
+            fishNodes_.Push(WeakPtr<Node>(fishNode));
         }
     }
 
@@ -6080,19 +9261,37 @@ void TerrainNode::CreateSchoolFish()
 
 void TerrainNode::RebuildFishSpatialHash()
 {
-    if (!scene_)
+    if (!scene_ || !loggedIn_)
         return;
 
     fishSpatialHash_.Clear();
     schoolStateCache_.InvalidateAll(++frameNumber_);
 
-    // Single scene iteration — insert all fish into the spatial hash
-    const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
-    for (unsigned i = 0; i < children.Size(); ++i)
+    // Use tracked fish node list — avoids iterating all scene children
+    for (unsigned i = 0; i < fishNodes_.Size(); ++i)
     {
-        auto* fish = children[i]->GetComponent<Fish>();
+        Node* n = fishNodes_[i].Get();
+        if (!n) continue;
+        auto* fish = n->GetComponent<Fish>();
         if (fish)
-            fishSpatialHash_.Insert(fish, children[i]->GetWorldPosition());
+            fishSpatialHash_.Insert(fish, n->GetWorldPosition());
+    }
+}
+
+void TerrainNode::RebuildLandAnimalSpatialHash()
+{
+    if (!scene_ || !loggedIn_)
+        return;
+
+    landAnimalHash_.Clear();
+
+    for (unsigned i = 0; i < animalNodes_.Size(); ++i)
+    {
+        Node* n = animalNodes_[i].Get();
+        if (!n) continue;
+        auto* animal = n->GetComponent<LandAnimal>();
+        if (animal)
+            landAnimalHash_.Insert(animal, n->GetWorldPosition());
     }
 }
 
@@ -6100,134 +9299,568 @@ void TerrainNode::RebuildFishSpatialHash()
 // Animals
 // ============================================================================
 
+// Spawn table — moved to file scope so SpawnCreatureAt() and CreateAnimals()
+// share one source of truth. Maps species name → model path, material list,
+// creature DB ID, and a fallback default count for habitat-rule fallback.
+namespace
+{
+    struct SpawnEntry {
+        const char* name;
+        const char* modelPath;
+        const char* matList;
+        int creatureId;
+        int defaultCount;
+    };
+
+    static const SpawnEntry kSpawnTable[] = {
+        {"Rabbit",   "Models/Animals/Rabbit.mdl",           "Models/Animals/Rabbit.txt",           1,  5},
+        {"Deer",     "Models/Animals/Deer.mdl",             "Models/Animals/Deer.txt",             2,  8},
+        {"Fox",      "Models/Animals/Fox.mdl",              "Models/Animals/Fox.txt",              3,  3},
+        {"Stag",     "Models/Animals/Stag.mdl",             "Models/Animals/Stag.txt",             4,  3},
+        {"Wolf",     "Models/Animals/Wolf.mdl",             "Models/Animals/Wolf.txt",             5,  2},
+        {"Bull",     "Models/Animals/Bull.mdl",             "Models/Animals/Bull.txt",             6,  2},
+        {"Cow",      "Models/Animals/Cow.mdl",              "Models/Animals/Cow.txt",              7,  3},
+        {"Donkey",   "Models/Animals/Donkey.mdl",           "Models/Animals/Donkey.txt",           9,  2},
+        {"Horse",    "Models/Animals/Horse.mdl",            "Models/Animals/Horse.txt",           10,  2},
+        {"Alpaca",   "Models/Animals/Alpaca.mdl",           "Models/Animals/Alpaca.txt",          11,  3},
+        {"Husky",    "Models/Animals/Husky.mdl",            "Models/Animals/Husky.txt",           12,  2},
+        {"ShibaInu", "Models/Animals/ShibaInu.mdl",         "Models/Animals/ShibaInu.txt",        13,  2},
+        {"CaveMan",  "Models/Characters/CavemanMan.mdl",    "Models/Characters/CavemanMan.txt",   20,  3},
+        {"CaveWoman","Models/Characters/CavemanWoman.mdl",  "Models/Characters/CavemanWoman.txt", 21,  3},
+    };
+
+    static const SpawnEntry* FindSpawnEntryByCreatureId(int creatureId)
+    {
+        for (const SpawnEntry& e : kSpawnTable)
+            if (e.creatureId == creatureId)
+                return &e;
+        return nullptr;
+    }
+
+    static const SpawnEntry* FindSpawnEntryByName(const char* name)
+    {
+        for (const SpawnEntry& e : kSpawnTable)
+            if (strcmp(e.name, name) == 0)
+                return &e;
+        return nullptr;
+    }
+}
+
 void TerrainNode::CreateAnimals()
 {
     if (!terrain_)
         return;
 
     auto* cache = GetSubsystem<ResourceCache>();
-    const float spawnRadius = 80.0f;
     const float waterLevel = 5.5f;
 
-    // Spawn near camera, not at world origin
-    Vector3 camPos = cameraNode_ ? cameraNode_->GetPosition() : Vector3::ZERO;
-    float centerX = camPos.x_;
-    float centerZ = camPos.z_;
+    // --- Phase 2: Terrain-wide grid sampling ---
+    // Build a grid of candidate spawn points classified by biome.
+    Vector3 spacing = terrain_->GetSpacing();
+    IntVector2 numVerts = terrain_->GetNumVertices();
+    float terrainW = (float)(numVerts.x_ - 1) * spacing.x_;
+    float terrainH = (float)(numVerts.y_ - 1) * spacing.z_;
+    Vector3 terrainOrigin = terrain_->GetNode()->GetWorldPosition();
+    float halfW = terrainW * 0.5f;
+    float halfH = terrainH * 0.5f;
 
-    // Spawn rabbits
-    for (int i = 0; i < 5; ++i)
-    {
-        // Find a dry spot
+    // Sample every 16 world units — ~160 points for a 2K terrain
+    const float GRID_STEP = 16.0f;
+
+    struct GridPoint {
         Vector3 pos;
-        for (int tries = 0; tries < 10; ++tries)
+        HabitatBiome biome;
+        float waterDist;
+    };
+    Vector<GridPoint> gridPoints;
+
+    for (float gx = terrainOrigin.x_ - halfW; gx < terrainOrigin.x_ + halfW; gx += GRID_STEP)
+    {
+        for (float gz = terrainOrigin.z_ - halfH; gz < terrainOrigin.z_ + halfH; gz += GRID_STEP)
         {
-            float x = centerX + Random(-spawnRadius, spawnRadius);
-            float z = centerZ + Random(-spawnRadius, spawnRadius);
-            float y = terrain_->GetHeight(Vector3(x, 0.0f, z));
-            if (y > waterLevel)
-            {
-                pos = Vector3(x, y, z);
-                break;
-            }
-            if (tries == 9)
-                pos = Vector3(centerX, terrain_->GetHeight(Vector3(centerX, 0.0f, centerZ)), centerZ);
+            Vector3 worldPos(gx, 0.0f, gz);
+            float h = terrain_->GetHeight(worldPos);
+            worldPos.y_ = h;
+
+            BiomeType bt = ClassifyTerrain(worldPos);
+            HabitatBiome hb = HabitatRules::FromBiomeType((int)bt);
+
+            // Look up precomputed water distance (Phase 4)
+            float waterDist = SampleWaterDistance(gx, gz);
+            if (waterDist < 0.0f)
+                waterDist = (h > waterLevel) ? 999.0f : 0.0f;
+
+            GridPoint gp;
+            gp.pos = worldPos;
+            gp.biome = hb;
+            gp.waterDist = waterDist;
+            gridPoints.Push(gp);
         }
-
-        Node* node = scene_->CreateChild("Rabbit", LOCAL);
-        node->SetPosition(pos);
-
-        // Model on child node with 180° Y flip — mesh faces -Z, Urho3D forward is +Z
-        Node* modelNode = node->CreateChild("RabbitModel");
-        modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
-
-        auto* model = modelNode->CreateComponent<AnimatedModel>();
-        model->SetModel(cache->GetResource<Model>("Models/Animals/Rabbit.mdl"), true, true);
-        model->ApplyMaterialList("Models/Animals/Rabbit.txt");
-        model->SetCastShadows(true);
-
-        modelNode->CreateComponent<AnimationController>();
-        node->CreateComponent<Rabbit>();
-
-        animalNodes_.Push(WeakPtr<Node>(node));
     }
 
-    // Spawn deer — prefer higher ground, further from water than rabbits
-    const float deerSpawnRadius = 120.0f;
-    const float deerMinHeight = waterLevel + 3.0f;  // at least 3m above waterline
-    for (int i = 0; i < 8; ++i)
+    URHO3D_LOGINFOF("CreateAnimals: sampled %u grid points across %.0fx%.0f terrain",
+        gridPoints.Size(), terrainW, terrainH);
+
+    unsigned totalSpawned = 0;
+
+    for (const auto& entry : kSpawnTable)
     {
-        Vector3 pos;
-        for (int tries = 0; tries < 20; ++tries)
+        // Determine target count: habitat rule density > PopulationManager > hardcoded default
+        int count = entry.defaultCount;
+        const HabitatRule* rule = habitatRules_.GetRule(entry.name);
+        if (rule)
+            count = rule->density;
+
+        // PopulationManager override if available
+        Vector3 camPos = cameraNode_ ? cameraNode_->GetPosition() : Vector3::ZERO;
+        int regionId = (popManager_ && popManager_->IsReady()) ? popManager_->FindRegion(camPos.x_, camPos.z_) : -1;
+        if (regionId >= 0)
         {
-            float x = centerX + Random(-deerSpawnRadius, deerSpawnRadius);
-            float z = centerZ + Random(-deerSpawnRadius, deerSpawnRadius);
-            float y = terrain_->GetHeight(Vector3(x, 0.0f, z));
-            // Prefer higher ground; relax threshold after many attempts
-            float minH = (tries < 10) ? deerMinHeight : waterLevel;
-            if (y > minH)
-            {
-                pos = Vector3(x, y, z);
-                break;
-            }
-            if (tries == 19)
-                pos = Vector3(centerX, terrain_->GetHeight(Vector3(centerX, 0.0f, centerZ)), centerZ);
+            int pop = popManager_->GetPopulation(regionId, entry.creatureId);
+            if (pop > 0)
+                count = pop;
         }
 
-        Node* node = scene_->CreateChild("Deer", LOCAL);
-        node->SetPosition(pos);
-
-        // Model on child node with 180° Y flip — deer mesh faces -Z, Urho3D forward is +Z
-        Node* modelNode = node->CreateChild("DeerModel");
-        modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
-
-        auto* model = modelNode->CreateComponent<AnimatedModel>();
-        model->SetModel(cache->GetResource<Model>("Models/Animals/Deer.mdl"), true, true);
-        model->ApplyMaterialList("Models/Animals/Deer.txt");
-        model->SetCastShadows(true);
-
-        modelNode->CreateComponent<AnimationController>();
-        node->CreateComponent<Deer>();
-
-        animalNodes_.Push(WeakPtr<Node>(node));
-    }
-
-    // ── Foxes ──
-    for (int i = 0; i < 3; ++i)
-    {
-        Vector3 pos;
-        for (int attempt = 0; attempt < 20; ++attempt)
+        // Collect valid spawn candidates for this species
+        Vector<unsigned> validIndices;
+        if (rule)
         {
-            float centerX = Random(-80.0f, 80.0f);
-            float centerZ = Random(-80.0f, 80.0f);
-            float groundY = terrain_->GetHeight(Vector3(centerX, 0.0f, centerZ));
-            if (groundY > 5.5f)  // above water
+            for (unsigned i = 0; i < gridPoints.Size(); ++i)
             {
-                pos = Vector3(centerX, groundY, centerZ);
-                break;
+                const GridPoint& gp = gridPoints[i];
+                if (HabitatRules::IsValidSpawnPoint(*rule, gp.biome, gp.pos.y_, gp.waterDist))
+                    validIndices.Push(i);
             }
-            if (attempt == 19)
-                pos = Vector3(centerX, terrain_->GetHeight(Vector3(centerX, 0.0f, centerZ)), centerZ);
+        }
+        else
+        {
+            // No rule — accept any point above water (legacy behavior)
+            for (unsigned i = 0; i < gridPoints.Size(); ++i)
+            {
+                if (gridPoints[i].pos.y_ > waterLevel)
+                    validIndices.Push(i);
+            }
         }
 
-        Node* node = scene_->CreateChild("Fox", LOCAL);
-        node->SetPosition(pos);
+        if (validIndices.Empty())
+        {
+            URHO3D_LOGWARNINGF("CreateAnimals: no valid habitat for %s, skipping", entry.name);
+            continue;
+        }
 
-        // Model on child node with 180° Y flip — mesh faces -Z, Urho3D forward is +Z
-        Node* modelNode = node->CreateChild("FoxModel");
-        modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
+        // Determine group size
+        int gsMin = rule ? rule->groupSizeMin : 1;
+        int gsMax = rule ? rule->groupSizeMax : 1;
 
-        auto* model = modelNode->CreateComponent<AnimatedModel>();
-        model->SetModel(cache->GetResource<Model>("Models/Animals/Fox.mdl"), true, true);
-        model->ApplyMaterialList("Models/Animals/Fox.txt");
-        model->SetCastShadows(true);
+        // Place groups until we reach target count
+        int spawned = 0;
+        while (spawned < count)
+        {
+            // Pick a random valid grid point as group center
+            unsigned idx = validIndices[Random((int)validIndices.Size())];
+            const GridPoint& center = gridPoints[idx];
 
-        modelNode->CreateComponent<AnimationController>();
-        node->CreateComponent<Fox>();
+            int groupSize = (gsMin == gsMax) ? gsMin : (gsMin + Random(gsMax - gsMin + 1));
+            groupSize = Min(groupSize, count - spawned);
 
-        animalNodes_.Push(WeakPtr<Node>(node));
+            for (int g = 0; g < groupSize; ++g)
+            {
+                // Jitter within 8m of the group center, but re-validate the
+                // habitat rule at the jittered point — the grid validation only
+                // confirms the centre, and ±8m can cross a riverbank straight
+                // into a shallow spit. Resample up to 8 times before falling
+                // back to the (already-validated) centre.
+                float jx = center.pos.x_;
+                float jz = center.pos.z_;
+                float jy = center.pos.y_;
+                bool jitterOk = false;
+                for (int attempt = 0; attempt < 8; ++attempt)
+                {
+                    float tx = center.pos.x_ + Random(-8.0f, 8.0f);
+                    float tz = center.pos.z_ + Random(-8.0f, 8.0f);
+                    float ty = terrain_->GetHeight(Vector3(tx, 0.0f, tz));
+                    if (ty < waterLevel)
+                        continue;
+
+                    if (rule)
+                    {
+                        float twd = SampleWaterDistance(tx, tz);
+                        if (twd < 0.0f)
+                            twd = (ty > waterLevel) ? 999.0f : 0.0f;
+                        // Reuse the centre's biome — biome doesn't change much
+                        // over an 8 m radius and reclassifying every attempt is
+                        // expensive in this hot path.
+                        if (!HabitatRules::IsValidSpawnPoint(*rule, center.biome, ty, twd))
+                            continue;
+                    }
+
+                    jx = tx;
+                    jz = tz;
+                    jy = ty;
+                    jitterOk = true;
+                    break;
+                }
+                (void)jitterOk; // fallback to centre is fine if all attempts failed
+
+                Vector3 pos(jx, jy, jz);
+
+                // SpawnCreatureAt handles all node/model/component creation,
+                // applies habitat-rule + GameDB combat stats, pushes to
+                // animalNodes_. Returns nullptr only on unknown creatureId
+                // or missing scene — neither possible inside this loop.
+                LandAnimal* spawned_a = SpawnCreatureAt(entry.creatureId, pos);
+                if (spawned_a)
+                    URHO3D_LOGINFOF("  spawn %s at (%.1f, %.1f, %.1f)", entry.name, pos.x_, pos.y_, pos.z_);
+                ++spawned;
+            }
+        }
+
+        URHO3D_LOGINFOF("CreateAnimals: %s — %d spawned (%u valid grid points)",
+            entry.name, spawned, validIndices.Size());
+        totalSpawned += spawned;
     }
 
-    URHO3D_LOGINFOF("Created %u animals (5 rabbits, 8 deer, 3 foxes)", animalNodes_.Size());
+    URHO3D_LOGINFOF("CreateAnimals: %u total animals across %u species",
+        totalSpawned, (unsigned)(sizeof(kSpawnTable) / sizeof(kSpawnTable[0])));
+
+    // Place ALL cavepeople near the campfire — supports multiple NPCs per camp
+    Node* campfire = scene_->GetChild("Campfire", true);
+    if (campfire && terrain_)
+    {
+        Vector3 firePos = campfire->GetPosition();
+        // Find the inland direction (highest neighbouring terrain)
+        Vector3 bestDir;
+        float bestH = -999.0f;
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            for (int dz = -1; dz <= 1; ++dz)
+            {
+                if (dx == 0 && dz == 0) continue;
+                Vector3 probe = firePos + Vector3((float)dx * 6.0f, 0.0f, (float)dz * 6.0f);
+                float h = terrain_->GetHeight(probe);
+                if (h > bestH) { bestH = h; bestDir = Vector3((float)dx, 0.0f, (float)dz).Normalized(); }
+            }
+        }
+
+        // Gather all caveman/cavewoman nodes and place them in a semicircle around the fire
+        Vector<Node*> caveNodes;
+        const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
+        for (unsigned i = 0; i < children.Size(); i++)
+        {
+            const String& name = children[i]->GetName();
+            if (name == "CaveMan" || name == "CaveWoman")
+                caveNodes.Push(children[i]);
+        }
+
+        float baseAngle = Atan2(bestDir.z_, bestDir.x_);
+        for (unsigned i = 0; i < caveNodes.Size(); i++)
+        {
+            // Spread NPCs in a semicircle around the campfire, inland side
+            float angle = baseAngle + (float)i * 40.0f - (float)(caveNodes.Size() - 1) * 20.0f;
+            float dist = 3.5f + Random(0.0f, 2.0f);
+            Vector3 npcPos = firePos + Vector3(Cos(angle) * dist, 0.0f, Sin(angle) * dist);
+            npcPos.y_ = terrain_->GetHeight(npcPos);
+
+            caveNodes[i]->SetPosition(npcPos);
+            auto* creature = caveNodes[i]->GetComponent<Creature>();
+            if (creature) creature->SetHomePosition(npcPos);
+            auto* npc = caveNodes[i]->GetComponent<HumanNPC>();
+            if (npc)
+            {
+                npc->SetCampfireNode(campfire);
+                if (cameraNode_)
+                    npc->SetCameraNode(cameraNode_);
+                if (resourceMap_)
+                    npc->SetResourceMap(resourceMap_);
+            }
+        }
+
+        URHO3D_LOGINFOF("Placed %u cavepeople near campfire at (%.1f, %.1f, %.1f)",
+            caveNodes.Size(), firePos.x_, firePos.y_, firePos.z_);
+    }
+}
+
+// ============================================================================
+// Loose Resources — stones, sticks, fiber, berries, flint
+// ============================================================================
+
+void TerrainNode::CreateResourceMap()
+{
+    if (!terrain_ || !scene_)
+        return;
+
+    resourceMap_ = new ResourceMap(context_);
+    ResourceMap::RegisterObject(context_);
+
+    const float waterLevel = 5.0f;
+    resourceMap_->Generate(terrain_, ecosystem_, waterLevel);
+
+    URHO3D_LOGINFOF("ResourceMap: %u resource pixels generated", resourceMap_->GetResourceCount());
+}
+
+void TerrainNode::UpdateResourceStreaming()
+{
+    if (!resourceMap_ || !terrain_ || !scene_ || !cameraNode_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    Vector3 camPos = cameraNode_->GetWorldPosition();
+    const float SPAWN_RADIUS = 150.0f;
+    const float DESPAWN_RADIUS = 180.0f;
+    const float SPAWN_RADIUS_SQ = SPAWN_RADIUS * SPAWN_RADIUS;
+    const float DESPAWN_RADIUS_SQ = DESPAWN_RADIUS * DESPAWN_RADIUS;
+
+    // Despawn nodes beyond radius
+    Vector<unsigned> toRemove;
+    for (auto it = activePickupNodes_.Begin(); it != activePickupNodes_.End(); ++it)
+    {
+        Node* node = it->second_;
+        if (!node)
+        {
+            toRemove.Push(it->first_);
+            continue;
+        }
+        Vector3 diff = node->GetWorldPosition() - camPos;
+        diff.y_ = 0.f;
+        if (diff.LengthSquared() > DESPAWN_RADIUS_SQ)
+        {
+            node->Remove();
+            toRemove.Push(it->first_);
+        }
+    }
+    for (unsigned key : toRemove)
+        activePickupNodes_.Erase(key);
+
+    // Spawn new nodes within radius — scan resource map pixels in camera area
+    // Convert camera world pos to pixel bounds
+    const int MAP_SIZE = ResourceMap::MAP_SIZE;
+    float pixelsPerMeterX = (float)MAP_SIZE / (resourceMap_->GetImage() ? 1.f : 1.f);
+
+    // Use terrain bounds from the resourceMap's image
+    Image* img = resourceMap_->GetImage();
+    if (!img)
+        return;
+
+    // Get terrain extents from the resource map's coordinate system
+    Vector3 spacing = terrain_->GetSpacing();
+    IntVector2 numVerts = terrain_->GetNumVertices();
+    float terrainSizeX = (float)(numVerts.x_ - 1) * spacing.x_;
+    float terrainSizeZ = (float)(numVerts.y_ - 1) * spacing.z_;
+    float originX = -terrainSizeX * 0.5f;
+    float originZ = -terrainSizeZ * 0.5f;
+
+    // Pixel bounds for the spawn region
+    float minWX = camPos.x_ - SPAWN_RADIUS;
+    float maxWX = camPos.x_ + SPAWN_RADIUS;
+    float minWZ = camPos.z_ - SPAWN_RADIUS;
+    float maxWZ = camPos.z_ + SPAWN_RADIUS;
+
+    int minPx = Clamp((int)(((minWX - originX) / terrainSizeX) * MAP_SIZE), 0, MAP_SIZE - 1);
+    int maxPx = Clamp((int)(((maxWX - originX) / terrainSizeX) * MAP_SIZE), 0, MAP_SIZE - 1);
+    int minPz = Clamp((int)(((minWZ - originZ) / terrainSizeZ) * MAP_SIZE), 0, MAP_SIZE - 1);
+    int maxPz = Clamp((int)(((maxWZ - originZ) / terrainSizeZ) * MAP_SIZE), 0, MAP_SIZE - 1);
+
+    // Model/material lookup per resource type
+    struct VisualDef
+    {
+        const char* modelPath;
+        const char* matPath;
+        Vector3 scale;
+        const char* name;
+    };
+    static const VisualDef visuals[] = {
+        { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 0 = NONE
+        { "Models/Nature/stump_round.mdl",      "Models/Nature/Materials/_defaultMat.xml",        Vector3(0.3f, 0.3f, 0.3f),  "Loose Stone" },   // 1 = STONE (no rock model — stump placeholder)
+        { "Models/Nature/log.mdl",              "Models/Nature/Materials/woodBark.xml",            Vector3(0.3f, 0.3f, 0.3f),  "Fallen Stick" },  // 2 = STICK
+        { "Models/Nature/fern_02.mdl",          "Models/Nature/Materials/leafsGreen.xml",         Vector3(0.3f, 0.4f, 0.3f),  "Plant Fiber" },   // 3 = FIBER
+        { "Models/Nature/stump_round.mdl",      "Models/Nature/Materials/_defaultMat.xml",        Vector3(0.5f, 0.4f, 0.5f),  "Clay" },          // 4 = CLAY (no pebble model — stump placeholder)
+        { "Models/Nature/stump_roundDetailed.mdl", "Models/Nature/Materials/_defaultMat.xml",     Vector3(0.2f, 0.2f, 0.2f),  "Flint" },         // 5 = FLINT (no rock model — stump placeholder)
+        { "Models/Nature/BushBerries_1.mdl",    "Materials/Berry.xml",                            Vector3(0.2f, 0.2f, 0.2f),  "Berries" },       // 6 = BERRIES
+        { "Models/Nature/log.mdl",              "Models/Nature/Materials/woodBark.xml",            Vector3(0.4f, 0.4f, 0.4f),  "Log" },           // 7 = LOG
+        { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 8 = MUSHROOM (placeholder)
+        { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 9 = HERB (placeholder)
+        { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 10 = SHELL (placeholder)
+        { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 11 = REEDS (placeholder)
+        { "Models/Nature/log.mdl",              "Models/Nature/Materials/woodBark.xml",            Vector3(0.35f, 0.35f, 0.35f), "Softwood" },    // 12 = SOFTWOOD
+        { "Models/Nature/log.mdl",              "Models/Nature/Materials/woodBark.xml",            Vector3(0.45f, 0.45f, 0.45f), "Hardwood" },    // 13 = HARDWOOD
+    };
+    static const int NUM_VISUALS = sizeof(visuals) / sizeof(visuals[0]);
+
+    unsigned spawned = 0;
+    const unsigned MAX_SPAWN_PER_FRAME = 50;
+
+    for (int pz = minPz; pz <= maxPz && spawned < MAX_SPAWN_PER_FRAME; ++pz)
+    {
+        for (int px = minPx; px <= maxPx && spawned < MAX_SPAWN_PER_FRAME; ++px)
+        {
+            // Unique key from pixel coords
+            unsigned key = (unsigned)pz * MAP_SIZE + (unsigned)px;
+            if (activePickupNodes_.Contains(key))
+                continue;
+
+            unsigned pixel = img->GetPixelInt(px, pz);
+            unsigned char type = (unsigned char)(pixel & 0xFF);
+            if (type == RES_NONE || type >= NUM_VISUALS)
+                continue;
+            // Skip placeholder slots (Future types in the visuals array have nullptr model paths)
+            if (!visuals[type].modelPath)
+                continue;
+
+            unsigned char qty = (unsigned char)((pixel >> 8) & 0xFF);
+            unsigned char flags = (unsigned char)((pixel >> 24) & 0xFF);
+            if (qty == 0 || (flags & RFLAG_DEPLETED))
+                continue;
+
+            // Convert pixel to world position
+            float wx = originX + ((float)px + 0.5f) / (float)MAP_SIZE * terrainSizeX;
+            float wz = originZ + ((float)pz + 0.5f) / (float)MAP_SIZE * terrainSizeZ;
+
+            // Distance check
+            float dx = wx - camPos.x_;
+            float dz = wz - camPos.z_;
+            if (dx * dx + dz * dz > SPAWN_RADIUS_SQ)
+                continue;
+
+            float wy = terrain_->GetHeight(Vector3(wx, 0.f, wz));
+
+            const VisualDef& vis = visuals[type];
+            Model* mdl = cache->GetResource<Model>(vis.modelPath);
+            if (!mdl)
+                mdl = cache->GetResource<Model>("Models/Box.mdl");
+
+            Node* node = scene_->CreateTemporaryChild(vis.name, LOCAL);
+            node->SetPosition(Vector3(wx, wy, wz));
+
+            // Variant-based scale variation
+            unsigned char variant = (unsigned char)((pixel >> 16) & 0xFF);
+            float sv = 0.8f + (float)variant / 255.f * 0.4f;
+            node->SetScale(vis.scale * sv);
+
+            auto* sm = node->CreateComponent<StaticModel>();
+            sm->SetModel(mdl);
+            Material* mat = cache->GetResource<Material>(vis.matPath);
+            if (mat)
+                sm->SetMaterial(mat);
+            sm->SetCastShadows(false);
+
+            auto* body = node->CreateComponent<RigidBody>();
+            body->SetCollisionLayer(2);
+            body->SetKinematic(true);
+            body->SetMass(0.f);
+            auto* shape = node->CreateComponent<CollisionShape>();
+            shape->SetSphere(vis.scale.x_ * sv * 2.5f);
+
+            int itemId = ResourceTypeToItemId((ResourceType)type);
+            node->SetVar("ItemID", itemId);
+            node->SetVar("ItemQty", (int)qty);
+
+            auto* pickup = node->CreateComponent<ResourcePickup>();
+            pickup->sourceName_ = vis.name;
+            pickup->itemId_ = itemId;
+            pickup->quantity_ = (int)qty;
+
+            activePickupNodes_[key] = node;
+            ++spawned;
+        }
+    }
+}
+
+// ============================================================================
+// Pickup interaction — called from left-click raycast
+// ============================================================================
+
+void TerrainNode::TryPickupAtCursor(const Ray& pickRay)
+{
+    if (!scene_)
+        return;
+
+    auto* physicsWorld = scene_->GetComponent<PhysicsWorld>();
+    if (!physicsWorld)
+        return;
+
+    Vector<PhysicsRaycastResult> results;
+    physicsWorld->Raycast(results, pickRay, 300.f);
+
+    for (unsigned i = 0; i < results.Size(); ++i)
+    {
+        Node* node = results[i].body_->GetNode();
+        if (!node)
+            continue;
+
+        auto* pickup = node->GetComponent<ResourcePickup>();
+        if (!pickup)
+            continue;
+
+        // Range check — character in possession mode, else camera
+        Node* refNode = characterNode_ ? characterNode_ : cameraNode_;
+        if (refNode && !pickup->IsInRange(refNode))
+        {
+            URHO3D_LOGINFOF("Too far to pick up %s", pickup->sourceName_.CString());
+            return;
+        }
+
+        // Send server-authoritative harvest request with world position + resource type
+        SendResourceHarvest(node->GetWorldPosition(), pickup->itemId_);
+        return;
+    }
+}
+
+// ============================================================================
+// Resource Map — server authority message handlers
+// ============================================================================
+
+void TerrainNode::HandleResourceDepleted(MemoryBuffer& msg)
+{
+    float worldX = msg.ReadFloat();
+    float worldZ = msg.ReadFloat();
+    unsigned char newQty = msg.ReadU8();
+    unsigned char resourceType = msg.ReadU8();
+
+    if (!resourceMap_ || !resourceMap_->GetImage())
+        return;
+
+    // Update the local resource map image to match the server's state
+    Image* img = resourceMap_->GetImage();
+    Vector3 spacing = terrain_->GetSpacing();
+    IntVector2 numVerts = terrain_->GetNumVertices();
+    float terrainSizeX = (float)(numVerts.x_ - 1) * spacing.x_;
+    float terrainSizeZ = (float)(numVerts.y_ - 1) * spacing.z_;
+    float originX = -terrainSizeX * 0.5f;
+    float originZ = -terrainSizeZ * 0.5f;
+
+    int px = Clamp((int)(((worldX - originX) / terrainSizeX) * (float)ResourceMap::MAP_SIZE), 0, ResourceMap::MAP_SIZE - 1);
+    int pz = Clamp((int)(((worldZ - originZ) / terrainSizeZ) * (float)ResourceMap::MAP_SIZE), 0, ResourceMap::MAP_SIZE - 1);
+
+    unsigned pixel = img->GetPixelInt(px, pz);
+    unsigned char flags = (unsigned char)((pixel >> 24) & 0xFF);
+    unsigned char variant = (unsigned char)((pixel >> 16) & 0xFF);
+
+    if (newQty == 0 && !(flags & RFLAG_RESPAWNABLE))
+    {
+        // Permanent depletion — clear the pixel entirely
+        img->SetPixelInt(px, pz, 0);
+    }
+    else
+    {
+        if (newQty == 0)
+            flags |= RFLAG_DEPLETED;
+        else
+            flags &= ~RFLAG_DEPLETED;  // respawn clears depleted
+
+        img->SetPixelInt(px, pz,
+            (unsigned)resourceType | ((unsigned)newQty << 8) |
+            ((unsigned)variant << 16) | ((unsigned)flags << 24));
+    }
+
+    // Remove the active pickup node at this pixel (it'll respawn from streaming if qty > 0)
+    unsigned key = (unsigned)pz * ResourceMap::MAP_SIZE + (unsigned)px;
+    auto it = activePickupNodes_.Find(key);
+    if (it != activePickupNodes_.End())
+    {
+        if (it->second_)
+            it->second_->Remove();
+        activePickupNodes_.Erase(it);
+    }
 }
 
 // ============================================================================
@@ -6325,31 +9958,48 @@ void TerrainNode::UpdateSeasonalEffects()
         if (terrainMat)
             terrainMat->SetShaderParameter("MatDiffColor", cachedTerrainTint_);
 
-        // Grass seasonal tint — via GrassSystem
-        if (grassSystem_)
+        // QUARANTINED — grass not rendering
+        // if (grassSystem_)
+        // {
+        //     Color grassSpring(0.5f, 0.85f, 0.35f, 1.0f);
+        //     Color grassSummer(0.75f, 0.8f, 0.3f, 1.0f);
+        //     Color grassAutumn(0.7f, 0.55f, 0.2f, 1.0f);
+        //     Color grassWinter(0.5f, 0.45f, 0.3f, 1.0f);
+        //     Color grassTint;
+        //     if (seasonAngle < 0.25f)
+        //         grassTint = grassSpring.Lerp(grassSummer, seasonAngle / 0.25f);
+        //     else if (seasonAngle < 0.5f)
+        //         grassTint = grassSummer.Lerp(grassAutumn, (seasonAngle - 0.25f) / 0.25f);
+        //     else if (seasonAngle < 0.75f)
+        //         grassTint = grassAutumn.Lerp(grassWinter, (seasonAngle - 0.5f) / 0.25f);
+        //     else
+        //         grassTint = grassWinter.Lerp(grassSpring, (seasonAngle - 0.75f) / 0.25f);
+        //     grassSystem_->SetSeasonalTint(grassTint);
+        // }
+
+        // Ecosystem seasonal growth multiplier: spring 1.5, summer 1.0, autumn 0.5, winter 0.0
+        if (ecosystem_)
         {
-            Color grassSpring(0.5f, 0.85f, 0.35f, 1.0f);
-            Color grassSummer(0.75f, 0.8f, 0.3f, 1.0f);
-            Color grassAutumn(0.7f, 0.55f, 0.2f, 1.0f);
-            Color grassWinter(0.5f, 0.45f, 0.3f, 1.0f);
-            Color grassTint;
+            float ecoMult;
             if (seasonAngle < 0.25f)
-                grassTint = grassSpring.Lerp(grassSummer, seasonAngle / 0.25f);
+                ecoMult = Lerp(1.5f, 1.0f, seasonAngle / 0.25f);       // spring → summer
             else if (seasonAngle < 0.5f)
-                grassTint = grassSummer.Lerp(grassAutumn, (seasonAngle - 0.25f) / 0.25f);
+                ecoMult = Lerp(1.0f, 0.5f, (seasonAngle - 0.25f) / 0.25f);  // summer → autumn
             else if (seasonAngle < 0.75f)
-                grassTint = grassAutumn.Lerp(grassWinter, (seasonAngle - 0.5f) / 0.25f);
+                ecoMult = Lerp(0.5f, 0.0f, (seasonAngle - 0.5f) / 0.25f);   // autumn → winter
             else
-                grassTint = grassWinter.Lerp(grassSpring, (seasonAngle - 0.75f) / 0.25f);
-            grassSystem_->SetSeasonalTint(grassTint);
+                ecoMult = Lerp(0.0f, 1.5f, (seasonAngle - 0.75f) / 0.25f);  // winter → spring
+            ecosystem_->SetSeasonMultiplier(ecoMult);
         }
+
+        // Forest seasonal color — deciduous trees change, evergreens stay green
+        UpdateTreeSeason(seasonAngle);
     }
 
-    // Water color
+    // Water color (shared material across all water tiles)
     if (waterNode_)
     {
-        auto* sm = waterNode_->GetComponent<StaticModel>();
-        auto* waterMat = sm ? sm->GetMaterial() : nullptr;
+        auto* waterMat = GetSubsystem<ResourceCache>()->GetResource<Material>("Materials/Water.xml");
         if (waterMat)
         {
             Color summerShallow(0.2f, 0.6f, 0.5f);
@@ -6362,6 +10012,33 @@ void TerrainNode::UpdateSeasonalEffects()
 
             waterMat->SetShaderParameter("ShallowColor", cachedShallowColor_);
             waterMat->SetShaderParameter("DeepColor", cachedDeepColor_);
+
+            // Moon specular glistening — direction and intensity
+            if (moonNode_ && cachedMoonAlt_ > 0.0f)
+            {
+                Vector3 moonDir = (moonNode_->GetWorldPosition() - waterNode_->GetWorldPosition()).Normalized();
+                waterMat->SetShaderParameter("MoonDir", moonDir);
+                waterMat->SetShaderParameter("MoonColor", Vector3(0.5f, 0.55f, 0.8f));
+                waterMat->SetShaderParameter("MoonSpecular", moonOcclusionFade_);
+            }
+            else
+            {
+                waterMat->SetShaderParameter("MoonSpecular", 0.0f);
+            }
+
+            // Sun specular glistening — direction and intensity
+            if (sunNode_ && cachedSunAlt_ > 0.0f)
+            {
+                Vector3 sunDir = (sunNode_->GetWorldPosition() - waterNode_->GetWorldPosition()).Normalized();
+                float sunSpec = Clamp((cachedSunAlt_ - 2.0f) / 10.0f, 0.0f, 1.0f);
+                waterMat->SetShaderParameter("SunDir", sunDir);
+                waterMat->SetShaderParameter("SunColor", Vector3(1.0f, 0.92f, 0.8f));
+                waterMat->SetShaderParameter("SunSpecular", sunSpec);
+            }
+            else
+            {
+                waterMat->SetShaderParameter("SunSpecular", 0.0f);
+            }
         }
     }
 
@@ -6384,6 +10061,122 @@ void TerrainNode::UpdateSeasonalEffects()
             skyboxMat_->SetTexture(TU_SPECULAR, seasonSkyboxes_[nextSeason]);
         }
         skyboxMat_->SetShaderParameter("SeasonBlend", blend);
+
+        // Weather skybox override — cloudCover drives which skybox shows
+        // 0.0-0.3 = clear, 0.3-0.7 = seasonal (no override), 0.7-0.85 = overcast, 0.85+ = storm
+        float cc = weather_.cloudCover;
+        if (cc > 0.7f && weatherSkyboxes_[1])
+        {
+            if (cc > 0.85f && weatherSkyboxes_[2])
+            {
+                // Storm: blend overcast→storm between 0.85 and 1.0
+                float stormBlend = Clamp((cc - 0.85f) / 0.15f, 0.0f, 1.0f);
+                skyboxMat_->SetTexture(TU_DIFFUSE, weatherSkyboxes_[1]);
+                skyboxMat_->SetTexture(TU_SPECULAR, weatherSkyboxes_[2]);
+                skyboxMat_->SetShaderParameter("SeasonBlend", stormBlend);
+            }
+            else
+            {
+                // Overcast: blend seasonal→overcast between 0.7 and 0.85
+                float overcastBlend = Clamp((cc - 0.7f) / 0.15f, 0.0f, 1.0f);
+                skyboxMat_->SetTexture(TU_SPECULAR, weatherSkyboxes_[1]);
+                skyboxMat_->SetShaderParameter("SeasonBlend", overcastBlend);
+            }
+        }
+        else if (cc < 0.3f && weatherSkyboxes_[0])
+        {
+            // Clear: blend seasonal→clear between 0.3 and 0.0
+            float clearBlend = Clamp((0.3f - cc) / 0.3f, 0.0f, 1.0f);
+            skyboxMat_->SetTexture(TU_SPECULAR, weatherSkyboxes_[0]);
+            skyboxMat_->SetShaderParameter("SeasonBlend", clearBlend);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Drought Client Visuals — derived from weather state, no server message
+// ---------------------------------------------------------------------------
+
+void TerrainNode::UpdateDroughtVisuals(float timeStep)
+{
+    // Drought builds when precipitation is low during warm seasons, decays when rain falls
+    float seasonAngle = fmodf((dayOfYear_ - 81) / 365.0f + 1.0f, 1.0f);
+    bool warmSeason = (seasonAngle > 0.1f && seasonAngle < 0.6f);  // spring through mid-autumn
+    float precip = weather_.precipitation;
+
+    if (warmSeason && precip < 0.05f)
+        droughtSeverity_ = Min(1.0f, droughtSeverity_ + 0.002f * timeStep);  // slow buildup
+    else if (precip > 0.3f)
+        droughtSeverity_ = Max(0.0f, droughtSeverity_ - 0.02f * timeStep);   // rain breaks drought fast
+    else
+        droughtSeverity_ = Max(0.0f, droughtSeverity_ - 0.005f * timeStep);  // gradual recovery
+
+    if (droughtSeverity_ < 0.01f)
+    {
+        // No drought — clean up dust if present
+        if (dustEmitterNode_)
+        {
+            dustEmitterNode_->Remove();
+            dustEmitterNode_ = nullptr;
+        }
+        return;
+    }
+
+    // --- Terrain tint: shift toward brown/ochre ---
+    if (terrain_)
+    {
+        auto* terrainMat = terrain_->GetMaterial();
+        if (terrainMat)
+        {
+            Color droughtTint(0.85f + 0.15f * droughtSeverity_,
+                              0.75f - 0.1f * droughtSeverity_,
+                              0.55f - 0.15f * droughtSeverity_);
+            Color blended = cachedTerrainTint_.Lerp(droughtTint, droughtSeverity_);
+            terrainMat->SetShaderParameter("MatDiffColor", blended);
+        }
+    }
+
+    // --- Water level recession: up to 1.5m drop at max severity ---
+    if (waterNode_)
+    {
+        float drop = droughtSeverity_ * 1.5f;
+        waterNode_->SetPosition(Vector3(0.0f, baseWaterY_ - drop, 0.0f));
+    }
+
+    // --- Dust particles at severity > 0.5 ---
+    if (droughtSeverity_ > 0.5f && cameraNode_)
+    {
+        if (!dustEmitterNode_)
+        {
+            dustEmitterNode_ = scene_->CreateChild("DroughtDust");
+            auto* cache = GetSubsystem<ResourceCache>();
+            auto* dustEffect = cache->GetResource<ParticleEffect>("Particle/Dust.xml");
+            if (!dustEffect)
+                dustEffect = cache->GetResource<ParticleEffect>("Particle/Smoke.xml");
+            if (dustEffect)
+            {
+                auto* emitter = dustEmitterNode_->CreateComponent<ParticleEmitter>();
+                SharedPtr<ParticleEffect> local = dustEffect->Clone();
+                local->SetMinParticleSize(Vector2(0.5f, 0.5f));
+                local->SetMaxParticleSize(Vector2(1.5f, 1.5f));
+                emitter->SetEffect(local);
+            }
+        }
+
+        // Follow camera, emit more at higher severity
+        dustEmitterNode_->SetWorldPosition(cameraNode_->GetWorldPosition() + Vector3(0, -2, 0));
+        auto* emitter = dustEmitterNode_->GetComponent<ParticleEmitter>();
+        if (emitter && emitter->GetEffect())
+        {
+            float intensity = (droughtSeverity_ - 0.5f) * 2.0f;  // 0..1 over severity 0.5..1.0
+            emitter->GetEffect()->SetMinEmissionRate(1.0f + intensity * 4.0f);
+            emitter->GetEffect()->SetMaxEmissionRate(3.0f + intensity * 8.0f);
+        }
+    }
+    else if (droughtSeverity_ <= 0.5f && dustEmitterNode_)
+    {
+        dustEmitterNode_->Remove();
+        dustEmitterNode_ = nullptr;
     }
 }
 
@@ -6463,8 +10256,12 @@ void TerrainNode::UpdateAtmosphere(float sunAltitude)
     }
     if (moonLight_)
     {
-        moonLight_->SetColor(moonColor);
-        moonLight_->SetEnabled(moonEnabled);
+        // Phase 2 lunar cycle: brightness scales with phase (full=1.0, new=0.0)
+        float moonPhase = moonAge_ / 29.53f;
+        float moonIllumination = (1.0f - cosf(moonPhase * 2.0f * M_PI)) * 0.5f;
+        Color phasedColor = moonColor * moonIllumination;
+        moonLight_->SetColor(phasedColor);
+        moonLight_->SetEnabled(moonEnabled && moonIllumination > 0.05f);
     }
 
     // Height fog: auto (time-based) unless user overrode with H key
@@ -6627,6 +10424,7 @@ void TerrainNode::UpdateWeather(float timeStep)
     }
 
     ApplyWeatherToScene();
+    UpdateDroughtVisuals(timeStep);
 }
 
 // ============================================================================
@@ -6784,7 +10582,7 @@ void TerrainNode::ApplyWeatherToScene()
     {
         float baseIntensity = 0.6f;  // default god ray intensity
         float weatherIntensity = baseIntensity * (1.0f - weather_.cloudCover * 0.7f);
-        renderPath_->SetShaderParameter("GodRayIntensity", weatherIntensity);
+        SetShaderParamCached("GodRayIntensity", weatherIntensity);
     }
 }
 
@@ -6923,6 +10721,65 @@ apply:
 }
 
 // ============================================================================
+// Weather Phase 4: Rainfall Accumulation
+// ============================================================================
+
+void TerrainNode::UpdateRainfallAccumulation()
+{
+    if (!rainfallMap_ || !terrain_)
+        return;
+
+    // Terrain world bounds for coordinate mapping
+    const Vector3& spacing = terrain_->GetSpacing();
+    int hmSize = terrain_->GetHeightMap() ? terrain_->GetHeightMap()->GetWidth() : 1025;
+    float terrainWorldSize = (float)(hmSize - 1) * spacing.x_;
+    Vector3 terrainPos = terrain_->GetNode()->GetWorldPosition();
+    float originX = terrainPos.x_ - terrainWorldSize * 0.5f;
+    float originZ = terrainPos.z_ - terrainWorldSize * 0.5f;
+
+    unsigned char* data = rainfallMap_->GetData();
+    int stride = RAINFALL_MAP_SIZE * 4;  // RGBA
+
+    // Rainfall deposit rate per update tick (tunable)
+    float depositRate = 2.0f;   // units per tick when raining
+    float drainRate = 0.5f;     // soil moisture drain per tick (evaporation)
+    float surfaceDrainRate = 1.0f;  // surface water evaporation per tick
+
+    for (int z = 0; z < RAINFALL_MAP_SIZE; ++z)
+    {
+        for (int x = 0; x < RAINFALL_MAP_SIZE; ++x)
+        {
+            // Map pixel to world position
+            float worldX = originX + ((float)x / (float)(RAINFALL_MAP_SIZE - 1)) * terrainWorldSize;
+            float worldZ = originZ + ((float)z / (float)(RAINFALL_MAP_SIZE - 1)) * terrainWorldSize;
+
+            // Sample cloud density at this position
+            float density = SampleCloudDensity(Vector3(worldX, 0.0f, worldZ));
+
+            int idx = (z * RAINFALL_MAP_SIZE + x) * 4;
+            float surfaceWater = (float)data[idx];      // R
+            float soilMoisture = (float)data[idx + 1];  // G
+
+            // Rainfall: deposit when cloud density > 0.6
+            if (density > 0.6f)
+            {
+                float rainIntensity = (density - 0.6f) / 0.4f;  // 0-1 within rain range
+                float deposit = depositRate * rainIntensity;
+                surfaceWater = Min(surfaceWater + deposit, 255.0f);
+                soilMoisture = Min(soilMoisture + deposit * 0.5f, 255.0f);
+            }
+
+            // Drain: surface water evaporates, soil moisture drains
+            surfaceWater = Max(surfaceWater - surfaceDrainRate, 0.0f);
+            soilMoisture = Max(soilMoisture - drainRate, 0.0f);
+
+            data[idx]     = (unsigned char)surfaceWater;
+            data[idx + 1] = (unsigned char)soilMoisture;
+        }
+    }
+}
+
+// ============================================================================
 // Melbourne Time (via OS timezone database)
 // ============================================================================
 
@@ -6963,13 +10820,267 @@ void TerrainNode::SyncMelbourneTime()
 // Update
 // ============================================================================
 
+void TerrainNode::HandleBeginFrame(StringHash eventType, VariantMap& eventData)
+{
+    // Deferred scene swap — runs BEFORE Scene::Update so old scene's components
+    // never tick with stale pointers
+    if (!pendingScene_)
+        return;
+
+    // Swap scene AND viewport atomically
+    scene_ = pendingScene_;
+    pendingScene_.Reset();
+    {
+        auto* renderer = GetSubsystem<Renderer>();
+        if (renderer && renderer->GetNumViewports() > 0)
+        {
+            auto* viewport = renderer->GetViewport(0);
+            if (viewport)
+                viewport->SetScene(scene_);
+        }
+    }
+
+    SetupSceneBindings();
+
+    // Update reflection camera with loaded water plane
+    if (waterNode_ && reflectionCameraNode_)
+    {
+        auto* reflCam = reflectionCameraNode_->GetComponent<Camera>();
+        if (reflCam)
+        {
+            reflCam->SetReflectionPlane(waterPlane_);
+            reflCam->SetClipPlane(waterClipPlane_);
+        }
+    }
+    if (waterNode_ && renderPath_)
+        renderPath_->SetShaderParameter("WaterLevel", waterNode_->GetWorldPosition().y_);
+
+    // SetupSceneBindings() already recreated all LOCAL entities, campfire UI, etc.
+
+    // Recreate minimap camera (UI-bound, not in SetupSceneBindings)
+    if (minimap_)
+    {
+        minimapCameraNode_ = scene_->CreateTemporaryChild("MinimapCamera", LOCAL);
+        auto* minimapCam = minimapCameraNode_->CreateComponent<Camera>();
+        minimapCam->SetOrthographic(true);
+        IntVector2 numPatches = terrain_ ? terrain_->GetNumPatches() : IntVector2(16, 16);
+        float terrainWorldSize = terrain_ ? numPatches.x_ * terrain_->GetSpacing().x_ * terrain_->GetPatchSize() : 2048.0f;
+        minimapCam->SetOrthoSize(terrainWorldSize);
+        minimapCam->SetFarClip(500.0f);
+        minimapCam->SetNearClip(1.0f);
+        minimapCam->SetFlipVertical(true);
+        Vector3 terrainCenter = terrain_ ? terrain_->GetNode()->GetWorldPosition() : Vector3::ZERO;
+        minimapCameraNode_->SetPosition(Vector3(terrainCenter.x_, 200.0f, terrainCenter.z_));
+        minimapCameraNode_->SetRotation(Quaternion(90.0f, 0.0f, 0.0f));
+        RefreshMinimap();
+    }
+
+    // Restore camera from scene Vars
+    possessing_ = false;
+    characterNode_ = nullptr;
+    clientObjectID_ = 0;
+    if (cameraNode_ && scene_)
+    {
+        const Variant& cx = scene_->GetVar("CameraX");
+        const Variant& cy = scene_->GetVar("CameraY");
+        const Variant& cz = scene_->GetVar("CameraZ");
+        Vector3 camPos(cx.IsEmpty() ? 64.0f : cx.GetFloat(),
+                       cy.IsEmpty() ? 60.0f : cy.GetFloat(),
+                       cz.IsEmpty() ? 64.0f : cz.GetFloat());
+        float minY = 20.0f;
+        if (terrain_)
+            minY = Max(minY, terrain_->GetHeight(camPos) + 5.0f);
+        if (waterNode_)
+            minY = Max(minY, waterNode_->GetWorldPosition().y_ + 5.0f);
+        camPos.y_ = Max(camPos.y_, minY);
+        cameraNode_->SetWorldPosition(camPos);
+        yaw_ = scene_->GetVar("CameraYaw").GetFloat();
+        pitch_ = scene_->GetVar("CameraPitch").GetFloat();
+        cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
+        const Variant& cm = scene_->GetVar("CameraMode");
+        cameraMode_ = cm.IsEmpty() ? CAM_GOD : (CameraMode)cm.GetI32();
+    }
+    else
+        cameraMode_ = CAM_GOD;
+
+    // Re-init mouse mode
+    menuOpen_ = false;
+    auto* input = GetSubsystem<Input>();
+    if (input)
+    {
+        GetSubsystem<UI>()->SetFocusElement(nullptr);
+        input->SetMouseMode(MM_RELATIVE);
+        input->SetMouseVisible(false);
+        useMouseMode_ = MM_RELATIVE;
+    }
+
+    URHO3D_LOGINFO("Scene swap complete");
+}
+
 void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
     using namespace Update;
     float timeStep = eventData[P_TIMESTEP].GetFloat();
 
-    // Rebuild fish spatial hash once per frame (O(N) insert, enables O(1) neighbor queries)
-    RebuildFishSpatialHash();
+    // Scan scene for replicated creature nodes that need components attached.
+    // E_NODEADDED fires for the first batch (which gets Clear'd), so we also
+    // scan periodically to catch post-Clear nodes.
+    if (loggedIn_ && scene_)
+    {
+        const auto& children = scene_->GetChildren();
+        for (unsigned i = 0; i < children.Size(); ++i)
+        {
+            Node* child = children[i];
+            if (!child || child->IsTemporary())
+                continue;
+            // Only process replicated nodes (low IDs)
+            if (child->GetID() >= 0x1000000)
+                continue;
+            // Already has a creature component?
+            if (child->GetDerivedComponent<LandAnimal>(false))
+                continue;
+            // Check if it's a creature by name
+            const Variant& creatureVar = child->GetVar("CreatureId");
+            if (creatureVar.IsEmpty())
+                continue;
+            int creatureId = creatureVar.GetI32();
+            if (creatureId <= 0)
+                continue;
+            // Attach creature component (same logic as HandleNodeAdded)
+            AttachCreatureComponent(child, creatureId);
+        }
+
+        // Hide orphaned replicated nodes that have an AnimatedModel but no
+        // creature component after a grace period — these render with broken
+        // animations and are invisible to visibility toggles and raycasts.
+        // Grace period avoids hiding nodes that just haven't been attached yet.
+        for (unsigned i = 0; i < children.Size(); ++i)
+        {
+            Node* child = children[i];
+            if (!child || child->IsTemporary())
+                continue;
+            if (child->GetID() >= 0x1000000)
+                continue;
+            if (child->GetDerivedComponent<LandAnimal>(false))
+                continue;
+            // Skip nodes with CreatureId — attachment scan above will handle them
+            const Variant& creatureVar = child->GetVar("CreatureId");
+            if (!creatureVar.IsEmpty() && creatureVar.GetI32() > 0)
+                continue;
+            auto* mdl = child->GetComponent<AnimatedModel>();
+            if (mdl && mdl->IsEnabled())
+            {
+                URHO3D_LOGWARNINGF("Hiding orphaned replicated AnimatedModel node '%s' (id=%u) — no creature component, no CreatureId",
+                    child->GetName().CString(), child->GetID());
+                mdl->SetEnabled(false);
+            }
+        }
+    }
+
+    // Drive replicated creature logic + apply visibility toggles.
+    for (unsigned i = 0; i < replicatedCreatures_.Size(); ++i)
+    {
+        Creature* c = replicatedCreatures_[i];
+        if (!c || !c->GetNode())
+            continue;
+
+        // Apply per-species visibility
+        int cid = c->GetCreatureId();
+        bool vis = true;
+        switch (cid)
+        {
+        case  1: vis = rabbitVisible_;    break;
+        case  2: vis = deerVisible_;      break;
+        case  3: vis = foxVisible_;       break;
+        case  4: vis = stagVisible_;      break;
+        case  5: vis = wolfVisible_;      break;
+        case  6: vis = bullVisible_;      break;
+        case  7: vis = cowVisible_;       break;
+        case  9: vis = donkeyVisible_;    break;
+        case 10: vis = horseVisible_;     break;
+        case 11: vis = alpacaVisible_;    break;
+        case 12: vis = huskyVisible_;     break;
+        case 13: vis = shibaInuVisible_;  break;
+        case 20: vis = caveManVisible_;   break;
+        case 21: vis = caveWomanVisible_; break;
+        }
+        // Use view mask instead of SetEnabled — replication overrides enabled state.
+        auto* mdl = c->GetNode()->GetComponent<AnimatedModel>(true);
+        if (mdl)
+            mdl->SetViewMask(vis ? 0x7FFFFFFF : 0);
+
+        if (vis)
+            c->Update(timeStep);
+    }
+
+    // ProfilerTimeline frame — first real call site of the Phase 1 infrastructure.
+    // RAII scope opens a frame on construction, closes on every exit path.
+    // Inner sections use URHO3D_TIMELINE_EVENT_CAT scopes so the existing
+    // HiresTimer-based stat logging stays untouched (different consumers).
+    auto* graphicsSubsystem_pt = GetSubsystem<Graphics>();
+    ProfilerTimeline* timeline = graphicsSubsystem_pt ? graphicsSubsystem_pt->GetProfilerTimeline() : nullptr;
+    ProfilerTimelineFrameScope _ptl_frame(timeline);
+
+    // --- Real wall-clock frame profiling (prints every 120 frames) ---
+    static HiresTimer frameTimer;
+    static long long accumFrame = 0, accumCelestial = 0, accumFish = 0, accumContext = 0;
+    static long long accumRipple = 0, accumOofo = 0, accumMinimap = 0, accumLogic = 0;
+    static int profileFrameCount = 0;
+    long long frameStart = 0;
+    HiresTimer sectionTimer;
+    if (loggedIn_)
+    {
+        frameStart = frameTimer.GetUSec(true);
+    }
+
+    // Rebuild fish spatial hash every 3 frames — fish don't move fast enough to need 60Hz updates
+    if (fishHashFrameSkip_++ >= 3)
+    {
+        fishHashFrameSkip_ = 0;
+        URHO3D_TIMELINE_EVENT_CAT(timeline, "FishSpatialHash Rebuild", "ai");
+        RebuildFishSpatialHash();
+    }
+
+    // Rebuild land animal spatial hash every 3 frames — same cadence as fish
+    // Land animals are sparser (~20-50) so this is cheaper than the fish hash
+    if ((fishHashFrameSkip_ + 1) % 3 == 0)  // offset by 1 frame from fish hash
+    {
+        URHO3D_TIMELINE_EVENT_CAT(timeline, "LandAnimalHash Rebuild", "ai");
+        RebuildLandAnimalSpatialHash();
+    }
+
+    // Death System Phase 3: age and expire death scent markers.
+    // Cheap (max 16 markers, cap enforced in ScentRegistry::Register), every frame.
+    {
+        URHO3D_TIMELINE_EVENT_CAT(timeline, "ScentRegistry Tick", "ai");
+        ScentRegistry::Tick(timeStep);
+    }
+
+    // Resource map streaming — spawn/despawn pickup nodes within camera radius.
+    // Throttled to 0.5s — pickup visuals don't need 60 Hz updates.
+    resourceStreamTimer_ += timeStep;
+    if (resourceStreamTimer_ >= 0.5f)
+    {
+        resourceStreamTimer_ = 0.f;
+        UpdateResourceStreaming();
+    }
+
+    // Offline-mode connect retry — drives the spawn-and-retry state machine.
+    // No-op when offlineMode_ == OFFLINE_NONE.
+    TickOfflineConnect(timeStep);
+
+    // Resource Chain Phase 2 — trap-check scanner.
+    // Client-driven detection: any of our local creatures within TRAP_CHECK_RADIUS of
+    // a placed trap generates one MSG_TRAP_CHECK round-trip per (trap, creature) pair.
+    // Server (local or remote) does the real attract_range gating + d20 vs holdStrength roll.
+    // Throttled to TRAP_CHECK_INTERVAL because the proximity test is O(traps × animals).
+    trapCheckTimer_ -= timeStep;
+    if (loggedIn_ && trapCheckTimer_ <= 0.0f && !trapNodes_.Empty())
+    {
+        URHO3D_TIMELINE_EVENT_CAT(timeline, "TrapCheck Scan", "ai");
+        trapCheckTimer_ = TRAP_CHECK_INTERVAL;
+        ScanTrapsForCatches();
+    }
 
     // AuthServer LAN discovery (skipped if user chose localhost or already connected)
     discoveryTimer_ -= timeStep;
@@ -6995,15 +11106,10 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         }
     }
 
-    // Deferred avatar node lookup — remote event may arrive before replication delivers the node
-    if (clientObjectID_ && !characterNode_ && scene_)
+    // Phase 5a: no deferred avatar lookup. characterNode_ is set by PossessNPC,
+    // cleared by UnpossessNPC. The clientObjectID_ node is a position tracker only.
+    if (false)
     {
-        characterNode_ = scene_->GetNode(clientObjectID_);
-        if (characterNode_)
-        {
-            cameraMode_ = CAM_CHASE;
-            URHO3D_LOGINFOF("Deferred avatar node lookup succeeded — node %u found, chase camera active", clientObjectID_);
-        }
     }
 
     // Melbourne time sync (every 5 minutes)
@@ -7041,28 +11147,82 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
     else
     {
         // Full world mode
-        if (cameraTransitioning_)
+        if (possessionLerping_)
+            UpdatePossessionLerp(timeStep);
+        else if (cameraTransitioning_)
             UpdateCameraTransition(timeStep);
         else
             MoveCamera(timeStep);
         UpdateCurrentPatchBoundary();
-        if (!oofos_.Empty()) UpdateOOFOs(timeStep);
-        if (minimapCameraNode_) UpdateMinimapCamera();
-        // GPU grass — feed player position as physics shape 0
-        if (grassSystem_ && characterNode_)
+        sectionTimer.GetUSec(true);
+        // UpdateOOFOs spawns its own fleet on staggered timers, so it must run
+        // before oofos_ is populated — the prior !oofos_.Empty() guard deadlocked spawn.
+        if (!oofos_.Empty() || oofosSpawned_ < NUM_OOFOS)
         {
-            Vector3 charPos = characterNode_->GetWorldPosition();
-            grassSystem_->SetPhysicsShape(0, Vector4(charPos.x_, charPos.y_, charPos.z_, 1.5f));
+            URHO3D_TIMELINE_EVENT_CAT(timeline, "OOFO Update", "ai");
+            UpdateOOFOs(timeStep);
+        }
+        accumOofo += sectionTimer.GetUSec(true);
+        if (minimap_)
+        {
+            URHO3D_TIMELINE_EVENT_CAT(timeline, "Minimap", "ui");
+            UpdateMinimapCamera();
+            UpdateMinimapBlips();
+        }
+        {
+            URHO3D_TIMELINE_EVENT_CAT(timeline, "Vitals Panel", "ui");
+            UpdateSelectedVitalsPanel();
+        }
+        accumMinimap += sectionTimer.GetUSec(true);
+        // QUARANTINED — grass not rendering
+        // if (grassSystem_ && characterNode_)
+        // {
+        //     Vector3 charPos = characterNode_->GetWorldPosition();
+        //     grassSystem_->SetPhysicsShape(0, Vector4(charPos.x_, charPos.y_, charPos.z_, 1.5f));
+        // }
+
+        // Water ripples — propagate and feed character splashes
+        sectionTimer.GetUSec(true);
+        if (rippleSystem_)
+        {
+            URHO3D_TIMELINE_EVENT_CAT(timeline, "Water Ripples", "fx");
+            rippleSystem_->Update(timeStep);
+            float waterY = waterNode_ ? waterNode_->GetWorldPosition().y_ : 5.0f;
+            if (characterNode_)
+            {
+                Node* charNode = characterNode_;
+                Vector3 charPos = charNode->GetWorldPosition();
+                if (charPos.y_ < waterY + 0.5f) // at or just above water surface
+                {
+                    auto* body = charNode->GetComponent<RigidBody>();
+                    float speed = body ? body->GetLinearVelocity().Length() : 0.0f;
+                    if (speed > 0.5f)
+                        rippleSystem_->StampImpact(charPos.x_, charPos.z_, 1.5f + speed * 0.3f, speed * 0.15f);
+                }
+            }
+        }
+        accumRipple += sectionTimer.GetUSec(true);
+
+        // Tree LOD — throttled to twice per second
+        treeLodTimer_ += timeStep;
+        if (treeLodTimer_ > 0.5f)
+        {
+            treeLodTimer_ = 0.0f;
+            UpdateTreeLOD();
         }
 
         if (renderPath_)
         {
+            // Performance Phase 4 — these two ride the per-frame update.
+            // MainCameraY changes only when the camera moves vertically;
+            // UnderwaterColor changes only when the fog color shifts (slow,
+            // weather-driven). Cached uploads skip both when static.
             float camY = cameraNode_->GetWorldPosition().y_;
-            renderPath_->SetShaderParameter("MainCameraY", camY);
+            SetShaderParamCached("MainCameraY", camY);
             if (zone_)
             {
                 Color fog = zone_->GetFogColor();
-                renderPath_->SetShaderParameter("UnderwaterColor", Vector3(fog.r_ * 0.3f, fog.g_ * 0.3f, fog.b_ * 0.3f));
+                SetShaderParamCached("UnderwaterColor", Vector3(fog.r_ * 0.3f, fog.g_ * 0.3f, fog.b_ * 0.3f));
             }
 
             // Water droplets — two triggers:
@@ -7121,10 +11281,20 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         buildingSystem_->UpdateGhostPreview(cam, terrain_, 5.0f);
     }
 
-    // Context hint — crosshair raycast for interactable detection
+    // Context hint — crosshair raycast for interactable detection (every 3 frames)
     if (hud_ && !asyncSceneLoading_ && (cameraMode_ == CAM_CHASE || cameraMode_ == CAM_FIRSTPERSON))
-        UpdateContextHintRaycast();
-    else if (hud_)
+    {
+        if (contextHintFrameSkip_++ >= 3)
+        {
+            contextHintFrameSkip_ = 0;
+            UpdateContextHintRaycast();
+        }
+    }
+
+    // Arrow count HUD — update when bow equipped
+    UpdateArrowHUD();
+
+    if (hud_)
         hud_->SetContextHint("");
 
     // Status icons driven by proximity (near-fire, shelter)
@@ -7134,24 +11304,212 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         hud_->SetStatusIcon(ICON_NEAR_FIRE, distToFire < 8.0f);
     }
 
+    // Campfire fuel decay (real wallclock seconds, immune to time scrub)
+    UpdateCampfireFuel(timeStep);
+
+    // Campfire light flicker — lerp brightness and color toward random targets,
+    // then multiply by fireIntensity_ so a dying fire dims to nothing.
+    if (campfireLight_)
+    {
+        fireFadeTimer_ += timeStep;
+        float t = Clamp(fireFadeTimer_ / fireFadeTime_, 0.0f, 1.0f);
+        float flickerBrightness = Lerp(fireBrightnessCurrent_, fireBrightnessTarget_, t);
+        campfireLight_->SetBrightness(flickerBrightness * fireIntensity_);
+        campfireLight_->SetRange(cfBaseLightRange_ * fireIntensity_);
+        campfireLight_->SetColor(fireColorCurrent_.Lerp(fireColorTarget_, t));
+
+        if (t >= 1.0f)
+        {
+            // Reached target — pick new random target relative to slider-set max brightness
+            fireBrightnessCurrent_ = fireBrightnessTarget_;
+            fireColorCurrent_ = fireColorTarget_;
+            fireBrightnessTarget_ = cfBaseLightBrightness_ * Random(0.55f, 1.20f);
+            // Random fire color: yellow, orange, or red
+            float r = 1.0f;
+            float g = Random(0.15f, 0.65f);
+            float b = Random(0.0f, g * 0.3f);
+            fireColorTarget_ = Color(r, g, b);
+            fireFadeTime_ = Random(0.2f, 0.5f);
+            fireFadeTimer_ = 0.0f;
+        }
+    }
+
     // Celestial update AFTER camera movement — god ray screen position must match
     // the camera state that will be used for rendering this frame
-    if (!asyncSceneLoading_ && sunNode_)
+    if (!asyncSceneLoading_ && sunNode_ && loggedIn_)
     {
+        HiresTimer celestialTimer;
         UpdateCelestialBodies(timeStep);
         UpdateWeather(timeStep);
         if (rainEmitter_) UpdateRain(timeStep);
         if (snowEmitter_) UpdateSnow(timeStep);
         UpdateLightning(timeStep);
+        accumCelestial += celestialTimer.GetUSec(true);
+
+        // Weather Phase 4: rainfall accumulation (every N frames)
+        if (rainfallMap_ && terrain_)
+        {
+            if (++rainfallFrameCounter_ >= RAINFALL_UPDATE_INTERVAL)
+            {
+                rainfallFrameCounter_ = 0;
+                UpdateRainfallAccumulation();
+                // Phase 2-3: soil dynamics then vegetation growth
+                if (ecosystem_)
+                {
+                    ecosystem_->UpdateSoil();
+                    ecosystem_->UpdateGrowth();
+                    ecosystem_->UploadSoilToGPU();  // Phase 19: sync worn paths to shader
+                }
+            }
+        }
+
+        // Feed game state to soundscape — crossfades all ambient layers
+        if (soundscape_)
+        {
+            if (sunLight_)
+                soundscape_->SetSunAltitude(-sunLight_->GetNode()->GetDirection().y_);
+            soundscape_->SetPrecipitation(weather_.precipitation);
+            soundscape_->SetWindSpeed(weather_.windSpeed);
+            soundscape_->SetCloudCover(weather_.cloudCover);
+        }
     }
+
+    // Driven key system — push drivers, then evaluate all response curves
+    if (auto* dks = GetSubsystem<DrivenKeySystem>())
+    {
+        dks->SetDriver(StringHash("TestDriver"), Clamp(timeOfDay_ / 24.0f, 0.0f, 1.0f));
+        dks->Update();
+    }
+
+    // --- Perf toggles — apply each frame ---
+    if (sunLight_)
+        sunLight_->SetCastShadows(shadowsEnabled_);
+    if (renderPath_)
+    {
+        if (!godRaysEnabled_)
+        {
+            renderPath_->SetEnabled("GodRays", false);
+            renderPath_->SetEnabled("MoonRays", false);
+        }
+        if (!postProcessEnabled_)
+        {
+            renderPath_->SetEnabled("Underwater", false);
+            renderPath_->SetEnabled("WaterDroplets", false);
+        }
+    }
+    if (reflectionCameraNode_)
+    {
+        auto* reflCam = reflectionCameraNode_->GetComponent<Camera>();
+        if (reflCam)
+            reflCam->SetViewMask(waterReflectionEnabled_ ? 0x7fffffff : 0x00000000);
+    }
+
+    // Biome debug overlay (F7)
+    if (biomeDebugOverlay_ && cameraNode_ && terrain_ && hud_)
+    {
+        Vector3 camPos = cameraNode_->GetWorldPosition();
+        BiomeType biome = ClassifyTerrain(camPos);
+        float h = terrain_->GetHeight(camPos);
+        Vector3 n = terrain_->GetNormal(camPos);
+        hud_->SetContextHint("Biome: " + BiomeToString(biome) +
+            " | H:" + String((int)h) + " S:" + String(n.y_, 2));
+    }
+
+    // --- Wall-clock profiling (every 120 frames, real elapsed time) ---
+    if (loggedIn_)
+    {
+        static HiresTimer wallTimer;
+        static long long wallAccum = 0;
+        static int wallCount = 0;
+
+        wallAccum += wallTimer.GetUSec(true);  // real microseconds since last frame's measurement
+        wallCount++;
+
+        if (wallCount >= 120)
+        {
+            float avgFrameMs = (float)wallAccum / wallCount / 1000.0f;
+            float realFps = (avgFrameMs > 0.0f) ? 1000.0f / avgFrameMs : 0.0f;
+            float avgCelestialMs = (float)accumCelestial / wallCount / 1000.0f;
+            float avgRippleMs = (float)accumRipple / wallCount / 1000.0f;
+            float avgOofoMs = (float)accumOofo / wallCount / 1000.0f;
+            float avgMinimapMs = (float)accumMinimap / wallCount / 1000.0f;
+            URHO3D_LOGINFOF("PERF[%d frames]: frame=%.1fms (%.1f FPS) | celestial=%.2fms ripple=%.2fms oofo=%.2fms minimap=%.2fms",
+                wallCount, avgFrameMs, realFps, avgCelestialMs, avgRippleMs, avgOofoMs, avgMinimapMs);
+            wallAccum = 0; wallCount = 0;
+            accumFrame = 0; accumCelestial = 0; accumFish = 0; accumContext = 0;
+            accumRipple = 0; accumOofo = 0; accumMinimap = 0; accumLogic = 0;
+            profileFrameCount = 0;
+        }
+    }
+
+    // Fumble text animation — float up and fade out (1.5s lifetime)
+    if (!fumbleText_.Expired())
+    {
+        fumbleTextTimer_ += timeStep;
+        float t = fumbleTextTimer_;
+
+        IntVector2 pos = fumbleText_->GetPosition();
+        pos.y_ = (int)(fumbleTextStartY_ - t * 50.0f);
+        fumbleText_->SetPosition(pos);
+
+        float alpha = 1.0f - (t / 1.5f);
+        if (alpha <= 0.0f)
+        {
+            fumbleText_->Remove();
+            fumbleText_.Reset();
+        }
+        else
+        {
+            fumbleText_->SetOpacity(alpha);
+        }
+    }
+
+    // Camera shake countdown
+    if (cameraShakeTimer_ > 0.0f)
+        cameraShakeTimer_ = Max(0.0f, cameraShakeTimer_ - timeStep);
 
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        // Use wall-clock elapsed time, not clamped game timeStep (Engine::minFps_ clamps to 0.1s)
+        static float lastElapsed = 0.0f;
+        float elapsed = GetSubsystem<Time>()->GetElapsedTime();
+        float realDt = elapsed - lastElapsed;
+        lastElapsed = elapsed;
+        float profilerDt = (realDt > 0.0f && realDt < 1.0f) ? realDt : timeStep;
         if (cameraNode_)
             profilerUI_->SetCameraPos(cameraNode_->GetWorldPosition());
-        profilerUI_->Update();
+        profilerUI_->Update(profilerDt);
     }
+
+    UpdateInspectPanel();
+}
+
+void TerrainNode::HandleDrivenKeyOutput(StringHash eventType, VariantMap& eventData)
+{
+    using namespace DrivenKeyOutput;
+    StringHash param = eventData[P_PARAM].GetStringHash();
+    float value = eventData[P_VALUE].GetFloat();
+    StringHash driver = eventData[P_DRIVER].GetStringHash();
+    float driverValue = eventData[P_DRIVERVALUE].GetFloat();
+    URHO3D_LOGDEBUGF("DrivenKey: driver %s=%.3f -> driven %s=%.3f",
+        driver.ToString().CString(), driverValue,
+        param.ToString().CString(), value);
+}
+
+void TerrainNode::SetShaderParamCached(const String& name, const Variant& value)
+{
+    // Performance Phase 4 — skip uploads of values that already match the
+    // last-sent value for this name. Cuts ~10 redundant SetShaderParameter
+    // calls per frame from the god rays + camera + fog hot path. Cache is
+    // invalidated explicitly via InvalidateShaderParamCache() on render path
+    // swaps so a new pipeline never inherits stale "we already sent this" state.
+    if (!renderPath_)
+        return;
+    auto it = shaderParamCache_.Find(name);
+    if (it != shaderParamCache_.End() && it->second_ == value)
+        return;
+    shaderParamCache_[name] = value;
+    renderPath_->SetShaderParameter(name, value);
 }
 
 void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
@@ -7159,7 +11517,15 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
     if (asyncSceneLoading_)
         return;
 
+    if (!scene_)
+        return;
+
     auto* debug = scene_->GetComponent<DebugRenderer>();
+    if (!debug && loggedIn_)
+    {
+        URHO3D_LOGWARNING("[DebugRay] No DebugRenderer on scene!");
+        return;
+    }
 
     // Overlay rays — independent of drawDebug_, toggled from Overlay menu
     if (debug && cameraNode_)
@@ -7181,55 +11547,86 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
                 }
             }
 
-            // Sun & Moon locator rays — always draw, even when billboard is hidden below horizon
-            if (sunNode_)
+            // Sun & Moon locator rays
+            if (drawDebug_ && sunNode_)
                 debug->AddLine(sunNode_->GetWorldPosition(), cursorNear, Color(1.0f, 0.6f, 0.0f), true);
-            if (moonNode_)
+            if (drawDebug_ && moonNode_)
                 debug->AddLine(moonNode_->GetWorldPosition(), cursorNear, Color(0.0f, 0.8f, 1.0f), true);
 
-            // Animal rays — lines from camera to each animal, color coded by species
-            if (landAnimalRayVisible_ || waterAnimalRayVisible_)
+            // Campfire ray
+            if (campfireRayVisible_ && campfireNode_)
+                debug->AddLine(campfireNode_->GetWorldPosition(), cursorNear, campfireLight_ ? campfireLight_->GetColor() : Color(1.0f, 0.5f, 0.0f), true);
+
+            // Animal rays — lines from cursor to each animal, color coded by species
+            // Category toggle + per-species toggles filter
             {
-                Vector3 camPos = cameraNode_->GetWorldPosition();
-                const Vector<SharedPtr<Node>>& children = scene_->GetChildren();
-                for (unsigned i = 0; i < children.Size(); ++i)
+                // Land animals
+                if (animalNodes_.Size() > 0)
                 {
-                    const String& name = children[i]->GetName();
-                    Color color;
-                    bool isWater = false;
-
-                    if (name == "Rabbit")
-                        color = Color(0.2f, 1.0f, 0.2f);   // green
-                    else if (name == "Deer")
-                        color = Color(0.8f, 0.4f, 1.0f);   // purple
-                    else if (name == "Fox")
-                        color = Color(1.0f, 0.4f, 0.1f);   // orange-red
-                    else if (name == "Fish")
+                    // Per-frame ray count logged at DEBUG level only
+                    URHO3D_LOGDEBUGF("[DebugRay] Drawing land animal rays: %u nodes", animalNodes_.Size());
+                    for (unsigned i = 0; i < animalNodes_.Size(); ++i)
                     {
-                        color = Color(0.2f, 0.7f, 1.0f);   // sky blue
-                        isWater = true;
+                        Node* n = animalNodes_[i].Get();
+                        if (!n) continue;
+                        const String& name = n->GetName();
+                        Color color;
+                        bool show = false;
+                        if (name == "Rabbit"  && rabbitRayVisible_)    { color = Color(0.2f, 1.0f, 0.2f); show = true; }
+                        else if (name == "Deer"    && deerRayVisible_)    { color = Color(0.8f, 0.4f, 1.0f); show = true; }
+                        else if (name == "Fox"     && foxRayVisible_)     { color = Color(1.0f, 0.4f, 0.1f); show = true; }
+                        else if (name == "Wolf"    && wolfRayVisible_)    { color = Color(0.6f, 0.0f, 0.0f); show = true; }
+                        else if (name == "Stag"    && stagRayVisible_)    { color = Color(0.6f, 0.3f, 1.0f); show = true; }
+                        else if (name == "Bull"    && bullRayVisible_)    { color = Color(0.5f, 0.25f, 0.0f); show = true; }
+                        else if (name == "Cow"     && cowRayVisible_)     { color = Color(0.9f, 0.9f, 0.7f); show = true; }
+                        else if (name == "Horse"   && horseRayVisible_)   { color = Color(0.4f, 0.3f, 0.2f); show = true; }
+                        else if (name == "Donkey"  && donkeyRayVisible_)  { color = Color(0.5f, 0.5f, 0.5f); show = true; }
+                        else if (name == "Alpaca"  && alpacaRayVisible_)  { color = Color(1.0f, 0.9f, 0.8f); show = true; }
+                        else if (name == "Husky"   && huskyRayVisible_)   { color = Color(0.3f, 0.5f, 0.8f); show = true; }
+                        else if (name == "ShibaInu" && shibaInuRayVisible_) { color = Color(1.0f, 0.6f, 0.2f); show = true; }
+                        else if (name == "CaveMan"  && caveManRayVisible_)  { color = Color(0.0f, 1.0f, 1.0f); show = true; }
+                        else if (name == "CaveWoman" && caveWomanRayVisible_) { color = Color(1.0f, 0.0f, 1.0f); show = true; }
+                        if (show)
+                            debug->AddLine(n->GetWorldPosition(), cursorNear, color, true);
                     }
-                    else
-                        continue;
+                }
 
-                    if (isWater && !waterAnimalRayVisible_)
-                        continue;
-                    if (!isWater && !landAnimalRayVisible_)
-                        continue;
-
-                    Vector3 animalPos = children[i]->GetWorldPosition();
-                    debug->AddLine(camPos, animalPos, color, false);
+                // Water animals — Performance Phase 3: iterate the cached
+                // fishNodes_ (populated at spawn time, holds both Fish and
+                // SchoolFish via WeakPtr) instead of walking the entire scene
+                // graph and string-comparing every child every frame.
+                if (waterAnimalRayVisible_)
+                {
+                    for (unsigned i = 0; i < fishNodes_.Size(); ++i)
+                    {
+                        Node* n = fishNodes_[i].Get();
+                        if (!n) continue;
+                        const String& name = n->GetName();
+                        if (name == "Fish" && fishRayVisible_)
+                        {
+                            debug->AddLine(n->GetWorldPosition(), cursorNear,
+                                Color(0.2f, 0.7f, 1.0f), true);
+                        }
+                        else if (name == "SchoolFish" && schoolFishRayVisible_)
+                        {
+                            debug->AddLine(n->GetWorldPosition(), cursorNear,
+                                Color(0.1f, 1.0f, 0.8f), true);
+                        }
+                    }
                 }
             }
         }
     }
 
-    // GPU grass debug — just draw the grid origin marker
-    if (grassRayVisible_ && grassSystem_ && grassSystem_->GetGrassNode() && debug)
-    {
-        Vector3 origin = grassSystem_->GetGrassNode()->GetWorldPosition();
-        debug->AddLine(origin, origin + Vector3::UP * 5.0f, Color::YELLOW, false);
-    }
+    // QUARANTINED — grass not rendering
+    // if (grassRayVisible_ && grassSystem_ && grassSystem_->GetGrassNode() && debug)
+    // {
+    //     Vector3 origin = grassSystem_->GetGrassNode()->GetWorldPosition();
+    //     debug->AddLine(origin, origin + Vector3::UP * 5.0f, Color::YELLOW, false);
+    // }
+
+    // Gizmo — always draw when a tool is active and a node is selected (not gated by drawDebug_)
+    DrawGizmo();
 
     if (!drawDebug_)
         return;
@@ -7256,74 +11653,67 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
         }
     }
 
-    DrawGizmo();
-
     auto* physics = scene_->GetComponent<PhysicsWorld>();
     if (physics)
         physics->DrawDebugGeometry(true);
-}
 
-void TerrainNode::TestComputeShader()
-{
-    auto* graphics = GetSubsystem<Graphics>();
-    auto* cache = GetSubsystem<ResourceCache>();
-
-    // Load the test compute shader
-    auto* shader = cache->GetResource<Shader>("Shaders/GLSL/TestCompute.glsl");
-    if (!shader)
+    // Draw bounding box for selected node (works for nodes without physics)
+    if (selectedNode_ && !selectedNode_.Expired() && debug)
     {
-        URHO3D_LOGERROR("TestCompute: Failed to load TestCompute.glsl");
-        return;
+        Vector<Drawable*> drawables;
+        selectedNode_->GetDerivedComponents<Drawable>(drawables, true);
+        for (unsigned i = 0; i < drawables.Size(); ++i)
+        {
+            BoundingBox bb = drawables[i]->GetWorldBoundingBox();
+            debug->AddBoundingBox(bb, Color::YELLOW, false);
+        }
     }
 
-    ShaderVariation* cs = shader->GetVariation(CS, "");
-    if (!cs)
+    // AnimatedModel bounding boxes — shows all skinned meshes even when underground
+    if (debug)
     {
-        URHO3D_LOGERROR("TestCompute: Failed to get compute shader variation");
-        return;
+        Vector<AnimatedModel*> models;
+        scene_->GetComponents<AnimatedModel>(models, true);
+        for (unsigned i = 0; i < models.Size(); ++i)
+        {
+            if (models[i]->IsEnabledEffective())
+            {
+                BoundingBox bb = models[i]->GetWorldBoundingBox();
+                debug->AddBoundingBox(bb, Color::MAGENTA, true);
+            }
+        }
     }
 
-    // Create input buffer: 64 floats [1.0, 2.0, ... 64.0]
-    const unsigned NUM_FLOATS = 64;
-    float inputData[NUM_FLOATS];
-    for (unsigned i = 0; i < NUM_FLOATS; ++i)
-        inputData[i] = (float)(i + 1);
+    // Vision cones — draw head-forward detection cone for each creature
+    if (debug)
+    {
+        Vector<Creature*> creatures;
+        scene_->GetDerivedComponents<Creature>(creatures, true);
+        for (unsigned i = 0; i < creatures.Size(); ++i)
+        {
+            Creature* c = creatures[i];
+            if (!c->IsEnabledEffective() || !c->GetNode())
+                continue;
 
-    // Create output buffer: 64 floats initialized to zero
-    float outputData[NUM_FLOATS];
-    memset(outputData, 0, sizeof(outputData));
+            float range = c->GetVisionRange();
+            float cosAngle = c->GetVisionCosAngle();
+            if (range <= 0.0f)
+                continue;
 
-    // Use VertexBuffers as SSBOs (they have STORAGE_BUFFER_BIT usage flag)
-    // Each "vertex" is one float (4 bytes) — use a single FLOAT element
-    Vector<VertexElement> elements;
-    elements.Push(VertexElement(TYPE_FLOAT, SEM_POSITION));
+            float halfAngle = acosf(Clamp(cosAngle, -1.0f, 1.0f));
+            Vector3 pos = c->GetNode()->GetWorldPosition();
+            pos.y_ += 1.0f;  // raise to approximate head height
+            Vector3 forward = c->GetNode()->GetWorldDirection();
+            forward.y_ = 0.0f;  // flatten to XZ (matches CanSee)
+            float fwdLen = forward.Length();
+            if (fwdLen < 0.001f)
+                continue;
+            forward /= fwdLen;
 
-    SharedPtr<VertexBuffer> inputBuffer(new VertexBuffer(context_));
-    inputBuffer->SetShadowed(true);
-    inputBuffer->SetSize(NUM_FLOATS, elements, false);
-    inputBuffer->SetData(inputData);
-
-    SharedPtr<VertexBuffer> outputBuffer(new VertexBuffer(context_));
-    outputBuffer->SetShadowed(true);
-    outputBuffer->SetSize(NUM_FLOATS, elements, false);
-    outputBuffer->SetData(outputData);
-
-    URHO3D_LOGINFO("TestCompute: Buffers created, dispatching compute shader...");
-
-    // Bind compute shader and storage buffers
-    graphics->SetComputeShader(cs);
-    graphics->SetStorageBuffer(0, inputBuffer);
-    graphics->SetStorageBuffer(1, outputBuffer);
-
-    // Dispatch: 1 group of 64 threads
-    graphics->DispatchCompute(1);
-
-    URHO3D_LOGINFO("TestCompute: Dispatch complete — check log for errors");
-
-    // Clean up
-    graphics->SetComputeShader(nullptr);
-    graphics->SetStorageBuffer(0, nullptr);
-    graphics->SetStorageBuffer(1, nullptr);
+            Color coneColor = c->IsPredator() ? Color(1.0f, 0.3f, 0.2f, 0.8f) : Color(0.3f, 0.8f, 1.0f, 0.6f);
+            debug->AddCone(pos, forward, range, halfAngle, coneColor, 12, false);
+        }
+    }
 }
 
 void TerrainNode::RunErosion(int iterations)
@@ -7833,14 +12223,11 @@ void TerrainNode::CreateNodeSection(Node* node)
     auto* cache = GetSubsystem<ResourceCache>();
     Font* font = font_;
 
-    // Header
-    auto* header = inspectorContent_->CreateChild<Text>();
-    header->SetFont(font, 12);
-    header->SetText("Node: " + (node->GetName().Empty() ? String("ID ") + String(node->GetID()) : node->GetName()));
-    header->SetColor(Color(0.9f, 0.9f, 0.3f));
+    String nodeTitle = "Node: " + (node->GetName().Empty() ? String("ID ") + String(node->GetID()) : node->GetName());
+    auto* section = CreateCollapsibleSection(inspectorContent_, font, nodeTitle, true);
 
     // Name
-    auto* nameRow = inspectorContent_->CreateChild<UIElement>();
+    auto* nameRow = section->CreateChild<UIElement>();
     nameRow->SetLayout(LM_HORIZONTAL, 4, IntRect(2, 1, 2, 1));
     nameRow->SetFixedHeight(20);
 
@@ -7859,14 +12246,14 @@ void TerrainNode::CreateNodeSection(Node* node)
     SubscribeToEvent(nameEdit, E_TEXTFINISHED, URHO3D_HANDLER(TerrainNode, HandleInspectorTransformEdit));
 
     // Position
-    CreateVec3Row(inspectorContent_, "Pos", node->GetPosition(), "Position");
+    CreateVec3Row(section, "Pos", node->GetPosition(), "Position");
 
     // Rotation (as Euler)
     Vector3 euler = node->GetRotation().EulerAngles();
-    CreateVec3Row(inspectorContent_, "Rot", euler, "Rotation");
+    CreateVec3Row(section, "Rot", euler, "Rotation");
 
     // Scale
-    CreateVec3Row(inspectorContent_, "Scale", node->GetScale(), "Scale");
+    CreateVec3Row(section, "Scale", node->GetScale(), "Scale");
 }
 
 LineEdit* TerrainNode::CreateVec3Row(UIElement* parent, const String& label, const Vector3& value, const String& tag)
@@ -7965,11 +12352,7 @@ void TerrainNode::CreateComponentSection(Component* component, unsigned compInde
     auto* cache = GetSubsystem<ResourceCache>();
     Font* font = font_;
 
-    // Component header
-    auto* header = inspectorContent_->CreateChild<Text>();
-    header->SetFont(font, 12);
-    header->SetText(component->GetTypeName());
-    header->SetColor(Color(0.4f, 0.9f, 0.4f));
+    auto* section = CreateCollapsibleSection(inspectorContent_, font, component->GetTypeName(), true);
 
     const Vector<AttributeInfo>* attrs = component->GetAttributes();
     if (!attrs)
@@ -7985,7 +12368,7 @@ void TerrainNode::CreateComponentSection(Component* component, unsigned compInde
 
         Variant value = component->GetAttribute(i);
 
-        auto* row = inspectorContent_->CreateChild<UIElement>();
+        auto* row = section->CreateChild<UIElement>();
         row->SetLayout(LM_HORIZONTAL, 4, IntRect(2, 1, 2, 1));
         row->SetFixedHeight(20);
 
@@ -8363,7 +12746,14 @@ void TerrainNode::HandleHostDiscovered(StringHash eventType, VariantMap& eventDa
 
     // Auto-connect
     auto* network = GetSubsystem<Network>();
-    network->Connect(address, (unsigned short)port, scene_);
+    if (!gameSceneReady_)
+    {
+        gameScene_ = new Scene(context_);
+        SubscribeToEvent(gameScene_, E_ASYNCLOADFINISHED, URHO3D_HANDLER(TerrainNode, OnGameSceneLoaded));
+        // Creature attachment handled by per-frame scan in HandleUpdate
+        gameSceneReady_ = true;
+    }
+    network->Connect(address, (unsigned short)port, gameScene_);
     UpdateAuthButtonState();
 }
 
@@ -8371,15 +12761,44 @@ void TerrainNode::HandleServerConnected(StringHash eventType, VariantMap& eventD
 {
     authConnected_ = true;
     authDiscovering_ = false;
+
+    bool wasOffline = (offlineMode_ != OFFLINE_NONE);
+    // Offline state machine: success — leave the state machine.
+    if (wasOffline)
+    {
+        URHO3D_LOGINFO("Offline mode: local AuthServer connection established");
+        offlineMode_ = OFFLINE_NONE;
+        offlineRetryTimer_ = 0.0f;
+        offlineRetriesLeft_ = 0;
+    }
     URHO3D_LOGINFO("Connected to AuthServer at " + authServerAddress_ + ":" + String(authServerPort_));
 
     auto* network = GetSubsystem<Network>();
+
+    // Game scene was created before Connect() and passed as the connection's scene.
+    // MSG_LOADSCENE from the server will load TestScene.xml into gameScene_.
+
+    // Offline without PAKE: send MSG_AUTH_LOGIN immediately with the reserved
+    // credentials. No encryption, no key exchange — plaintext over loopback.
+    if (wasOffline && !network->HasCredentials())
+    {
+        URHO3D_LOGINFO("[NetDebug] Offline non-PAKE: sending MSG_AUTH_LOGIN directly");
+        Connection* serverConn = network->GetServerConnection();
+        if (serverConn)
+        {
+            VectorBuffer msg;
+            msg.WriteString(String(OFFLINE_RESERVED_USERNAME));
+            msg.WriteString(String(OFFLINE_RESERVED_PASSWORD));
+            serverConn->SendMessage(MSG_AUTH_LOGIN, true, true, msg);
+        }
+    }
+
     String statusMsg = "Connected to " + authServerAddress_ + ":" + String(authServerPort_);
     if (loginStatusText_)
     {
-        // PAKE: connection + key exchange + auth happen together
-        loginStatusText_->SetText(network->HasCredentials() ? "Authenticating..." : "Connected — enter credentials");
-        loginStatusText_->SetColor(network->HasCredentials() ? Color(0.7f, 0.7f, 0.7f) : Color(0.3f, 1.0f, 0.3f));
+        loginStatusText_->SetText(wasOffline ? "Authenticating (offline)..." :
+            (network->HasCredentials() ? "Authenticating..." : "Connected — enter credentials"));
+        loginStatusText_->SetColor(Color(0.7f, 0.7f, 0.7f));
     }
     if (networkStatusText_)
     {
@@ -8400,7 +12819,8 @@ void TerrainNode::HandleServerDisconnected(StringHash eventType, VariantMap& eve
     }
 
     authConnected_ = false;
-    URHO3D_LOGINFO("Disconnected from AuthServer");
+    URHO3D_LOGINFOF("[NetDebug] SERVER DISCONNECTED — loggedIn=%d wasPake=%d uptime=%.1fs",
+        (int)loggedIn_, (int)wasPake, GetSubsystem<Time>() ? GetSubsystem<Time>()->GetElapsedTime() : -1.0f);
 
     // If we were in-world, tear down and return to login screen
     if (loggedIn_)
@@ -8434,8 +12854,34 @@ void TerrainNode::HandleServerDisconnected(StringHash eventType, VariantMap& eve
 void TerrainNode::HandleConnectFailed(StringHash eventType, VariantMap& eventData)
 {
     authConnected_ = false;
-    URHO3D_LOGWARNING("Failed to connect to AuthServer");
+    URHO3D_LOGWARNINGF("Failed to connect to AuthServer (offlineMode=%d)", (int)offlineMode_);
 
+    // Offline-mode state machine: first attempt failed → spawn local AuthServer
+    // and retry. Subsequent retries use the bounded retry counter.
+    if (offlineMode_ == OFFLINE_TRY_CONNECT)
+    {
+        offlineMode_ = OFFLINE_SPAWN_PENDING;
+        OfflineSpawnAuthServer();
+        if (offlineMode_ == OFFLINE_NONE)
+            return;  // spawn failed, status text already set
+        offlineRetryTimer_ = OFFLINE_RETRY_INTERVAL;
+        return;
+    }
+    if (offlineMode_ == OFFLINE_RETRY_CONNECT)
+    {
+        // Stay in RETRY state — TickOfflineConnect will dial again until
+        // OFFLINE_MAX_RETRIES is exhausted.
+        offlineRetryTimer_ = OFFLINE_RETRY_INTERVAL;
+        if (loginStatusText_)
+        {
+            loginStatusText_->SetText("Waiting for AuthServer to bind port (" +
+                                      String(offlineRetriesLeft_) + " retries left)...");
+            loginStatusText_->SetColor(Color(0.7f, 0.7f, 0.9f));
+        }
+        return;
+    }
+
+    // Normal (non-offline) connect failure path.
     String statusMsg = "Connect failed — is AuthServer running?";
     if (loginStatusText_)
     {
@@ -8455,6 +12901,8 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
     using namespace NetworkMessage;
     int msgID = eventData[P_MESSAGEID].GetI32();
     const auto& data = eventData[P_DATA].GetBuffer();
+
+    // MSG_CREATURE_AI_STATE is handled at line ~11820 — no logging needed here
 
     if (msgID == MSG_PEER_INTRODUCE)
     {
@@ -8577,11 +13025,308 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
         return;
     }
 
+    // Combat result
+    if (msgID == MSG_COMBAT_RESULT)
+    {
+        MemoryBuffer msg(data);
+        HandleCombatResult(msgID, msg);
+        return;
+    }
+
+    // Combat Phase 2 — server-driven creature death (HP=0 on the server).
+    if (msgID == MSG_CREATURE_DEATH)
+    {
+        MemoryBuffer msg(data);
+        HandleCreatureDeath(msg);
+        return;
+    }
+
+    // Death System Phase 1 — server-driven replacement spawn after a kill.
+    if (msgID == MSG_SPAWN_CREATURE)
+    {
+        HandleSpawnCreatureMsg(eventType, eventData);
+        return;
+    }
+
+    // Server-authoritative creature AI state update (NPC AI Phase 1).
+    if (msgID == MSG_CREATURE_AI_STATE)
+    {
+        MemoryBuffer msg(data);
+        HandleCreatureAIState(msg);
+        return;
+    }
+
+    // Fish spawn points from water body analysis
+    if (msgID == MSG_FISH_SPAWNS)
+    {
+        MemoryBuffer msg(data);
+        unsigned short count = msg.ReadU16();
+        serverFishSpawns_.Clear();
+        serverFishSpawns_.Reserve(count);
+        for (unsigned i = 0; i < count; ++i)
+        {
+            FishSpawnInfo sp;
+            sp.x = msg.ReadFloat();
+            sp.z = msg.ReadFloat();
+            sp.depth = msg.ReadFloat();
+            serverFishSpawns_.Push(sp);
+        }
+        URHO3D_LOGINFOF("[Fish] Received %u spawn points from server", count);
+
+        // Recreate fish at server-provided locations
+        if (!serverFishSpawns_.Empty())
+        {
+            // Remove existing fish
+            for (unsigned i = 0; i < fishNodes_.Size(); ++i)
+            {
+                Node* n = fishNodes_[i].Get();
+                if (n) n->Remove();
+            }
+            fishNodes_.Clear();
+            CreateFish();
+            CreateSchoolFish();
+        }
+        return;
+    }
+
+    // Settlement patch ownership
+    if (msgID == MSG_SETTLEMENT_CLAIMS)
+    {
+        MemoryBuffer msg(data);
+        HandleSettlementClaims(msg);
+        return;
+    }
+
+    // Server-authoritative tree spawn
+    if (msgID == MSG_SPAWN_TREE)
+    {
+        MemoryBuffer msg(data);
+        HandleSpawnTree(msg);
+        return;
+    }
+    if (msgID == MSG_REMOVE_TREE)
+    {
+        MemoryBuffer msg(data);
+        unsigned treeId = msg.ReadU32();
+        auto it = treeIdToNode_.Find(treeId);
+        if (it != treeIdToNode_.End())
+        {
+            if (it->second_)
+                it->second_->Remove();
+            treeIdToNode_.Erase(it);
+        }
+        if (focusedTreeId_ == treeId)
+            focusedTreeId_ = 0;
+        URHO3D_LOGINFOF("[Trees] Tree %u removed", treeId);
+        return;
+    }
+
     // Building system messages
-    if (msgID == MSG_BUILD_RESULT || msgID == MSG_BUILDING_SPAWN || msgID == MSG_BUILDING_REMOVE)
+    if (msgID == MSG_BUILD_RESULT || msgID == MSG_BUILDING_SPAWN || msgID == MSG_BUILDING_REMOVE ||
+        msgID == MSG_GATE_STATE || msgID == MSG_BUILDING_HP || msgID == MSG_RESPAWN_SET)
     {
         MemoryBuffer msg(data);
         HandleBuildMessage(msgID, msg);
+        return;
+    }
+
+    // Resource map server authority messages
+    if (msgID == MSG_RESOURCE_DEPLETED)
+    {
+        MemoryBuffer msg(data);
+        HandleResourceDepleted(msg);
+        return;
+    }
+
+    // Trap system messages (Resource Chain Phase 2)
+    if (msgID == MSG_TRAP_SPAWNED)
+    {
+        MemoryBuffer msg(data);
+        unsigned nodeId = msg.ReadU32();
+        int      itemId = msg.ReadI32();
+        float    px     = msg.ReadFloat();
+        float    py     = msg.ReadFloat();
+        float    pz     = msg.ReadFloat();
+        float    rot    = msg.ReadFloat();
+
+        // Create the trap node. Use a simple StaticModel with the item's model
+        // looked up from GameDB. Store the server's node id in a Var for later
+        // removal lookup.
+        Node* trapNode = scene_->CreateChild("PlacedTrap");
+        trapNode->SetPosition(Vector3(px, py, pz));
+        trapNode->SetRotation(Quaternion(rot, Vector3::UP));
+        trapNode->SetVar("ServerTrapId", (int)nodeId);
+        trapNode->SetVar("TrapItemId", itemId);
+
+        if (gameDB_)
+        {
+            ItemInfo info;
+            if (gameDB_->GetItem(itemId, info) && !info.model.Empty())
+            {
+                auto* cache = GetSubsystem<ResourceCache>();
+                auto* model = cache->GetResource<Model>(info.model);
+                if (model)
+                {
+                    auto* sm = trapNode->CreateComponent<StaticModel>();
+                    sm->SetModel(model);
+                }
+            }
+        }
+        // Direct lookup table for MSG_TRAP_REMOVED + the trap-check scanner.
+        trapNodes_[nodeId] = WeakPtr<Node>(trapNode);
+        URHO3D_LOGINFOF("Trap spawned: nodeId=%u itemId=%d at (%.1f,%.1f,%.1f)",
+                         nodeId, itemId, px, py, pz);
+        return;
+    }
+
+    if (msgID == MSG_TRAP_REMOVED)
+    {
+        MemoryBuffer msg(data);
+        unsigned nodeId = msg.ReadU32();
+
+        // Direct HashMap lookup — replaces a per-removal scene walk.
+        auto it = trapNodes_.Find(nodeId);
+        if (it != trapNodes_.End() && it->second_)
+            it->second_->Remove();
+        trapNodes_.Erase(nodeId);
+        trapCheckSent_.Erase(nodeId);
+        return;
+    }
+
+    if (msgID == MSG_TRAP_TRIGGERED)
+    {
+        // Server has decided this trap caught this creature. Apply the visual
+        // result locally: snap the creature to the trap position and put it in
+        // CREATURE_TRAPPED state. The creature is already registered in the
+        // server's creatureStates_ from this same path, so a follow-up harvest
+        // (E key) will work.
+        MemoryBuffer msg(data);
+        unsigned trapNodeId     = msg.ReadU32();
+        unsigned creatureNodeId = msg.ReadU32();
+        float    cx             = msg.ReadFloat();
+        float    cy             = msg.ReadFloat();
+        float    cz             = msg.ReadFloat();
+        (void)cx; (void)cy; (void)cz;  // server reflects the position back; we trust the local node
+
+        Node* creatureNode = scene_->GetNode(creatureNodeId);
+        if (!creatureNode)
+        {
+            URHO3D_LOGWARNINGF("MSG_TRAP_TRIGGERED: unknown creature node %u (trap=%u)",
+                                creatureNodeId, trapNodeId);
+            return;
+        }
+        Creature* creature = creatureNode->GetDerivedComponent<Creature>();
+        if (!creature)
+        {
+            URHO3D_LOGWARNINGF("MSG_TRAP_TRIGGERED: node %u has no Creature component", creatureNodeId);
+            return;
+        }
+
+        // Snap to trap position so the catch is visually obvious.
+        auto trapIt = trapNodes_.Find(trapNodeId);
+        if (trapIt != trapNodes_.End() && trapIt->second_)
+            creatureNode->SetWorldPosition(trapIt->second_->GetWorldPosition());
+
+        creature->SetState(CREATURE_TRAPPED);
+        URHO3D_LOGINFOF("Trap caught: trap=%u creature=%u (%s)",
+                         trapNodeId, creatureNodeId, creatureNode->GetName().CString());
+        return;
+    }
+
+    // --- Farming messages ---
+    if (msgID == MSG_CROP_SPAWNED)
+    {
+        MemoryBuffer msg(data);
+        int cropId     = msg.ReadI32();
+        int seedItemId = msg.ReadI32();
+        float px       = msg.ReadFloat();
+        float py       = msg.ReadFloat();
+        float pz       = msg.ReadFloat();
+        unsigned char stage = (unsigned char)msg.ReadU8();
+
+        // Check if this crop already exists (growth update)
+        auto existIt = cropNodes_.Find(cropId);
+        if (existIt != cropNodes_.End() && existIt->second_)
+        {
+            // Update visual scale for growth stage
+            Node* node = existIt->second_;
+            float scale = 0.2f + stage * 0.267f;  // 0=0.2, 1=0.47, 2=0.73, 3=1.0
+            node->SetScale(scale);
+            URHO3D_LOGINFOF("[Farming] Crop %d advanced to stage %d", cropId, stage);
+            return;
+        }
+
+        // Create new crop node
+        Node* cropNode = scene_->CreateChild("PlacedCrop");
+        cropNode->SetPosition(Vector3(px, py, pz));
+        float scale = 0.2f + stage * 0.267f;
+        cropNode->SetScale(scale);
+
+        // Load model — try crop-specific model, fall back to generic
+        auto* cache = GetSubsystem<ResourceCache>();
+        String modelPath;
+
+        // Look up model from GameDB crop_types
+        if (gameDB_)
+        {
+            CropTypeInfo cropType;
+            if (gameDB_->GetCropType(seedItemId, cropType) && !cropType.model.Empty())
+                modelPath = cropType.model;
+        }
+
+        auto* staticModel = cropNode->CreateComponent<StaticModel>();
+        Model* model = nullptr;
+        if (!modelPath.Empty())
+            model = cache->GetResource<Model>(modelPath);
+        if (!model)
+            model = cache->GetResource<Model>("Models/Box.mdl");  // Placeholder
+        if (model)
+            staticModel->SetModel(model);
+
+        // Store for tracking
+        cropNode->SetVar("CropId", cropId);
+        cropNode->SetVar("SeedItemId", seedItemId);
+        cropNode->SetVar("GrowthStage", (int)stage);
+        cropNodes_[cropId] = WeakPtr<Node>(cropNode);
+
+        URHO3D_LOGINFOF("[Farming] Crop spawned: id=%d seed=%d at (%.1f,%.1f,%.1f) stage=%d",
+            cropId, seedItemId, px, py, pz, stage);
+        return;
+    }
+
+    if (msgID == MSG_CROP_REMOVED)
+    {
+        MemoryBuffer msg(data);
+        int cropId = msg.ReadI32();
+
+        auto it = cropNodes_.Find(cropId);
+        if (it != cropNodes_.End())
+        {
+            if (it->second_)
+                it->second_->Remove();
+            cropNodes_.Erase(it);
+        }
+        URHO3D_LOGINFOF("[Farming] Crop removed: id=%d", cropId);
+        return;
+    }
+
+    if (msgID == MSG_HARVEST_RESULT)
+    {
+        MemoryBuffer msg(data);
+        unsigned targetNodeId = msg.ReadU32();
+        int      count        = msg.ReadI32();
+        String summary;
+        for (int i = 0; i < count; ++i)
+        {
+            int itemId = msg.ReadI32();
+            int qty    = msg.ReadI32();
+            ItemInfo info;
+            if (gameDB_ && gameDB_->GetItem(itemId, info))
+                summary += String(qty) + "x " + info.name + " ";
+            else
+                summary += String(qty) + "x item" + String(itemId) + " ";
+        }
+        URHO3D_LOGINFOF("Harvested target=%u: %s", targetNodeId, summary.CString());
         return;
     }
 
@@ -8589,6 +13334,13 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
     {
         MemoryBuffer msg(data);
         HandleResourcePatch(msg);
+        return;
+    }
+
+    if (msgID == MSG_NEW_TERRAIN)
+    {
+        MemoryBuffer msg(data);
+        HandleNewTerrain(msg);
         return;
     }
 
@@ -8626,7 +13378,7 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
             if (success)
             {
                 loggedInUsername_ = usernameEdit_ ? usernameEdit_->GetText().Trimmed() : "Unknown";
-                URHO3D_LOGINFOF("Logged in as %s (admin level %d), scene: %s, patch: (%d,%d)",
+                URHO3D_LOGINFOF("[NetDebug] Login success — user=%s admin=%d scene=%s patch=(%d,%d)",
                     loggedInUsername_.CString(), adminLevel_, serverSceneName_.CString(),
                     ownedPatchX_, ownedPatchZ_);
 
@@ -8636,7 +13388,18 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
                 loginTimer_.Reset();
                 loginTimerActive_ = true;
                 firstFramePending_ = true;
+
+                // Show AI Tuning button for admins (Phase 4)
+                if (adminLevel_ > 0 && menuBar_)
+                {
+                    auto* btn = menuBar_->GetChild("AITuningBtn", false);
+                    if (btn)
+                        btn->SetVisible(true);
+                }
+
+                URHO3D_LOGINFO("[NetDebug] Calling EnterWorld...");
                 EnterWorld();
+                URHO3D_LOGINFO("[NetDebug] EnterWorld returned");
             }
             else if (loginStatusText_)
             {
@@ -8652,6 +13415,98 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
                 loginStatusText_->SetColor(success ? Color(0.3f, 1.0f, 0.3f) : Color(1.0f, 0.3f, 0.3f));
             }
         }
+    }
+
+    // Possession system — server responses
+    if (msgID == MSG_POSSESS)
+    {
+        MemoryBuffer msg(data);
+        unsigned npcNodeId = msg.ReadU32();
+        int npcPlayerId = msg.ReadI32();
+        bool success = msg.ReadBool();
+
+        if (success)
+        {
+            possessedNPCPlayerId_ = npcPlayerId;
+            URHO3D_LOGINFOF("Possession confirmed: NPC %u, playerId %d", npcNodeId, npcPlayerId);
+        }
+        else
+        {
+            // Server rejected — undo local possession
+            URHO3D_LOGWARNINGF("Possession rejected: NPC %u already possessed by another player", npcNodeId);
+            if (possessedNPC_ && possessedNPC_->GetID() == npcNodeId)
+                UnpossessNPC();
+        }
+        return;
+    }
+
+    if (msgID == MSG_UNPOSSESS)
+    {
+        MemoryBuffer msg(data);
+        unsigned npcNodeId = msg.ReadU32();
+        possessedNPCPlayerId_ = -1;
+        URHO3D_LOGINFOF("Unpossession confirmed: NPC %u", npcNodeId);
+        return;
+    }
+
+    // --- Trade System messages ---
+    if (msgID == MSG_TRADE_INCOMING)
+    {
+        MemoryBuffer msg(data);
+        HandleTradeIncoming(msg);
+        return;
+    }
+    if (msgID == MSG_TRADE_ACCEPT)
+    {
+        MemoryBuffer msg(data);
+        HandleTradeAccepted(msg);
+        return;
+    }
+    if (msgID == MSG_TRADE_UPDATE)
+    {
+        MemoryBuffer msg(data);
+        HandleTradeUpdate(msg);
+        return;
+    }
+    if (msgID == MSG_TRADE_LOCK)
+    {
+        MemoryBuffer msg(data);
+        HandleTradeLock(msg);
+        return;
+    }
+    if (msgID == MSG_TRADE_COMPLETE)
+    {
+        MemoryBuffer msg(data);
+        HandleTradeComplete(msg);
+        return;
+    }
+    if (msgID == MSG_TRADE_CANCEL)
+    {
+        MemoryBuffer msg(data);
+        HandleTradeCancel(msg);
+        return;
+    }
+
+    if (msgID == MSG_TUNING_DATA)
+    {
+        MemoryBuffer msg(data);
+        unsigned short count = msg.ReadU16();
+        tuningEntries_.Clear();
+        for (unsigned short i = 0; i < count; ++i)
+        {
+            TuningEntry e;
+            e.key = msg.ReadString();
+            e.value = msg.ReadFloat();
+            e.label = msg.ReadString();
+            e.category = msg.ReadString();
+            e.minVal = msg.ReadFloat();
+            e.maxVal = msg.ReadFloat();
+            tuningEntries_.Push(e);
+        }
+        URHO3D_LOGINFOF("[AI Tuning] Received %u tuning parameters", count);
+        if (tuningPanel_)
+            PopulateTuningPanel();
+        return;
     }
 }
 
@@ -8677,7 +13532,13 @@ void TerrainNode::HandleAuthConnectButton(StringHash eventType, VariantMap& even
     {
         // Connect to localhost
         URHO3D_LOGINFOF("Connecting to AuthServer at %s:%d...", authServerAddress_.CString(), (int)authServerPort_);
-        network->Connect(authServerAddress_, authServerPort_, scene_);
+        if (!gameSceneReady_)
+        {
+            gameScene_ = new Scene(context_);
+            SubscribeToEvent(gameScene_, E_ASYNCLOADFINISHED, URHO3D_HANDLER(TerrainNode, OnGameSceneLoaded));
+            gameSceneReady_ = true;
+        }
+        network->Connect(authServerAddress_, authServerPort_, gameScene_);
     }
     UpdateAuthButtonState();
 }
@@ -8786,7 +13647,13 @@ void TerrainNode::HandlePeerDisconnected(StringHash eventType, VariantMap& event
 
         // Reconnect to AuthServer
         auto* network = GetSubsystem<Network>();
-        network->Connect(authServerAddress_, authServerPort_, scene_);
+        if (!gameSceneReady_)
+        {
+            gameScene_ = new Scene(context_);
+            SubscribeToEvent(gameScene_, E_ASYNCLOADFINISHED, URHO3D_HANDLER(TerrainNode, OnGameSceneLoaded));
+            gameSceneReady_ = true;
+        }
+        network->Connect(authServerAddress_, authServerPort_, gameScene_);
     }
     else
     {
@@ -8882,6 +13749,19 @@ void TerrainNode::SendTerrainEdit(const Vector3& worldPos, float timeStep)
             int srcIdx = ((y0 + row) * hmW + x0) * comps;
             int dstIdx = row * rw * comps;
             memcpy(&snap.heightData[dstIdx], &src[srcIdx], rw * comps);
+        }
+        // Mode 6 (river) also modifies waterMap_ — snapshot for rollback
+        if (brushMode_ == 6 && waterMap_)
+        {
+            int wComps = waterMap_->GetComponents();
+            snap.waterData.Resize(rw * rh * wComps);
+            unsigned char* wSrc = waterMap_->GetData();
+            for (int row = 0; row < rh; ++row)
+            {
+                int srcIdx = ((y0 + row) * hmW + x0) * wComps;
+                int dstIdx = row * rw * wComps;
+                memcpy(&snap.waterData[dstIdx], &wSrc[srcIdx], rw * wComps);
+            }
         }
         terrainEditSnapshots_[editID] = snap;
 
@@ -9023,6 +13903,20 @@ void TerrainNode::HandleEditReject(MemoryBuffer& msg)
                 memcpy(&dst[dstIdx], &snap.heightData[srcIdx], rw * comps);
             }
             terrain_->ApplyHeightMap();
+            // Rollback water map if snapshot includes water data (mode 6)
+            if (!snap.waterData.Empty() && waterMap_)
+            {
+                int wComps = waterMap_->GetComponents();
+                unsigned char* wDst = waterMap_->GetData();
+                for (int row = 0; row < rh; ++row)
+                {
+                    int dstIdx = ((snap.regionMin.y_ + row) * hmW + snap.regionMin.x_) * wComps;
+                    int srcIdx = row * rw * wComps;
+                    memcpy(&wDst[dstIdx], &snap.waterData[srcIdx], rw * wComps);
+                }
+                if (waterMapTex_)
+                    waterMapTex_->SetData(waterMap_);
+            }
         }
         terrainEditSnapshots_.Erase(terrainIt);
         return;
@@ -9224,12 +14118,126 @@ void TerrainNode::HandleResourcePatch(MemoryBuffer& msg)
         URHO3D_LOGINFOF("Resource patch '%s' (%d,%d) → pixels (%d,%d) %dx%d",
             resourceID.CString(), patchX, patchZ, pixelX, pixelZ, pixelW, pixelH);
     }
+    else if (resourceID == "resource_map" && resourceMap_ && resourceMap_->GetImage())
+    {
+        Image* localImg = resourceMap_->GetImage();
+        bool ok = false;
+
+        if (components == 0)
+        {
+            // PNG-compressed data — decode into image
+            unsigned startPos = msg.GetPosition();
+            SharedPtr<Image> decoded(new Image(context_));
+            MemoryBuffer pngStream(reinterpret_cast<const unsigned char*>(msg.GetData()) + startPos, dataSize);
+            if (decoded->Load(pngStream) &&
+                decoded->GetWidth() == ResourceMap::MAP_SIZE &&
+                decoded->GetHeight() == ResourceMap::MAP_SIZE)
+            {
+                // Clear existing pickup nodes — they'll be respawned by streaming
+                for (auto it = activePickupNodes_.Begin(); it != activePickupNodes_.End(); ++it)
+                {
+                    if (it->second_)
+                        it->second_->Remove();
+                }
+                activePickupNodes_.Clear();
+
+                memcpy(localImg->GetData(), decoded->GetData(),
+                       (size_t)decoded->GetWidth() * decoded->GetHeight() * decoded->GetComponents());
+                ok = true;
+                URHO3D_LOGINFOF("Received server resource map (PNG %u bytes → %dx%d)",
+                    dataSize, decoded->GetWidth(), decoded->GetHeight());
+            }
+            msg.Seek(startPos + dataSize);
+        }
+        else if (components == 4 && pixelW == ResourceMap::MAP_SIZE && pixelH == ResourceMap::MAP_SIZE &&
+                 dataSize == (unsigned)(pixelW * pixelH * components))
+        {
+            // Raw RGBA fallback
+            for (auto it = activePickupNodes_.Begin(); it != activePickupNodes_.End(); ++it)
+            {
+                if (it->second_)
+                    it->second_->Remove();
+            }
+            activePickupNodes_.Clear();
+
+            const unsigned char* srcData = reinterpret_cast<const unsigned char*>(msg.GetData()) + msg.GetPosition();
+            memcpy(localImg->GetData(), srcData, dataSize);
+            msg.Seek(msg.GetPosition() + dataSize);
+            ok = true;
+            URHO3D_LOGINFOF("Received server resource map (raw %u bytes)", dataSize);
+        }
+        else
+        {
+            msg.Seek(msg.GetPosition() + dataSize);
+            URHO3D_LOGWARNING("Resource map size/format mismatch from server");
+        }
+    }
     else
     {
         // Skip unknown resource data
         msg.Seek(msg.GetPosition() + dataSize);
         URHO3D_LOGWARNINGF("Unknown resource patch: %s", resourceID.CString());
     }
+}
+
+void TerrainNode::HandleNewTerrain(MemoryBuffer& msg)
+{
+    int gridX = msg.ReadI32();
+    int gridZ = msg.ReadI32();
+    Vector<byte> pngData = msg.ReadBuffer();
+
+    // Load heightmap from PNG data
+    auto* cache = GetSubsystem<ResourceCache>();
+    MemoryBuffer pngStream(pngData.Buffer(), pngData.Size());
+    SharedPtr<Image> heightmap(new Image(context_));
+    if (!heightmap->Load(pngStream))
+    {
+        URHO3D_LOGERRORF("MSG_NEW_TERRAIN: failed to load heightmap for grid (%d, %d)", gridX, gridZ);
+        return;
+    }
+
+    // Create terrain node at correct world position
+    const float terrainWorldSize = 2048.0f;  // 1025 verts * 2.0 spacing
+    float posX = gridX * terrainWorldSize - (terrainWorldSize * 0.5f);
+    float posZ = gridZ * terrainWorldSize - (terrainWorldSize * 0.5f);
+
+    String nodeName = "Terrain_" + String(gridX) + "_" + String(gridZ);
+
+    // Don't duplicate if we already have this terrain
+    if (scene_->GetChild(nodeName))
+    {
+        URHO3D_LOGWARNINGF("MSG_NEW_TERRAIN: terrain node '%s' already exists, skipping", nodeName.CString());
+        return;
+    }
+
+    Node* newTerrainNode = scene_->CreateChild(nodeName);
+    newTerrainNode->SetPosition(Vector3(posX, 0.0f, posZ));
+
+    auto* terrain = newTerrainNode->CreateComponent<Terrain>();
+    terrain->SetPatchSize(64);
+    terrain->SetSpacing(Vector3(2.0f, 0.5f, 2.0f));
+    terrain->SetSmoothing(false);
+    terrain->SetHeightMap(heightmap);
+
+    // Use same material as the primary terrain
+    if (terrain_ && terrain_->GetMaterial())
+        terrain->SetMaterial(terrain_->GetMaterial());
+
+    terrain->SetOccluder(true);
+
+    auto* body = newTerrainNode->CreateComponent<RigidBody>();
+    body->SetCollisionLayer(2);
+    body->SetFriction(0.75f);
+    auto* shape = newTerrainNode->CreateComponent<CollisionShape>();
+    shape->SetTerrain();
+
+    // Register in ResourceCache for serialization
+    String resName = "Terrains/terrain_" + String(gridX) + "_" + String(gridZ) + ".png";
+    heightmap->SetName(resName);
+    cache->AddManualResource(heightmap);
+
+    URHO3D_LOGINFOF("MSG_NEW_TERRAIN: created terrain at grid (%d, %d), world (%.0f, 0, %.0f)",
+        gridX, gridZ, posX, posZ);
 }
 
 void TerrainNode::SendPatchPosition(int patchX, int patchZ)
@@ -9251,116 +14259,47 @@ void TerrainNode::SendPatchPosition(int patchX, int patchZ)
 // Player Avatar & Camera Modes
 // ============================================================================
 
-Node* TerrainNode::CreatePlayerAvatar()
-{
-    if (!scene_)
-        return nullptr;
-
-    auto* cache = GetSubsystem<ResourceCache>();
-
-    // Spawn at center of owned patch, ensure above water
-    const float patchWorldSize = 128.0f;
-    const float waterLevel = 5.0f;
-    float spawnX = (ownedPatchX_ + 0.5f) * patchWorldSize;
-    float spawnZ = (ownedPatchZ_ + 0.5f) * patchWorldSize;
-    Vector3 spawnPos(spawnX, 20.0f, spawnZ);
-    if (terrain_)
-    {
-        float terrainH = terrain_->GetHeight(spawnPos);
-
-        // If initial position is underwater, scan nearby for dry land
-        if (terrainH < waterLevel + 2.0f)
-        {
-            float bestH = terrainH;
-            Vector3 bestPos = spawnPos;
-            // Search in expanding rings around spawn center
-            for (float r = 16.0f; r <= 128.0f; r += 16.0f)
-            {
-                for (int angle = 0; angle < 8; ++angle)
-                {
-                    float a = angle * (M_PI / 4.0f);
-                    Vector3 probe(spawnX + r * cosf(a), 0.0f, spawnZ + r * sinf(a));
-                    float h = terrain_->GetHeight(probe);
-                    if (h > bestH)
-                    {
-                        bestH = h;
-                        bestPos = probe;
-                    }
-                }
-                if (bestH > waterLevel + 5.0f)
-                    break;  // Found good high ground
-            }
-            spawnPos.x_ = bestPos.x_;
-            spawnPos.z_ = bestPos.z_;
-            terrainH = bestH;
-        }
-
-        spawnPos.y_ = Max(terrainH, waterLevel) + 2.0f;
-    }
-
-    // Root character node (replicated for network)
-    Node* charNode = scene_->CreateChild("Player");
-    charNode->SetPosition(spawnPos);
-
-    // Child model node — separate from physics root for future model swap
-    Node* modelNode = charNode->CreateChild("PlayerModel");
-    modelNode->SetPosition(Vector3(0.0f, 0.9f, 0.0f));  // capsule center offset
-    auto* model = modelNode->CreateComponent<StaticModel>();
-    model->SetModel(cache->GetResource<Model>("Models/Capsule.mdl"));
-    model->SetMaterial(cache->GetResource<Material>("Materials/Stone.xml"));
-    model->SetCastShadows(true);
-
-    // Physics
-    auto* body = charNode->CreateComponent<RigidBody>();
-    body->SetMass(1.0f);
-    body->SetFriction(1.0f);
-    body->SetLinearDamping(0.5f);
-    body->SetAngularDamping(0.5f);
-    body->SetAngularFactor(Vector3::ZERO);  // prevent tumbling
-    body->SetCollisionLayer(1);
-    body->SetCollisionEventMode(COLLISION_ALWAYS);
-
-    auto* shape = charNode->CreateComponent<CollisionShape>();
-    shape->SetCapsule(0.7f, 1.8f, Vector3(0.0f, 0.9f, 0.0f));
-
-    // Character controller component
-    charNode->CreateComponent<PlayerCharacter>();
-
-    return charNode;
-}
+// CreatePlayerAvatar removed — Phase 5a: possession replaces the capsule avatar
 
 void TerrainNode::UpdateCharacterCamera()
 {
-    Node* charNode = characterNode_;
-    if (!charNode || !cameraNode_)
+    // Follow possessed NPC if available, fall back to legacy characterNode_
+    Node* followNode = possessedNPC_ ? possessedNPC_.Get() : characterNode_.Get();
+    if (!followNode || !cameraNode_)
         return;
 
-    // Hide own model in first person, show in third person/editor
-    Node* modelNode = charNode->GetChild("PlayerModel");
+    // Hide PlayerModel child in first person (only relevant for legacy capsule)
+    Node* modelNode = followNode->GetChild("PlayerModel");
     if (modelNode)
         modelNode->SetEnabled(cameraMode_ != CAM_FIRSTPERSON);
+
+    // Camera shake offset — small random jitter during fumble
+    Vector3 shakeOffset = Vector3::ZERO;
+    if (cameraShakeTimer_ > 0.0f)
+    {
+        float intensity = cameraShakeTimer_ / 0.3f;  // decays from 1→0
+        shakeOffset = Vector3(
+            (Random(2.0f) - 1.0f) * 0.08f * intensity,
+            (Random(2.0f) - 1.0f) * 0.06f * intensity,
+            0.0f);
+    }
 
     if (cameraMode_ == CAM_FIRSTPERSON)
     {
         // Eye-level inside the character
-        Vector3 eyePos = charNode->GetPosition() + Vector3(0.0f, 1.6f, 0.0f);
+        Vector3 eyePos = followNode->GetWorldPosition() + Vector3(0.0f, 1.6f, 0.0f) + shakeOffset;
         cameraNode_->SetPosition(eyePos);
         cameraNode_->SetRotation(Quaternion(pitch_, yaw_, 0.0f));
-        // Rotate character to match yaw
-        charNode->SetRotation(Quaternion(0.0f, yaw_, 0.0f));
     }
     else if (cameraMode_ == CAM_CHASE)
     {
         const float CAMERA_DISTANCE = 5.0f;
         const float CAMERA_HEIGHT = 2.0f;
 
-        // Rotate character to match yaw
-        charNode->SetRotation(Quaternion(0.0f, yaw_, 0.0f));
-
         // Camera position: behind and above
         Quaternion camRot(pitch_, yaw_, 0.0f);
-        Vector3 targetPos = charNode->GetPosition() + Vector3(0.0f, CAMERA_HEIGHT, 0.0f);
-        Vector3 desiredCamPos = targetPos + camRot * Vector3::BACK * CAMERA_DISTANCE;
+        Vector3 targetPos = followNode->GetWorldPosition() + Vector3(0.0f, CAMERA_HEIGHT, 0.0f);
+        Vector3 desiredCamPos = targetPos + camRot * Vector3::BACK * CAMERA_DISTANCE + shakeOffset;
 
         // Raycast to avoid clipping through walls/terrain
         auto* physicsWorld = scene_ ? scene_->GetComponent<PhysicsWorld>() : nullptr;
@@ -9372,7 +14311,7 @@ void TerrainNode::UpdateCharacterCamera()
             {
                 PhysicsRaycastResult result;
                 physicsWorld->RaycastSingle(result, Ray(targetPos, dir / dist), dist);
-                if (result.body_ && result.body_ != charNode->GetComponent<RigidBody>())
+                if (result.body_)
                     desiredCamPos = targetPos + (dir / dist) * Max(result.distance_ - 0.1f, 0.5f);
             }
         }
@@ -9380,7 +14319,199 @@ void TerrainNode::UpdateCharacterCamera()
         cameraNode_->SetPosition(desiredCamPos);
         cameraNode_->SetRotation(camRot);
     }
-    // CAM_GOD: camera is free-flying, handled by existing MoveCamera code
+}
+
+void TerrainNode::PossessNPC(Node* npcNode)
+{
+    if (!npcNode || !cameraNode_)
+        return;
+
+    auto* npc = npcNode->GetDerivedComponent<HumanNPC>(false);
+    if (!npc)
+        return;
+
+    // Unpossess previous NPC if any
+    if (possessedNPC_ && possessedNPC_ != npcNode)
+    {
+        auto* prevNPC = possessedNPC_->GetComponent<HumanNPC>();
+        if (prevNPC)
+            prevNPC->SetPossessed(false);
+    }
+
+    possessedNPC_ = npcNode;
+    possessing_ = true;
+    npc->SetPossessed(true);
+
+    // Add SmoothedTransform for interpolated movement on the focused character
+    if (!npcNode->GetComponent<SmoothedTransform>())
+        npcNode->CreateComponent<SmoothedTransform>();
+
+    // Phase 5a: alias characterNode_ to the possessed NPC so all existing
+    // code that reads characterNode_ (campfire distance, building placement,
+    // underwater checks, etc.) works without modification.
+    characterNode_ = npcNode;
+
+    // Set up camera lerp to chase position
+    possessionLerping_ = true;
+    possessionLerpTime_ = 0.0f;
+    possessionLerpStartPos_ = cameraNode_->GetWorldPosition();
+    possessionLerpStartRot_ = cameraNode_->GetWorldRotation();
+
+    cameraMode_ = CAM_CHASE;
+
+    const float CAMERA_DISTANCE = 5.0f;
+    const float CAMERA_HEIGHT = 2.0f;
+    Quaternion camRot(pitch_, yaw_, 0.0f);
+    Vector3 targetPos = npcNode->GetWorldPosition() + Vector3(0.0f, CAMERA_HEIGHT, 0.0f);
+    possessionLerpEndPos_ = targetPos + camRot * Vector3::BACK * CAMERA_DISTANCE;
+    possessionLerpEndRot_ = camRot;
+
+    // Enable mouse look
+    auto* input = GetSubsystem<Input>();
+    input->SetMouseMode(MM_RELATIVE);
+    input->SetMouseVisible(false);
+    useMouseMode_ = MM_RELATIVE;
+    menuOpen_ = false;
+
+    // Notify server (server validates and sends inventory)
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (serverConn)
+    {
+        VectorBuffer buf;
+        buf.WriteU32(npc->GetSpawnId());  // server-assigned spawnId (0 if client-spawned)
+        buf.WriteI32(npc->GetCreatureId()); // species ID for lazy-register
+        Vector3 npcPos = npcNode->GetWorldPosition();
+        buf.WriteFloat(npcPos.x_);
+        buf.WriteFloat(npcPos.y_);
+        buf.WriteFloat(npcPos.z_);
+        serverConn->SendMessage(MSG_POSSESS, true, true, buf);
+    }
+
+    URHO3D_LOGINFOF("Possessed NPC: %s", npcNode->GetName().CString());
+}
+
+void TerrainNode::UnpossessNPC()
+{
+    if (!possessedNPC_ || !cameraNode_)
+        return;
+
+    auto* npc = possessedNPC_->GetDerivedComponent<HumanNPC>(false);
+    unsigned unpossessSpawnId = npc ? npc->GetSpawnId() : 0;
+    if (npc)
+        npc->SetPossessed(false);
+
+    // Remove SmoothedTransform — no longer the focused character
+    auto* smoothed = possessedNPC_->GetComponent<SmoothedTransform>();
+    if (smoothed)
+        possessedNPC_->RemoveComponent(smoothed);
+
+    Vector3 npcPos = possessedNPC_->GetWorldPosition();
+
+    possessedNPC_ = nullptr;
+    possessing_ = false;
+    characterNode_ = nullptr;  // Phase 5a: god has no body
+
+    // Pull camera back 2 units along current look direction, keep rotation
+    possessionLerping_ = true;
+    possessionLerpTime_ = 0.0f;
+    possessionLerpStartPos_ = cameraNode_->GetWorldPosition();
+    possessionLerpStartRot_ = cameraNode_->GetWorldRotation();
+
+    cameraMode_ = CAM_GOD;
+    Vector3 lookDir = cameraNode_->GetWorldDirection();
+    possessionLerpEndPos_ = possessionLerpStartPos_ - lookDir * 2.0f;
+    possessionLerpEndRot_ = possessionLerpStartRot_;
+
+    // Free cursor for god mode
+    auto* input = GetSubsystem<Input>();
+    input->SetMouseMode(MM_FREE);
+    input->SetMouseVisible(true);
+    useMouseMode_ = MM_FREE;
+    menuOpen_ = true;
+
+    // Notify server
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (serverConn)
+    {
+        VectorBuffer buf;
+        buf.WriteU32(unpossessSpawnId);
+        serverConn->SendMessage(MSG_UNPOSSESS, true, true, buf);
+    }
+    possessedNPCPlayerId_ = -1;
+
+    URHO3D_LOGINFO("Unpossessed NPC — god mode");
+}
+
+void TerrainNode::TogglePossession()
+{
+    // Legacy toggle — if possessing, unpossess; if not, no-op (use click to possess)
+    if (possessing_)
+        UnpossessNPC();
+}
+
+void TerrainNode::UpdatePossessionLerp(float timeStep)
+{
+    if (!possessionLerping_)
+        return;
+
+    possessionLerpTime_ += timeStep;
+    float t = possessionLerpTime_ / POSSESSION_LERP_DURATION;
+
+    bool finished = false;
+    if (t >= 1.0f)
+    {
+        t = 1.0f;
+        finished = true;
+        possessionLerping_ = false;
+    }
+
+    // Smooth step for pleasant ease-in/out
+    t = t * t * (3.0f - 2.0f * t);
+
+    Vector3 pos = possessionLerpStartPos_.Lerp(possessionLerpEndPos_, t);
+    Quaternion rot = possessionLerpStartRot_.Slerp(possessionLerpEndRot_, t);
+    cameraNode_->SetWorldPosition(pos);
+    cameraNode_->SetWorldRotation(rot);
+
+    // Lerp listener between camera and NPC during transition
+    if (listenerNode_)
+    {
+        if (possessing_ && possessedNPC_)
+        {
+            // Transitioning to possessed — lerp from camera toward NPC
+            Vector3 npcPos = possessedNPC_->GetWorldPosition();
+            listenerNode_->SetWorldPosition(possessionLerpStartPos_.Lerp(npcPos, t));
+        }
+        else
+        {
+            // Transitioning to god mode — listener follows camera
+            listenerNode_->SetWorldPosition(pos);
+        }
+    }
+
+    if (finished)
+        UpdateListenerPosition();
+}
+
+void TerrainNode::UpdateListenerPosition()
+{
+    if (!listenerNode_)
+        return;
+
+    if (possessing_ && possessedNPC_)
+    {
+        // Reparent listener to the possessed NPC
+        listenerNode_->SetParent(possessedNPC_);
+        listenerNode_->SetPosition(Vector3::ZERO);
+    }
+    else
+    {
+        // Reparent listener back to camera
+        listenerNode_->SetParent(cameraNode_);
+        listenerNode_->SetPosition(Vector3::ZERO);
+    }
 }
 
 void TerrainNode::HandlePhysicsPreStep(StringHash eventType, VariantMap& eventData)
@@ -9405,6 +14536,7 @@ void TerrainNode::HandlePhysicsPreStep(StringHash eventType, VariantMap& eventDa
             controls.Set(CTRL_LEFT, input->GetKeyDown(KEY_A));
             controls.Set(CTRL_RIGHT, input->GetKeyDown(KEY_D));
             controls.Set(CTRL_JUMP, input->GetKeyDown(KEY_SPACE));
+            controls.Set(CTRL_SPRINT, input->GetKeyDown(KEY_SHIFT));
         }
 
         serverConnection->SetControls(controls);
@@ -9415,46 +14547,14 @@ void TerrainNode::HandlePhysicsPreStep(StringHash eventType, VariantMap& eventDa
     {
         const Vector<SharedPtr<Connection>>& connections = network->GetClientConnections();
 
-        for (Connection* connection : connections)
-        {
-            Node* avatarNode = serverObjects_[connection];
-            if (!avatarNode)
-                continue;
-
-            auto* character = avatarNode->GetComponent<PlayerCharacter>();
-            if (character)
-            {
-                const Controls& controls = connection->GetControls();
-                character->controls_ = controls;
-                // Rotate character to face the direction the client is looking
-                avatarNode->SetRotation(Quaternion(0.0f, controls.yaw_, 0.0f));
-            }
-        }
+        // Phase 5a: server-side control routing is handled via MSG_POSSESS —
+        // the possessed NPC receives controls directly through HumanNPC.
+        (void)connections;
     }
 
-    // Local standalone: apply controls directly to own avatar
-    if (!serverConnection && !network->IsServerRunning())
-    {
-        Node* charNode = characterNode_;
-        if (charNode && cameraMode_ != CAM_GOD)
-        {
-            auto* input = GetSubsystem<Input>();
-            auto* ui = GetSubsystem<UI>();
-            auto* character = charNode->GetComponent<PlayerCharacter>();
-            if (character && !ui->GetFocusElement())
-            {
-                character->controls_.Set(CTRL_FORWARD, input->GetKeyDown(KEY_W));
-                character->controls_.Set(CTRL_BACK, input->GetKeyDown(KEY_S));
-                character->controls_.Set(CTRL_LEFT, input->GetKeyDown(KEY_A));
-                character->controls_.Set(CTRL_RIGHT, input->GetKeyDown(KEY_D));
-                character->controls_.Set(CTRL_JUMP, input->GetKeyDown(KEY_SPACE));
-                character->controls_.yaw_ = yaw_;
-                character->controls_.pitch_ = pitch_;
-                // Rotate character to face yaw
-                charNode->SetRotation(Quaternion(0.0f, yaw_, 0.0f));
-            }
-        }
-    }
+    // Controls always route through the server connection (even offline mode
+    // connects to a local AuthServer). Server's HandlePhysicsPreStep applies
+    // them to the possessed NPC's ServerCreatureAI.
 }
 
 void TerrainNode::HandleClientConnected(StringHash eventType, VariantMap& eventData)
@@ -9464,16 +14564,18 @@ void TerrainNode::HandleClientConnected(StringHash eventType, VariantMap& eventD
     auto* newConnection = static_cast<Connection*>(eventData[P_CONNECTION].GetPtr());
     newConnection->SetScene(scene_);
 
-    // Create avatar for the new client
-    Node* newAvatar = CreatePlayerAvatar();
-    serverObjects_[newConnection] = newAvatar;
+    // Phase 5a: no capsule avatar. Create a lightweight node for server-side
+    // position tracking (spectator broadcasts, combat range checks).
+    // Client starts in god cam and possesses NPCs to interact.
+    Node* tracker = scene_->CreateChild("ClientTracker");
+    serverObjects_[newConnection] = tracker;
 
-    // Tell the client which node they control
+    // Tell the client which node ID is theirs (for position sync)
     VariantMap remoteEventData;
-    remoteEventData[P_ID] = newAvatar->GetID();
+    remoteEventData[P_ID] = tracker->GetID();
     newConnection->SendRemoteEvent(E_CLIENTOBJECTID, true, remoteEventData);
 
-    URHO3D_LOGINFOF("Client connected — created avatar node %u", newAvatar->GetID());
+    URHO3D_LOGINFOF("Client connected — created tracker node %u (god cam, no avatar)", tracker->GetID());
 }
 
 void TerrainNode::HandleClientDisconnected(StringHash eventType, VariantMap& eventData)
@@ -9493,37 +14595,424 @@ void TerrainNode::HandleClientDisconnected(StringHash eventType, VariantMap& eve
 void TerrainNode::HandleClientObjectID(StringHash eventType, VariantMap& eventData)
 {
     clientObjectID_ = eventData[P_ID].GetU32();
-    characterNode_ = scene_ ? scene_->GetNode(clientObjectID_) : nullptr;
-    URHO3D_LOGINFOF("Received avatar node ID: %u (node %s)",
-        clientObjectID_, characterNode_ ? "found" : "NOT FOUND — will retry on next frame");
+    URHO3D_LOGINFOF("Received client object ID: %u", clientObjectID_);
 
-    // Switch to chase camera so WASD controls flow to the avatar
-    if (characterNode_)
+    // Phase 5a: player starts in god cam — no avatar, no chase cam.
+    // characterNode_ stays null until the player possesses an NPC.
+}
+
+void TerrainNode::HandleNodeAdded(StringHash, VariantMap& eventData)
+{
+    using namespace NodeAdded;
+    auto* node = static_cast<Node*>(eventData[P_NODE].GetPtr());
+    if (!node)
+        return;
+
+    // Replicated creature nodes arrive as parent+child: the parent (e.g. "Rabbit")
+    // may arrive nameless initially, but the child model node (e.g. "RabbitModel")
+    // arrives after the parent's name is set via delta update. We detect EITHER:
+    // - A node whose name matches a creature species
+    // - A node whose PARENT name matches a creature species
+    // In both cases we attach the component to the parent (creature root) node.
+
+    // Determine which node is the creature root and what species it is
+    Node* creatureNode = node;
+    String name = node->GetName();
+
+    // If this node's name doesn't match, check if the parent is a creature
+    // (this handles the child model node arriving, e.g. "RabbitModel" under "Rabbit")
+    int creatureId = 0;
+    auto lookupId = [](const String& n) -> int {
+        if (n == "Rabbit")    return 1;
+        if (n == "Deer")      return 2;
+        if (n == "Fox")       return 3;
+        if (n == "Stag")      return 4;
+        if (n == "Wolf")      return 5;
+        if (n == "Bull")      return 6;
+        if (n == "Cow")       return 7;
+        if (n == "Donkey")    return 9;
+        if (n == "Horse")     return 10;
+        if (n == "Alpaca")    return 11;
+        if (n == "Husky")     return 12;
+        if (n == "ShibaInu")  return 13;
+        if (n == "CaveMan")   return 20;
+        if (n == "CaveWoman") return 21;
+        return 0;
+    };
+
+    creatureId = lookupId(name);
+    if (creatureId == 0 && node->GetParent())
     {
-        cameraMode_ = CAM_CHASE;
-        URHO3D_LOGINFO("Switched to chase camera — WASD drives avatar");
+        // Child node — check parent
+        creatureId = lookupId(node->GetParent()->GetName());
+        creatureNode = node->GetParent();
     }
-    // Node may not exist yet if replication hasn't delivered it — HandleUpdate will retry
+    if (creatureId == 0)
+        return; // Not a creature node
+
+    // Already has a creature component? Skip (avoid double-attach)
+    if (creatureNode->GetDerivedComponent<LandAnimal>(false))
+        return;
+
+    URHO3D_LOGINFOF("[Replication] Creature node arrived: %s (id=%d)",
+        creatureNode->GetName().CString(), creatureId);
+
+    // Attach species-specific LogicComponent to the creature root node
+    LandAnimal* animal = nullptr;
+    switch (creatureId)
+    {
+    case  1: animal = creatureNode->CreateComponent<Rabbit>();    break;
+    case  2: animal = creatureNode->CreateComponent<Deer>();      break;
+    case  3: animal = creatureNode->CreateComponent<Fox>();       break;
+    case  4: animal = creatureNode->CreateComponent<Stag>();      break;
+    case  5: animal = creatureNode->CreateComponent<Wolf>();      break;
+    case  6: animal = creatureNode->CreateComponent<Bull>();      break;
+    case  7: animal = creatureNode->CreateComponent<Cow>();       break;
+    case  9: animal = creatureNode->CreateComponent<Donkey>();    break;
+    case 10: animal = creatureNode->CreateComponent<Horse>();     break;
+    case 11: animal = creatureNode->CreateComponent<Alpaca>();    break;
+    case 12: animal = creatureNode->CreateComponent<Husky>();     break;
+    case 13: animal = creatureNode->CreateComponent<ShibaInu>(); break;
+    case 20: animal = creatureNode->CreateComponent<CaveMan>();   break;
+    case 21: animal = creatureNode->CreateComponent<CaveWoman>(); break;
+    default:
+        URHO3D_LOGWARNINGF("HandleNodeAdded: unknown creatureId %d on node %s",
+            creatureId, node->GetName().CString());
+        return;
+    }
+
+    if (animal)
+    {
+        // Read server-assigned spawnId from replicated node Var.
+        const Variant& spawnVar = creatureNode->GetVar("SpawnId");
+        unsigned spawnId = spawnVar.IsEmpty() ? 0 : spawnVar.GetU32();
+        if (spawnId > 0)
+        {
+            animal->SetSpawnId(spawnId);
+            spawnIdToNode_[spawnId] = creatureNode;
+        }
+
+        // Track creature for per-frame updates — LogicComponent event
+        // subscriptions don't work for components on replicated nodes.
+        replicatedCreatures_.Push(WeakPtr<Creature>(animal));
+        URHO3D_LOGINFOF("[Tracked] %s — replicatedCreatures_ now %u",
+            creatureNode->GetName().CString(), replicatedCreatures_.Size());
+
+        // Set up NPC references if human
+        if (creatureId == 20 || creatureId == 21)
+        {
+            auto* npc = dynamic_cast<HumanNPC*>(animal);
+            if (npc)
+            {
+                npc->SetCameraNode(cameraNode_);
+                Node* campfire = scene_ ? scene_->GetChild("Campfire", true) : nullptr;
+                if (campfire)
+                    npc->SetCampfireNode(campfire);
+            }
+        }
+
+        animalNodes_.Push(WeakPtr<Node>(creatureNode));
+        URHO3D_LOGINFOF("HandleNodeAdded: attached %s (creatureId=%d spawnId=%u)",
+            creatureNode->GetName().CString(), creatureId, spawnId);
+    }
+}
+
+void TerrainNode::AttachCreatureComponent(Node* creatureNode, int creatureId)
+{
+    if (!creatureNode || creatureNode->GetDerivedComponent<LandAnimal>(false))
+        return;
+
+    LandAnimal* animal = nullptr;
+    switch (creatureId)
+    {
+    case  1: animal = creatureNode->CreateComponent<Rabbit>();    break;
+    case  2: animal = creatureNode->CreateComponent<Deer>();      break;
+    case  3: animal = creatureNode->CreateComponent<Fox>();       break;
+    case  4: animal = creatureNode->CreateComponent<Stag>();      break;
+    case  5: animal = creatureNode->CreateComponent<Wolf>();      break;
+    case  6: animal = creatureNode->CreateComponent<Bull>();      break;
+    case  7: animal = creatureNode->CreateComponent<Cow>();       break;
+    case  9: animal = creatureNode->CreateComponent<Donkey>();    break;
+    case 10: animal = creatureNode->CreateComponent<Horse>();     break;
+    case 11: animal = creatureNode->CreateComponent<Alpaca>();    break;
+    case 12: animal = creatureNode->CreateComponent<Husky>();     break;
+    case 13: animal = creatureNode->CreateComponent<ShibaInu>(); break;
+    case 20: animal = creatureNode->CreateComponent<CaveMan>();   break;
+    case 21: animal = creatureNode->CreateComponent<CaveWoman>(); break;
+    default: return;
+    }
+
+    if (animal)
+    {
+        const Variant& spawnVar = creatureNode->GetVar("SpawnId");
+        unsigned spawnId = spawnVar.IsEmpty() ? 0 : spawnVar.GetU32();
+        if (spawnId > 0)
+        {
+            animal->SetSpawnId(spawnId);
+            spawnIdToNode_[spawnId] = creatureNode;
+        }
+        replicatedCreatures_.Push(WeakPtr<Creature>(animal));
+        animalNodes_.Push(WeakPtr<Node>(creatureNode));
+
+        if (creatureId == 20 || creatureId == 21)
+        {
+            auto* npc = dynamic_cast<HumanNPC*>(animal);
+            if (npc)
+            {
+                npc->SetCameraNode(cameraNode_);
+                Node* campfire = scene_ ? scene_->GetChild("Campfire", true) : nullptr;
+                if (campfire)
+                    npc->SetCampfireNode(campfire);
+            }
+        }
+
+        URHO3D_LOGINFOF("[AttachCreature] %s creatureId=%d spawnId=%u",
+            creatureNode->GetName().CString(), creatureId, spawnId);
+    }
+}
+
+// ============================================================================
+// Ecosystem — texture-based vegetation map
+// ============================================================================
+
+void TerrainNode::CreateEcosystem()
+{
+    if (!terrain_)
+        return;
+
+    ecosystem_ = new EcosystemManager(context_);
+    ecosystem_->Initialize(terrain_, 5.0f);  // waterLevel = 5.0
+
+    // Phase 2: connect rainfall map as moisture input for vegetation growth
+    if (rainfallMap_)
+        ecosystem_->SetRainfallMap(rainfallMap_, RAINFALL_MAP_SIZE);
+
+    // Phase 19: bind soil trampling texture to terrain material for worn path visuals
+    auto* soilTex = ecosystem_->GetOrCreateSoilTexture();
+    if (soilTex && terrain_)
+    {
+        auto* terrainMat = terrain_->GetMaterial();
+        if (terrainMat)
+            terrainMat->SetTexture(static_cast<TextureUnit>(5), soilTex);
+    }
+}
+
+// ============================================================================
+// Trees — server-authoritative placement, client caches L-system models
+// ============================================================================
+
+void TerrainNode::InitTreeModels()
+{
+    if (treeModelsReady_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* diffTech = cache->GetResource<Technique>("Techniques/Diff.xml");
+
+    // Bark textures per species — all use cylindrical UVs from LTreeGenerator
+    auto* barkNormal = cache->GetResource<Texture2D>("Textures/Bark_NormalTree.png");
+    auto* barkTwisted = cache->GetResource<Texture2D>("Textures/Bark_TwistedTree.png");
+    auto* barkDead = cache->GetResource<Texture2D>("Textures/Bark_DeadTree.png");
+    Texture2D* barkTextures[NUM_TREE_SPECIES] = {
+        barkNormal,   // 0 = Oak
+        barkNormal,   // 1 = Pine
+        barkTwisted,  // 2 = Eucalyptus (twisted bark)
+        barkDead,     // 3 = Acacia (dry bark)
+        barkNormal,   // 4 = Willow
+        barkTwisted,  // 5 = SheOak (papery bark)
+    };
+
+    // Leaf textures — broadleaf vs pine needle cluster
+    auto* leafBroad = cache->GetResource<Texture2D>("Textures/Leaves_NormalTree_C.png");
+    auto* leafPine = cache->GetResource<Texture2D>("Textures/Leaf_Pine_C.png");
+    Texture2D* leafTextures[NUM_TREE_SPECIES] = {
+        leafBroad,    // 0 = Oak
+        leafPine,     // 1 = Pine
+        leafBroad,    // 2 = Eucalyptus
+        leafBroad,    // 3 = Acacia
+        leafBroad,    // 4 = Willow
+        leafPine,     // 5 = SheOak (needle-like)
+    };
+
+    TreePreset presets[NUM_TREE_SPECIES] = { LTreeGenerator::Oak(), LTreeGenerator::Pine(), LTreeGenerator::Eucalyptus(), LTreeGenerator::Acacia(), LTreeGenerator::Willow(), LTreeGenerator::SheOak() };
+    for (int i = 0; i < NUM_TREE_SPECIES; ++i)
+    {
+        treeModel_[i] = LTreeGenerator::Generate(context_, presets[i]);
+        treeModelLOD1_[i] = LTreeGenerator::GenerateLOD(context_, presets[i]);
+
+        auto* barkMat = new Material(context_);
+        barkMat->SetTechnique(0, diffTech);
+        if (barkTextures[i])
+            barkMat->SetTexture(TU_DIFFUSE, barkTextures[i]);
+        barkMat->SetShaderParameter("MatDiffColor", Color::WHITE);
+        barkMat->SetShaderParameter("MatSpecColor", Vector4(0.15f, 0.15f, 0.15f, 8.0f));
+        treeBarkMat_[i] = barkMat;
+
+        auto* leafMat = new Material(context_);
+        leafMat->SetTechnique(0, diffTech);
+        if (leafTextures[i])
+            leafMat->SetTexture(TU_DIFFUSE, leafTextures[i]);
+        leafMat->SetShaderParameter("MatDiffColor", Color::WHITE);
+        leafMat->SetShaderParameter("MatSpecColor", Vector4(0.1f, 0.1f, 0.1f, 4.0f));
+        treeLeafMat_[i] = leafMat;
+
+        treeBaseLeafColor_[i] = presets[i].leafColor;
+        treeEvergreen_[i] = presets[i].evergreen;
+    }
+
+    // Imposter billboard materials — baked textures for LOD2 distance
+    auto* diffAlphaTech = cache->GetResource<Technique>("Techniques/DiffUnlitAlpha.xml");
+    const char* imposterNames[NUM_TREE_SPECIES] = { "Oak", "Pine", "Eucalyptus", "Acacia", "Willow", "SheOak" };
+    for (int i = 0; i < NUM_TREE_SPECIES; ++i)
+    {
+        String texPath = String("Textures/Trees/") + imposterNames[i] + "_Imposter0.png";
+        auto* tex = cache->GetResource<Texture2D>(texPath);
+        if (!tex)
+            continue;
+
+        auto* mat = new Material(context_);
+        mat->SetTechnique(0, diffAlphaTech);
+        mat->SetTexture(TU_DIFFUSE, tex);
+        mat->SetShaderParameter("MatDiffColor", Color::WHITE);
+        treeImposterMat_[i] = mat;
+    }
+
+    treeModelsReady_ = true;
+}
+
+void TerrainNode::UpdateTreeSeason(float seasonAngle)
+{
+    for (int i = 0; i < NUM_TREE_SPECIES; ++i)
+    {
+        if (!treeLeafMat_[i])
+            continue;
+
+        Color base = treeBaseLeafColor_[i];
+        Color leafColor;
+
+        if (treeEvergreen_[i])
+        {
+            // Evergreen: subtle brightness pulse through the year
+            float brightness = 0.85f + 0.15f * sinf(seasonAngle * 6.2831853f);
+            leafColor = Color(brightness, brightness, brightness);
+        }
+        else
+        {
+            // Seasonal multipliers — texture provides base green, these shift it
+            Color spring(0.9f, 1.1f, 0.8f);    // slightly more green
+            Color summer(1.0f, 1.0f, 1.0f);    // texture as-is
+            Color autumn(1.8f, 0.8f, 0.3f);    // shift toward orange/red
+            Color winter(0.5f, 0.45f, 0.35f);  // desaturate and darken
+
+            if (seasonAngle < 0.25f)
+                leafColor = spring.Lerp(summer, seasonAngle / 0.25f);
+            else if (seasonAngle < 0.5f)
+                leafColor = summer.Lerp(autumn, (seasonAngle - 0.25f) / 0.25f);
+            else if (seasonAngle < 0.75f)
+                leafColor = autumn.Lerp(winter, (seasonAngle - 0.5f) / 0.25f);
+            else
+                leafColor = winter.Lerp(spring, (seasonAngle - 0.75f) / 0.25f);
+        }
+
+        treeLeafMat_[i]->SetShaderParameter("MatDiffColor", leafColor);
+    }
+}
+
+void TerrainNode::UpdateTreeLOD()
+{
+    if (!cameraNode_ || treeIdToNode_.Empty())
+        return;
+
+    Vector3 camPos = cameraNode_->GetWorldPosition();
+    const float lod1DistSq = 80.0f * 80.0f;
+    const float lod2DistSq = 160.0f * 160.0f;
+
+    for (auto it = treeIdToNode_.Begin(); it != treeIdToNode_.End(); ++it)
+    {
+        Node* node = it->second_;
+        if (!node)
+            continue;
+
+        int species = node->GetVar("TreeSpecies").GetI32();
+        if (species < 0 || species >= NUM_TREE_SPECIES)
+            continue;
+
+        Vector3 pos = node->GetWorldPosition();
+        float dx = pos.x_ - camPos.x_;
+        float dz = pos.z_ - camPos.z_;
+        float distSq = dx * dx + dz * dz;
+
+        auto* sm = node->GetComponent<StaticModel>();
+        auto* bb = node->GetComponent<BillboardSet>();
+
+        if (distSq > lod2DistSq && treeImposterMat_[species])
+        {
+            // LOD2: billboard imposter
+            if (sm)
+                sm->SetEnabled(false);
+
+            if (!bb)
+            {
+                // Lazy-create BillboardSet on first LOD2 transition
+                bb = node->CreateComponent<BillboardSet>();
+                bb->SetNumBillboards(1);
+                bb->SetMaterial(treeImposterMat_[species]);
+                bb->SetFaceCameraMode(FC_ROTATE_Y);  // Y-axis only — trees don't tilt
+                bb->SetSorted(false);
+
+                // Size from model bounding box
+                BoundingBox bbox = treeModel_[species] ? treeModel_[species]->GetBoundingBox() : BoundingBox(0.0f, 10.0f);
+                float width = bbox.Size().x_ * 1.1f;
+                float height = bbox.Size().y_ * 1.1f;
+
+                Billboard* quad = bb->GetBillboard(0);
+                quad->position_ = Vector3(0.0f, height * 0.5f, 0.0f);  // center vertically
+                quad->size_ = Vector2(width, height);
+                quad->enabled_ = true;
+                bb->Commit();
+            }
+            else
+                bb->SetEnabled(true);
+        }
+        else
+        {
+            // LOD0 or LOD1: 3D geometry
+            if (bb)
+                bb->SetEnabled(false);
+
+            if (!sm)
+                continue;
+
+            sm->SetEnabled(true);
+            Model* want = (distSq > lod1DistSq) ? treeModelLOD1_[species] : treeModel_[species];
+            if (sm->GetModel() != want && want)
+            {
+                sm->SetModel(want, true);
+                if (treeBarkMat_[species]) sm->SetMaterial(0, treeBarkMat_[species]);
+                if (treeLeafMat_[species]) sm->SetMaterial(1, treeLeafMat_[species]);
+                sm->SetCastShadows(distSq <= lod1DistSq);
+            }
+        }
+    }
 }
 
 // ============================================================================
 // Grass — cross-billboard clumps written as UMDL .mdl, loaded via cache
 // ============================================================================
 
-void TerrainNode::CreateGrass()
-{
-    if (!terrain_)
-        return;
-
-    // Create a scene node to host the GrassSystem component
-    Node* grassHost = scene_->CreateChild("GrassHost", LOCAL);
-    grassSystem_ = grassHost->CreateComponent<GrassSystem>();
-
-    // Initialize: 200m grid, 0.5m cell spacing (~160K blades), 100m visible radius
-    grassSystem_->Initialize(terrain_, 200.0f, 0.5f, 100.0f);
-    grassSystem_->SetWind(0.5f, Vector2(1.0f, 0.3f));
-    grassSystem_->SetSeasonalTint(Color(1.0f, 1.0f, 1.0f, 1.0f));
-}
+// QUARANTINED — grass not rendering, 160K blades generated but zero visible in game
+// void TerrainNode::CreateGrass()
+// {
+//     if (!terrain_)
+//         return;
+//     Node* grassHost = scene_->CreateChild("GrassHost", LOCAL);
+//     grassSystem_ = grassHost->CreateComponent<GrassSystem>();
+//     grassSystem_->Initialize(terrain_, 200.0f, 0.5f, 100.0f);
+//     grassSystem_->SetWind(0.5f, Vector2(1.0f, 0.3f));
+//     grassSystem_->SetSeasonalTint(Color(1.0f, 1.0f, 1.0f, 1.0f));
+//     if (ecosystem_ && ecosystem_->GetVegetationTexture())
+//         grassSystem_->SetDensityMap(ecosystem_->GetVegetationTexture());
+// }
 
 // --- Font / Theme ---
 
@@ -9574,6 +15063,26 @@ void TerrainNode::LoadThemePrefs()
                     currentFontSize_ = sz;
             }
         }
+        else if (line.StartsWith("\"audio"))
+        {
+            unsigned colon = line.Find(':');
+            if (colon != String::NPOS)
+            {
+                String key = line.Substring(0, colon).Trimmed();
+                key.Replace("\"", "");
+                String val = line.Substring(colon + 1).Trimmed();
+                val.Replace(",", "");
+                float gain = Clamp((float)atof(val.CString()), 0.0f, 1.0f);
+                auto* audio = GetSubsystem<Audio>();
+                if (audio)
+                {
+                    if (key == "audioMaster")  audio->SetMasterGain(SOUND_MASTER, gain);
+                    else if (key == "audioEffects") audio->SetMasterGain(SOUND_EFFECT, gain);
+                    else if (key == "audioAmbient") audio->SetMasterGain(SOUND_AMBIENT, gain);
+                    else if (key == "audioMusic")   audio->SetMasterGain(SOUND_MUSIC, gain);
+                }
+            }
+        }
     }
 }
 
@@ -9590,9 +15099,20 @@ void TerrainNode::SaveThemePrefs()
     if (!file.IsOpen())
         return;
 
+    auto* audio = GetSubsystem<Audio>();
     String json = "{\n";
     json += "  \"font\": \"" + currentFontName_ + "\",\n";
-    json += "  \"fontSize\": " + String(currentFontSize_) + "\n";
+    json += "  \"fontSize\": " + String(currentFontSize_) + ",\n";
+    if (audio)
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "  \"audioMaster\": %.2f,\n  \"audioEffects\": %.2f,\n  \"audioAmbient\": %.2f,\n  \"audioMusic\": %.2f\n",
+            audio->GetMasterGain(SOUND_MASTER), audio->GetMasterGain(SOUND_EFFECT),
+            audio->GetMasterGain(SOUND_AMBIENT), audio->GetMasterGain(SOUND_MUSIC));
+        json += String(buf);
+    }
+    else
+        json += "  \"audioMaster\": 1.0\n";
     json += "}\n";
 
     file.Write(json.CString(), json.Length());
@@ -9750,24 +15270,169 @@ void TerrainNode::UpdateContextHintRaycast()
             hud_->SetContextHint("E: Add Fuel");
             return;
         }
-        if (name == "Deer" || name == "Rabbit" || name == "Fox")
+        // Check if this is any animal (has a Creature component)
+        if (auto* animal = candidate->GetDerivedComponent<Creature>())
         {
-            // Check if animal is dead
-            auto* animal = candidate->GetComponent<Animal>();
-            if (animal && animal->GetState() == ANIMAL_DIE)
+            // CORPSE included so the harvest hint stays alive for the full
+            // post-death window (5s DIE + 120s CORPSE), not just the 5s
+            // death animation. Server-side MSG_HARVEST is state-agnostic
+            // (see AuthServer::HandleHarvest), so this is purely a UX fix.
+            const CreatureState st = animal->GetState();
+            if (st == CREATURE_DIE || st == CREATURE_CORPSE || st == CREATURE_TRAPPED)
             {
                 hud_->SetContextHint("E: Harvest");
+                focusedHarvestNodeId_ = candidate->GetID();
+                focusedHarvestCreatureId_ = animal->GetCreatureId();
                 return;
             }
-            // Living animal — no interaction hint
+            // Living animal — check if it's a HumanNPC for trade hint
+            auto* npc = candidate->GetDerivedComponent<HumanNPC>(false);
+            if (npc && candidate != possessedNPC_.Get())
+            {
+                float dist = possessedNPC_ ?
+                    (candidate->GetWorldPosition() - possessedNPC_->GetWorldPosition()).Length() : 999.0f;
+                if (dist <= 3.0f)
+                    hud_->SetContextHint("T: Trade");
+            }
             continue;
         }
+        // Check for placed buildings (gates)
+        if (buildingSystem_)
+        {
+            Variant placedVar = candidate->GetVar("PlacedBuildingId");
+            if (!placedVar.IsEmpty())
+            {
+                int placedId = placedVar.GetI32();
+                if (buildingSystem_->IsGate(placedId))
+                {
+                    bool open = buildingSystem_->IsGateOpen(placedId);
+                    hud_->SetContextHint(open ? "E: Close Gate" : "E: Open Gate");
+                    focusedGateId_ = placedId;
+                    return;
+                }
+                // Phase 2b: Woodpile shows wood counts on hover. Detect by
+                // typeId rather than name so a renamed building still works.
+                Variant typeVar = candidate->GetVar("BuildingTypeId");
+                if (!typeVar.IsEmpty() && typeVar.GetI32() == 56)
+                {
+                    if (auto* pb = buildingSystem_->FindPlacedMutable(placedId))
+                    {
+                        char buf[96];
+                        snprintf(buf, sizeof(buf),
+                            "Woodpile  SW %d/%d  HW %d/%d   E: Deposit",
+                            pb->softwoodBu, pb->woodCapacity,
+                            pb->hardwoodBu, pb->woodCapacity);
+                        hud_->SetContextHint(String(buf));
+                        focusedWoodpileId_ = placedId;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Check for server-authoritative trees (choppable)
+        for (auto tIt = treeIdToNode_.Begin(); tIt != treeIdToNode_.End(); ++tIt)
+        {
+            if (tIt->second_ && tIt->second_ == candidate)
+            {
+                hud_->SetContextHint("E: Chop");
+                focusedTreeId_ = tIt->first_;
+                return;
+            }
+        }
+
         // Generic interactable objects (gather sources, etc.)
-        // Future: check for "GatherSource", "WaterSource", "Building", "Gate", etc.
-        // For now, skip unrecognized nodes
     }
 
+    focusedGateId_ = -1;
+    focusedWoodpileId_ = -1;
+    focusedHarvestNodeId_ = 0;
+    focusedHarvestCreatureId_ = 0;
+    focusedTreeId_ = 0;
     hud_->SetContextHint("");
+}
+
+// ============================================================================
+// Resource Chain Phase 2 — Trap-check scanner (client-driven detection)
+// ============================================================================
+
+void TerrainNode::ScanTrapsForCatches()
+{
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn || !serverConn->IsConnected())
+        return;
+
+    const float radiusSq = TRAP_CHECK_RADIUS * TRAP_CHECK_RADIUS;
+
+    // Walk every armed-locally trap. The server is the authority on armed/disarmed
+    // state — once disarmed, our checks return silently. We don't track that
+    // locally; the dedupe set absorbs the noise.
+    for (auto trapIt = trapNodes_.Begin(); trapIt != trapNodes_.End(); )
+    {
+        const unsigned trapNodeId = trapIt->first_;
+        Node* trapNode = trapIt->second_;
+        if (!trapNode)
+        {
+            // Stale weak pointer — node was removed without us seeing MSG_TRAP_REMOVED.
+            trapCheckSent_.Erase(trapNodeId);
+            trapIt = trapNodes_.Erase(trapIt);
+            continue;
+        }
+        ++trapIt;
+
+        const Vector3 trapPos = trapNode->GetWorldPosition();
+        HashSet<unsigned>& sentSet = trapCheckSent_[trapNodeId];
+
+        // Snapshot the current set, so we can prune entries whose creature has
+        // left range without invalidating iterators while we send.
+        HashSet<unsigned> stillInRange;
+
+        for (unsigned i = 0; i < animalNodes_.Size(); ++i)
+        {
+            Node* animalNode = animalNodes_[i].Get();
+            if (!animalNode || !animalNode->IsEnabled())
+                continue;
+            Creature* creature = animalNode->GetDerivedComponent<Creature>();
+            if (!creature)
+                continue;
+            // Only living creatures can be caught — skip dead, corpse, already-trapped.
+            const CreatureState st = creature->GetState();
+            if (st == CREATURE_DIE || st == CREATURE_CORPSE || st == CREATURE_TRAPPED)
+                continue;
+
+            const Vector3 cp = animalNode->GetWorldPosition();
+            const Vector3 d  = cp - trapPos;
+            if (d.LengthSquared() > radiusSq)
+                continue;
+
+            const unsigned creatureNodeId = animalNode->GetID();
+            stillInRange.Insert(creatureNodeId);
+
+            // Dedupe: only send the first time this (trap, creature) pair enters range.
+            if (sentSet.Contains(creatureNodeId))
+                continue;
+            sentSet.Insert(creatureNodeId);
+
+            VectorBuffer buf;
+            buf.WriteU32(trapNodeId);
+            buf.WriteU32(creatureNodeId);
+            buf.WriteI32(creature->GetCreatureId());
+            buf.WriteFloat(cp.x_);
+            buf.WriteFloat(cp.y_);
+            buf.WriteFloat(cp.z_);
+            serverConn->SendMessage(MSG_TRAP_CHECK, true, true, buf);
+        }
+
+        // Prune dedupe set: any creatureId no longer in range can re-fire later.
+        for (auto sIt = sentSet.Begin(); sIt != sentSet.End(); )
+        {
+            if (!stillInRange.Contains(*sIt))
+                sIt = sentSet.Erase(sIt);
+            else
+                ++sIt;
+        }
+    }
 }
 
 // ============================================================================
@@ -10098,13 +15763,16 @@ void TerrainNode::ToggleInventory()
     }
     else
     {
-        // Return to relative mode if menu is also closed
+        // Return to relative mode if menu is also closed and window has focus
         if (!menuOpen_)
         {
             auto* input = GetSubsystem<Input>();
-            GetSubsystem<UI>()->SetFocusElement(nullptr);
-            input->SetMouseMode(MM_RELATIVE);
-            input->SetMouseVisible(false);
+            if (input->HasFocus())
+            {
+                GetSubsystem<UI>()->SetFocusElement(nullptr);
+                input->SetMouseMode(MM_RELATIVE);
+                input->SetMouseVisible(false);
+            }
         }
     }
 }
@@ -10121,6 +15789,36 @@ void TerrainNode::SendPickup(unsigned nodeId)
     serverConn->SendMessage(MSG_PICKUP, true, true, buf);
 }
 
+void TerrainNode::SendResourceHarvest(const Vector3& worldPos, int itemId)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network->GetServerConnection();
+    if (!serverConn)
+        return;
+
+    // Reverse map item ID to ResourceType
+    unsigned char resType = RES_NONE;
+    switch (itemId)
+    {
+    case 1:  resType = RES_STONE;    break;
+    case 2:  resType = RES_STICK;    break;
+    case 3:  resType = RES_FIBER;    break;
+    case 4:  resType = RES_CLAY;     break;
+    case 5:  resType = RES_FLINT;    break;
+    case 6:  resType = RES_BERRIES;  break;
+    case 11: resType = RES_LOG;      break;
+    case 15: resType = RES_SOFTWOOD; break;  // Phase 1b
+    case 16: resType = RES_HARDWOOD; break;  // Phase 1b
+    default: return;
+    }
+
+    VectorBuffer buf;
+    buf.WriteFloat(worldPos.x_);
+    buf.WriteFloat(worldPos.z_);
+    buf.WriteU8(resType);
+    serverConn->SendMessage(MSG_RESOURCE_HARVEST, true, true, buf);
+}
+
 void TerrainNode::SendDrop(int itemId, int qty)
 {
     auto* network = GetSubsystem<Network>();
@@ -10132,6 +15830,285 @@ void TerrainNode::SendDrop(int itemId, int qty)
     buf.WriteI32(itemId);
     buf.WriteI32(qty);
     serverConn->SendMessage(MSG_DROP, true, true, buf);
+}
+
+// ============================================================================
+// Combat (Phase 1) — melee attack, server validation, floating damage numbers
+// ============================================================================
+
+void TerrainNode::TryMeleeAttack()
+{
+    if (!scene_ || !cameraNode_)
+        return;
+
+    // Swing sound — plays regardless of hit/miss
+    if (characterNode_)
+    {
+        auto* source = characterNode_->GetComponent<SoundSource3D>();
+        if (source)
+        {
+            auto* cache = GetSubsystem<ResourceCache>();
+            auto* swingSound = cache ? cache->GetResource<Sound>("Sounds/PlayerFist.wav") : nullptr;
+            if (swingSound)
+                source->Play(swingSound);
+        }
+    }
+
+    auto* physicsWorld = scene_->GetComponent<PhysicsWorld>();
+    if (!physicsWorld)
+        return;
+
+    // Raycast from camera forward (possession = camera behind character)
+    auto* camera = cameraNode_->GetComponent<Camera>();
+    if (!camera)
+        return;
+    Ray ray = camera->GetScreenRay(0.5f, 0.5f);
+
+    // Check equipped weapon range — extend raycast for ranged weapons
+    float attackRange = 5.0f;  // melee default
+    for (unsigned s = 0; s < inventory_.Size(); ++s)
+    {
+        if (inventory_[s].slotType == "weapon" && gameDB_)
+        {
+            CombatInfo ci;
+            if (gameDB_->GetCombatStats(inventory_[s].itemId, ci) && ci.range > 3.0f)
+                attackRange = ci.range;
+            break;
+        }
+    }
+
+    Vector<PhysicsRaycastResult> results;
+    physicsWorld->Raycast(results, ray, attackRange);
+
+    for (unsigned i = 0; i < results.Size(); ++i)
+    {
+        Node* node = results[i].body_->GetNode();
+        if (!node || node->HasComponent<Terrain>())
+            continue;
+
+        Creature* animal = node->GetDerivedComponent<Creature>(false);
+        if (!animal)
+            animal = node->GetParent() ? node->GetParent()->GetDerivedComponent<Creature>(false) : nullptr;
+        if (!animal)
+            continue;
+
+        // Get equipped weapon item ID (0 = bare hands)
+        int weaponId = 0;
+        for (unsigned s = 0; s < inventory_.Size(); ++s)
+        {
+            if (inventory_[s].slotType == "weapon")
+            {
+                weaponId = inventory_[s].itemId;
+                break;
+            }
+        }
+
+        // Send to server for authoritative dice roll.
+        // Combat Phase 2: include creatureId so the server can lazy-register
+        // the target's stats from GameDB on its first hit. The server keys
+        // Send spawnId (server-assigned) so server can look up creatureStates_ directly.
+        auto* network = GetSubsystem<Network>();
+        auto* serverConn = network->GetServerConnection();
+        if (serverConn)
+        {
+            VectorBuffer buf;
+            buf.WriteU32(animal->GetSpawnId());  // server-side key (was local nodeId)
+            buf.WriteI32(weaponId);
+            buf.WriteI32(animal->GetCreatureId());
+            serverConn->SendMessage(MSG_ATTACK, true, false, buf);
+        }
+        else
+        {
+            // Offline / single-player: resolve locally
+            int attackMod  = 0;
+            int baseDamage = 1;
+            int damageVar  = 2;
+            if (gameDB_ && weaponId > 0)
+            {
+                CombatInfo ci;
+                if (gameDB_->GetCombatStats(weaponId, ci))
+                {
+                    attackMod  = ci.attackMod;
+                    baseDamage = ci.damage;
+                    damageVar  = ci.damageVar;
+                }
+            }
+            int roll   = (rand() % 20) + 1;
+            bool crit  = (roll == 20);
+            bool fumble = (roll == 1);
+            bool hit   = !fumble && (crit || (roll + attackMod) >= animal->GetDefense());
+            int damage = 0;
+            if (hit)
+            {
+                damage = baseDamage + (damageVar > 0 ? (rand() % damageVar) + 1 : 0);
+                if (crit) damage *= 2;
+            }
+            {
+                using namespace CombatResult;
+                VariantMap& ed = GetEventDataMap();
+                ed[P_DAMAGE] = damage;
+                ed[P_CRIT]   = crit;
+                ed[P_MISS]   = !hit;
+                node->SendEvent(E_COMBAT_RESULT, ed);
+            }
+            if (hit)
+                animal->TakeDamage(damage);
+            if (fumble)
+                ShowFumbleEffect();
+        }
+        return;
+    }
+}
+
+void TerrainNode::HandleCombatResult(int /*msgID*/, MemoryBuffer& msg)
+{
+    unsigned targetSpawnId = msg.ReadU32();  // server-assigned spawnId (was local nodeId)
+    bool hit    = msg.ReadBool();
+    bool crit   = msg.ReadBool();
+    bool fumble = msg.ReadBool();
+    int damage  = msg.ReadI32();
+    /*int roll  =*/ msg.ReadI32();  // not used client-side for display
+    // Combat Phase 2: trailing hpRemaining field. Old servers don't include
+    // it; MemoryBuffer reads past EOF return 0, which is benign — we ignore
+    // sync if we read 0 from EOF rather than from the server.
+    bool hasHpRemaining = !msg.IsEof();
+    int hpRemaining = hasHpRemaining ? msg.ReadI32() : -1;
+
+    // Resolve spawnId → local scene node via the spawn tracking map.
+    auto sIt = spawnIdToNode_.Find(targetSpawnId);
+    Node* target = (sIt != spawnIdToNode_.End() && sIt->second_) ? sIt->second_ : nullptr;
+
+    if (target)
+    {
+        using namespace CombatResult;
+        VariantMap& ed = GetEventDataMap();
+        ed[P_DAMAGE] = damage;
+        ed[P_CRIT]   = crit;
+        ed[P_MISS]   = !hit;
+        target->SendEvent(E_COMBAT_RESULT, ed);
+    }
+
+    if (target && hit)
+    {
+        // Hit sound — play on the target's position
+        auto* hitSource = target->GetComponent<SoundSource3D>();
+        if (hitSource)
+        {
+            auto* cache = GetSubsystem<ResourceCache>();
+            auto* hitSound = cache ? cache->GetResource<Sound>("Sounds/PlayerFistHit.wav") : nullptr;
+            if (hitSound)
+                hitSource->Play(hitSound);
+        }
+
+        Creature* animal = target->GetDerivedComponent<Creature>(false);
+        if (!animal && target->GetParent())
+            animal = target->GetParent()->GetDerivedComponent<Creature>(false);
+        if (animal)
+        {
+            // Server is authoritative on HP. Mirror its value rather than
+            // reapplying TakeDamage locally (which would double-flee/fight
+            // and risk diverging from the server's HP).
+            if (hasHpRemaining)
+                animal->SetHp(hpRemaining);
+            else
+                animal->TakeDamage(damage);  // legacy fallback
+        }
+    }
+
+    // Fumble (nat 1): server unequips weapon, client shows feedback.
+    // The inventory update from the server handles the actual slot change.
+    if (fumble)
+        ShowFumbleEffect();
+}
+
+void TerrainNode::HandleCreatureDeath(MemoryBuffer& msg)
+{
+    // Wire format from AuthServer::BroadcastCreatureDeath:
+    //   spawnId u32, species string, position Vector3, creatureId i32, cause u8
+    unsigned targetSpawnId = msg.ReadU32();
+    String   species       = msg.ReadString();
+    Vector3  pos           = msg.ReadVector3();
+    int      creatureId    = msg.ReadI32();
+    // Phase 5c: death cause byte (trailing — old servers don't send it)
+    unsigned char deathCause = msg.IsEof() ? 0 : (unsigned char)msg.ReadByte();
+    (void)pos; (void)creatureId;
+
+    // Resolve spawnId → local scene node
+    auto sIt = spawnIdToNode_.Find(targetSpawnId);
+    Node* target = (sIt != spawnIdToNode_.End() && sIt->second_) ? sIt->second_ : nullptr;
+    if (!target)
+        return;  // already gone client-side
+
+    Creature* creature = target->GetDerivedComponent<Creature>(false);
+    if (!creature && target->GetParent())
+        creature = target->GetParent()->GetDerivedComponent<Creature>(false);
+    if (!creature)
+        return;
+
+    if (creature->GetState() == CREATURE_DIE)
+        return;  // already dying — server confirmation matches client
+
+    static const char* causeNames[] = {"combat", "drown", "starve", "age", "scavenge", "fall", "fire"};
+    const char* causeName = (deathCause < 7) ? causeNames[deathCause] : "unknown";
+    URHO3D_LOGINFOF("MSG_CREATURE_DEATH: %s (spawnId %u) died — cause: %s",
+        species.CString(), targetSpawnId, causeName);
+
+    // Phase 5d: this IS the server's authoritative death — drive state directly.
+    // SetHp(0) syncs HP, SetState triggers death anim + E_CREATUREDIED for
+    // scavenger/scent/loot listeners.
+    creature->SetHp(0);
+    creature->SetState(CREATURE_DIE);
+}
+
+// ============================================================================
+// Combat Fumble Effect — floating "FUMBLE!" text + camera shake + sound
+// ============================================================================
+
+void TerrainNode::ShowFumbleEffect()
+{
+    // Sound — clumsy weapon slip
+    auto* cache = GetSubsystem<ResourceCache>();
+    if (cameraNode_)
+    {
+        auto* src = cameraNode_->GetOrCreateComponent<SoundSource>();
+        auto* snd = cache ? cache->GetResource<Sound>("Sounds/NutThrow.wav") : nullptr;
+        if (src && snd)
+            src->Play(snd);
+    }
+
+    // Floating "FUMBLE!" text — centered on screen, orange, floats up and fades
+    auto* ui = GetSubsystem<UI>();
+    auto* graphics = GetSubsystem<Graphics>();
+    if (!ui || !graphics)
+        return;
+
+    // Remove previous fumble text if still visible
+    if (!fumbleText_.Expired())
+        fumbleText_->Remove();
+
+    auto* font = cache ? cache->GetResource<Font>("Fonts/Anonymous Pro.ttf") : nullptr;
+    if (!font)
+        font = cache ? cache->GetResource<Font>("Fonts/BlueHighway.ttf") : nullptr;
+    if (!font)
+        return;
+
+    auto* text = ui->GetRoot()->CreateChild<Text>();
+    text->SetText("FUMBLE!");
+    text->SetFont(font, 22);
+    text->SetColor(Color(1.0f, 0.5f, 0.1f));  // orange
+    text->SetTextAlignment(HA_CENTER);
+
+    // Position center-screen, slightly above middle
+    int sx = graphics->GetWidth() / 2 - 40;
+    int sy = graphics->GetHeight() / 2 - 60;
+    text->SetPosition(IntVector2(sx, sy));
+
+    fumbleText_ = text;
+    fumbleTextTimer_ = 0.0f;
+    fumbleTextStartY_ = (float)sy;
+
+    // Start camera shake (0.3s duration)
+    cameraShakeTimer_ = 0.3f;
 }
 
 // ============================================================================
@@ -10230,6 +16207,280 @@ void TerrainNode::RefreshEquipmentSlots()
         {
             equipSlots_[i].text->SetText("--");
             equipSlots_[i].button->SetColor(Color(0.25f, 0.2f, 0.18f, 0.8f));  // empty
+        }
+    }
+
+    // Update torch visual whenever equipment changes
+    UpdateTorchVisual();
+}
+
+// ---------------------------------------------------------------------------
+// Fire Carrying Phase 2: Torch Visual System
+// ---------------------------------------------------------------------------
+
+void TerrainNode::UpdateTorchVisual()
+{
+    // Check for fire items: hand slot (torches) + bag (bundles/vessels)
+    int torchItem = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        // Fire bundle (872) always glows; bark vessel (873) depends on contents
+        if (inventory_[i].slotType == "bag" && inventory_[i].itemId == 872)
+            torchItem = 872;
+        if (inventory_[i].slotType == "bag" && inventory_[i].itemId == 873)
+        {
+            // Check vessel contents from creature state
+            unsigned char vc = 0;
+            if (characterNode_)
+            {
+                auto* creature = characterNode_->GetDerivedComponent<Creature>(true);
+                if (creature) vc = creature->GetVesselContents();
+            }
+            if (vc == 1) torchItem = 873;       // fire — show ember glow
+            else if (vc == 2) torchItem = 8732;  // water — distinct visual (encoded as 8732)
+            // vc == 0: empty — no visual
+        }
+        if (inventory_[i].slotType == "hand")
+        {
+            if (inventory_[i].itemId == 109 || inventory_[i].itemId == 871)
+                torchItem = inventory_[i].itemId;
+            break;
+        }
+    }
+
+    if (torchItem == equippedTorchItem_)
+        return;  // no change
+
+    int prevTorch = equippedTorchItem_;
+    equippedTorchItem_ = torchItem;
+
+    if (torchItem > 0)
+    {
+        // Equip or switch torch — create/update flame
+        if (torchFlameNode_)
+            torchFlameNode_->Remove();
+        CreateTorchFlame(torchItem);
+    }
+    else if (prevTorch > 0)
+    {
+        // Torch removed — rain extinguish or burned out
+        RemoveTorchFlame(true);
+    }
+}
+
+void TerrainNode::CreateTorchFlame(int fireItemId)
+{
+    Node* parent = characterNode_;
+    if (!parent)
+        parent = cameraNode_;
+    if (!parent)
+        return;
+
+    // Try to attach to RightHand bone if available (possessed NPC)
+    Node* attachPoint = parent;
+    auto* animModel = parent->GetComponent<AnimatedModel>();
+    if (!animModel)
+    {
+        for (unsigned i = 0; i < parent->GetNumChildren(); ++i)
+        {
+            animModel = parent->GetChild(i)->GetComponent<AnimatedModel>();
+            if (animModel)
+            {
+                Node* handBone = parent->GetChild(i)->GetChild("RightHand", true);
+                if (handBone)
+                    attachPoint = handBone;
+                break;
+            }
+        }
+    }
+    else
+    {
+        Node* handBone = parent->GetChild("RightHand", true);
+        if (handBone)
+            attachPoint = handBone;
+    }
+
+    torchFlameNode_ = attachPoint->CreateChild("TorchFlame");
+    torchFlameNode_->SetPosition(Vector3(0.0f, 0.3f, 0.0f));
+
+    // Light parameters per fire item tier
+    auto* light = torchFlameNode_->CreateComponent<Light>();
+    light->SetLightType(LIGHT_POINT);
+
+    float emitMin = 4.0f, emitMax = 8.0f;
+    Vector2 sizeMin(0.08f, 0.12f), sizeMax(0.12f, 0.2f);
+
+    switch (fireItemId)
+    {
+    case 871:  // Resin Torch — bright amber
+        light->SetColor(Color(1.0f, 0.65f, 0.2f));
+        light->SetRange(8.0f);
+        light->SetBrightness(0.9f);
+        emitMin = 8.0f; emitMax = 14.0f;
+        sizeMin = Vector2(0.15f, 0.25f); sizeMax = Vector2(0.25f, 0.4f);
+        break;
+    case 872:  // Fire Bundle — dim ember glow, no real flame
+        light->SetColor(Color(0.9f, 0.4f, 0.1f));
+        light->SetRange(3.0f);
+        light->SetBrightness(0.25f);
+        emitMin = 1.0f; emitMax = 3.0f;
+        sizeMin = Vector2(0.04f, 0.06f); sizeMax = Vector2(0.06f, 0.1f);
+        break;
+    case 873:  // Bark Vessel (fire) — faint warm glow
+        light->SetColor(Color(1.0f, 0.5f, 0.15f));
+        light->SetRange(2.5f);
+        light->SetBrightness(0.2f);
+        emitMin = 0.5f; emitMax = 2.0f;
+        sizeMin = Vector2(0.03f, 0.05f); sizeMax = Vector2(0.05f, 0.08f);
+        break;
+    case 8732:  // Bark Vessel (water) — cool blue shimmer
+        light->SetColor(Color(0.3f, 0.5f, 0.9f));
+        light->SetRange(1.5f);
+        light->SetBrightness(0.15f);
+        emitMin = 0.3f; emitMax = 1.0f;
+        sizeMin = Vector2(0.02f, 0.02f); sizeMax = Vector2(0.04f, 0.04f);
+        break;
+    default:   // Basic Torch (109) — warm yellow
+        light->SetColor(Color(1.0f, 0.75f, 0.3f));
+        light->SetRange(5.0f);
+        light->SetBrightness(0.5f);
+        break;
+    }
+
+    // Particle emitter — fire or water mist depending on item
+    auto* cache = GetSubsystem<ResourceCache>();
+    const char* particlePath = (fireItemId == 8732) ? "Particle/Smoke.xml" : "Particle/Fire.xml";
+    auto* effect = cache->GetResource<ParticleEffect>(particlePath);
+    if (effect)
+    {
+        auto* emitter = torchFlameNode_->CreateComponent<ParticleEmitter>();
+        SharedPtr<ParticleEffect> localEffect = effect->Clone();
+        localEffect->SetMinEmissionRate(emitMin);
+        localEffect->SetMaxEmissionRate(emitMax);
+        localEffect->SetMinParticleSize(sizeMin);
+        localEffect->SetMaxParticleSize(sizeMax);
+        emitter->SetEffect(localEffect);
+    }
+}
+
+void TerrainNode::RemoveTorchFlame(bool showExtinguish)
+{
+    if (torchFlameNode_)
+    {
+        if (showExtinguish)
+        {
+            // Brief steam/sizzle visual at the torch position before removing
+            Vector3 pos = torchFlameNode_->GetWorldPosition();
+            torchFlameNode_->Remove();
+            torchFlameNode_ = nullptr;
+
+            // Create a short-lived smoke puff
+            Node* parent = characterNode_ ? characterNode_.Get() : cameraNode_;
+            if (parent)
+            {
+                Node* steamNode = parent->CreateChild("TorchSteam");
+                steamNode->SetWorldPosition(pos);
+                auto* cache = GetSubsystem<ResourceCache>();
+                auto* smokeEffect = cache->GetResource<ParticleEffect>("Particle/Smoke.xml");
+                if (smokeEffect)
+                {
+                    auto* emitter = steamNode->CreateComponent<ParticleEmitter>();
+                    SharedPtr<ParticleEffect> localSmoke = smokeEffect->Clone();
+                    localSmoke->SetMinEmissionRate(5.0f);
+                    localSmoke->SetMaxEmissionRate(10.0f);
+                    localSmoke->SetActiveTime(0.5f);  // brief puff
+                    emitter->SetEffect(localSmoke);
+                    emitter->SetAutoRemoveMode(REMOVE_NODE);
+                }
+            }
+
+            // Show HUD feedback
+            if (hud_)
+                hud_->SetContextHint("Torch extinguished!");
+        }
+        else
+        {
+            torchFlameNode_->Remove();
+            torchFlameNode_ = nullptr;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Water Phase 1: Bark Vessel Visual States per NPC
+// ---------------------------------------------------------------------------
+
+void TerrainNode::UpdateNPCVesselVisual(Node* npcNode, unsigned char contents)
+{
+    if (!npcNode)
+        return;
+
+    // Remove previous vessel visual if any
+    Node* existing = npcNode->GetChild("VesselFX", true);
+    if (existing)
+        existing->Remove();
+
+    if (contents == 0)
+        return;  // empty — no visual
+
+    // Find a suitable attach point (hand bone or NPC root)
+    Node* attachPoint = npcNode;
+    for (unsigned i = 0; i < npcNode->GetNumChildren(); ++i)
+    {
+        auto* anim = npcNode->GetChild(i)->GetComponent<AnimatedModel>();
+        if (anim)
+        {
+            Node* hand = npcNode->GetChild(i)->GetChild("RightHand", true);
+            if (hand) attachPoint = hand;
+            break;
+        }
+    }
+
+    Node* fxNode = attachPoint->CreateChild("VesselFX");
+    fxNode->SetPosition(Vector3(0.0f, 0.2f, 0.0f));
+
+    auto* light = fxNode->CreateComponent<Light>();
+    light->SetLightType(LIGHT_POINT);
+
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    if (contents == 1)
+    {
+        // Fire — warm ember glow (same as bark vessel in torch system)
+        light->SetColor(Color(1.0f, 0.5f, 0.15f));
+        light->SetRange(2.5f);
+        light->SetBrightness(0.2f);
+
+        auto* effect = cache->GetResource<ParticleEffect>("Particle/Fire.xml");
+        if (effect)
+        {
+            auto* emitter = fxNode->CreateComponent<ParticleEmitter>();
+            SharedPtr<ParticleEffect> local = effect->Clone();
+            local->SetMinEmissionRate(0.5f);
+            local->SetMaxEmissionRate(2.0f);
+            local->SetMinParticleSize(Vector2(0.03f, 0.05f));
+            local->SetMaxParticleSize(Vector2(0.05f, 0.08f));
+            emitter->SetEffect(local);
+        }
+    }
+    else if (contents == 2)
+    {
+        // Water — cool blue shimmer, no particles (just light ripple)
+        light->SetColor(Color(0.3f, 0.5f, 0.9f));
+        light->SetRange(1.5f);
+        light->SetBrightness(0.15f);
+
+        // Subtle smoke-like mist for water surface shimmer
+        auto* effect = cache->GetResource<ParticleEffect>("Particle/Smoke.xml");
+        if (effect)
+        {
+            auto* emitter = fxNode->CreateComponent<ParticleEmitter>();
+            SharedPtr<ParticleEffect> local = effect->Clone();
+            local->SetMinEmissionRate(0.3f);
+            local->SetMaxEmissionRate(1.0f);
+            local->SetMinParticleSize(Vector2(0.02f, 0.02f));
+            local->SetMaxParticleSize(Vector2(0.04f, 0.04f));
+            emitter->SetEffect(local);
         }
     }
 }
@@ -10505,7 +16756,9 @@ void TerrainNode::SendUnequip(const String& slot)
 
 bool TerrainNode::IsConsumable(const String& category) const
 {
-    return category == "food" || category == "fuel";
+    // Food only. Fuel (softwood/hardwood/charcoal) is consumed by burning,
+    // not eating — it gets its own deposit/burn path via woodpile + fire pit.
+    return category == "food";
 }
 
 void TerrainNode::ShowItemContextMenu(int bagIndex, const IntVector2& screenPos)
@@ -10740,10 +16993,316 @@ void TerrainNode::InitGameDB()
     gameDB_->ExecuteFile(dataDir + "GameDB/buildings_schema.sql");
     gameDB_->ExecuteFile(dataDir + "GameDB/buildings_seed.sql");
 
+    // Population dynamics schema (idempotent)
+    gameDB_->ExecuteFile(dataDir + "GameDB/population_schema.sql");
+
+    // Initialise population manager and subscribe to animal death events
+    popManager_ = new PopulationManager(context_);
+    popManager_->Initialize(gameDB_);
+    SubscribeToEvent(E_CREATUREDIED, URHO3D_HANDLER(TerrainNode, HandleAnimalDied));
+
     // Load all tier 0-3 recipes
     recipes_ = gameDB_->GetRecipesForTier(3);
     URHO3D_LOGINFOF("GameDB loaded: %d recipes", recipes_.Size());
 #endif
+}
+
+void TerrainNode::HandleAnimalDied(StringHash /*eventType*/, VariantMap& eventData)
+{
+    // The client used to call popManager_->RecordKill here on the local
+    // PopulationManager. That was wrong: in multiplayer N clients each
+    // catch E_CREATUREDIED locally and would each increment their own
+    // local birth accumulator, causing per-client population divergence
+    // and (in Death System Phase 1) N replacement spawns per real death.
+    //
+    // RecordKill now lives server-side in AuthServer::HandleHarvest,
+    // called once per successful harvest (see AuthServer.cpp around the
+    // "Population accounting" comment). The client PopulationManager is
+    // for read-only display — it must NOT mutate population state.
+    //
+    // What DOES belong here: client-side reactions that don't mutate
+    // authoritative state. Death System Phase 3 lands the first one —
+    // a scent marker registered for scavenger AI to investigate.
+    using namespace CreatureDied;
+    int     creatureId = eventData[P_CREATUREID].GetI32();
+    Vector3 pos        = eventData[P_POSITION].GetVector3();
+    ScentRegistry::Register(pos, creatureId);
+
+    // Auto-unpossess if the possessed NPC just died
+    if (possessedNPC_)
+    {
+        auto* sender = dynamic_cast<Component*>(GetEventSender());
+        if (sender && sender->GetNode() == possessedNPC_.Get())
+            UnpossessNPC();
+    }
+}
+
+LandAnimal* TerrainNode::SpawnCreatureAt(int creatureId, const Vector3& pos)
+{
+    if (!scene_)
+        return nullptr;
+
+    const SpawnEntry* entry = FindSpawnEntryByCreatureId(creatureId);
+    if (!entry)
+    {
+        URHO3D_LOGWARNINGF("SpawnCreatureAt: unknown creatureId %d", creatureId);
+        return nullptr;
+    }
+
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    Node* node = scene_->CreateTemporaryChild(entry->name, LOCAL);
+    node->SetPosition(pos);
+
+    // Model on child node with 180° Y flip — meshes face -Z, Urho3D forward is +Z
+    Node* modelNode = node->CreateChild(String(entry->name) + "Model");
+    modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
+
+    auto* model = modelNode->CreateComponent<AnimatedModel>();
+    model->SetModel(cache->GetResource<Model>(entry->modelPath), true, true);
+    model->ApplyMaterialList(entry->matList);
+    model->SetCastShadows(false);  // Animals skip shadow pass — saves ~40 draws per cascade
+
+    modelNode->CreateComponent<AnimationController>();
+
+    // Species-specific component. Kept as an explicit if-chain (rather than
+    // type-name reflection) so the linker requires every referenced class —
+    // a missing #include shows up as a build error rather than a runtime
+    // "unknown component type" log spam.
+    LandAnimal* animal = nullptr;
+    if      (strcmp(entry->name, "Rabbit")    == 0) animal = node->CreateComponent<Rabbit>();
+    else if (strcmp(entry->name, "Deer")      == 0) animal = node->CreateComponent<Deer>();
+    else if (strcmp(entry->name, "Fox")       == 0) animal = node->CreateComponent<Fox>();
+    else if (strcmp(entry->name, "Wolf")      == 0) animal = node->CreateComponent<Wolf>();
+    else if (strcmp(entry->name, "Stag")      == 0) animal = node->CreateComponent<Stag>();
+    else if (strcmp(entry->name, "Bull")      == 0) animal = node->CreateComponent<Bull>();
+    else if (strcmp(entry->name, "Cow")       == 0) animal = node->CreateComponent<Cow>();
+    else if (strcmp(entry->name, "Horse")     == 0) animal = node->CreateComponent<Horse>();
+    else if (strcmp(entry->name, "Donkey")    == 0) animal = node->CreateComponent<Donkey>();
+    else if (strcmp(entry->name, "Alpaca")    == 0) animal = node->CreateComponent<Alpaca>();
+    else if (strcmp(entry->name, "Husky")     == 0) animal = node->CreateComponent<Husky>();
+    else if (strcmp(entry->name, "ShibaInu")  == 0) animal = node->CreateComponent<ShibaInu>();
+    else if (strcmp(entry->name, "CaveMan")   == 0) animal = node->CreateComponent<CaveMan>();
+    else if (strcmp(entry->name, "CaveWoman") == 0) animal = node->CreateComponent<CaveWoman>();
+
+    // Phase 5: Cavemen always spawn near the campfire, not at random terrain positions
+    if (animal && (entry->creatureId == 20 || entry->creatureId == 21))
+    {
+        Node* campfire = scene_ ? scene_->GetChild("Campfire", true) : nullptr;
+        if (campfire && terrain_)
+        {
+            Vector3 firePos = campfire->GetWorldPosition();
+            float angle = Random(360.0f);
+            float dist = 3.5f + Random(0.0f, 2.0f);
+            Vector3 campPos = firePos + Vector3(Cos(angle) * dist, 0.0f, Sin(angle) * dist);
+            campPos.y_ = terrain_->GetHeight(campPos);
+            node->SetPosition(campPos);
+            animal->SetHomePosition(campPos);
+
+            auto* npc = dynamic_cast<HumanNPC*>(animal);
+            if (npc)
+            {
+                npc->SetCampfireNode(campfire);
+                if (cameraNode_)
+                    npc->SetCameraNode(cameraNode_);
+                if (resourceMap_)
+                    npc->SetResourceMap(resourceMap_);
+            }
+        }
+    }
+
+    if (animal)
+    {
+        if (buildingSystem_)
+            animal->SetBuildingSystem(buildingSystem_);
+        animal->SetSpatialHash(&landAnimalHash_);
+        if (ecosystem_)
+            animal->SetEcosystem(ecosystem_);
+        if (gameDB_)
+        {
+            CreatureInfo ci;
+            if (gameDB_->GetCreature(entry->creatureId, ci))
+            {
+                float fleeFrac = (ci.aggression == "aggressive") ? 0.25f : 0.75f;
+                animal->InitCombatStats(ci.hp, ci.attack, ci.defense, ci.damage, ci.damageVar,
+                    ci.speed, fleeFrac, ci.aggression);
+            }
+        }
+    }
+    else
+    {
+        URHO3D_LOGWARNINGF("SpawnCreatureAt: no component constructor for species '%s'", entry->name);
+    }
+
+    animalNodes_.Push(WeakPtr<Node>(node));
+    return animal;
+}
+
+void TerrainNode::HandleSpawnCreatureMsg(StringHash /*eventType*/, VariantMap& eventData)
+{
+    // Server→client replacement spawn — Death System Phase 1.
+    // Wire format from AuthServer::BroadcastSpawnCreature:
+    //   region_id i32, creature_id i32, x f32, y f32, z f32, spawn_id u32 (optional)
+    using namespace NetworkMessage;
+    const auto& data = eventData[P_DATA].GetBuffer();
+    MemoryBuffer msg(data);
+
+    int  regionId   = msg.ReadI32();
+    int  creatureId = msg.ReadI32();
+    float x = msg.ReadFloat();
+    /*float y = */ msg.ReadFloat();   // ignored — server sends 0, we snap below
+    float z = msg.ReadFloat();
+    unsigned spawnId = msg.IsEof() ? 0 : msg.ReadU32();  // server-assigned AI tracking ID
+    (void)regionId;  // logged only; spawn position came from server
+
+    if (!scene_ || !terrain_)
+        return;
+
+    // Snap Y to terrain. Then validate the snap landed on dry land — the
+    // server has no terrain access, so its random region pick can land in
+    // a lake. If invalid, walk outward in 1m steps along a random axis up
+    // to 8 attempts; drop the spawn if all attempts are wet.
+    const float waterLevel = 5.5f;
+    float bestY = terrain_->GetHeight(Vector3(x, 0.0f, z));
+    if (bestY <= waterLevel)
+    {
+        bool found = false;
+        for (int attempt = 1; attempt <= 8 && !found; ++attempt)
+        {
+            float angle = Random(360.0f);
+            float r     = (float)attempt * 2.0f;  // 2,4,...,16m outward sweep
+            float tx = x + r * Cos(angle);
+            float tz = z + r * Sin(angle);
+            float ty = terrain_->GetHeight(Vector3(tx, 0.0f, tz));
+            if (ty > waterLevel)
+            {
+                x = tx;
+                z = tz;
+                bestY = ty;
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            URHO3D_LOGWARNINGF("MSG_SPAWN_CREATURE: no dry land near (%.1f, %.1f) for creatureId %d — dropping",
+                x, z, creatureId);
+            return;
+        }
+    }
+
+    Vector3 pos(x, bestY, z);
+    LandAnimal* animal = SpawnCreatureAt(creatureId, pos);
+    if (animal)
+    {
+        // Store server-assigned AI tracking ID for MSG_CREATURE_AI_STATE correlation
+        if (spawnId > 0)
+        {
+            animal->SetSpawnId(spawnId);
+            spawnIdToNode_[spawnId] = animal->GetNode();
+        }
+
+        URHO3D_LOGINFOF("MSG_SPAWN_CREATURE: spawned creatureId %d (spawnId %u) in region %d at (%.1f, %.1f, %.1f)",
+            creatureId, spawnId, regionId, pos.x_, pos.y_, pos.z_);
+    }
+}
+
+void TerrainNode::HandleCreatureAIState(MemoryBuffer& msg)
+{
+    // Wire format: spawnId u32, state u8, position Vec3, targetId u32, moveSpeed f32,
+    //              hp f32, hunger f32, thirst f32, warmth f32, stamina f32
+    unsigned spawnId = msg.ReadU32();
+    unsigned char state = static_cast<unsigned char>(msg.ReadByte());
+    float px = msg.ReadFloat();
+    float py = msg.ReadFloat();
+    float pz = msg.ReadFloat();
+    unsigned targetId = msg.ReadU32();
+    float moveSpeed = msg.ReadFloat();
+    float aiHp = msg.ReadFloat();
+    float aiHunger = msg.ReadFloat();
+    float aiThirst = msg.ReadFloat();
+    float aiWarmth = msg.ReadFloat();
+    float aiStamina = msg.ReadFloat();
+    (void)targetId;   // Phase 3: used for hunt/defend target
+
+    auto it = spawnIdToNode_.Find(spawnId);
+    if (it == spawnIdToNode_.End() || it->second_.Expired())
+    {
+        // Log first few misses with actual map contents for diagnosis
+        static int totalMiss = 0;
+        if (++totalMiss == 10)
+        {
+            String keys;
+            for (auto m = spawnIdToNode_.Begin(); m != spawnIdToNode_.End(); ++m)
+                keys += String(m->first_) + " ";
+            URHO3D_LOGWARNINGF("[AIState] spawnId %u miss — map has %u entries: [%s]",
+                spawnId, spawnIdToNode_.Size(), keys.CString());
+        }
+        return;
+    }
+
+    Node* node = it->second_;
+    auto* creature = node->GetDerivedComponent<Creature>(true);
+    if (!creature)
+        return;
+
+    // Snap server Y to local terrain height (server has approximate height only)
+    float localY = terrain_ ? terrain_->GetHeight(Vector3(px, 0.0f, pz)) : py;
+
+    // Apply server-authoritative state — creature lerps toward server position
+    // and plays the server-chosen animation. Local AI decisions are suppressed.
+    auto serverState = static_cast<CreatureState>(state);
+    creature->ApplyServerState(serverState, Vector3(px, localY, pz), moveSpeed);
+    creature->SetServerVitals(aiHp, aiHunger, aiThirst, aiWarmth, aiStamina);
+
+    // Bark vessel contents — trailing u8 (0=empty, 1=fire, 2=water)
+    unsigned char vesselContents = 0;
+    if (msg.GetSize() > msg.GetPosition())
+        vesselContents = msg.ReadU8();
+    unsigned char prevVessel = creature->GetVesselContents();
+    creature->SetVesselContents(vesselContents);
+    if (vesselContents != prevVessel)
+        UpdateNPCVesselVisual(node, vesselContents);
+
+    // Phase 19: record footstep on client ecosystem for visual path wear
+    if (ecosystem_ && moveSpeed > 0.5f && serverState != CREATURE_IDLE &&
+        serverState != CREATURE_SLEEP && serverState != CREATURE_SIT &&
+        serverState != CREATURE_CORPSE && serverState != CREATURE_DIE)
+        ecosystem_->RecordFootstep(px, pz);
+}
+
+void TerrainNode::HandleSpawnTree(MemoryBuffer& msg)
+{
+    // Wire format: species u8, pos_x f32, pos_z f32, scale f32, treeId u32, growth_stage u8
+    int species = Clamp(static_cast<int>(static_cast<unsigned char>(msg.ReadByte())), 0, NUM_TREE_SPECIES - 1);
+    float px = msg.ReadFloat();
+    float pz = msg.ReadFloat();
+    float scale = msg.ReadFloat();
+    unsigned treeId = msg.ReadU32();
+    int growthStage = msg.GetSize() > msg.GetPosition() ? (int)msg.ReadU8() : 3;
+
+    float stageScale = (growthStage == 2) ? 0.5f : 1.0f;
+    float py = terrain_ ? terrain_->GetHeight(Vector3(px, 0.0f, pz)) : 0.0f;
+
+    InitTreeModels();
+
+    if (!treeModel_[species])
+        return;
+
+    Node* treeNode = scene_->CreateChild("Tree", LOCAL);
+    treeNode->SetWorldPosition(Vector3(px, py, pz));
+    treeNode->SetRotation(Quaternion(0.0f, Random(360.0f), 0.0f));
+    treeNode->SetScale(scale * stageScale);
+    treeNode->SetVar("TreeId", treeId);
+    treeNode->SetVar("TreeSpecies", species);
+
+    auto* sm = treeNode->CreateComponent<StaticModel>();
+    sm->SetModel(treeModel_[species], true);
+    if (treeBarkMat_[species]) sm->SetMaterial(0, treeBarkMat_[species]);
+    if (treeLeafMat_[species]) sm->SetMaterial(1, treeLeafMat_[species]);
+    sm->SetCastShadows(true);
+    sm->SetViewMask(0x01);
+
+    treeIdToNode_[treeId] = treeNode;
 }
 
 void TerrainNode::CreateCraftingUI()
@@ -11225,9 +17784,12 @@ void TerrainNode::ToggleCrafting()
         if (!menuOpen_ && !inventoryOpen_)
         {
             auto* input = GetSubsystem<Input>();
-            GetSubsystem<UI>()->SetFocusElement(nullptr);
-            input->SetMouseMode(MM_RELATIVE);
-            input->SetMouseVisible(false);
+            if (input->HasFocus())
+            {
+                GetSubsystem<UI>()->SetFocusElement(nullptr);
+                input->SetMouseMode(MM_RELATIVE);
+                input->SetMouseVisible(false);
+            }
         }
     }
 }
@@ -11789,8 +18351,9 @@ void TerrainNode::InitBuildingSystem()
         buildingSystem_ = existing;
     }
 
-    // Load building types from GameDB
+    // Load building types and snap rules from GameDB
     LoadBuildingTypes();
+    LoadSnapRules();
 }
 
 void TerrainNode::LoadBuildingTypes()
@@ -11847,6 +18410,41 @@ void TerrainNode::LoadBuildingTypes()
     database->Disconnect(conn);
     buildingSystem_->SetBuildingTypes(types);
     URHO3D_LOGINFOF("Loaded %u building types from GameDB", types.Size());
+#endif
+}
+
+void TerrainNode::LoadSnapRules()
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    if (!buildingSystem_)
+        return;
+
+    auto* database = GetSubsystem<Database>();
+    if (!database)
+        return;
+
+    String dbPath = GetSubsystem<ResourceCache>()->GetResourceDirs()[1] + "GameDB/game_rules.db";
+    DbConnection* conn = database->Connect("file:" + dbPath + "?mode=ro");
+    if (!conn)
+        return;
+
+    DbResult result = conn->Execute(
+        "SELECT from_type, to_type, align FROM snap_rules");
+
+    Vector<SnapRule> rules;
+    for (unsigned i = 0; i < result.GetNumRows(); ++i)
+    {
+        const VariantVector& row = result.GetRows()[i];
+        SnapRule rule;
+        rule.fromType = row[0].GetString();
+        rule.toType = row[1].GetString();
+        rule.align = row[2].GetString();
+        rules.Push(rule);
+    }
+
+    database->Disconnect(conn);
+    buildingSystem_->SetSnapRules(rules);
+    URHO3D_LOGINFOF("Loaded %u snap rules from GameDB", rules.Size());
 #endif
 }
 
@@ -11980,11 +18578,149 @@ void TerrainNode::ToggleBuildMode()
         if (!menuOpen_ && !inventoryOpen_ && !craftingOpen_)
         {
             auto* input = GetSubsystem<Input>();
-            GetSubsystem<UI>()->SetFocusElement(nullptr);
-            input->SetMouseMode(MM_RELATIVE);
-            input->SetMouseVisible(false);
+            if (input->HasFocus())
+            {
+                GetSubsystem<UI>()->SetFocusElement(nullptr);
+                input->SetMouseMode(MM_RELATIVE);
+                input->SetMouseVisible(false);
+            }
         }
     }
+}
+
+void TerrainNode::TryGateInteract()
+{
+    if (!buildingSystem_ || focusedGateId_ < 0)
+        return;
+
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    buildingSystem_->RequestGateToggle(serverConn, focusedGateId_);
+}
+
+void TerrainNode::TryBuildingInteract()
+{
+    if (!buildingSystem_ || !characterNode_)
+        return;
+
+    Vector3 playerPos = characterNode_->GetWorldPosition();
+    int nearId = buildingSystem_->FindNearestBuilding(playerPos, 5.0f);
+    if (nearId < 0)
+    {
+        // Fall back to gate interact if focused
+        TryGateInteract();
+        return;
+    }
+
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+
+    // Check if it's a gate — toggle it
+    if (buildingSystem_->IsGate(nearId))
+    {
+        buildingSystem_->RequestGateToggle(serverConn, nearId);
+        return;
+    }
+
+    // Find the building type
+    const auto& buildings = buildingSystem_->GetPlacedBuildings();
+    int typeId = -1;
+    int hp = 0, maxHp = 0;
+    for (unsigned i = 0; i < buildings.Size(); ++i)
+    {
+        if (buildings[i].placedId == nearId)
+        {
+            typeId = buildings[i].buildingTypeId;
+            hp = buildings[i].hp;
+            maxHp = buildings[i].maxHp;
+            break;
+        }
+    }
+
+    const auto& types = buildingSystem_->GetBuildingTypes();
+    const BuildingTypeInfo* info = nullptr;
+    for (unsigned i = 0; i < types.Size(); ++i)
+    {
+        if (types[i].id == typeId)
+        {
+            info = &types[i];
+            break;
+        }
+    }
+
+    if (!info)
+        return;
+
+    // Fire system Phase 2b: Woodpile deposit. Take all available softwood/hardwood
+    // from local inventory and add to the pile (capped at woodCapacity per type).
+    // Currently client-local only — no inventory consume on server side. Phase 3
+    // will replace this with a proper MSG_WOODPILE_TRANSFER round-trip.
+    if (info->id == 56)
+    {
+        DepositToWoodpile(nearId);
+        return;
+    }
+
+    // Shelter: sleep + set respawn
+    if (info->sleepCapacity > 0)
+    {
+        buildingSystem_->RequestSleep(serverConn, nearId);
+        if (info->respawn)
+            buildingSystem_->RequestSetRespawn(serverConn, nearId);
+        return;
+    }
+
+    // Damaged building: repair
+    if (hp < maxHp)
+    {
+        buildingSystem_->RequestRepair(serverConn, nearId);
+        return;
+    }
+
+    // Storage building: open storage
+    if (info->storageSlots > 0 && serverConn)
+    {
+        VectorBuffer buf;
+        buf.WriteI32(nearId);
+        serverConn->SendMessage(MSG_OPEN_STORAGE, true, true, buf);
+        return;
+    }
+}
+
+void TerrainNode::DepositToWoodpile(int placedId)
+{
+    // Server-authoritative: send deposit request, server validates inventory
+    // and broadcasts updated woodpile state back to all clients.
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VariantMap data;
+    data[P_PILE_BUILDING_ID] = placedId;
+    serverConn->SendRemoteEvent(E_WOODPILE_DEPOSIT, true, data);
+}
+
+void TerrainNode::HandleWoodpileState(StringHash, VariantMap& eventData)
+{
+    if (!buildingSystem_)
+        return;
+
+    int buildingId = eventData[P_PILE_BUILDING_ID].GetI32();
+    int softwood   = eventData[P_PILE_SOFTWOOD].GetI32();
+    int hardwood   = eventData[P_PILE_HARDWOOD].GetI32();
+    int capacity   = eventData[P_PILE_CAPACITY].GetI32();
+
+    PlacedBuilding* pb = buildingSystem_->FindPlacedMutable(buildingId);
+    if (!pb)
+        return;
+
+    pb->softwoodBu  = softwood;
+    pb->hardwoodBu  = hardwood;
+    pb->woodCapacity = capacity;
+
+    URHO3D_LOGINFOF("WoodpileState building=%d SW %d/%d HW %d/%d",
+        buildingId, softwood, capacity, hardwood, capacity);
 }
 
 void TerrainNode::HandleBuildMessage(int msgID, MemoryBuffer& msg)
@@ -12018,10 +18754,1003 @@ void TerrainNode::HandleBuildMessage(int msgID, MemoryBuffer& msg)
         float rot = msg.ReadFloat();
         int hp = msg.ReadI32();
         buildingSystem_->HandleBuildingSpawn(placedId, typeId, Vector3(px, py, pz), rot, hp);
+
+        // Water Phase 4: wells get a water shimmer effect
+        if (typeId == 57)  // BUILDING_WELL
+        {
+            PlacedBuilding* pb = buildingSystem_->FindPlacedMutable(placedId);
+            Node* wellNode = (pb && pb->node) ? pb->node.Get() : nullptr;
+            if (wellNode)
+            {
+                Node* fxNode = wellNode->CreateChild("WellWater");
+                fxNode->SetPosition(Vector3(0.0f, 0.8f, 0.0f));  // water surface inside well
+
+                auto* light = fxNode->CreateComponent<Light>();
+                light->SetLightType(LIGHT_POINT);
+                light->SetColor(Color(0.25f, 0.4f, 0.7f));
+                light->SetRange(2.0f);
+                light->SetBrightness(0.1f);
+
+                auto* cache = GetSubsystem<ResourceCache>();
+                auto* effect = cache->GetResource<ParticleEffect>("Particle/Smoke.xml");
+                if (effect)
+                {
+                    auto* emitter = fxNode->CreateComponent<ParticleEmitter>();
+                    SharedPtr<ParticleEffect> local = effect->Clone();
+                    local->SetMinEmissionRate(0.2f);
+                    local->SetMaxEmissionRate(0.5f);
+                    local->SetMinParticleSize(Vector2(0.03f, 0.03f));
+                    local->SetMaxParticleSize(Vector2(0.06f, 0.06f));
+                    emitter->SetEffect(local);
+                }
+            }
+        }
     }
     else if (msgID == MSG_BUILDING_REMOVE)
     {
         int placedId = msg.ReadI32();
         buildingSystem_->HandleBuildingRemove(placedId);
     }
+    else if (msgID == MSG_GATE_STATE)
+    {
+        int placedId = msg.ReadI32();
+        bool open = msg.ReadBool();
+        buildingSystem_->HandleGateState(placedId, open);
+    }
+    else if (msgID == MSG_BUILDING_HP)
+    {
+        int placedId = msg.ReadI32();
+        int newHp = msg.ReadI32();
+        buildingSystem_->HandleBuildingHpUpdate(placedId, newHp);
+    }
+    else if (msgID == MSG_RESPAWN_SET)
+    {
+        int placedId = msg.ReadI32();
+        float rx = msg.ReadFloat();
+        float ry = msg.ReadFloat();
+        float rz = msg.ReadFloat();
+        respawnBuildingId_ = placedId;
+        respawnPosition_ = Vector3(rx, ry, rz);
+        URHO3D_LOGINFOF("Respawn set at building %d (%.1f,%.1f,%.1f)", placedId, rx, ry, rz);
+    }
+}
+
+// =============================================================================
+// Biome Classification
+// =============================================================================
+
+String BiomeToString(BiomeType biome)
+{
+    switch (biome)
+    {
+    case BIOME_WATER:     return "water";
+    case BIOME_RIVERBANK: return "riverbank";
+    case BIOME_GRASSLAND: return "grassland";
+    case BIOME_FOREST:    return "forest";
+    case BIOME_MOUNTAIN:  return "mountain";
+    default:              return "any";
+    }
+}
+
+bool TerrainMatchesSource(const String& sourceTerrain, BiomeType biome)
+{
+    if (sourceTerrain == "any")
+        return true;
+    return sourceTerrain == BiomeToString(biome);
+}
+
+void TerrainNode::CacheWeightMapImage()
+{
+    if (weightMapImage_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    // Prefer PNG (lossless, reliable CPU read) over DDS
+    weightMapImage_ = cache->GetResource<Image>("Textures/TerrainWeights.png");
+    if (!weightMapImage_)
+        weightMapImage_ = cache->GetResource<Image>("Textures/TerrainWeights.dds");
+
+    if (weightMapImage_)
+        URHO3D_LOGINFO("Biome classifier: cached weight map image (" +
+                       String(weightMapImage_->GetWidth()) + "x" +
+                       String(weightMapImage_->GetHeight()) + ")");
+    else
+        URHO3D_LOGWARNING("Biome classifier: weight map image not found — defaulting to grassland");
+}
+
+void TerrainNode::SampleWeightMap(const Vector2& uv, float& outR, float& outG, float& outB) const
+{
+    if (!weightMapImage_)
+    {
+        outR = 1.0f; outG = 0.0f; outB = 0.0f;
+        return;
+    }
+
+    int px = (int)(Clamp(uv.x_, 0.0f, 1.0f) * (float)(weightMapImage_->GetWidth() - 1));
+    int py = (int)(Clamp(uv.y_, 0.0f, 1.0f) * (float)(weightMapImage_->GetHeight() - 1));
+    Color c = weightMapImage_->GetPixel(px, py);
+    outR = c.r_;
+    outG = c.g_;
+    outB = c.b_;
+}
+
+BiomeType TerrainNode::ClassifyTerrain(const Vector3& worldPos) const
+{
+    if (!terrain_)
+        return BIOME_ANY;
+
+    const float waterLevel = 5.0f;
+    float height = terrain_->GetHeight(worldPos);
+
+    // 1. Underwater
+    if (height < waterLevel - 0.5f)
+        return BIOME_WATER;
+
+    // 2. Riverbank — near water level, low and flat
+    if (height < waterLevel + 3.0f && height >= waterLevel - 0.5f)
+        return BIOME_RIVERBANK;
+
+    // 3. Slope check
+    Vector3 normal = terrain_->GetNormal(worldPos);
+    float flatness = normal.y_;  // 1.0 = flat, 0.0 = cliff
+
+    // 4. Mountain — steep slope OR very high elevation
+    if (flatness < 0.7f || height > 80.0f)
+        return BIOME_MOUNTAIN;
+
+    // 5. Sample weight map for vegetation vs rock classification
+    Vector3 terrainPos = terrain_->GetNode()->GetWorldPosition();
+    Vector3 spacing = terrain_->GetSpacing();
+    IntVector2 numVerts = terrain_->GetNumVertices();
+    float terrainSizeX = (float)(numVerts.x_ - 1) * spacing.x_;
+    float terrainSizeZ = (float)(numVerts.y_ - 1) * spacing.z_;
+
+    Vector2 uv(
+        (worldPos.x_ - terrainPos.x_ + terrainSizeX * 0.5f) / terrainSizeX,
+        (worldPos.z_ - terrainPos.z_ + terrainSizeZ * 0.5f) / terrainSizeZ
+    );
+
+    float weightR, weightG, weightB;
+    SampleWeightMap(uv, weightR, weightG, weightB);
+
+    // 6. Forest — high vegetation, moderate terrain, mid-elevation
+    if (weightR > 0.5f && height > 15.0f && height < 70.0f && flatness > 0.8f)
+        return BIOME_FOREST;
+
+    // 7. Grassland — high vegetation, flat, lower areas
+    if (weightR > 0.4f && flatness > 0.85f)
+        return BIOME_GRASSLAND;
+
+    // 8. Rock dominant at moderate height → mountain
+    if (weightG > 0.5f)
+        return BIOME_MOUNTAIN;
+
+    return BIOME_GRASSLAND;  // default fallback
+}
+
+// ============================================================================
+// Water Distance Map — precomputed low-res grid for habitat spawning
+// ============================================================================
+
+void TerrainNode::BuildWaterDistanceMap()
+{
+    if (!terrain_)
+        return;
+
+    const float waterLevel = 5.5f;
+    const float cellSize = 8.0f;  // 8m per cell
+
+    Vector3 spacing = terrain_->GetSpacing();
+    IntVector2 numVerts = terrain_->GetNumVertices();
+    float terrainW = (float)(numVerts.x_ - 1) * spacing.x_;
+    float terrainH = (float)(numVerts.y_ - 1) * spacing.z_;
+    Vector3 terrainPos = terrain_->GetNode()->GetWorldPosition();
+
+    waterDistOrigin_ = Vector3(terrainPos.x_ - terrainW * 0.5f, 0.0f, terrainPos.z_ - terrainH * 0.5f);
+    waterDistCellSize_ = cellSize;
+    waterDistMapW_ = (int)(terrainW / cellSize) + 1;
+    waterDistMapH_ = (int)(terrainH / cellSize) + 1;
+    waterDistMap_.Resize(waterDistMapW_ * waterDistMapH_);
+
+    // Pass 1: mark water vs land
+    for (int gz = 0; gz < waterDistMapH_; ++gz)
+    {
+        for (int gx = 0; gx < waterDistMapW_; ++gx)
+        {
+            float wx = waterDistOrigin_.x_ + gx * cellSize;
+            float wz = waterDistOrigin_.z_ + gz * cellSize;
+            float h = terrain_->GetHeight(Vector3(wx, 0.0f, wz));
+            waterDistMap_[gz * waterDistMapW_ + gx] = (h < waterLevel) ? 0.0f : 9999.0f;
+        }
+    }
+
+    // Pass 2: forward distance propagation (top-left to bottom-right)
+    for (int gz = 0; gz < waterDistMapH_; ++gz)
+    {
+        for (int gx = 0; gx < waterDistMapW_; ++gx)
+        {
+            int idx = gz * waterDistMapW_ + gx;
+            if (waterDistMap_[idx] == 0.0f)
+                continue;
+            float best = waterDistMap_[idx];
+            if (gx > 0)
+                best = Min(best, waterDistMap_[idx - 1] + cellSize);
+            if (gz > 0)
+                best = Min(best, waterDistMap_[(gz - 1) * waterDistMapW_ + gx] + cellSize);
+            if (gx > 0 && gz > 0)
+                best = Min(best, waterDistMap_[(gz - 1) * waterDistMapW_ + gx - 1] + cellSize * 1.414f);
+            if (gx < waterDistMapW_ - 1 && gz > 0)
+                best = Min(best, waterDistMap_[(gz - 1) * waterDistMapW_ + gx + 1] + cellSize * 1.414f);
+            waterDistMap_[idx] = best;
+        }
+    }
+
+    // Pass 3: backward propagation (bottom-right to top-left)
+    for (int gz = waterDistMapH_ - 1; gz >= 0; --gz)
+    {
+        for (int gx = waterDistMapW_ - 1; gx >= 0; --gx)
+        {
+            int idx = gz * waterDistMapW_ + gx;
+            if (waterDistMap_[idx] == 0.0f)
+                continue;
+            float best = waterDistMap_[idx];
+            if (gx < waterDistMapW_ - 1)
+                best = Min(best, waterDistMap_[idx + 1] + cellSize);
+            if (gz < waterDistMapH_ - 1)
+                best = Min(best, waterDistMap_[(gz + 1) * waterDistMapW_ + gx] + cellSize);
+            if (gx < waterDistMapW_ - 1 && gz < waterDistMapH_ - 1)
+                best = Min(best, waterDistMap_[(gz + 1) * waterDistMapW_ + gx + 1] + cellSize * 1.414f);
+            if (gx > 0 && gz < waterDistMapH_ - 1)
+                best = Min(best, waterDistMap_[(gz + 1) * waterDistMapW_ + gx - 1] + cellSize * 1.414f);
+            waterDistMap_[idx] = best;
+        }
+    }
+
+    URHO3D_LOGINFOF("BuildWaterDistanceMap: %dx%d grid (%.0fm cells), terrain %.0fx%.0f",
+        waterDistMapW_, waterDistMapH_, cellSize, terrainW, terrainH);
+}
+
+float TerrainNode::SampleWaterDistance(float worldX, float worldZ) const
+{
+    if (waterDistMap_.Empty() || waterDistCellSize_ <= 0.0f)
+        return -1.0f;
+
+    float lx = (worldX - waterDistOrigin_.x_) / waterDistCellSize_;
+    float lz = (worldZ - waterDistOrigin_.z_) / waterDistCellSize_;
+
+    int gx = Clamp((int)lx, 0, waterDistMapW_ - 1);
+    int gz = Clamp((int)lz, 0, waterDistMapH_ - 1);
+
+    return waterDistMap_[gz * waterDistMapW_ + gx];
+}
+
+// ============================================================================
+// Trade System — Client UI
+// ============================================================================
+
+void TerrainNode::SendTradeRequest(unsigned targetNodeId)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    buf.WriteU32(targetNodeId);
+    serverConn->SendMessage(MSG_TRADE_REQUEST, true, true, buf);
+    tradePending_ = true;
+    URHO3D_LOGINFOF("Sent trade request to NPC node %u", targetNodeId);
+}
+
+void TerrainNode::SendTradeOffer(int itemId, int qty, bool adding)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    buf.WriteI32(itemId);
+    buf.WriteI32(qty);
+    buf.WriteBool(adding);
+    serverConn->SendMessage(MSG_TRADE_OFFER, true, true, buf);
+}
+
+void TerrainNode::SendTradeLock()
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    serverConn->SendMessage(MSG_TRADE_LOCK, true, true, buf);
+}
+
+void TerrainNode::SendTradeCancel()
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    serverConn->SendMessage(MSG_TRADE_CANCEL, true, true, buf);
+}
+
+void TerrainNode::SendTradeAccept()
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    serverConn->SendMessage(MSG_TRADE_ACCEPT, true, true, buf);
+}
+
+void TerrainNode::SendTradeReject()
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    serverConn->SendMessage(MSG_TRADE_REJECT, true, true, buf);
+}
+
+void TerrainNode::HandleTradeIncoming(MemoryBuffer& msg)
+{
+    tradeIncomingPlayerId_ = msg.ReadI32();
+    tradeIncomingName_ = msg.ReadString();
+    tradeIncomingPending_ = true;
+
+    // Show accept/reject prompt
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+
+    if (tradePromptWindow_)
+        tradePromptWindow_->Remove();
+
+    tradePromptWindow_ = new Window(context_);
+    ui->GetRoot()->AddChild(tradePromptWindow_);
+    tradePromptWindow_->SetStyleAuto(style);
+    tradePromptWindow_->SetSize(320, 80);
+    tradePromptWindow_->SetAlignment(HA_CENTER, VA_CENTER);
+    tradePromptWindow_->SetLayout(LM_VERTICAL, 6, IntRect(8, 8, 8, 8));
+
+    auto* promptText = tradePromptWindow_->CreateChild<Text>();
+    promptText->SetText(tradeIncomingName_ + " wants to trade.");
+    promptText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 14);
+    promptText->SetColor(Color::WHITE);
+    promptText->SetTextAlignment(HA_CENTER);
+
+    auto* hintText = tradePromptWindow_->CreateChild<Text>();
+    hintText->SetText("Y = Accept    N = Reject");
+    hintText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 12);
+    hintText->SetColor(Color(0.7f, 0.9f, 0.7f));
+    hintText->SetTextAlignment(HA_CENTER);
+
+    URHO3D_LOGINFOF("Trade request from %s (playerId %d)", tradeIncomingName_.CString(), tradeIncomingPlayerId_);
+}
+
+void TerrainNode::HandleTradeAccepted(MemoryBuffer& msg)
+{
+    bool accepted = msg.ReadBool();
+    (void)accepted;
+
+    tradePending_ = false;
+    tradeOpen_ = true;
+    tradeLocked_ = false;
+    tradePartnerLocked_ = false;
+    myTradeOffer_.Clear();
+    theirTradeOffer_.Clear();
+
+    // Close the incoming prompt if it was still showing
+    if (tradePromptWindow_)
+    {
+        tradePromptWindow_->Remove();
+        tradePromptWindow_ = nullptr;
+    }
+    tradeIncomingPending_ = false;
+
+    if (!tradeWindow_)
+        CreateTradeUI();
+
+    tradeWindow_->SetVisible(true);
+    RefreshTradeOffers();
+
+    // Free cursor for UI interaction
+    auto* input = GetSubsystem<Input>();
+    input->SetMouseMode(MM_FREE);
+    input->SetMouseVisible(true);
+
+    URHO3D_LOGINFO("Trade session opened");
+}
+
+void TerrainNode::HandleTradeUpdate(MemoryBuffer& msg)
+{
+    int count = msg.ReadI32();
+    theirTradeOffer_.Clear();
+    for (int i = 0; i < count; ++i)
+    {
+        TradeOfferItem item;
+        item.itemId = msg.ReadI32();
+        item.quantity = msg.ReadI32();
+        // Look up name from GameDB
+        if (gameDB_)
+        {
+            ItemInfo info;
+            if (gameDB_->GetItem(item.itemId, info))
+                item.itemName = info.name;
+            else
+                item.itemName = "Item #" + String(item.itemId);
+        }
+        else
+            item.itemName = "Item #" + String(item.itemId);
+        theirTradeOffer_.Push(item);
+    }
+    RefreshTradeOffers();
+}
+
+void TerrainNode::HandleTradeLock(MemoryBuffer& msg)
+{
+    bool locked = msg.ReadBool();
+    if (!locked)
+    {
+        // Partner's offer changed after we locked — unlock us too
+        tradeLocked_ = false;
+        tradePartnerLocked_ = false;
+        if (tradeStatusText_)
+            tradeStatusText_->SetText("Partner modified offer — unlocked");
+    }
+    else
+    {
+        tradePartnerLocked_ = true;
+        if (tradeStatusText_)
+            tradeStatusText_->SetText("Partner locked in");
+    }
+    RefreshTradeOffers();
+}
+
+void TerrainNode::HandleTradeComplete(MemoryBuffer& msg)
+{
+    bool success = msg.ReadBool();
+    (void)success;
+
+    URHO3D_LOGINFO("Trade completed successfully!");
+    if (tradeStatusText_)
+        tradeStatusText_->SetText("Trade complete!");
+
+    CloseTradeWindow();
+}
+
+void TerrainNode::HandleTradeCancel(MemoryBuffer& msg)
+{
+    String reason = msg.ReadString();
+    URHO3D_LOGINFOF("Trade cancelled: %s", reason.CString());
+
+    CloseTradeWindow();
+
+    // Also dismiss the incoming prompt if pending
+    if (tradePromptWindow_)
+    {
+        tradePromptWindow_->Remove();
+        tradePromptWindow_ = nullptr;
+    }
+    tradeIncomingPending_ = false;
+    tradePending_ = false;
+}
+
+void TerrainNode::CreateTradeUI()
+{
+    auto* ui = GetSubsystem<UI>();
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* style = cache->GetResource<XMLFile>("UI/DefaultStyle.xml");
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    tradeWindow_ = new Window(context_);
+    ui->GetRoot()->AddChild(tradeWindow_);
+    tradeWindow_->SetStyleAuto(style);
+    tradeWindow_->SetSize(520, 440);
+    tradeWindow_->SetAlignment(HA_CENTER, VA_CENTER);
+    tradeWindow_->SetLayout(LM_VERTICAL, 4, IntRect(8, 8, 8, 8));
+    tradeWindow_->SetVisible(false);
+
+    // Title
+    auto* title = tradeWindow_->CreateChild<Text>();
+    title->SetText("Trade");
+    title->SetFont(font, 16);
+    title->SetColor(Color(1.0f, 0.9f, 0.6f));
+    title->SetTextAlignment(HA_CENTER);
+
+    // Split layout: left (my offer) | right (their offer)
+    auto* splitRow = tradeWindow_->CreateChild<UIElement>();
+    splitRow->SetLayout(LM_HORIZONTAL, 8);
+    splitRow->SetMinHeight(200);
+
+    // --- My offer panel ---
+    auto* myPanel = splitRow->CreateChild<UIElement>();
+    myPanel->SetLayout(LM_VERTICAL, 2);
+    myPanel->SetMinWidth(240);
+
+    auto* myLabel = myPanel->CreateChild<Text>();
+    myLabel->SetText("Your Offer");
+    myLabel->SetFont(font, 13);
+    myLabel->SetColor(Color(0.7f, 0.9f, 0.7f));
+
+    auto* myGrid = myPanel->CreateChild<UIElement>();
+    myGrid->SetLayout(LM_VERTICAL, 2);
+    tradeMyOfferSlots_.Clear();
+    for (int i = 0; i < 6; ++i)
+    {
+        auto* btn = myGrid->CreateChild<Button>();
+        btn->SetStyleAuto(style);
+        btn->SetMinSize(220, 28);
+        btn->SetVar("TradeSlotIndex", i);
+        btn->SetVar("TradeSlotSide", 0);  // 0 = my side
+
+        auto* label = btn->CreateChild<Text>();
+        label->SetFont(font, 11);
+        label->SetText("(empty)");
+        label->SetColor(Color(0.5f, 0.5f, 0.5f));
+
+        SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleTradeOfferSlotClick));
+        tradeMyOfferSlots_.Push(btn);
+    }
+
+    // --- Their offer panel ---
+    auto* theirPanel = splitRow->CreateChild<UIElement>();
+    theirPanel->SetLayout(LM_VERTICAL, 2);
+    theirPanel->SetMinWidth(240);
+
+    auto* theirLabel = theirPanel->CreateChild<Text>();
+    theirLabel->SetText("Their Offer");
+    theirLabel->SetFont(font, 13);
+    theirLabel->SetColor(Color(0.9f, 0.7f, 0.7f));
+
+    auto* theirGrid = theirPanel->CreateChild<UIElement>();
+    theirGrid->SetLayout(LM_VERTICAL, 2);
+    tradeTheirOfferSlots_.Clear();
+    for (int i = 0; i < 6; ++i)
+    {
+        auto* btn = theirGrid->CreateChild<Button>();
+        btn->SetStyleAuto(style);
+        btn->SetMinSize(220, 28);
+
+        auto* label = btn->CreateChild<Text>();
+        label->SetFont(font, 11);
+        label->SetText("(empty)");
+        label->SetColor(Color(0.5f, 0.5f, 0.5f));
+
+        tradeTheirOfferSlots_.Push(btn);
+    }
+
+    // --- Inventory bag for drag-to-offer ---
+    auto* bagLabel = tradeWindow_->CreateChild<Text>();
+    bagLabel->SetText("Your Bag (click to offer)");
+    bagLabel->SetFont(font, 12);
+    bagLabel->SetColor(Color(0.8f, 0.8f, 0.8f));
+
+    auto* bagRow = tradeWindow_->CreateChild<UIElement>("TradeBagRow");
+    bagRow->SetLayout(LM_HORIZONTAL, 2);
+    bagRow->SetMinHeight(32);
+
+    // Show up to 10 bag items as clickable buttons
+    for (int i = 0; i < 10; ++i)
+    {
+        auto* btn = bagRow->CreateChild<Button>();
+        btn->SetStyleAuto(style);
+        btn->SetMinSize(48, 28);
+        btn->SetVar("TradeBagIndex", i);
+
+        auto* label = btn->CreateChild<Text>();
+        label->SetFont(font, 9);
+        label->SetText("");
+
+        SubscribeToEvent(btn, E_RELEASED, URHO3D_HANDLER(TerrainNode, HandleTradeBagSlotClick));
+    }
+
+    // --- Buttons row ---
+    auto* btnRow = tradeWindow_->CreateChild<UIElement>();
+    btnRow->SetLayout(LM_HORIZONTAL, 8);
+    btnRow->SetMinHeight(30);
+
+    tradeLockBtn_ = btnRow->CreateChild<Button>();
+    tradeLockBtn_->SetStyleAuto(style);
+    tradeLockBtn_->SetMinSize(100, 28);
+    auto* lockLabel = tradeLockBtn_->CreateChild<Text>();
+    lockLabel->SetFont(font, 12);
+    lockLabel->SetText("Lock In");
+    lockLabel->SetColor(Color::WHITE);
+    SubscribeToEvent(tradeLockBtn_, E_RELEASED, [this](StringHash, VariantMap&) {
+        if (!tradeLocked_)
+        {
+            tradeLocked_ = true;
+            SendTradeLock();
+            if (tradeStatusText_)
+                tradeStatusText_->SetText("Locked — waiting for partner...");
+            RefreshTradeOffers();
+        }
+    });
+
+    tradeCancelBtn_ = btnRow->CreateChild<Button>();
+    tradeCancelBtn_->SetStyleAuto(style);
+    tradeCancelBtn_->SetMinSize(100, 28);
+    auto* cancelLabel = tradeCancelBtn_->CreateChild<Text>();
+    cancelLabel->SetFont(font, 12);
+    cancelLabel->SetText("Cancel");
+    cancelLabel->SetColor(Color(1.0f, 0.4f, 0.4f));
+    SubscribeToEvent(tradeCancelBtn_, E_RELEASED, [this](StringHash, VariantMap&) {
+        SendTradeCancel();
+        CloseTradeWindow();
+    });
+
+    // Status text
+    tradeStatusText_ = tradeWindow_->CreateChild<Text>();
+    tradeStatusText_->SetFont(font, 11);
+    tradeStatusText_->SetColor(Color(0.8f, 0.8f, 0.6f));
+    tradeStatusText_->SetText("");
+}
+
+void TerrainNode::RefreshTradeOffers()
+{
+    if (!tradeWindow_ || !tradeWindow_->IsVisible())
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+
+    // Refresh my offer slots
+    for (int i = 0; i < 6; ++i)
+    {
+        auto* label = tradeMyOfferSlots_[i]->GetChildStaticCast<Text>(0);
+        if (!label) continue;
+
+        if (i < (int)myTradeOffer_.Size())
+        {
+            String text = myTradeOffer_[i].itemName;
+            if (myTradeOffer_[i].quantity > 1)
+                text += " x" + String(myTradeOffer_[i].quantity);
+            label->SetText(text);
+            label->SetColor(tradeLocked_ ? Color(0.6f, 0.6f, 0.6f) : Color::WHITE);
+        }
+        else
+        {
+            label->SetText("(empty)");
+            label->SetColor(Color(0.5f, 0.5f, 0.5f));
+        }
+    }
+
+    // Refresh their offer slots
+    for (int i = 0; i < 6; ++i)
+    {
+        auto* label = tradeTheirOfferSlots_[i]->GetChildStaticCast<Text>(0);
+        if (!label) continue;
+
+        if (i < (int)theirTradeOffer_.Size())
+        {
+            String text = theirTradeOffer_[i].itemName;
+            if (theirTradeOffer_[i].quantity > 1)
+                text += " x" + String(theirTradeOffer_[i].quantity);
+            label->SetText(text);
+            label->SetColor(tradePartnerLocked_ ? Color(0.6f, 0.8f, 0.6f) : Color::WHITE);
+        }
+        else
+        {
+            label->SetText("(empty)");
+            label->SetColor(Color(0.5f, 0.5f, 0.5f));
+        }
+    }
+
+    // Refresh bag slots in trade window (named child for reliable lookup)
+    auto* bagRow = tradeWindow_->GetChild("TradeBagRow", false);
+    if (bagRow)
+    {
+        unsigned bagIdx = 0;
+        for (unsigned i = 0; i < inventory_.Size() && bagIdx < 10; ++i)
+        {
+            if (inventory_[i].slotType != "bag")
+                continue;
+
+            auto* btn = bagRow->GetChild(bagIdx);
+            if (btn)
+            {
+                auto* label = static_cast<Text*>(btn->GetChild(0u));
+                if (label)
+                {
+                    String text = inventory_[i].itemName;
+                    if (inventory_[i].quantity > 1)
+                        text += " x" + String(inventory_[i].quantity);
+                    label->SetText(text);
+                    label->SetColor(Color(0.8f, 0.9f, 0.8f));
+                }
+            }
+            ++bagIdx;
+        }
+        // Clear remaining slots
+        for (; bagIdx < 10; ++bagIdx)
+        {
+            auto* btn = bagRow->GetChild(bagIdx);
+            if (btn)
+            {
+                auto* label = static_cast<Text*>(btn->GetChild(0u));
+                if (label)
+                    label->SetText("");
+            }
+        }
+    }
+
+    // Update lock button state
+    if (tradeLockBtn_)
+    {
+        auto* lockLabel = tradeLockBtn_->GetChildStaticCast<Text>(0);
+        if (lockLabel)
+        {
+            if (tradeLocked_)
+            {
+                lockLabel->SetText("Locked");
+                lockLabel->SetColor(Color(0.5f, 0.5f, 0.5f));
+            }
+            else
+            {
+                lockLabel->SetText("Lock In");
+                lockLabel->SetColor(Color::WHITE);
+            }
+        }
+    }
+}
+
+void TerrainNode::CloseTradeWindow()
+{
+    tradeOpen_ = false;
+    tradePending_ = false;
+    tradeLocked_ = false;
+    tradePartnerLocked_ = false;
+    tradePartnerNodeId_ = 0;
+    tradeProximityCheckTimer_ = 0.0f;
+    myTradeOffer_.Clear();
+    theirTradeOffer_.Clear();
+
+    if (tradeWindow_)
+        tradeWindow_->SetVisible(false);
+
+    if (tradeStatusText_)
+        tradeStatusText_->SetText("");
+}
+
+void TerrainNode::HandleTradeOfferSlotClick(StringHash /*eventType*/, VariantMap& eventData)
+{
+    // Click on my offer slot → remove item from offer
+    if (tradeLocked_)
+        return;
+
+    using namespace Released;
+    auto* btn = static_cast<Button*>(eventData[P_ELEMENT].GetPtr());
+    if (!btn)
+        return;
+
+    int slotIndex = btn->GetVar("TradeSlotIndex").GetI32();
+    int side = btn->GetVar("TradeSlotSide").GetI32();
+
+    if (side != 0)
+        return;  // can only modify our own side
+
+    if (slotIndex < 0 || slotIndex >= (int)myTradeOffer_.Size())
+        return;
+
+    // Remove this item from offer
+    TradeOfferItem& item = myTradeOffer_[slotIndex];
+    SendTradeOffer(item.itemId, item.quantity, false);
+    myTradeOffer_.Erase(slotIndex);
+    RefreshTradeOffers();
+}
+
+void TerrainNode::HandleTradeBagSlotClick(StringHash /*eventType*/, VariantMap& eventData)
+{
+    // Click on bag slot → add 1 of that item to our offer
+    if (tradeLocked_)
+        return;
+    if (myTradeOffer_.Size() >= 6)
+        return;  // max 6 distinct items
+
+    using namespace Released;
+    auto* btn = static_cast<Button*>(eventData[P_ELEMENT].GetPtr());
+    if (!btn)
+        return;
+
+    int bagIdx = btn->GetVar("TradeBagIndex").GetI32();
+
+    // Map to actual inventory bag items
+    unsigned realIdx = 0;
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType != "bag")
+            continue;
+        if ((int)realIdx == bagIdx)
+        {
+            int itemId = inventory_[i].itemId;
+            int qty = 1;
+
+            // Check if already in offer — increment quantity
+            bool found = false;
+            for (unsigned j = 0; j < myTradeOffer_.Size(); ++j)
+            {
+                if (myTradeOffer_[j].itemId == itemId)
+                {
+                    myTradeOffer_[j].quantity++;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                TradeOfferItem offer;
+                offer.itemId = itemId;
+                offer.quantity = qty;
+                offer.itemName = inventory_[i].itemName;
+                myTradeOffer_.Push(offer);
+            }
+
+            SendTradeOffer(itemId, qty, true);
+            RefreshTradeOffers();
+            return;
+        }
+        ++realIdx;
+    }
+}
+
+void TerrainNode::SendChopTree(unsigned treeId)
+{
+    auto* network = GetSubsystem<Network>();
+    auto* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    buf.WriteU32(treeId);
+    serverConn->SendMessage(MSG_CHOP_TREE, true, true, buf);
+}
+
+void TerrainNode::UpdateArrowHUD()
+{
+    // Check if bow is equipped in hand slot
+    bool bowEquipped = false;
+    int arrowCount = 0;
+
+    for (unsigned i = 0; i < inventory_.Size(); ++i)
+    {
+        if (inventory_[i].slotType == "hand" && inventory_[i].itemId == 201)
+            bowEquipped = true;
+        if (inventory_[i].itemId == 202)
+            arrowCount += inventory_[i].quantity;
+    }
+
+    if (!bowEquipped)
+    {
+        if (arrowCountText_ && arrowCountText_->IsVisible())
+            arrowCountText_->SetVisible(false);
+        return;
+    }
+
+    // Create text element if needed
+    if (!arrowCountText_)
+    {
+        auto* ui = GetSubsystem<UI>();
+
+        auto* text = ui->GetRoot()->CreateChild<Text>("ArrowCount");
+        text->SetFont(font_, currentFontSize_);
+        text->SetTextAlignment(HA_CENTER);
+        text->SetAlignment(HA_CENTER, VA_CENTER);
+        text->SetPosition(0, 30);  // just below center
+        arrowCountText_ = text;
+    }
+
+    arrowCountText_->SetVisible(true);
+    arrowCountText_->SetText("Arrows: " + String(arrowCount));
+    arrowCountText_->SetColor(arrowCount < 5 ? Color(1.0f, 0.3f, 0.3f) : Color(0.9f, 0.9f, 0.9f));
+}
+
+// =============================================================================
+// Settlement Patch Ownership
+// =============================================================================
+
+void TerrainNode::HandleSettlementClaims(MemoryBuffer& msg)
+{
+    unsigned short count = msg.ReadU16();
+    for (unsigned i = 0; i < count; ++i)
+    {
+        unsigned char sx = msg.ReadU8();
+        unsigned char sz = msg.ReadU8();
+        unsigned short sid = msg.ReadU16();
+        unsigned long long key = ((unsigned long long)sx << 16) | sz;
+        patchClaims_[key] = sid;
+    }
+    URHO3D_LOGINFOF("[Settlement] Received %u patch claims", count);
+
+    if (showTerritoryOverlay_)
+        UpdateTerritoryOverlay();
+}
+
+Color TerrainNode::SettlementColor(unsigned settlementId)
+{
+    // Hash settlement ID to a hue — deterministic, distinct colors per settlement
+    float hue = fmod((float)(settlementId * 137) / 256.0f, 1.0f);
+    float s = 0.6f, v = 0.8f;
+    // HSV to RGB
+    int hi = (int)(hue * 6.0f);
+    float f = hue * 6.0f - hi;
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - s * f);
+    float t = v * (1.0f - s * (1.0f - f));
+    float r, g, b;
+    switch (hi % 6)
+    {
+    case 0: r = v; g = t; b = p; break;
+    case 1: r = q; g = v; b = p; break;
+    case 2: r = p; g = v; b = t; break;
+    case 3: r = p; g = q; b = v; break;
+    case 4: r = t; g = p; b = v; break;
+    default: r = v; g = p; b = q; break;
+    }
+    return Color(r, g, b, 0.15f);  // 15% alpha
+}
+
+void TerrainNode::UpdateTerritoryOverlay()
+{
+    // Remove old overlays
+    for (unsigned i = 0; i < patchOverlayNodes_.Size(); ++i)
+    {
+        Node* n = patchOverlayNodes_[i].Get();
+        if (n) n->Remove();
+    }
+    patchOverlayNodes_.Clear();
+
+    if (!showTerritoryOverlay_ || patchClaims_.Empty())
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* planeMdl = cache->GetResource<Model>("Models/Plane.mdl");
+    if (!planeMdl)
+        return;
+
+    // Settlement patch: 128×128 world units, terrain centered at origin
+    // Terrain half size: (1025-1) * 2.0 / 2 = 1024
+    static const float TERRAIN_HALF = 1024.0f;
+    static const float SPATCH_SIZE = 128.0f;
+
+    for (auto it = patchClaims_.Begin(); it != patchClaims_.End(); ++it)
+    {
+        int sx = (int)(it->first_ >> 16);
+        int sz = (int)(it->first_ & 0xFFFF);
+        unsigned sid = it->second_;
+
+        // Center of this settlement patch in world coords
+        float cx = -TERRAIN_HALF + (sx + 0.5f) * SPATCH_SIZE;
+        float cz = -TERRAIN_HALF + (sz + 0.5f) * SPATCH_SIZE;
+        float cy = terrain_ ? terrain_->GetHeight(Vector3(cx, 0.0f, cz)) : 0.0f;
+
+        Node* overlayNode = scene_->CreateTemporaryChild("PatchOverlay", LOCAL);
+        overlayNode->SetPosition(Vector3(cx, cy + 0.2f, cz));
+        overlayNode->SetScale(Vector3(SPATCH_SIZE, 1.0f, SPATCH_SIZE));
+
+        auto* sm = overlayNode->CreateComponent<StaticModel>();
+        sm->SetModel(planeMdl);
+        sm->SetCastShadows(false);
+
+        // Per-settlement color material
+        auto* baseMat = cache->GetResource<Material>("Materials/VColUnlit.xml");
+        if (baseMat)
+        {
+            SharedPtr<Material> mat(baseMat->Clone());
+            mat->SetShaderParameter("MatDiffColor", SettlementColor(sid));
+            sm->SetMaterial(mat);
+        }
+
+        patchOverlayNodes_.Push(WeakPtr<Node>(overlayNode));
+    }
+
+    URHO3D_LOGINFOF("[Settlement] Created %u territory overlay quads", patchOverlayNodes_.Size());
 }
