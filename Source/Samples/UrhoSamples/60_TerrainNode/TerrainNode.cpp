@@ -6620,6 +6620,9 @@ void TerrainNode::MoveCamera(float timeStep)
     if (input->GetKeyPress(KEY_F7))
         biomeDebugOverlay_ = !biomeDebugOverlay_;
 
+    if (input->GetKeyPress(KEY_F10))
+        RequestDeathLog();
+
     if (input->GetKeyPress(KEY_F11))
         GetSubsystem<Graphics>()->ToggleFullscreen();
 
@@ -13099,6 +13102,14 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
         return;
     }
 
+    // Death log response
+    if (msgID == MSG_DEATH_LOG_RESULT)
+    {
+        MemoryBuffer msg(data);
+        HandleDeathLogResult(msg);
+        return;
+    }
+
     // Settlement patch ownership
     if (msgID == MSG_SETTLEMENT_CLAIMS)
     {
@@ -15003,6 +15014,73 @@ void TerrainNode::UpdateTreeLOD()
                 sm->SetCastShadows(distSq <= lod1DistSq);
             }
         }
+    }
+}
+
+// ============================================================================
+// Death Log Query — F10 admin tool
+// ============================================================================
+
+void TerrainNode::RequestDeathLog()
+{
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    buf.WriteU16(20);  // request last 20 entries
+    serverConn->SendMessage(MSG_QUERY_DEATH_LOG, true, true, buf);
+}
+
+void TerrainNode::HandleDeathLogResult(MemoryBuffer& msg)
+{
+    static const char* causeNames[] = {
+        "combat", "drown", "starve", "age", "scavenge", "fall", "fire", "dehydrate", "freeze"
+    };
+
+    unsigned short count = msg.ReadU16();
+    URHO3D_LOGINFOF("[DeathLog] Received %u entries", count);
+
+    // Build text for the console/log display
+    String header = "\n=== DEATH LOG (last " + String(count) + ") ===\n";
+    String log = header;
+
+    for (unsigned i = 0; i < count; ++i)
+    {
+        String name = msg.ReadString();
+        String species = msg.ReadString();
+        float px = msg.ReadFloat();
+        float pz = msg.ReadFloat();
+        unsigned char cause = msg.ReadU8();
+        String killer = msg.ReadString();
+        int gameDay = msg.ReadI32();
+
+        const char* causeName = (cause < 9) ? causeNames[cause] : "unknown";
+
+        String entry = "  Day " + String(gameDay) + ": ";
+        if (!name.Empty())
+            entry += name + " (" + species + ")";
+        else
+            entry += species;
+        entry += " — " + String(causeName);
+        if (!killer.Empty())
+            entry += " by " + killer;
+        entry += " at (" + String((int)px) + ", " + String((int)pz) + ")\n";
+
+        log += entry;
+    }
+    log += "=================================\n";
+
+    URHO3D_LOGRAW(log);
+
+    // Also display in the UI chat area if it exists
+    auto* ui = GetSubsystem<UI>();
+    if (ui)
+    {
+        auto* chatLog = ui->GetRoot()->GetChildDynamicCast<Text>("ChatLog", true);
+        if (chatLog)
+            chatLog->SetText(chatLog->GetText() + log);
     }
 }
 

@@ -4069,6 +4069,12 @@ void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventDat
         break;
     }
 
+    case MSG_QUERY_DEATH_LOG:
+    {
+        HandleQueryDeathLog(connection, msg);
+        break;
+    }
+
     case MSG_ATTACK:
     {
         HandleAttack(connection, msg);
@@ -19486,6 +19492,68 @@ void AuthServer::RecordSettlementFirst(unsigned campfireId, const String& catego
 
     URHO3D_LOGINFOF("[History] Settlement %u first '%s' by %s (spawnId %u, day %d)",
         campfireId, category.CString(), npcName.CString(), npcSpawnId, currentGameDay_);
+#endif
+}
+
+void AuthServer::HandleQueryDeathLog(Connection* connection, MemoryBuffer& msg)
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    if (!worldDB_)
+        return;
+
+    unsigned short maxEntries = msg.ReadU16();
+    if (maxEntries == 0 || maxEntries > 50)
+        maxEntries = 20;
+
+    sqlite3* db = worldDB_->GetHandle();
+    if (!db)
+        return;
+
+    static const char* causeNames[] = {
+        "combat", "drown", "starve", "age", "scavenge", "fall", "fire", "dehydrate", "freeze"
+    };
+
+    VectorBuffer buf;
+    unsigned short count = 0;
+    unsigned short countPos = buf.GetSize();
+    buf.WriteU16(0);  // placeholder — overwritten after query
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT npc_name, species, pos_x, pos_z, cause, killer_name, game_day "
+        "FROM death_log ORDER BY id DESC LIMIT ?",
+        -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        sqlite3_bind_int(stmt, 1, maxEntries);
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            const char* name = (const char*)sqlite3_column_text(stmt, 0);
+            const char* species = (const char*)sqlite3_column_text(stmt, 1);
+            float px = (float)sqlite3_column_double(stmt, 2);
+            float pz = (float)sqlite3_column_double(stmt, 3);
+            int cause = sqlite3_column_int(stmt, 4);
+            const char* killer = (const char*)sqlite3_column_text(stmt, 5);
+            int gameDay = sqlite3_column_int(stmt, 6);
+
+            buf.WriteString(name ? name : "");
+            buf.WriteString(species ? species : "");
+            buf.WriteFloat(px);
+            buf.WriteFloat(pz);
+            buf.WriteByte(static_cast<std::byte>(cause < 9 ? cause : 0));
+            buf.WriteString(killer ? killer : "");
+            buf.WriteI32(gameDay);
+            ++count;
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // Patch count at the start
+    auto* data = const_cast<std::byte*>(buf.GetData());
+    data[0] = static_cast<std::byte>(count & 0xFF);
+    data[1] = static_cast<std::byte>(count >> 8);
+
+    connection->SendMessage(MSG_DEATH_LOG_RESULT, false, false, buf);
+    LogMessage("[DeathLog] Sent " + String(count) + " entries to client");
 #endif
 }
 

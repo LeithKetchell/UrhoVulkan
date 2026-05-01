@@ -1065,6 +1065,8 @@ private:
     // ── Server-Authoritative Creature AI (NPC AI Phase 1) ──────────────
     /// Handle MSG_CREATURE_AI_STATE — server pushes authoritative creature state.
     void HandleCreatureAIState(MemoryBuffer& msg);
+    void RequestDeathLog();
+    void HandleDeathLogResult(MemoryBuffer& msg);
     /// Map server-assigned spawnId → local scene node for AI state correlation.
     HashMap<unsigned, WeakPtr<Node>> spawnIdToNode_;
 
