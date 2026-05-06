@@ -3,7 +3,10 @@
 
 #pragma once
 
+#define WORKBOARD_MANAGER_VERSION "0.1.1"
+
 #include "WorkboardBase.h"
+#include "WorkboardDB.h"
 
 #include <Urho3D/Network/Network.h>
 #include <Urho3D/Network/Connection.h>
@@ -30,12 +33,15 @@ public:
 private:
     // ── UI creation ──
     void CreateUI();
-    void CreateInstanceStatusBar(UIElement* parent, int w, int h);
-    void CreateComposer(UIElement* parent, int x, int y, int w, int h);
-    void CreateMessageLog(UIElement* parent, int x, int y, int w, int h);
+    void CreateInstanceStatusBar(UIElement* parent, float minX, float minY, float maxX, float maxY);
+    void CreateComposer(UIElement* parent, float minX, float minY, float maxX, float maxY);
+    void CreateMessageLog(UIElement* parent, float minX, float minY, float maxX, float maxY);
+    void CreateYukiChatPanel(UIElement* parent, float minX, float minY, float maxX, float maxY);
+    void AppendYukiChat(const String& sender, const String& message);
 
     // ── Workboard ──
     void LoadWorkboard();
+    void LoadWorkboardFromMarkdown();  ///< Fallback: parse markdown directly
 
     // ── Workboard mutations (Manager is single authority) ──
     bool HandleWorkboardCommand(const String& message);
@@ -59,10 +65,23 @@ private:
     // ── IPC ──
     void CreateIPCPaths();
     void SendMessage(const String& target, const String& message);
-    bool InjectViaTTY(const String& role, const String& message);
+    bool SendToSocket(const String& role, const String& message, const String& excludeRole = String::EMPTY);
     int ReadInstancePID(const String& role);
     bool IsInstanceAlive(const String& role);
+    String ReadHealthState(const String& role);  // Read state from health JSON (BUSY/READY/STUCK/etc)
+    String ReadBuildStatus();  // Read active build status from /tmp/urho_claude/build_active.json
     void RefreshInstanceStatus();
+
+    // ── Relay socket (message broker) ──
+    void StartRelaySocket();
+    void StopRelaySocket();
+    void PollRelaySocket();
+    int relayListenFd_{-1};
+
+    // ── Yuki singleton management ──
+    void RepairYukiSocket();
+    float yukiRepairCooldown_{10.0f};  // Grace period on startup
+    static constexpr float YUKI_REPAIR_INTERVAL = 15.0f;
 
     // ── Beacon ──
     void UpdateBeacon();
@@ -73,9 +92,13 @@ private:
     void HandleSendCoder(StringHash eventType, VariantMap& eventData);
     void HandleSendPlanner(StringHash eventType, VariantMap& eventData);
     void HandleSendUnassigned(StringHash eventType, VariantMap& eventData);
+
     void HandleSendBroadcast(StringHash eventType, VariantMap& eventData);
     void HandleClearFileLocks(StringHash eventType, VariantMap& eventData);
     void HandleSpawnCoder(StringHash eventType, VariantMap& eventData);
+
+    // ── Workboard task lookup ──
+    String GetCurrentTask(const String& owner);
 
     // ── Multi-Coder discovery ──
     Vector<String> DiscoverCoderRoles();
@@ -83,7 +106,6 @@ private:
     String GetSelectedCoderRole();
 
     // ── Download ──
-    void CreateDownloadBar(UIElement* parent, int x, int y, int w, int h);
     void HandleDownload(StringHash eventType, VariantMap& eventData);
     void CheckDownloadProgress();
 
@@ -91,8 +113,13 @@ private:
     void AppendLog(const String& source, const String& message);
     Color LogColorForSource(const String& source);
 
-    // ── Theme ──
-    void CreateThemeBar(UIElement* parent, int x, int y, int w, int h);
+    // ── Tools popup (download) ──
+    void CreateToolsPopup();
+    void HandleToolsToggle(StringHash eventType, VariantMap& eventData);
+
+    // ── Settings popup (theme) ──
+    void CreateSettingsPopup();
+    void HandleSettingsToggle(StringHash eventType, VariantMap& eventData);
     void HandleFontSelected(StringHash eventType, VariantMap& eventData);
     void HandleFontSizeChanged(StringHash eventType, VariantMap& eventData);
     void ApplyFont(const String& fontName, int fontSize);
@@ -117,6 +144,7 @@ private:
     void HandleWbRequestPlan(StringHash eventType, VariantMap& eventData);
     void HandleWbMutation(StringHash eventType, VariantMap& eventData);
     void HandleWbSetIdentity(StringHash eventType, VariantMap& eventData);
+    void HandleWbInstanceStatus(StringHash eventType, VariantMap& eventData);
 
     // ── Events ──
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
@@ -133,11 +161,26 @@ private:
     float refreshAccumulator_{};
     static constexpr float REFRESH_INTERVAL = 5.0f;
     unsigned lastWriteMtime_{0};
+    float reconcileAccumulator_{0.0f};
+    static constexpr float RECONCILE_INTERVAL = 60.0f;
+
+    // ── Yuki training lump collection ──
+    float trainingCheckAccumulator_{0.0f};
+    static constexpr float TRAINING_CHECK_INTERVAL = 120.0f;
+    static constexpr unsigned TRAINING_LUMP_THRESHOLD = 50;
+    void CheckTrainingLump();
+
+    // ── SQL backing (Phase 4) ──
+    WorkboardDB workboardDB_;
 
     // ── Instance status UI ──
     DropDownList* coderStatusDropdown_{};
     Vector<String> knownCoderRoles_;
     Text* plannerStatusText_{};
+    Text* yukiStatusText_{};
+    Text* buildStatusText_{};  // Active build indicator
+    DropDownList* localsDropdown_{};
+    DropDownList* remotesDropdown_{};
     DropDownList* unassignedStatusDropdown_{};
     Vector<String> knownUnassignedRoles_;
 
@@ -147,11 +190,20 @@ private:
     Button* sendCoderBtn_{};
     Button* sendPlannerBtn_{};
     Button* sendUnassignedBtn_{};
+    Button* sendYukiBtn_{};
     Button* sendBroadcastBtn_{};
     Button* clearFileLocksBtn_{};
     Button* spawnCoderBtn_{};
 
-    // ── Download UI ──
+    // ── Tools popup UI ──
+    Window* toolsPopup_{};
+    Button* toolsBtn_{};
+
+    // ── Settings popup UI ──
+    Window* settingsPopup_{};
+    Button* settingsBtn_{};
+
+    // ── Download UI (inside settings popup) ──
     LineEdit* downloadUrlInput_{};
     Button* downloadBtn_{};
     Text* downloadStatusText_{};
@@ -165,9 +217,37 @@ private:
     ListView* logListView_{};
     static const unsigned MAX_LOG_LINES = 500;
 
+    // ── Yuki chat UI ──
+    Window* yukiChatPanel_{};
+    ListView* yukiChatLog_{};
+
     // ── IPC state (initialized in Start() via FileSystem::GetTemporaryDir()) ──
     String ipcDir_;
     String ttySockDir_;
+
+    // ── Build queue ──
+    struct BuildQueueEntry {
+        String target;
+        String requester;
+    };
+    void EnqueueBuild(const String& target, const String& requester);
+    void ProcessBuildQueue();
+    Vector<BuildQueueEntry> buildQueue_;
+    pid_t activeBuildPid_{0};
+    String activeBuildTarget_;
+    String activeBuildRequester_;
+
+    // ── System monitor ──
+    Text* cpuText_{};
+    Text* gpuText_{};
+    void SampleSystemStats();
+#ifdef __linux__
+    unsigned long long prevCpuTotal_{0};
+    unsigned long long prevCpuIdle_{0};
+#endif
+
+    // ── Singleton lock fd (held for process lifetime) ──
+    int singletonLockFd_{-1};
 
     // ── Beacon liveness ──
     HashMap<String, float> coderActivityTimers_;
@@ -175,6 +255,10 @@ private:
     float lastUnassignedActivity_{999.0f};
     static constexpr float LIVENESS_TIMEOUT = 300.0f;
     static constexpr unsigned short BEACON_PORT = 31337;
+
+    // ── Auto-spawn (doorkeeper) ──
+    float autoSpawnCooldown_{60.0f};  // Grace period on startup — let existing instances re-register
+    static constexpr float AUTO_SPAWN_COOLDOWN = 30.0f;
 
     // ── Remote workboard sync (Phase 2a) ──
     HashMap<Connection*, WbClientInfo> wbClients_;
