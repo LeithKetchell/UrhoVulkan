@@ -1,0 +1,4 @@
+Models/Animals/Materials/Main.xml
+Models/Animals/Materials/Main_Light.xml
+Models/Animals/Materials/Eyes_Black.xml
+Models/Animals/Materials/Nose.xml

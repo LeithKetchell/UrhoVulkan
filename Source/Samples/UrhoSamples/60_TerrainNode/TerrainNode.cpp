@@ -884,7 +884,7 @@ void TerrainNode::HandleOfflineButton(StringHash eventType, VariantMap& eventDat
     // to decrypt server messages as garbage → instant disconnect. Loopback
     // doesn't need encryption anyway. The auth still uses MSG_AUTH_LOGIN
     // with the reserved credentials; it's just not wrapped in PAKE.
-    // TODO: fix the SodiumCipher key derivation asymmetry and re-enable PAKE.
+    // PAKE disabled for localhost — loopback doesn't need encryption.
     // network->SetCredentials(String(OFFLINE_RESERVED_USERNAME),
     //                         String(OFFLINE_RESERVED_PASSWORD));
     URHO3D_LOGINFO("[NetDebug] Offline mode: PAKE disabled for localhost (crypto bypass)");
@@ -1691,8 +1691,14 @@ void TerrainNode::SetupSceneBindings()
     metalDeposits_ = scene_->GetDerivedComponent<MetalDeposits>(true);
 
     // Restore settings from scene Vars (auto-serialized with scene)
-    godRaysEnabled_ = scene_->GetVar("GodRays").GetBool();
-    shadowsEnabled_ = scene_->GetVar("Shadows").GetBool();
+    {
+        const Variant& gr = scene_->GetVar("GodRays");
+        godRaysEnabled_ = gr.IsEmpty() ? true : gr.GetBool();
+    }
+    {
+        const Variant& sh = scene_->GetVar("Shadows");
+        shadowsEnabled_ = sh.IsEmpty() ? true : sh.GetBool();
+    }
     {
         const Variant& wr = scene_->GetVar("WaterReflection");
         waterReflectionEnabled_ = wr.IsEmpty() ? true : wr.GetBool();
@@ -7283,6 +7289,52 @@ void TerrainNode::ApplyBrush(const Vector3& worldPos, float timeStep)
         }
     }
 
+    // Water reveal: when terrain is lowered below water level, spawn water tile for that patch
+    if ((brushMode_ == 2 || brushMode_ == 5) && waterNode_ && terrain_)
+    {
+        Vector3 spacing = terrain_->GetSpacing();
+        IntVector2 numPatches = terrain_->GetNumPatches();
+        float patchWorldX = spacing.x_ * terrain_->GetPatchSize();
+        float patchWorldZ = spacing.z_ * terrain_->GetPatchSize();
+        Vector3 terrainPos = terrain_->GetNode()->GetWorldPosition();
+        float halfTerrainX = numPatches.x_ * patchWorldX * 0.5f;
+        float halfTerrainZ = numPatches.y_ * patchWorldZ * 0.5f;
+
+        // Determine which patch the brush center is in
+        int px = (int)((worldPos.x_ - terrainPos.x_ + halfTerrainX) / patchWorldX);
+        int pz = (int)((worldPos.z_ - terrainPos.z_ + halfTerrainZ) / patchWorldZ);
+        px = Clamp(px, 0, numPatches.x_ - 1);
+        pz = Clamp(pz, 0, numPatches.y_ - 1);
+
+        // Check if any point in the brush area is now below water
+        float h = terrain_->GetHeight(worldPos);
+        if (h < baseWaterY_)
+        {
+            // Check if this patch already has a water tile (by position proximity)
+            float cx = terrainPos.x_ - halfTerrainX + px * patchWorldX + patchWorldX * 0.5f;
+            float cz = terrainPos.z_ - halfTerrainZ + pz * patchWorldZ + patchWorldZ * 0.5f;
+            bool hasTile = false;
+            for (unsigned i = 0; i < waterNode_->GetNumChildren(); ++i)
+            {
+                Node* tile = waterNode_->GetChild(i);
+                Vector3 tp = tile->GetPosition();
+                if (Abs(tp.x_ - cx) < 1.0f && Abs(tp.z_ - cz) < 1.0f)
+                { hasTile = true; break; }
+            }
+            if (!hasTile)
+            {
+                auto* cache = GetSubsystem<ResourceCache>();
+                Node* tile = waterNode_->CreateChild("WaterTile");
+                tile->SetPosition(Vector3(cx, 0.0f, cz));
+                tile->SetScale(Vector3(patchWorldX, 1.0f, patchWorldZ));
+                auto* sm = tile->CreateComponent<StaticModel>();
+                sm->SetModel(cache->GetResource<Model>("Models/Plane.mdl"));
+                sm->SetMaterial(cache->GetResource<Material>("Materials/Water.xml"));
+                sm->SetViewMask(0x80000000);
+            }
+        }
+    }
+
     // Re-upload water map to GPU after river brush edits
     if (brushMode_ == 6 && waterMapTex_ && waterMap_)
         waterMapTex_->SetData(waterMap_);
@@ -8489,7 +8541,7 @@ void TerrainNode::CreateCampfire()
         Node* fireNode = campfireNode_->CreateChild("Fire");
         campfireFireEmitter_ = fireNode->CreateComponent<ParticleEmitter>();
         campfireFireEmitter_->SetEffect(fireEffect);
-        campfireFireEmitter_->SetEmitting(true);
+        campfireFireEmitter_->SetEmitting(false);  // off until server says fire is lit
         // Capture baseline rates so intensity modulation has a "max" to scale against
         cfBaseFireRateMin_ = fireEffect->GetMinEmissionRate();
         cfBaseFireRateMax_ = fireEffect->GetMaxEmissionRate();
@@ -8503,7 +8555,7 @@ void TerrainNode::CreateCampfire()
         smokeNode->SetPosition(Vector3(0.0f, 0.3f, 0.0f));  // slightly above fire
         campfireSmokeEmitter_ = smokeNode->CreateComponent<ParticleEmitter>();
         campfireSmokeEmitter_->SetEffect(smokeEffect);
-        campfireSmokeEmitter_->SetEmitting(true);
+        campfireSmokeEmitter_->SetEmitting(false);  // off until server says fire is lit
         cfBaseSmokeRateMin_ = smokeEffect->GetMinEmissionRate();
         cfBaseSmokeRateMax_ = smokeEffect->GetMaxEmissionRate();
     }
@@ -11561,10 +11613,10 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
                 }
             }
 
-            // Sun & Moon locator rays
-            if (drawDebug_ && sunNode_)
+            // Sun & Moon locator rays — visible whenever god rays are enabled
+            if (godRaysEnabled_ && sunNode_)
                 debug->AddLine(sunNode_->GetWorldPosition(), cursorNear, Color(1.0f, 0.6f, 0.0f), true);
-            if (drawDebug_ && moonNode_)
+            if (godRaysEnabled_ && moonNode_)
                 debug->AddLine(moonNode_->GetWorldPosition(), cursorNear, Color(0.0f, 0.8f, 1.0f), true);
 
             // Campfire ray
@@ -16135,8 +16187,8 @@ void TerrainNode::HandleCreatureDeath(MemoryBuffer& msg)
     if (creature->GetState() == CREATURE_DIE)
         return;  // already dying — server confirmation matches client
 
-    static const char* causeNames[] = {"combat", "drown", "starve", "age", "scavenge", "fall", "fire"};
-    const char* causeName = (deathCause < 7) ? causeNames[deathCause] : "unknown";
+    static const char* causeNames[] = {"none", "combat", "drown", "starve", "age", "scavenge", "fall", "fire", "dehydrate", "freeze"};
+    const char* causeName = (deathCause < 10) ? causeNames[deathCause] : "unknown";
     URHO3D_LOGINFOF("MSG_CREATURE_DEATH: %s (spawnId %u) died — cause: %s",
         species.CString(), targetSpawnId, causeName);
 
@@ -17229,7 +17281,7 @@ void TerrainNode::HandleSpawnCreatureMsg(StringHash /*eventType*/, VariantMap& e
 {
     // Server→client replacement spawn — Death System Phase 1.
     // Wire format from AuthServer::BroadcastSpawnCreature:
-    //   region_id i32, creature_id i32, x f32, y f32, z f32, spawn_id u32 (optional)
+    //   region_id i32, creature_id i32, x f32, y f32, z f32, spawn_id u32, npcName string
     using namespace NetworkMessage;
     const auto& data = eventData[P_DATA].GetBuffer();
     MemoryBuffer msg(data);
@@ -17240,6 +17292,7 @@ void TerrainNode::HandleSpawnCreatureMsg(StringHash /*eventType*/, VariantMap& e
     /*float y = */ msg.ReadFloat();   // ignored — server sends 0, we snap below
     float z = msg.ReadFloat();
     unsigned spawnId = msg.IsEof() ? 0 : msg.ReadU32();  // server-assigned AI tracking ID
+    String npcName = msg.IsEof() ? String::EMPTY : msg.ReadString();
     (void)regionId;  // logged only; spawn position came from server
 
     if (!scene_ || !terrain_)
@@ -17288,8 +17341,13 @@ void TerrainNode::HandleSpawnCreatureMsg(StringHash /*eventType*/, VariantMap& e
             spawnIdToNode_[spawnId] = animal->GetNode();
         }
 
-        URHO3D_LOGINFOF("MSG_SPAWN_CREATURE: spawned creatureId %d (spawnId %u) in region %d at (%.1f, %.1f, %.1f)",
-            creatureId, spawnId, regionId, pos.x_, pos.y_, pos.z_);
+        // Store NPC name from server (humans get syllable names, animals get empty)
+        if (!npcName.Empty())
+            animal->GetNode()->SetVar("NPCName", npcName);
+
+        URHO3D_LOGWARNINGF("MSG_SPAWN_CREATURE: spawned %s creatureId %d (spawnId %u) at (%.1f, %.1f, %.1f)",
+            npcName.Empty() ? "animal" : npcName.CString(),
+            creatureId, spawnId, pos.x_, pos.y_, pos.z_);
     }
 }
 

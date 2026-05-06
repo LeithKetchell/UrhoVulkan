@@ -1,0 +1,6 @@
+Models/Animals/Materials/Main.xml
+Models/Animals/Materials/Main_Light.xml
+Models/Animals/Materials/Black.xml
+Models/Animals/Materials/Eyes_White.xml
+Models/Animals/Materials/Eyes_Pupil.xml
+Models/Animals/Materials/Eyes_Black.xml

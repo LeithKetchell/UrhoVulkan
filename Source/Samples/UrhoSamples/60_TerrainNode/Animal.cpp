@@ -1,6 +1,7 @@
 // Animal — base class for terrain-roaming wildlife.
 
 #include "Animal.h"
+#include "BuildingSystem.h"
 
 #include <Urho3D/Core/Context.h>
 #include <Urho3D/Graphics/AnimatedModel.h>
@@ -30,7 +31,7 @@ void Animal::Start()
     // Cache terrain
     terrain_ = GetScene()->GetComponent<Terrain>(true);
 
-    // Normalize model to real-world size: crush to unit space, then scale to GetDesiredSize()
+    // Normalize model to real-world size until all models are reimported at correct scale
     auto* mdl = node_->GetComponent<AnimatedModel>(true);
     if (mdl)
     {
@@ -159,6 +160,13 @@ void Animal::SetState(AnimalState newState)
 
     case ANIMAL_DIE:
         stateTimer_ = 5.0f;  // death anim + linger, then remove
+        {
+            using namespace AnimalDied;
+            VariantMap& eventData = GetEventDataMap();
+            eventData[P_CREATUREID] = GetCreatureId();
+            eventData[P_POSITION]   = node_ ? node_->GetWorldPosition() : Vector3::ZERO;
+            SendEvent(E_ANIMALDIED, eventData);
+        }
         break;
     }
 
@@ -285,6 +293,13 @@ void Animal::MoveToward(const Vector3& target, float speed, float timeStep)
     // Only move forward along the direction we're actually facing
     Vector3 newPos = pos + newFwd * speed * timeStep;
 
+    // Wall collision check — blocked animals pick a new idle/wander
+    if (IsBlockedByWall(pos, newPos))
+    {
+        SetState(ANIMAL_IDLE);
+        return;
+    }
+
     // Don't walk into water
     if (terrain_)
     {
@@ -348,4 +363,120 @@ void Animal::Respawn()
     state_ = ANIMAL_IDLE;  // bypass SetState guard (same-state check)
     stateTimer_ = Random(GetMinIdleDuration(), GetMaxIdleDuration());
     OnStateEnter(ANIMAL_IDLE);
+}
+
+bool Animal::IsBlockedByWall(const Vector3& from, const Vector3& to) const
+{
+    if (!buildingSystem_)
+        return false;
+
+    int creatureId = GetCreatureId();
+    if (creatureId <= 0)
+        return false;
+
+    const auto& buildings = buildingSystem_->GetPlacedBuildings();
+    const auto& types = buildingSystem_->GetBuildingTypes();
+
+    for (unsigned i = 0; i < buildings.Size(); ++i)
+    {
+        const PlacedBuilding& pb = buildings[i];
+
+        // Only check wall/gate/corner snap types
+        if (pb.snapType != "wall" && pb.snapType != "gate" && pb.snapType != "corner")
+            continue;
+
+        // Open gates don't block
+        if (pb.snapType == "gate" && pb.gateOpen)
+            continue;
+
+        // Simple proximity check: is the new position within the wall's footprint?
+        float dx = to.x_ - pb.position.x_;
+        float dz = to.z_ - pb.position.z_;
+        float dist = sqrtf(dx * dx + dz * dz);
+
+        // Use footprint as collision radius
+        float radius = pb.footprintX * 0.6f;
+        if (dist > radius)
+            continue;
+
+        // Was the old position also within radius? (already inside — don't trap)
+        float dxFrom = from.x_ - pb.position.x_;
+        float dzFrom = from.z_ - pb.position.z_;
+        float distFrom = sqrtf(dxFrom * dxFrom + dzFrom * dzFrom);
+        if (distFrom <= radius)
+            continue;  // already inside, let them move out
+
+        // Check wall_strength — does this wall block this creature?
+        // Find building type for tier-based strength lookup
+        for (unsigned t = 0; t < types.Size(); ++t)
+        {
+            if (types[t].id == pb.buildingTypeId)
+            {
+                // Simple tier-based blocking: tier 1 blocks small, tier 2 blocks medium, tier 3 blocks all
+                // Creature IDs from seed data: 1=rabbit, 2=deer, 3=fox, 4=boar, 5=wolf, 6=bear
+                int tier = types[t].tier;
+                if (tier >= 3)
+                    return true;  // stone blocks everything
+                if (tier >= 2 && creatureId <= 5)
+                    return true;  // wood blocks everything except bear
+                if (tier >= 1 && (creatureId == 1 || creatureId == 3))
+                    return true;  // stick blocks rabbit and fox
+                break;
+            }
+        }
+    }
+
+    return false;
+}
+
+// ============================================================================
+// Combat
+// ============================================================================
+
+void Animal::InitCombatStats(int hp, int attack, int defense, int damage, int damageVar,
+                              int speed, float fleeFraction, const String& aggression)
+{
+    hp_          = hp;
+    maxHp_       = hp;
+    attack_      = attack;
+    defense_     = defense;
+    damage_      = damage;
+    damageVar_   = damageVar;
+    speed_       = speed;
+    fleeFraction_ = fleeFraction;
+    aggression_  = aggression;
+}
+
+bool Animal::TakeDamage(int amount)
+{
+    if (state_ == ANIMAL_DIE)
+        return false;  // already dead
+
+    hp_ -= amount;
+    if (hp_ < 0) hp_ = 0;
+
+    URHO3D_LOGINFOF("Animal %s took %d damage — HP %d/%d",
+        GetNode() ? GetNode()->GetName().CString() : "?", amount, hp_, maxHp_);
+
+    if (hp_ <= 0)
+    {
+        SetState(ANIMAL_DIE);
+        return true;
+    }
+
+    // Flee or fight based on aggression and HP threshold
+    float hpFrac = (float)hp_ / (float)maxHp_;
+    if (hpFrac <= fleeFraction_)
+    {
+        if (aggression_ == "aggressive")
+            SetState(ANIMAL_FIGHT);
+        else
+            SetState(ANIMAL_FLEE);
+    }
+    else if (aggression_ == "aggressive" && state_ != ANIMAL_FIGHT)
+    {
+        SetState(ANIMAL_FIGHT);
+    }
+
+    return false;
 }

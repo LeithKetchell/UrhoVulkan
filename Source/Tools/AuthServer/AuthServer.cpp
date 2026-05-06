@@ -8,6 +8,7 @@
 #include <Urho3D/Graphics/AnimatedModel.h>
 #include <Urho3D/Graphics/AnimationController.h>
 #include <Urho3D/Graphics/Graphics.h>
+#include <Urho3D/Graphics/GraphicsEvents.h>
 #include <Urho3D/Graphics/Model.h>
 #include <Urho3D/Graphics/Renderer.h>
 #include <Urho3D/Graphics/Zone.h>
@@ -581,12 +582,14 @@ void AuthServer::CreateUI()
 
     auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
 
-    // Dark background
+    // Dark background — fills window, resizes on E_SCREENMODE
     auto* bg = root->CreateChild<BorderImage>("Background");
     bg->SetStyle("Window");
-    bg->SetFixedSize(root->GetWidth(), root->GetHeight());
+    bg->SetSize(root->GetWidth(), root->GetHeight());
     bg->SetColor(Color(0.12f, 0.12f, 0.15f));
     bg->SetLayout(LM_VERTICAL, 4, IntRect(8, 8, 8, 8));
+    uiBg_ = bg;
+    SubscribeToEvent(E_SCREENMODE, URHO3D_HANDLER(AuthServer, HandleScreenMode));
 
     // Title bar
     auto* title = bg->CreateChild<Text>("Title");
@@ -686,9 +689,28 @@ void AuthServer::CreateNetworkingPanel(BorderImage* bg, Font* font)
     logHeader->SetText("--- Activity Log ---");
     logHeader->SetColor(Color(0.5f, 0.7f, 1.0f));
 
-    logList_ = networkingPanel_->CreateChild<ListView>("LogList");
-    logList_->SetStyle("ListView");
-    logList_->SetMinHeight(200);
+    // Activity Log — Claudette output pattern (ScrollView + per-line Text + selection overlay)
+    logScrollView_ = networkingPanel_->CreateChild<ScrollView>("LogScroll");
+    logScrollView_->SetStyleAuto();
+    logScrollView_->SetScrollBarsVisible(false, true);
+    logScrollView_->SetFocusMode(FM_NOTFOCUSABLE);
+    logScrollView_->SetScrollStep(0.02f);
+
+    logContent_ = new UIElement(context_);
+    logScrollView_->SetContentElement(logContent_);
+
+    logPanel_ = logContent_->CreateChild<UIElement>("LogPanel");
+    logPanel_->SetPosition(0, 0);
+
+    logSelectionOverlay_ = logContent_->CreateChild<UIElement>("LogSelOverlay");
+    logSelectionOverlay_->SetPosition(0, 0);
+    logSelectionOverlay_->SetClipChildren(true);
+
+    // Mouse events for text selection
+    SubscribeToEvent(E_MOUSEBUTTONDOWN, URHO3D_HANDLER(AuthServer, HandleLogMouseDown));
+    SubscribeToEvent(E_MOUSEBUTTONUP, URHO3D_HANDLER(AuthServer, HandleLogMouseUp));
+    SubscribeToEvent(E_MOUSEMOVE, URHO3D_HANDLER(AuthServer, HandleLogMouseMove));
+    SubscribeToEvent(E_KEYDOWN, URHO3D_HANDLER(AuthServer, HandleLogKeyDown));
 }
 
 void AuthServer::CreateDatabasePanel(BorderImage* bg, Font* font)
@@ -1392,11 +1414,8 @@ void AuthServer::LogMessage(const String& msg)
 {
     URHO3D_LOGINFO(msg);
 
-    if (!logList_)
+    if (!logPanel_)
         return;
-
-    auto* cache = GetSubsystem<ResourceCache>();
-    auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
 
     // Timestamp
     Time* time = GetSubsystem<Time>();
@@ -1406,33 +1425,225 @@ void AuthServer::LogMessage(const String& msg)
     unsigned s = secs % 60;
     char tsBuf[16];
     snprintf(tsBuf, sizeof(tsBuf), "[%02u:%02u:%02u] ", h, m, s);
-    String timestamp(tsBuf);
 
-    auto* line = new Text(context_);
-    line->SetFont(font, 11);
-    line->SetText(timestamp + msg);
+    String line = String(tsBuf) + msg;
+    logLines_.Push(line);
 
-    // Color by content
-    if (msg.Contains("[ERROR]"))
-        line->SetColor(Color(1.0f, 0.3f, 0.3f));
-    else if (msg.Contains("connected") || msg.Contains("authenticated") || msg.Contains("ready"))
-        line->SetColor(Color(0.3f, 1.0f, 0.3f));
-    else if (msg.Contains("disconnected"))
-        line->SetColor(Color(1.0f, 0.6f, 0.2f));
-    else
-        line->SetColor(Color(0.75f, 0.75f, 0.75f));
+    // Add Text child — Claudette scrollback pattern
+    auto* cache = GetSubsystem<ResourceCache>();
+    auto* lineText = logPanel_->CreateChild<Text>();
+    lineText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 11);
+    lineText->SetColor(Color(0.8f, 0.8f, 0.8f));
+    lineText->SetText(line);
+    lineText->SetPosition(0, (int)(logLineCount_ * LOG_LINE_HEIGHT));
+    int lineW = logScrollView_ ? logScrollView_->GetWidth() : 400;
+    if (lineW < 20) lineW = 400;
+    lineText->SetSize(lineW, (int)(LOG_LINE_HEIGHT + 0.5f));
+    logLineCount_++;
 
-    logList_->AddItem(line);
+    // Trim oldest lines if over limit
+    if (logLineCount_ > MAX_LOG_LINES)
+    {
+        unsigned trimCount = logLineCount_ - MAX_LOG_LINES;
+        for (unsigned t = 0; t < trimCount; t++)
+            logPanel_->RemoveChildAtIndex(0);
+        logLineCount_ -= trimCount;
+        logLines_.Erase(0, trimCount);
+        for (unsigned j = 0; j < logPanel_->GetNumChildren(); j++)
+            logPanel_->GetChild(j)->SetPosition(0, (int)(j * LOG_LINE_HEIGHT));
+    }
 
-    // Cap log length
-    while (logList_->GetNumItems() > MAX_LOG_LINES)
-        logList_->RemoveItem((i32)0);
+    // Update panel + content + overlay size
+    // Width must come from scroll view (content elements start at 0 width)
+    int panelW = logScrollView_ ? logScrollView_->GetWidth() : 400;
+    if (panelW < 20) panelW = 400;  // fallback before layout runs
+    int panelH = (int)(logLineCount_ * LOG_LINE_HEIGHT);
+    logPanel_->SetSize(panelW, panelH);
+    if (logSelectionOverlay_)
+        logSelectionOverlay_->SetSize(panelW, panelH);
+    if (logContent_)
+        logContent_->SetSize(panelW, panelH);
 
     // Auto-scroll to bottom
-    logList_->EnsureItemVisibility(logList_->GetNumItems() - 1);
+    if (logScrollView_)
+    {
+        int viewH = logScrollView_->GetHeight();
+        int maxScroll = panelH - viewH;
+        if (maxScroll > 0)
+            logScrollView_->SetViewPosition(IntVector2(0, maxScroll));
+    }
 }
 
 // ============================================================
+// Activity Log — Selection (Claudette output pattern)
+// ============================================================
+
+int AuthServer::LogScreenToRow(int screenY)
+{
+    if (!logScrollView_)
+        return -1;
+    IntVector2 viewPos = logScrollView_->GetViewPosition();
+    IntVector2 scrollScreenPos = logScrollView_->GetScreenPosition();
+    int contentY = screenY - scrollScreenPos.y_ + viewPos.y_;
+    int row = (int)(contentY / LOG_LINE_HEIGHT);
+    if (row < 0) row = 0;
+    if (row >= (int)logLineCount_) row = (int)logLineCount_ - 1;
+    return row;
+}
+
+void AuthServer::HandleLogMouseDown(StringHash, VariantMap& eventData)
+{
+    using namespace MouseButtonDown;
+    if (eventData[P_BUTTON].GetI32() != MOUSEB_LEFT)
+        return;
+
+    // Only process on networking tab
+    if (activeTab_ != 0 || !logScrollView_ || !logScrollView_->IsVisible())
+        return;
+
+    auto* input = GetSubsystem<Input>();
+    IntVector2 pos = input->GetMousePosition();
+
+    // Only start selection if click is inside the log scroll view
+    IntVector2 svPos = logScrollView_->GetScreenPosition();
+    IntVector2 svSize = logScrollView_->GetSize();
+    if (pos.x_ < svPos.x_ || pos.x_ > svPos.x_ + svSize.x_ ||
+        pos.y_ < svPos.y_ || pos.y_ > svPos.y_ + svSize.y_)
+        return;
+
+    int row = LogScreenToRow(pos.y_);
+    if (row < 0) return;
+
+    logSelecting_ = true;
+    logHasSelection_ = false;
+    logSelStartRow_ = row;
+    logSelEndRow_ = row;
+}
+
+void AuthServer::HandleLogMouseUp(StringHash, VariantMap& eventData)
+{
+    using namespace MouseButtonUp;
+    if (eventData[P_BUTTON].GetI32() != MOUSEB_LEFT)
+        return;
+
+    if (!logSelecting_)
+        return;
+
+    logSelecting_ = false;
+    if (logSelStartRow_ == logSelEndRow_)
+        logHasSelection_ = false;
+    // Auto-copy on mouse up (like terminal select)
+    if (logHasSelection_)
+        GetSubsystem<UI>()->SetClipboardText(GetLogSelectedText());
+}
+
+void AuthServer::HandleLogMouseMove(StringHash, VariantMap&)
+{
+    if (!logSelecting_)
+        return;
+
+    auto* input = GetSubsystem<Input>();
+    IntVector2 pos = input->GetMousePosition();
+    int row = LogScreenToRow(pos.y_);
+    if (row >= 0 && row != logSelEndRow_)
+    {
+        logSelEndRow_ = row;
+        logHasSelection_ = true;
+        RenderLogSelectionOverlay();
+    }
+}
+
+void AuthServer::HandleLogKeyDown(StringHash, VariantMap& eventData)
+{
+    using namespace KeyDown;
+    int key = eventData[P_KEY].GetI32();
+    int qual = eventData[P_QUALIFIERS].GetI32();
+
+    // Ctrl+C: copy selection to clipboard
+    if (key == KEY_C && (qual & QUAL_CTRL))
+    {
+        if (logHasSelection_)
+        {
+            GetSubsystem<UI>()->SetClipboardText(GetLogSelectedText());
+            logHasSelection_ = false;
+            RenderLogSelectionOverlay();
+        }
+    }
+}
+
+String AuthServer::GetLogSelectedText()
+{
+    if (!logHasSelection_ || logLines_.Empty())
+        return String::EMPTY;
+
+    int r1 = logSelStartRow_, r2 = logSelEndRow_;
+    if (r1 > r2) { int t = r1; r1 = r2; r2 = t; }
+    r1 = Max(r1, 0);
+    r2 = Min(r2, (int)logLines_.Size() - 1);
+
+    String result;
+    for (int r = r1; r <= r2; r++)
+    {
+        result += logLines_[r];
+        if (r < r2)
+            result += "\n";
+    }
+    return result;
+}
+
+void AuthServer::RenderLogSelectionOverlay()
+{
+    if (!logSelectionOverlay_)
+        return;
+
+    if (!logHasSelection_)
+    {
+        if (logSelectionOverlay_->GetNumChildren() > 0)
+            logSelectionOverlay_->RemoveAllChildren();
+        return;
+    }
+
+    logSelectionOverlay_->RemoveAllChildren();
+
+    int r1 = logSelStartRow_, r2 = logSelEndRow_;
+    if (r1 > r2) { int t = r1; r1 = r2; r2 = t; }
+
+    int panelW = logScrollView_ ? logScrollView_->GetWidth() : 400;
+    if (panelW < 20) panelW = 400;
+    for (int r = r1; r <= r2; r++)
+    {
+        auto* hl = logSelectionOverlay_->CreateChild<BorderImage>();
+        hl->SetPosition(0, (int)(r * LOG_LINE_HEIGHT));
+        hl->SetSize(panelW, (int)(LOG_LINE_HEIGHT + 0.5f));
+        hl->SetColor(Color(0.2f, 0.4f, 0.7f, 0.7f));
+    }
+}
+
+// ============================================================
+void AuthServer::HandleScreenMode(StringHash, VariantMap& eventData)
+{
+    using namespace ScreenMode;
+    int w = eventData[P_WIDTH].GetI32();
+    int h = eventData[P_HEIGHT].GetI32();
+    if (uiBg_)
+        uiBg_->SetSize(w, h);
+
+    // Refresh log element widths after layout recalculates
+    if (logScrollView_ && logPanel_ && logLineCount_ > 0)
+    {
+        int panelW = logScrollView_->GetWidth();
+        if (panelW > 0)
+        {
+            int panelH = (int)(logLineCount_ * LOG_LINE_HEIGHT);
+            logPanel_->SetSize(panelW, panelH);
+            if (logSelectionOverlay_)
+                logSelectionOverlay_->SetSize(panelW, panelH);
+            if (logContent_)
+                logContent_->SetSize(panelW, panelH);
+        }
+    }
+}
+
 // Database Editor
 // ============================================================
 
@@ -2831,9 +3042,9 @@ void AuthServer::SpawnInitialCreatures()
             ai.isHuman = IsHumanSpecies(entry.creatureId);
             ai.isPredator = IsPredatorSpecies(entry.creatureId);
             ai.moveSpeed = ai.isHuman ? 2.0f : 1.5f;
-            ai.hunger = 100.0f;
-            ai.thirst = 100.0f;
-            ai.stamina = 100.0f;
+            ai.hunger = 50.0f + Random(30.0f);
+            ai.thirst = 60.0f + Random(30.0f);
+            ai.stamina = 80.0f + Random(20.0f);
             ai.warmth = weatherTemperature_;
             ai.currentTask = STASK_IDLE;
             ai.spawnId = spawnId;
@@ -2842,6 +3053,16 @@ void AuthServer::SpawnInitialCreatures()
                 ai.campfireId = AssignCampfireForNPC(pos, regionId);
                 ai.settlementId = ai.campfireId;
                 ai.npcName = GenerateNPCName(ai.campfireId);
+
+                // Born dressed — parents killed something, made hide wrap
+                int npcPid = GetNPCPlayerId(spawnId);
+                if (npcPid > 0 && worldDB_)
+                {
+                    worldDB_->AddItemToInventory(npcPid, 300, 1, 1, 1.5f, 0, 30.0f, 10);  // Hide Wrap
+                    worldDB_->EquipItem(npcPid, 300, "body");
+                    worldDB_->AddItemToInventory(npcPid, 303, 1, 1, 1.0f, 0, 30.0f, 10);  // Hide Boots
+                    worldDB_->EquipItem(npcPid, 303, "feet");
+                }
             }
             creatureAI_[spawnId] = ai;
 
@@ -4256,6 +4477,9 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
         journalTrimTimer_ = JOURNAL_TRIM_INTERVAL;
         journalManager_.TrimAll();
     }
+
+    // Batch-dispatch NPC priority evaluation via compute shader (or CPU fallback)
+    DispatchNPCPriorityCompute();
 
     // Server-authoritative creature AI tick
     TickCreatureAI(dt);
@@ -6024,6 +6248,11 @@ void AuthServer::InitGameDB()
     else
         LogMessage("[PopulationManager] WARNING: failed to initialize");
 
+    // Initialize NPC priority compute (GPU-accelerated task selection)
+    npcPriorityCompute_ = new NPCPriorityCompute(context_);
+    npcPriorityCompute_->Initialize();
+    SetupDefaultPriorityCurves();
+
     // Cache building type info for fast lookup during ticks
     CacheBuildingTypes();
 
@@ -6974,9 +7203,47 @@ void AuthServer::BroadcastCreatureDeath(unsigned spawnId, const ServerCreatureSt
         ++sent;
     }
 
-    LogMessage("[Combat] Creature spawnId=" + String(spawnId) +
-               " (" + cs.species + ") died — killer=" + killerName +
-               " — death broadcast to " + String(sent) + " clients");
+    static const char* causeNames[] = {
+        "none", "combat", "drown", "starve", "age", "scavenge", "fall", "fire", "dehydrate", "freeze"
+    };
+    const char* causeName = (cause < 10) ? causeNames[cause] : "unknown";
+
+    // Toe tag: who, what, where, when, why
+    String npcName;
+    auto aiIt = creatureAI_.Find(spawnId);
+    if (aiIt != creatureAI_.End())
+        npcName = aiIt->second_.npcName;
+    if (npcName.Empty())
+        npcName = cs.species;
+
+    // For freeze deaths, sum equipped clothing warmth (same as UpdateCreatureVitals)
+    String freezeExtra;
+    if (cause == DEATH_FREEZE && aiIt != creatureAI_.End() && aiIt->second_.isHuman && worldDB_ && gameDB_)
+    {
+        float clothingWarmth = 0.0f;
+        int npcPid = GetNPCPlayerId(spawnId);
+        if (npcPid > 0)
+        {
+            static const char* warmSlots[] = {"body", "back", "feet", "head"};
+            for (int ws = 0; ws < 4; ++ws)
+            {
+                int itemId = worldDB_->GetEquippedItem(npcPid, warmSlots[ws]);
+                if (itemId > 0)
+                    clothingWarmth += gameDB_->GetClothingWarmth(itemId);
+            }
+        }
+        freezeExtra = " | clothingWarmth: " + String(clothingWarmth, 1);
+    }
+
+    LogMessage("[DEATH] " + npcName + " (" + cs.species + " #" + String(spawnId) + ")"
+               " | cause: " + causeName +
+               " | killer: " + killerName +
+               " | hp: " + String(cs.hp) + "/" + String(cs.maxHp) +
+               " | pos: (" + String((int)cs.position.x_) + "," +
+               String((int)cs.position.y_) + "," + String((int)cs.position.z_) + ")"
+               " | region: " + String(cs.regionId) +
+               " | day: " + String(currentGameDay_) +
+               freezeExtra);
 
     // Persist death to death_log
 #ifdef URHO3D_DATABASE_SQLITE
@@ -7042,6 +7309,51 @@ void AuthServer::BroadcastCreatureDeath(unsigned spawnId, const ServerCreatureSt
         }
 #endif
     }
+
+    // Loot scatter — roll loot table and spawn pickup nodes in a circle around death site
+#ifdef URHO3D_DATABASE_SQLITE
+    if (gameDB_ && scene_)
+    {
+        Vector<LootDrop> drops = gameDB_->GetLoot(cs.creatureId);
+        auto* cache = GetSubsystem<ResourceCache>();
+        for (unsigned i = 0; i < drops.Size(); ++i)
+        {
+            const LootDrop& d = drops[i];
+            if (d.chance < 1.0f && Random() >= d.chance)
+                continue;
+
+            // Random position in ~2m circle around death site
+            float angle = Random(6.2831853f);
+            float radius = 0.5f + Random(1.5f);
+            Vector3 lootPos = cs.position + Vector3(cosf(angle) * radius, 0.5f, sinf(angle) * radius);
+
+            // Snap Y to terrain if available
+            if (scene_->GetComponent<Terrain>())
+            {
+                float terrainY = scene_->GetComponent<Terrain>()->GetHeight(lootPos);
+                if (terrainY > 0.0f)
+                    lootPos.y_ = terrainY + 0.3f;
+            }
+
+            ItemInfo item;
+            if (gameDB_->GetItem(d.itemId, item))
+            {
+                Node* lootNode = scene_->CreateChild("Loot");
+                lootNode->SetPosition(lootPos);
+                lootNode->SetVar("ItemID", d.itemId);
+                lootNode->SetVar("ItemQty", d.quantity);
+
+                if (!item.model.Empty())
+                {
+                    auto* sm = lootNode->CreateComponent<StaticModel>();
+                    auto* model = cache->GetResource<Model>(item.model);
+                    if (model)
+                        sm->SetModel(model);
+                }
+            }
+        }
+    }
+#endif
 }
 
 void AuthServer::HandleDrop(Connection* connection, MemoryBuffer& msg)
@@ -7220,7 +7532,8 @@ bool AuthServer::CraftForOwner(int playerId, int recipeId, const Vector3& positi
             const String& name = outputItem.name;
             // Textiles: weaving products → craft_fiber → SKILL_WEAVING
             if (name.Contains("Cloth") || name.Contains("Thread") || name.Contains("Woven") ||
-                name.Contains("Reed Basket") || name.Contains("Net") || name.Contains("Bandage"))
+                name.Contains("Reed Basket") || name.Contains("Net") || name.Contains("Bandage") ||
+                name.Contains("Canvas") || name.Contains("Sail") || name.Contains("Tapestry"))
                 craftAction = "craft_fiber";
             else if (cat == "armor" || cat == "clothing")
             {
@@ -7362,6 +7675,46 @@ bool AuthServer::CraftForOwner(int playerId, int recipeId, const Vector3& positi
         torchTimers_[playerId] = TORCH_BURN_TIME;
     }
 
+    // Tapestry inscription: read first settlement_history event as the tapestry's description
+    if (recipe.outputId == ITEM_TAPESTRY && worldDB_)
+    {
+        unsigned campfireId = 0;
+        for (auto aiIt = creatureAI_.Begin(); aiIt != creatureAI_.End(); ++aiIt)
+        {
+            if (GetNPCPlayerId(aiIt->second_.spawnId) == playerId)
+            { campfireId = aiIt->second_.campfireId; break; }
+        }
+        if (campfireId != 0)
+        {
+            sqlite3* db = worldDB_->GetHandle();
+            sqlite3_stmt* stmt = nullptr;
+            String inscription;
+            if (sqlite3_prepare_v2(db,
+                "SELECT category, npc_name, game_day FROM settlement_history "
+                "WHERE campfire_id = ? ORDER BY game_day ASC LIMIT 1",
+                -1, &stmt, nullptr) == SQLITE_OK)
+            {
+                sqlite3_bind_int(stmt, 1, (int)campfireId);
+                if (sqlite3_step(stmt) == SQLITE_ROW)
+                {
+                    String cat = (const char*)sqlite3_column_text(stmt, 0);
+                    String npc = (const char*)sqlite3_column_text(stmt, 1);
+                    int day = sqlite3_column_int(stmt, 2);
+                    inscription = npc + " — " + cat + " (day " + String(day) + ")";
+                }
+                sqlite3_finalize(stmt);
+            }
+            if (!inscription.Empty())
+            {
+                worldDB_->Execute(
+                    "INSERT OR REPLACE INTO tapestry_inscriptions (owner_id, inscription) "
+                    "VALUES (" + String(playerId) + ", '" + inscription + "')");
+                URHO3D_LOGINFOF("[Tapestry] Settlement %u tapestry depicts: %s",
+                    campfireId, inscription.CString());
+            }
+        }
+    }
+
     if (connection)
         SendInventoryUpdate(connection, playerId);
     return true;
@@ -7487,6 +7840,187 @@ void AuthServer::CacheBuildingTypes()
         cachedBuildingTypes_[types[i].id] = types[i];
 
     LogMessage("[Buildings] Cached " + String(types.Size()) + " building types");
+}
+
+void AuthServer::SetupDefaultPriorityCurves()
+{
+    if (!npcPriorityCompute_)
+        return;
+
+    Vector<PriorityCurveData> curves;
+
+    // FLEE: hp low → highest priority (driver 5 = hpFraction)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 5;  // hpFraction
+        c.taskId = STASK_FLEE;
+        c.numPoints = 3;
+        c.points[0] = {0.0f, 30.0f};   // 0% hp → priority 30
+        c.points[1] = {0.3f, 20.0f};   // 30% hp → priority 20
+        c.points[2] = {0.5f, 0.0f};    // 50%+ hp → no flee
+        curves.Push(c);
+    }
+
+    // EAT: hunger low → high priority (driver 0 = hunger)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 0;  // hunger
+        c.taskId = STASK_EAT;
+        c.numPoints = 3;
+        c.points[0] = {0.0f, 25.0f};   // starving → priority 25
+        c.points[1] = {25.0f, 18.0f};  // very hungry → 18
+        c.points[2] = {60.0f, 0.0f};   // not hungry → 0
+        curves.Push(c);
+    }
+
+    // HUNT: moderate hunger, no food in hand (driver 0 = hunger)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 0;  // hunger
+        c.taskId = STASK_HUNT;
+        c.numPoints = 3;
+        c.points[0] = {0.0f, 15.0f};   // starving → 15 (but EAT will outrank)
+        c.points[1] = {30.0f, 12.0f};  // hungry → 12
+        c.points[2] = {50.0f, 0.0f};   // satisfied → 0
+        curves.Push(c);
+    }
+
+    // DRINK: thirst low → high priority (driver 1 = thirst)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 1;  // thirst
+        c.taskId = STASK_DRINK;
+        c.numPoints = 3;
+        c.points[0] = {0.0f, 28.0f};   // dehydrated → 28
+        c.points[1] = {30.0f, 15.0f};  // thirsty → 15
+        c.points[2] = {50.0f, 0.0f};   // fine → 0
+        curves.Push(c);
+    }
+
+    // WARM: warmth low → high priority (driver 2 = warmth)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 2;  // warmth
+        c.taskId = STASK_WARM;
+        c.numPoints = 3;
+        c.points[0] = {0.0f, 22.0f};   // freezing → 22
+        c.points[1] = {15.0f, 12.0f};  // cold → 12
+        c.points[2] = {25.0f, 0.0f};   // ok → 0
+        curves.Push(c);
+    }
+
+    // SLEEP: stamina low → priority (driver 3 = stamina)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 3;  // stamina
+        c.taskId = STASK_SLEEP;
+        c.numPoints = 3;
+        c.points[0] = {0.0f, 20.0f};   // exhausted → 20
+        c.points[1] = {20.0f, 10.0f};  // tired → 10
+        c.points[2] = {40.0f, 0.0f};   // rested → 0
+        curves.Push(c);
+    }
+
+    // TEND_FIRE: darkness high → priority (driver 4 = darkness)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 4;  // darkness
+        c.taskId = STASK_TEND_FIRE;
+        c.numPoints = 3;
+        c.points[0] = {0.0f, 0.0f};    // daytime → 0
+        c.points[1] = {0.5f, 5.0f};    // dusk → 5
+        c.points[2] = {1.0f, 12.0f};   // night → 12
+        curves.Push(c);
+    }
+
+    // GATHER: moderate hunger + daytime (driver 0 = hunger)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 0;  // hunger
+        c.taskId = STASK_GATHER;
+        c.numPoints = 3;
+        c.points[0] = {0.0f, 10.0f};   // starving → 10 (EAT/HUNT outrank)
+        c.points[1] = {40.0f, 8.0f};   // hungry-ish → 8
+        c.points[2] = {60.0f, 0.0f};   // full → 0
+        curves.Push(c);
+    }
+
+    // CRAFT/WORK: low-urgency, no survival need (driver 3 = stamina as proxy)
+    {
+        PriorityCurveData c{};
+        c.driverIndex = 3;  // stamina — well-rested = productive
+        c.taskId = STASK_CRAFT;
+        c.numPoints = 3;
+        c.points[0] = {30.0f, 0.0f};   // tired → don't work
+        c.points[1] = {50.0f, 6.0f};   // moderate → 6
+        c.points[2] = {100.0f, 10.0f}; // fully rested → 10
+        curves.Push(c);
+    }
+
+    npcPriorityCompute_->SetCurves(curves);
+    URHO3D_LOGINFOF("[NPCPriority] Loaded %u default priority curves", curves.Size());
+}
+
+void AuthServer::DispatchNPCPriorityCompute()
+{
+    if (!npcPriorityCompute_)
+        return;
+
+    // Collect vitals from all human NPCs
+    Vector<GPUNPCDrivers> npcData;
+    Vector<unsigned> spawnIds;  // parallel array for mapping results back
+
+    float darkness = GetDarkness();
+
+    for (auto it = creatureAI_.Begin(); it != creatureAI_.End(); ++it)
+    {
+        const ServerCreatureAI& ai = it->second_;
+        if (!ai.isHuman)
+            continue;
+
+        GPUNPCDrivers d{};
+        d.hunger = ai.hunger;
+        d.thirst = ai.thirst;
+        d.warmth = ai.warmth;
+        d.stamina = ai.stamina;
+        d.darkness = darkness;
+
+        // HP fraction
+        auto csIt = creatureStates_.Find(ai.spawnId);
+        if (csIt != creatureStates_.End() && csIt->second_.maxHp > 0)
+            d.hpFraction = (float)csIt->second_.hp / (float)csIt->second_.maxHp;
+        else
+            d.hpFraction = 1.0f;
+
+        d.pad0 = 0.0f;
+        d.pad1 = 0.0f;
+
+        npcData.Push(d);
+        spawnIds.Push(ai.spawnId);
+    }
+
+    if (npcData.Empty())
+        return;
+
+    if (npcPriorityCompute_->IsComputeReady())
+    {
+        // GPU path: dispatch and readback
+        npcPriorityCompute_->Dispatch(npcData);
+
+        Vector<GPUNPCResult> results;
+        npcPriorityCompute_->Readback(results);
+
+        gpuPriorityCache_.Clear();
+        for (unsigned i = 0; i < results.Size() && i < spawnIds.Size(); ++i)
+            gpuPriorityCache_[spawnIds[i]] = results[i].taskId;
+    }
+    else
+    {
+        // CPU fallback: evaluate each NPC using the same curve logic
+        gpuPriorityCache_.Clear();
+        for (unsigned i = 0; i < npcData.Size(); ++i)
+            gpuPriorityCache_[spawnIds[i]] = npcPriorityCompute_->EvaluateCPU(npcData[i]);
+    }
 }
 
 void AuthServer::HandleBuild(Connection* connection, MemoryBuffer& msg)
@@ -8395,11 +8929,16 @@ void AuthServer::HandleHarvest(Connection* connection, MemoryBuffer& msg)
     if (sessIt == sessions_.End() || !sessIt->second_.authenticated || !sessIt->second_.alive)
         return;
 
-    // Phase 2 trust model: client sends target node id + creature id.
-    // Server rolls loot and adds to inventory. Range/state validation will
-    // tighten when creatureStates_ lands (Combat Phase 2).
     unsigned targetNodeId = msg.ReadU32();
     int      creatureId   = msg.ReadI32();
+
+    // Harvest dedup — each creature can only be looted once
+    if (harvestedCreatures_.Contains(targetNodeId))
+    {
+        LogMessage(sessIt->second_.username + " tried to re-harvest creature " + String(targetNodeId) + " — already looted");
+        return;
+    }
+    harvestedCreatures_.Insert(targetNodeId);
 
     ClientSession& s = sessIt->second_;
     if (!worldDB_ || !gameDB_)
@@ -8841,6 +9380,11 @@ void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vect
     // Assign a server-side tracking ID for AI state correlation.
     unsigned spawnId = ++nextSpawnId_;
 
+    // Generate NPC name before sending so client gets it in the spawn message
+    String npcName;
+    if (IsHumanSpecies(creatureId))
+        npcName = GenerateNPCName(AssignCampfireForNPC(pos, regionId));
+
     VectorBuffer buf;
     buf.WriteI32(regionId);
     buf.WriteI32(creatureId);
@@ -8848,6 +9392,7 @@ void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vect
     buf.WriteFloat(0.0f);
     buf.WriteFloat(pos.z_);
     buf.WriteU32(spawnId);
+    buf.WriteString(npcName);  // trailing string — empty for animals
 
     for (auto it = sessions_.Begin(); it != sessions_.End(); ++it)
     {
@@ -8868,9 +9413,11 @@ void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vect
         ai.isHuman = IsHumanSpecies(creatureId);
         ai.isPredator = IsPredatorSpecies(creatureId);
         ai.moveSpeed = ai.isHuman ? 2.0f : 1.5f;
-        ai.hunger = 100.0f;
-        ai.thirst = 100.0f;
-        ai.stamina = 100.0f;
+        // Start with slightly depleted vitals so NPCs begin working immediately
+        // instead of idling for minutes waiting for hunger/thirst to decay.
+        ai.hunger = 50.0f + Random(30.0f);     // 50-80: will gather soon
+        ai.thirst = 60.0f + Random(30.0f);     // 60-90: will drink soon
+        ai.stamina = 80.0f + Random(20.0f);    // 80-100: rested but not full
         ai.warmth = weatherTemperature_;
         ai.currentTask = STASK_IDLE;
         ai.spawnId = spawnId;  // Self-reference for inventory ops (Phase 4)
@@ -8883,11 +9430,22 @@ void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vect
                 ai.maturityDays = rules.maturityDays;
         }
         // Phase 6: humans get assigned to a shared campfire for night cycle
+        // Name + campfire already resolved above for the wire message
         if (ai.isHuman)
         {
             ai.campfireId = AssignCampfireForNPC(pos, regionId);
             ai.settlementId = ai.campfireId;
-            ai.npcName = GenerateNPCName(ai.campfireId);
+            ai.npcName = npcName;
+
+            // Born dressed — parents killed something, made hide wrap
+            int npcPid = GetNPCPlayerId(spawnId);
+            if (npcPid > 0 && worldDB_)
+            {
+                worldDB_->AddItemToInventory(npcPid, 300, 1, 1, 1.5f, 0, 30.0f, 10);  // Hide Wrap
+                worldDB_->EquipItem(npcPid, 300, "body");
+                worldDB_->AddItemToInventory(npcPid, 303, 1, 1, 1.0f, 0, 30.0f, 10);  // Hide Boots
+                worldDB_->EquipItem(npcPid, 303, "feet");
+            }
         }
         creatureAI_[spawnId] = ai;
 
@@ -9471,14 +10029,20 @@ void AuthServer::TickCreatureAI(float dt)
             ServerCreatureState& cs = csIt->second_;
             cs.hp = 0;
             BroadcastCreatureDeath(spawnId, cs, nullptr, cause);
-            if (populationManager_ && populationManager_->IsReady() && ai.regionId >= 0)
+            // Only spawn replacements for predation/combat kills — not vitals deaths.
+            // Starvation/dehydration/hypothermia deaths mean the population exceeds
+            // what the environment can sustain. Replacing them creates a death spiral.
+            if (cause == DEATH_COMBAT || cause == DEATH_SCAVENGE)
             {
-                Vector<ReplacementSpawn> replacements =
-                    populationManager_->RecordKill(ai.regionId, ai.creatureId);
-                for (unsigned j = 0; j < replacements.Size(); ++j)
+                if (populationManager_ && populationManager_->IsReady() && ai.regionId >= 0)
                 {
-                    Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(replacements[j].regionId);
-                    BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos, 0.0f);
+                    Vector<ReplacementSpawn> replacements =
+                        populationManager_->RecordKill(ai.regionId, ai.creatureId);
+                    for (unsigned j = 0; j < replacements.Size(); ++j)
+                    {
+                        Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(replacements[j].regionId);
+                        BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos, 0.0f);
+                    }
                 }
             }
             creatureStates_.Erase(csIt);
@@ -9521,8 +10085,12 @@ void AuthServer::TickCreatureAI(float dt)
         {
             ServerCreatureState& cs = csIt->second_;
             cs.hp = 0;
-            URHO3D_LOGINFOF("[Death5a] Creature spawnId=%u (species %d) drowned at Y=%.1f",
-                spawnId, ai.creatureId, ai.position.y_);
+            LogMessage("[DROWN] " + cs.species + " #" + String(spawnId) +
+                " | Y=" + String(ai.position.y_, 1) +
+                " | pos: (" + String((int)ai.position.x_) + "," +
+                String((int)ai.position.y_) + "," + String((int)ai.position.z_) + ")"
+                " | region: " + String(ai.regionId) +
+                " | day: " + String(currentGameDay_));
             BroadcastCreatureDeath(spawnId, cs, nullptr, DEATH_DROWN);
             if (populationManager_ && populationManager_->IsReady() && ai.regionId >= 0)
             {
@@ -9881,11 +10449,29 @@ AuthServer::DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, fl
     else
         ai.stamina = Max(0.0f, ai.stamina - GetTuning("stamina_drain_active", 0.10f) * dt);
 
-    // Warmth: base from weather, shelter bonus near home/campfire
+    // Warmth: base from weather, shelter bonus, clothing bonus
     // Night penalty: additional drain proportional to darkness (Phase 6)
     float darkness = GetDarkness();
     float shelterWarmth = GetShelterWarmth(ai.position.x_, ai.position.y_, ai.position.z_);
-    ai.warmth = weatherTemperature_ + shelterWarmth;
+
+    // Clothing warmth — sum equipped items' warmth values from clothing_warmth table
+    float clothingWarmth = 0.0f;
+    if (ai.isHuman && worldDB_ && gameDB_)
+    {
+        int npcPid = GetNPCPlayerId(ai.spawnId);
+        if (npcPid > 0)
+        {
+            static const char* warmSlots[] = {"body", "back", "feet", "head"};
+            for (int ws = 0; ws < 4; ++ws)
+            {
+                int itemId = worldDB_->GetEquippedItem(npcPid, warmSlots[ws]);
+                if (itemId > 0)
+                    clothingWarmth += gameDB_->GetClothingWarmth(itemId);
+            }
+        }
+    }
+
+    ai.warmth = weatherTemperature_ + shelterWarmth + clothingWarmth;
     ai.warmth -= darkness * GetTuning("warmth_night_drain", 0.40f) * dt; // Extra warmth drain at night
 
     // Sleeping near home provides warmth bonus — but ONLY when the shared
@@ -9901,6 +10487,14 @@ AuthServer::DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, fl
                 fireAlive = true;
             if (fireAlive)
                 ai.warmth = Min(100.0f, ai.warmth + 15.0f);
+
+            // Bedroll bonus: NPC sleeping near fire with a bedroll gets extra warmth
+            if (ai.currentTask == STASK_SLEEP)
+            {
+                int npcPid = GetNPCPlayerId(ai.spawnId);
+                if (npcPid > 0 && worldDB_ && worldDB_->GetItemCount(npcPid, 893) > 0)
+                    ai.warmth = Min(100.0f, ai.warmth + 8.0f);
+            }
         }
     }
     ai.warmth = Clamp(ai.warmth, 0.0f, 100.0f);
@@ -10067,6 +10661,30 @@ AuthServer::DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, fl
         // Food poisoning morale penalty
         if (ai.illnessActive)
             targetMorale -= 10.0f;
+        // Banner morale bonus: any NPC at a settlement with a placed banner gets +2
+        if (ai.campfireId != 0 && worldDB_)
+        {
+            // Check if any NPC at this settlement owns a banner (item 894)
+            for (auto bIt = creatureAI_.Begin(); bIt != creatureAI_.End(); ++bIt)
+            {
+                if (bIt->second_.campfireId == ai.campfireId && bIt->second_.isHuman)
+                {
+                    int bPid = GetNPCPlayerId(bIt->first_);
+                    if (bPid > 0 && worldDB_->GetItemCount(bPid, 894) > 0)
+                    { targetMorale += 2.0f; break; }
+                }
+            }
+            // Tapestry morale bonus: +5 if any NPC at settlement owns a tapestry (item 896)
+            for (auto tIt = creatureAI_.Begin(); tIt != creatureAI_.End(); ++tIt)
+            {
+                if (tIt->second_.campfireId == ai.campfireId && tIt->second_.isHuman)
+                {
+                    int tPid = GetNPCPlayerId(tIt->first_);
+                    if (tPid > 0 && worldDB_->GetItemCount(tPid, ITEM_TAPESTRY) > 0)
+                    { targetMorale += 5.0f; break; }
+                }
+            }
+        }
         // Clamp and lerp toward target
         targetMorale = Clamp(targetMorale, 0.0f, 100.0f);
         ai.morale = Lerp(ai.morale, targetMorale, Min(1.0f, dt * 0.1f));
@@ -10151,6 +10769,12 @@ void AuthServer::MoveCreature(ServerCreatureAI& ai, float dt)
 
 int AuthServer::PickCreatureTask(const ServerCreatureAI& ai)
 {
+    // GPU/CPU compute pre-evaluation: if the priority shader already determined
+    // a clear survival winner, use it as a fast-path hint for vitals-driven tasks.
+    // Combat/spatial decisions (FLEE, DEFEND, HEAL) still need CPU validation below.
+    auto gpuIt = gpuPriorityCache_.Find(ai.spawnId);
+    int gpuHint = (gpuIt != gpuPriorityCache_.End()) ? gpuIt->second_ : 0;
+
     // Priority-based task selection matching the plan's priority list.
 
     // 1. FLEE — human flees when HP critical (<30%) or unarmed facing a predator.
@@ -10390,6 +11014,16 @@ int AuthServer::PickCreatureTask(const ServerCreatureAI& ai)
             return STASK_WARM; // Walk home before dark
         if (distHome < 10.0f)
             return STASK_SIT_FIRE; // Already home — settle in for the night
+    }
+
+    // GPU priority hint: if compute shader identified a clear work-category winner
+    // and we've passed all survival checks above without returning, trust the hint
+    // for non-combat low-urgency tasks to skip expensive inventory/spatial scans.
+    if (gpuHint == STASK_CRAFT && ai.hunger >= 60.0f && ai.thirst >= 50.0f &&
+        ai.warmth >= 25.0f && ai.stamina >= 30.0f && GetDarkness() < 0.6f)
+    {
+        if (ai.isHuman && ai.growthProgress >= 1.0f && NPCFindCraftableRecipe(ai) >= 0)
+            return STASK_CRAFT;
     }
 
     // 6. GATHER — resource within range (simplified: periodic need)
@@ -12785,7 +13419,7 @@ void AuthServer::OnCreatureTaskComplete(ServerCreatureAI& ai)
             if (npcPid > 0)
             {
                 int woolQty = 2 + Random(2);  // 2-3 wool per shear
-                AddItemToWorldInventory(npcPid, 420, woolQty);  // 420 = Wool
+                AddItemToWorldInventory(npcPid, 880, woolQty);  // 880 = Wool
                 URHO3D_LOGINFOF("[Shear] NPC %u sheared alpaca %u → %d wool",
                     ai.spawnId, ai.targetId, woolQty);
 
@@ -18840,6 +19474,19 @@ bool AuthServer::NPCFish(ServerCreatureAI& ai)
             Vector3 bPos(boats[b].posX, boats[b].posY, boats[b].posZ);
             if ((ai.position - bPos).Length() < 15.0f)
             { boatBonus = FISHING_BOAT_BONUS; break; }
+        }
+    }
+    // Sail upgrade: if settlement has a sail (item 895), double boat bonus
+    if (boatBonus > 0 && ai.campfireId != 0)
+    {
+        for (auto sIt = creatureAI_.Begin(); sIt != creatureAI_.End(); ++sIt)
+        {
+            if (sIt->second_.campfireId == ai.campfireId && sIt->second_.isHuman)
+            {
+                int sPid = GetNPCPlayerId(sIt->first_);
+                if (sPid > 0 && worldDB_->GetItemCount(sPid, ITEM_SAIL) > 0)
+                { boatBonus *= 2; break; }
+            }
         }
     }
     int dc = 10;

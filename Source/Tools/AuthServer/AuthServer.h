@@ -14,6 +14,8 @@
 #include <Urho3D/UI/UI.h>
 #include <Urho3D/UI/Text.h>
 #include <Urho3D/UI/ListView.h>
+#include <Urho3D/UI/MultiLineEdit.h>
+#include <Urho3D/UI/ScrollView.h>
 #include <Urho3D/UI/Window.h>
 #include <Urho3D/UI/BorderImage.h>
 #include <Urho3D/UI/Font.h>
@@ -51,6 +53,7 @@
 #include "TerrainGenerator.h"
 #include "TerrainJournal.h"
 #include "ResourceMap.h"
+#include "NPCPriorityCompute.h"
 #include "EcosystemManager.h"
 
 using namespace Urho3D;
@@ -154,7 +157,7 @@ private:
     String GetConnectionIP(Connection* connection) const;
 
     static constexpr float UNAUTH_TIMEOUT = 30.0f;         // seconds before unauth kick
-    static constexpr int MAX_FAILED_LOGINS_PER_WINDOW = 5;  // attempts before IP ban
+    static constexpr int MAX_FAILED_LOGINS_PER_WINDOW = 3;  // attempts before IP ban
     static constexpr float LOGIN_RATE_WINDOW = 60.0f;       // rate limit window in seconds
     static constexpr int MAX_CONNECTIONS_PER_IP = 4;         // simultaneous connections per IP
 
@@ -310,6 +313,7 @@ private:
         String  species;
     };
     HashMap<unsigned, ServerCreatureState> creatureStates_;  // key: server-assigned spawnId
+    HashSet<unsigned> harvestedCreatures_;  // spawnIds already looted — prevents harvest spam
     /// Look up creature combat stats from GameDB. Returns true on success.
     bool LoadCreatureCombat(int creatureId, ServerCreatureState& out);
     /// Broadcast MSG_CREATURE_DEATH to all clients within 100m.
@@ -984,6 +988,8 @@ private:
     /// Draw water from nearest barrel. Returns true if water available.
     bool DrawFromBarrel(float posX, float posZ, float range);
     static constexpr int ITEM_PLANK = 12;
+    static constexpr int ITEM_SAIL = 895;         // Canvas sail — doubles boat fishing bonus
+    static constexpr int ITEM_TAPESTRY = 896;     // Woven tapestry — morale +5, shows settlement history
     static constexpr int FISHING_BOAT_BONUS = 3;  // +3 to fishing DC when near a boat
     /// Phase 25: NPC culls weakest tamed animal at their settlement for meat/hide.
     void NPCCullWeakest(ServerCreatureAI& ai);
@@ -1107,6 +1113,9 @@ private:
     SharedPtr<WorldDB>         worldDB_;
     SharedPtr<CombatResolver>  combatResolver_;
     SharedPtr<PopulationManager> populationManager_;
+    SharedPtr<NPCPriorityCompute> npcPriorityCompute_;
+    /// Cached GPU priority results: spawnId → task category from last dispatch.
+    HashMap<unsigned, int> gpuPriorityCache_;
     HungerRules hungerRules_{};
     ThirstRules thirstRules_{};
     InventoryRules inventoryRules_{};
@@ -1123,6 +1132,10 @@ private:
     int lastEconomyDay_{-1};  // last game-day when economy tick ran
     HashMap<int, BuildingTypeDBInfo> cachedBuildingTypes_;  // building_type_id → info
     void CacheBuildingTypes();
+    /// Set up default priority curves for NPC compute shader evaluation.
+    void SetupDefaultPriorityCurves();
+    /// Batch-dispatch NPC priority evaluation via compute shader. Called once per tick.
+    void DispatchNPCPriorityCompute();
 
     // Economic doctrine: daily resource regen, breeding, trade value updates
     void EconomyDailyTick();
@@ -1191,6 +1204,7 @@ private:
     int activeTab_{0};
 
     // Panels
+    BorderImage* uiBg_{};
     BorderImage* networkingPanel_{};
     BorderImage* databasePanel_{};
     BorderImage* weatherPanel_{};
@@ -1231,6 +1245,27 @@ private:
     Text* clientCountText_{};
     ListView* clientList_{};
     ListView* logList_{};
+    ScrollView* logScrollView_{};
+    UIElement* logContent_{};
+    UIElement* logPanel_{};
+    UIElement* logSelectionOverlay_{};
+    Vector<String> logLines_;          // stored text for copy
+    unsigned logLineCount_{0};
+    static constexpr unsigned MAX_LOG_LINES = 500;
+    static constexpr float LOG_LINE_HEIGHT = 14.0f;
+
+    // Log selection (Claudette output pattern)
+    bool logSelecting_{false};
+    bool logHasSelection_{false};
+    int logSelStartRow_{0}, logSelEndRow_{0};
+    void HandleLogMouseDown(StringHash, VariantMap& eventData);
+    void HandleLogMouseUp(StringHash, VariantMap& eventData);
+    void HandleLogMouseMove(StringHash, VariantMap& eventData);
+    void HandleLogKeyDown(StringHash, VariantMap& eventData);
+    void HandleScreenMode(StringHash, VariantMap& eventData);
+    int LogScreenToRow(int screenY);
+    String GetLogSelectedText();
+    void RenderLogSelectionOverlay();
 
     // Database panel
     DropDownList* tableSelector_{};
@@ -1266,7 +1301,6 @@ private:
     void HandleEditCancel(StringHash eventType, VariantMap& eventData);
 
     float uptime_{};
-    static const unsigned MAX_LOG_LINES = 200;
 
     // Melbourne clock display
     SharedPtr<MelbourneClock> melbourneClock_;
@@ -1292,7 +1326,7 @@ private:
     float weatherPrecipitation_{};
     float weatherWindSpeed_{};
     float weatherWindAngle_{};
-    float weatherTemperature_{};
+    float weatherTemperature_{20.0f};  // Melbourne ambient default until BOM updates
     float weatherHumidity_{};
 
     // Water Phase 5: Drought tracking

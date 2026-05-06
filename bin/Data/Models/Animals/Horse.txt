@@ -1,0 +1,8 @@
+Models/Animals/Materials/Main.xml
+Models/Animals/Materials/Hair.xml
+Models/Animals/Materials/Main_Dark.xml
+Models/Animals/Materials/Muzzle.xml
+Models/Animals/Materials/Hooves.xml
+Models/Animals/Materials/Main_Light.xml
+Models/Animals/Materials/Eye_Black.xml
+Models/Animals/Materials/Eye_White.xml

@@ -4,8 +4,15 @@
 # Define target name
 set (TARGET_NAME AuthServer)
 
-# Define source files
-define_source_files ()
+# Define source files — pull in shared ResourceMap from Sample 60
+set (SAMPLE60_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../Samples/UrhoSamples/60_TerrainNode)
+define_source_files (
+    EXTRA_CPP_FILES ${SAMPLE60_DIR}/ResourceMap.cpp ${SAMPLE60_DIR}/EcosystemManager.cpp
+                    ${CMAKE_CURRENT_SOURCE_DIR}/NPCPriorityCompute.cpp
+    EXTRA_H_FILES   ${SAMPLE60_DIR}/ResourceMap.h ${SAMPLE60_DIR}/EcosystemManager.h
+                    ${CMAKE_CURRENT_SOURCE_DIR}/NPCPriorityCompute.h
+)
+include_directories (${SAMPLE60_DIR})
 
 # Propagate database backend define (not auto-exported by Urho3D lib target)
 if (URHO3D_DATABASE_SQLITE)

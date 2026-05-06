@@ -2,28 +2,42 @@
 
 #pragma once
 
-#include "Animal.h"
+#include "LandAnimal.h"
 
-class Fox : public Animal
+class Fox : public LandAnimal
 {
-    URHO3D_OBJECT(Fox, Animal);
+    URHO3D_OBJECT(Fox, LandAnimal);
 
 public:
-    explicit Fox(Context* context);
+    explicit Fox(Context* context) : LandAnimal(context) {}
 
-    static void RegisterObject(Context* context);
+    static void RegisterObject(Context* context) { context->RegisterFactory<Fox>(); }
 
 protected:
     String GetModelPath() const override { return "Models/Animals/Fox.mdl"; }
-    String GetIdleAnim() const override { return "Models/Animals/Fox_Idle.ani"; }
-    String GetRunAnim() const override { return "Models/Animals/Fox_Gallop.ani"; }
-    String GetDieAnim() const override { return "Models/Animals/Fox_Death.ani"; }
+    String GetAnimPrefix() const override { return "Fox_AnimalArmature"; }
+    String GetIdleAnim() const override
+    {
+        if (Random(1.0f) < 0.3f)
+            return GetModelDir() + GetAnimPrefix() + "Idle_2_HeadLow.ani";
+        if (Random(1.0f) < 0.3f)
+            return GetModelDir() + GetAnimPrefix() + "Idle_2.ani";
+        return GetModelDir() + GetAnimPrefix() + "Idle.ani";
+    }
+    String GetLookAnim() const override { return GetModelDir() + GetAnimPrefix() + "Idle_2_HeadLow.ani"; }
 
-    float GetDesiredSize() const override { return 0.8f; }   // ~0.8m shoulder height
+    int GetCreatureId() const override { return 3; }
+    float GetDesiredSize() const override { return 0.55f; }
     float GetWanderRadius() const override { return 25.0f; }
     float GetWanderSpeed() const override { return 3.0f; }
     float GetFleeSpeed() const override { return 8.0f; }
     float GetFleeDistance() const override { return 25.0f; }
     float GetMinIdleDuration() const override { return 2.0f; }
     float GetMaxIdleDuration() const override { return 6.0f; }
+    bool IsScavenger() const override { return true; }
+    bool IsPredator() const override { return true; }
+    float GetVisionRange() const override { return 30.0f; }
+    float GetVisionCosAngle() const override { return 0.5f; }  // 120 degrees
+    float GetFoodGrassWeight() const override { return 0.0f; }
+    float GetFoodShrubWeight() const override { return 0.0f; }
 };

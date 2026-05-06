@@ -5,8 +5,18 @@
 
 #include <Urho3D/Scene/LogicComponent.h>
 #include <Urho3D/Graphics/Terrain.h>
+#include <Urho3D/Core/Object.h>
 
 using namespace Urho3D;
+
+class BuildingSystem;
+
+/// Fired when any animal enters the ANIMAL_DIE state (player kill, drowning, etc.).
+URHO3D_EVENT(E_ANIMALDIED, AnimalDied)
+{
+    URHO3D_PARAM(P_CREATUREID, CreatureId);   // int — matches creatures table id
+    URHO3D_PARAM(P_POSITION,   Position);     // Vector3 — world position of the animal
+}
 
 /// Animal behavior states.
 enum AnimalState
@@ -14,6 +24,7 @@ enum AnimalState
     ANIMAL_IDLE,
     ANIMAL_WANDER,
     ANIMAL_FLEE,
+    ANIMAL_FIGHT,   ///< Aggressive animals charge and attack
     ANIMAL_DIE
 };
 
@@ -35,6 +46,30 @@ public:
 
     /// Set home position (center of wander area).
     void SetHomePosition(const Vector3& pos) { homePos_ = pos; }
+
+    /// Set building system reference for wall collision checks.
+    void SetBuildingSystem(BuildingSystem* bs) { buildingSystem_ = bs; }
+
+    /// Get the creature ID for wall_strength lookups. Subclasses override.
+    virtual int GetCreatureId() const { return 0; }
+
+    // --- Combat ---
+    /// Apply damage to this animal. Returns true if it died.
+    bool TakeDamage(int amount);
+    /// Initialise combat stats from a creature record (called by TerrainNode after spawn).
+    void InitCombatStats(int hp, int attack, int defense, int damage, int damageVar,
+                         int speed, float fleeFraction, const String& aggression);
+
+    int GetHp()      const { return hp_; }
+    int GetMaxHp()   const { return maxHp_; }
+    int GetAttack()  const { return attack_; }
+    int GetDefense() const { return defense_; }
+    int GetDamage()  const { return damage_; }
+    int GetDamageVar() const { return damageVar_; }
+    float GetWeaponRange() const { return 2.0f; }
+
+    /// Node ID of the entity currently fighting this animal (0 = none).
+    unsigned combatTarget_{0};
 
 protected:
     // --- Subclass overrides: asset paths ---
@@ -72,6 +107,7 @@ private:
     void MoveToward(const Vector3& target, float speed, float timeStep);
     void SnapToTerrain();
     void Respawn();
+    bool IsBlockedByWall(const Vector3& from, const Vector3& to) const;
 
     Vector3 homePos_;
     Vector3 wanderTarget_;
@@ -86,4 +122,19 @@ private:
     /// Stagger ID for drowning scan distribution across frames.
     unsigned staggerID_{0};
     static unsigned nextStaggerID_;
+
+    /// Building system for wall collision (raw ptr — same scene lifetime).
+    BuildingSystem* buildingSystem_{nullptr};
+
+    // --- Combat stats (loaded from GameDB creatures table) ---
+    int hp_{10};
+    int maxHp_{10};
+    int attack_{0};
+    int defense_{10};
+    int damage_{1};
+    int damageVar_{4};
+    int speed_{5};
+    float fleeFraction_{0.5f};    ///< Flee when HP drops below this fraction
+    String aggression_{"passive"}; ///< "passive", "defensive", "aggressive"
+    float combatTimer_{0.0f};      ///< Cooldown between attacks
 };

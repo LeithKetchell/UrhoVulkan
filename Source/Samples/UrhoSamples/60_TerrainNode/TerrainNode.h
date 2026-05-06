@@ -474,8 +474,8 @@ private:
     Text* clockText_{};
     bool menuOpen_{false};
     int heightFogOverride_{0};  // 0=auto (time-based), 1=forced on, -1=forced off
-    bool godRaysEnabled_{false};
-    bool shadowsEnabled_{false};
+    bool godRaysEnabled_{true};
+    bool shadowsEnabled_{true};
     bool waterReflectionEnabled_{true};
     bool postProcessEnabled_{true};
     bool hemisphereEnabled_{true};
@@ -1253,7 +1253,7 @@ private:
     OfflineMode offlineMode_{OFFLINE_NONE};
     float offlineRetryTimer_{0.0f};
     int   offlineRetriesLeft_{0};
-    static constexpr int   OFFLINE_MAX_RETRIES   = 30;   // 30 × 1s = 30s window for AuthServer startup
+    static constexpr int   OFFLINE_MAX_RETRIES   = 90;   // 90 × 1s = 90s window for AuthServer startup
     static constexpr float OFFLINE_RETRY_INTERVAL = 1.0f;  // seconds between retries
     void TickOfflineConnect(float timeStep);
     void OfflineSpawnAuthServer();

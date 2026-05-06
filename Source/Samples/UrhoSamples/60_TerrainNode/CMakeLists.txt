@@ -16,5 +16,10 @@ if (EMSCRIPTEN)
 endif ()
 setup_main_executable ()
 
+# Link serialization is handled by .claude/hooks/safe_build.sh (project + target
+# locks). A second flock here would deadlock against safe_build.sh's held fd —
+# the parent holds the target lock via exec 200>, child flock would block on
+# the same inode. safe_build.sh is the authoritative serializer now.
+
 # Setup test cases
 setup_test ()

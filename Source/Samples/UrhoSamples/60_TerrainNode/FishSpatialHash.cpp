@@ -82,9 +82,11 @@ void FishSpatialHash::QuerySchool(const Vector3& pos, float radius, unsigned sch
                     const Entry& e = it->second_[i];
                     if ((e.pos - pos).LengthSquared() > r2)
                         continue;
-                    // dynamic_cast to check if this Fish is actually a SchoolFish
-                    SchoolFish* sf = dynamic_cast<SchoolFish*>(e.fish);
-                    if (sf && sf->GetSchoolID() == schoolID)
+                    // Virtual type check — avoids RTTI overhead of dynamic_cast
+                    if (!e.fish->IsSchoolFish())
+                        continue;
+                    SchoolFish* sf = static_cast<SchoolFish*>(e.fish);
+                    if (sf->GetSchoolID() == schoolID)
                         results.Push(sf);
                 }
             }

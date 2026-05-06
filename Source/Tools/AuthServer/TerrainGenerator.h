@@ -27,6 +27,7 @@ struct TerrainGenParams
     float islandFalloff{0.0f};      // 0 = off, >0 = radial falloff strength
     float waterLevel{0.04f};        // Heights below this become flat water floor
     float heightScale{1.0f};        // Overall height multiplier before normalization
+    float heightGamma{1.4f};        // Power curve after normalization — >1 lowers terrain, creating valleys/water
 };
 
 /// Generates procedural terrain heightmap images.

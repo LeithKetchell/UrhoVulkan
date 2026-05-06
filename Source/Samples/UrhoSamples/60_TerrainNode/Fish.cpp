@@ -1,4 +1,4 @@
-// Fish — aquatic animal. Swims underwater, avoids shallows, reacts to camera.
+// Fish — aquatic creature. Swims underwater, avoids shallows, reacts to camera.
 
 #include "Fish.h"
 #include "FishSpatialHash.h"
@@ -12,10 +12,8 @@
 #include <Urho3D/IO/Log.h>
 
 Fish::Fish(Context* context) :
-    Animal(context)
+    WaterAnimal(context)
 {
-    // Fish use regular Update (like original UpdateFish), not FixedUpdate
-    SetUpdateEventMask(LogicComponentEvents::Update);
 }
 
 void Fish::RegisterObject(Context* context)
@@ -25,16 +23,12 @@ void Fish::RegisterObject(Context* context)
 
 void Fish::Start()
 {
-    // Cache terrain — same as Animal base
-    terrain_ = GetScene()->GetComponent<Terrain>(true);
+    WaterAnimal::Start();
 
-    if (!cameraNode_)
-        URHO3D_LOGWARNING("Fish: no camera node set!");
+    cachedModel_ = node_->GetComponent<StaticModel>();
 
-    // Randomize per-fish schedule so they don't all behave identically
-    feedPhaseOffset_ = Random(0.0f, 0.4f);       // shifts when this fish considers it "dawn/dusk"
-    restingDepthFrac_ = Random(0.1f, 0.4f);      // how deep they rest (0=floor, 1=surface)
-    feedEagerness_ = Random(0.5f, 1.0f);         // how strongly they rise to feed
+    // cameraNode_ is set via SetCameraNode() after CreateComponent<Fish>() returns —
+    // not available yet during Start()
 }
 
 void Fish::SetMaterials(Material* base, Material* orbit, Material* stare)
@@ -44,13 +38,75 @@ void Fish::SetMaterials(Material* base, Material* orbit, Material* stare)
     stareMat_ = SharedPtr<Material>(stare);
 }
 
-void Fish::OnStateEnter(AnimalState /*newState*/)
-{
-    // Fish have no skeletal animations — wiggle is in the vertex shader
-}
-
 void Fish::Update(float timeStep)
 {
+    // --- Hunt scan: big fish look for school fish prey ---
+    // Rate-limited: only scan when not already hunting, ~every 0.5s via hunt timer reuse
+    if (!hunting_ && spatialHash_)
+    {
+        huntTimer_ -= timeStep;
+        if (huntTimer_ <= 0.0f)
+        {
+            huntTimer_ = 0.5f;
+            Vector3 pos = node_->GetWorldPosition();
+            float range = GetVisionRange();
+
+            nearbyBuf_.Clear();
+            spatialHash_->Query(pos, range, nearbyBuf_);
+
+            Fish* bestPrey = nullptr;
+            float bestDistSq = M_INFINITY;
+            for (unsigned i = 0; i < nearbyBuf_.Size(); ++i)
+            {
+                Fish* other = nearbyBuf_[i];
+                if (other == this) continue;
+                if (!other->IsSchoolFish()) continue;
+                if (!CanSee(other)) continue;
+
+                float distSq = (other->GetNode()->GetWorldPosition() - pos).LengthSquared();
+                if (distSq < bestDistSq)
+                {
+                    bestDistSq = distSq;
+                    bestPrey = other;
+                }
+            }
+
+            if (bestPrey)
+            {
+                huntTarget_ = bestPrey->GetNode();
+                hunting_ = true;
+                huntTimer_ = 5.0f;  // memory window
+            }
+        }
+    }
+
+    // --- Active hunt: chase prey ---
+    if (hunting_)
+    {
+        Node* prey = huntTarget_.Get();
+        if (!prey)
+        {
+            // Prey gone — give up
+            hunting_ = false;
+            huntTarget_.Reset();
+        }
+        else
+        {
+            // Can we still see it? Refresh memory.
+            auto* preyCreature = prey->GetComponent<Creature>();
+            if (preyCreature && CanSee(preyCreature))
+                huntTimer_ = 5.0f;
+
+            huntTimer_ -= timeStep;
+            if (huntTimer_ <= 0.0f)
+            {
+                // Lost the prey — give up
+                hunting_ = false;
+                huntTarget_.Reset();
+            }
+        }
+    }
+
     Swim(timeStep);
     ClampToWaterColumn();
 }
@@ -59,7 +115,6 @@ void Fish::Swim(float timeStep)
 {
     Vector3 pos = node_->GetWorldPosition();
     Quaternion rot = node_->GetWorldRotation();
-    // Fish model faces -Z, so forward is BACK
     Vector3 forward = rot * Vector3::BACK;
 
     // --- Neighbour avoidance via spatial hash ---
@@ -69,12 +124,12 @@ void Fish::Swim(float timeStep)
 
     if (spatialHash_)
     {
-        Vector<Fish*> nearby;
-        spatialHash_->Query(pos, comfortDist_, nearby);
-        for (unsigned i = 0; i < nearby.Size(); ++i)
+        nearbyBuf_.Clear();
+        spatialHash_->Query(pos, comfortDist_, nearbyBuf_);
+        for (unsigned i = 0; i < nearbyBuf_.Size(); ++i)
         {
-            if (nearby[i] == this) continue;
-            Vector3 diff = nearby[i]->GetNode()->GetWorldPosition() - pos;
+            if (nearbyBuf_[i] == this) continue;
+            Vector3 diff = nearbyBuf_[i]->GetNode()->GetWorldPosition() - pos;
             float dist = diff.Length();
             if (dist < nearestDist)
             {
@@ -96,9 +151,21 @@ void Fish::Swim(float timeStep)
         desiredDir = forward.Lerp(awayDir, urgency);
     }
 
+    // --- Hunt steering: override direction when chasing prey ---
+    if (hunting_ && huntTarget_)
+    {
+        Vector3 toPrey = huntTarget_->GetWorldPosition() - pos;
+        if (toPrey.LengthSquared() > 0.01f)
+        {
+            toPrey.Normalize();
+            // Strong bias toward prey — overrides neighbor avoidance
+            desiredDir = desiredDir.Lerp(toPrey, 0.8f);
+        }
+    }
+
     // --- Camera interaction ---
     Node* camNode = cameraNode_;
-    int fishZone = 0;  // 0=normal, 1=orbit, 2=stare
+    int fishZone = 0;
 
     if (camNode)
     {
@@ -110,7 +177,6 @@ void Fish::Swim(float timeStep)
 
         if (camDist < 1.0f && camDist > 0.01f)
         {
-            // Too close — slide off tangentially
             Vector3 radial = toCamFlat.LengthSquared() > 0.001f ? toCamFlat.Normalized() : forward;
             Vector3 tangentCW(radial.z_, 0.0f, -radial.x_);
             Vector3 tangentCCW(-radial.z_, 0.0f, radial.x_);
@@ -119,7 +185,6 @@ void Fish::Swim(float timeStep)
         }
         else if (camDist < stareDist_ && camDist > 0.5f)
         {
-            // Face the camera in full 3D
             Vector3 faceCam = toCam3D;
             if (faceCam.LengthSquared() > 0.001f)
                 faceCam.Normalize();
@@ -128,7 +193,6 @@ void Fish::Swim(float timeStep)
         }
         else if (camDist < orbitFar_ && camDist > 1.0f)
         {
-            // Circle around camera
             Vector3 radial = toCamFlat / camDist;
             Vector3 tangentCW(radial.z_, 0.0f, -radial.x_);
             Vector3 tangentCCW(-radial.z_, 0.0f, radial.x_);
@@ -159,22 +223,10 @@ void Fish::Swim(float timeStep)
         desiredDir = desiredDir.Lerp(toCenter, boundaryUrgency);
     }
 
-    // --- Shallow water avoidance ---
-    if (terrain_)
-    {
-        Vector3 probe = pos + forward * 3.0f;
-        float probeH = terrain_->GetHeight(probe);
-        float probeDepth = waterLevel_ - probeH;
-        if (probeDepth < 1.5f)
-        {
-            Vector3 toDeep = pos - probe;
-            toDeep.y_ = 0.0f;
-            if (toDeep.LengthSquared() > 0.001f)
-                toDeep.Normalize();
-            float shallowUrgency = Clamp(1.0f - (probeDepth / 1.5f), 0.0f, 1.0f);
-            desiredDir = desiredDir.Lerp(toDeep, shallowUrgency);
-        }
-    }
+    // --- Shallow water avoidance (via WaterAnimal helper) ---
+    Vector3 shallowAvoid = GetShallowAvoidance(pos, forward, 3.0f);
+    if (shallowAvoid.LengthSquared() > 0.001f)
+        desiredDir = desiredDir.Lerp(desiredDir + shallowAvoid, shallowAvoid.Length());
 
     // --- Finalize direction ---
     desiredDir.y_ *= 0.8f;
@@ -183,15 +235,16 @@ void Fish::Swim(float timeStep)
     else
         desiredDir = forward;
 
-    // Slerp toward desired heading (model faces -Z, so negate)
     Quaternion targetRot;
     targetRot.FromLookRotation(-desiredDir);
     rot = rot.Slerp(targetRot, turnSpeed_ * timeStep);
     node_->SetRotation(rot);
 
-    // Move forward — slow down near camera
+    // Move forward — slow down near camera, speed up when hunting
     float speedFactor = 1.0f;
-    if (camNode)
+    if (hunting_ && huntTarget_)
+        speedFactor = 1.8f;  // burst speed while chasing
+    else if (camNode)
     {
         Vector3 toCamFlat = camNode->GetWorldPosition() - pos;
         toCamFlat.y_ = 0.0f;
@@ -205,7 +258,7 @@ void Fish::Swim(float timeStep)
     node_->SetPosition(pos);
 
     // --- Material swap based on zone ---
-    auto* sm = node_->GetComponent<StaticModel>();
+    StaticModel* sm = cachedModel_;
     if (sm)
     {
         Material* want = (fishZone == 2) ? stareMat_.Get() :
@@ -214,43 +267,4 @@ void Fish::Swim(float timeStep)
         if (want && sm->GetMaterial() != want)
             sm->SetMaterial(want);
     }
-}
-
-void Fish::ClampToWaterColumn()
-{
-    Vector3 pos = node_->GetWorldPosition();
-    float terrainH = terrain_ ? terrain_->GetHeight(pos) : 0.0f;
-    float floorY = terrainH + minDepth_;
-    float ceilY = waterLevel_ - minDepth_;
-    if (floorY > ceilY)
-        floorY = ceilY;
-
-    // Dawn/dusk feeding — fish rise toward the surface only near horizon.
-    // Default: stay deep. Each fish has a randomized schedule offset + eagerness.
-    float feedBias = 0.0f;  // 0 = resting depth, 1 = surface
-    Node* sunLightNode = GetScene() ? GetScene()->GetChild("DirectionalLight", true) : nullptr;
-    if (sunLightNode)
-    {
-        Vector3 lightDir = sunLightNode->GetDirection();
-        // Sun altitude proxy: -lightDir.y_ (positive when sun is up)
-        float sunUp = -lightDir.y_;
-        // Near horizon: sunUp close to 0 (dawn/dusk)
-        // Per-fish offset shifts the "horizon" threshold so they don't all react at once
-        float horizonProximity = 1.0f - Abs(sunUp) - feedPhaseOffset_;
-        horizonProximity = Clamp(horizonProximity, 0.0f, 1.0f);
-        // Sharpen: only strong effect when very close to horizon, scaled by eagerness
-        feedBias = horizonProximity * horizonProximity * feedEagerness_;
-    }
-
-    // Resting depth: each fish has its own preferred resting fraction (deep by default)
-    float restingY = Lerp(floorY, ceilY, restingDepthFrac_);
-    // Feeding depth: near the surface
-    float feedingY = ceilY;
-    float preferredY = Lerp(restingY, feedingY, feedBias);
-
-    // Nudge toward preferred depth — 5% per frame for visible movement
-    pos.y_ = Lerp(pos.y_, preferredY, 0.05f);
-
-    pos.y_ = Clamp(pos.y_, floorY, ceilY);
-    node_->SetPosition(pos);
 }

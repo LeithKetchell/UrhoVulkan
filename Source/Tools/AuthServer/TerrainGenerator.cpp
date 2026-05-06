@@ -40,15 +40,25 @@ SharedPtr<Image> TerrainGenerator::GenerateWithEdges(Context* context,
     // Step 4: Normalize to [0, 1]
     Normalize(heights, res);
 
-    // Step 5: Erosion (operates on normalized [0,1] data)
+    // Step 5: Height gamma — lowers terrain mean, creating valleys and water areas.
+    // Ridged noise skews the distribution high; gamma >1 corrects this so ~15-20%
+    // of terrain sits below the water threshold, matching natural coastline coverage.
+    if (params.heightGamma != 1.0f && params.heightGamma > 0.0f)
+    {
+        int total = res * res;
+        for (int i = 0; i < total; ++i)
+            heights[i] = powf(heights[i], params.heightGamma);
+    }
+
+    // Step 6: Erosion (operates on normalized [0,1] data)
     if (params.erosionPasses > 0)
         ApplyErosion(heights, res, params.erosionPasses, params.erosionStrength, params.erosionDeposition);
 
-    // Step 6: Edge blending (after erosion so edges stay matched)
+    // Step 7: Edge blending (after erosion so edges stay matched)
     if (northEdge || southEdge || westEdge || eastEdge)
         BlendEdges(heights, res, northEdge, southEdge, westEdge, eastEdge);
 
-    // Step 7: Water floor
+    // Step 8: Water floor
     if (params.waterLevel > 0.0f)
         ApplyWaterFloor(heights, res, params.waterLevel);
 
