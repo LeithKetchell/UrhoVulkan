@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude IPC hook for WorkboardManager
 # Usage: claude_ipc.sh <action> [args...]
-#   action: announce | check | report | cleanup | assume <role>
+#   action: announce | check | report | cleanup | assume [auto]
 #   action: wb-add-done <task> <owner> <date> <review> <notes>
 #   action: wb-add-ready <pri> <plan> <file> <owner> <review> <summary>
 #   action: wb-add-inprogress <task> <owner> <started> <review> <notes>
@@ -105,17 +105,16 @@ get-role)
 
 announce)
     # SessionStart — register via TTY-based role file
-    # Auto-detect role from pty-proxy socket name (e.g. planner.sock → planner)
+    ensure_manager
     TTY_ID=$(get_tty_id)
     CLAUDE_PID=$(get_claude_pid)
 
+    # If spawned via pty-proxy with a coder socket name, go straight to assume
     if [ -n "$PTY_PROXY_SOCK" ]; then
         SOCK_BASE=$(basename "$PTY_PROXY_SOCK" .sock)
-        # Known roles auto-assume; spawn_N sockets stay unassigned
         case "$SOCK_BASE" in
-            planner|coder|coder[0-9]*)
-                # Delegate to assume — it handles singleton checks, numbering, and socket symlinks
-                "$0" assume "$SOCK_BASE"
+            coder|coder[0-9]*)
+                "$0" assume auto
                 exit $?
                 ;;
         esac
@@ -243,7 +242,8 @@ reannounce)
     ;;
 
 check)
-    # UserPromptSubmit / Notification — refresh PID (compaction changes process tree)
+    # UserPromptSubmit / Notification — refresh PID, ensure Manager is alive
+    ensure_manager
     ROLE=$(get_role)
 
     TTY_ID=$(get_tty_id)
@@ -257,13 +257,14 @@ check)
         echo "$CLAUDE_PID" > "$INST_DIR/${ROLE}.pid"
     fi
 
-    # Sticky note delivery — check for messages from WorkboardManager
+    # Sticky note delivery — check for messages from coders or Manager
     STICKY_DIR="$IPC_DIR/sticky"
     STICKY_FILE="$STICKY_DIR/${ROLE}.msg"
     if [ -f "$STICKY_FILE" ]; then
         MSG=$(cat "$STICKY_FILE" 2>/dev/null)
         if [ -n "$MSG" ]; then
-            echo "Message from Manager: $MSG"
+            echo "IPC message(s):"
+            echo "$MSG"
         fi
         rm -f "$STICKY_FILE"
     fi
@@ -305,42 +306,69 @@ cleanup)
     ;;
 
 assume)
-    # Auto-detect role under flock. Planner if free, coder otherwise.
-    # Role arg is accepted but ignored — determined by planner availability.
+    # Grab the next free coder slot. First arrival gets "coder" (elder), rest get coder2, coder3, ...
     TTY_ID=$(get_tty_id)
     CLAUDE_PID=$(get_claude_pid)
 
-    # Serialize all role claims
     exec 9>/tmp/urho_claude/assume.lock
     flock -w 10 9 || { echo "FAILED: could not acquire assume lock." >&2; exit 1; }
 
     OLD_ROLE="unassigned"
     [ -f "$INST_DIR/${TTY_ID}.role" ] && OLD_ROLE=$(head -1 "$INST_DIR/${TTY_ID}.role")
 
-    # Planner free? (no PID file, stale PID, or it's us re-assuming)
-    PLANNER_TAKEN=false
-    if [ -f "$INST_DIR/planner.pid" ]; then
-        OWNER=$(cat "$INST_DIR/planner.pid" 2>/dev/null)
-        [ -n "$OWNER" ] && [ "$OWNER" != "$CLAUDE_PID" ] && kill -0 "$OWNER" 2>/dev/null && PLANNER_TAKEN=true
+    # --- Promote to fill vacant elder slot ---
+    # Elder = "coder" (unnumbered). If dead/empty, promote lowest-numbered living coder.
+    _elder_pid=$(head -1 "$INST_DIR/coder.pid" 2>/dev/null)
+    if [ ! -f "$INST_DIR/coder.pid" ] || [ -z "$_elder_pid" ] || \
+       { [ "$_elder_pid" != "$CLAUDE_PID" ] && ! kill -0 "$_elder_pid" 2>/dev/null; }; then
+        rm -f "$INST_DIR/coder.pid"
+        for _pn in $(seq 2 20); do
+            [ -f "$INST_DIR/coder${_pn}.pid" ] || continue
+            _ppid=$(head -1 "$INST_DIR/coder${_pn}.pid" 2>/dev/null)
+            # Skip our own PID — we'll be assigned in the next section
+            if [ -n "$_ppid" ] && [ "$_ppid" != "$CLAUDE_PID" ] && kill -0 "$_ppid" 2>/dev/null; then
+                # Promote coderN -> coder (elder)
+                echo "$_ppid" > "$INST_DIR/coder.pid"
+                rm -f "$INST_DIR/coder${_pn}.pid"
+                # Update .role file to match
+                for _rf in "$INST_DIR"/*.role; do
+                    [ -f "$_rf" ] || continue
+                    [ "$(head -1 "$_rf")" = "coder${_pn}" ] || continue
+                    _rpid=$(sed -n '2p' "$_rf")
+                    printf '%s\n%s\n' "coder" "$_rpid" > "$_rf"
+                done
+                # Move TTY socket symlink
+                _tty_dir="/tmp/urho_claude/tty"
+                if [ -e "$_tty_dir/coder${_pn}.sock" ]; then
+                    _sock_tgt=$(readlink "$_tty_dir/coder${_pn}.sock" 2>/dev/null)
+                    rm -f "$_tty_dir/coder${_pn}.sock"
+                    [ -n "$_sock_tgt" ] && ln -sf "$_sock_tgt" "$_tty_dir/coder.sock"
+                fi
+                # Notify promoted coder via sticky
+                mkdir -p "$IPC_DIR/sticky"
+                echo "ROLE REASSIGNED: You are now 'coder' (elder). Was coder${_pn}. Update your internal role." \
+                    > "$IPC_DIR/sticky/coder.msg"
+                echo "Promoted: coder${_pn} -> coder (elder, PID $_ppid)"
+                break
+            else
+                rm -f "$INST_DIR/coder${_pn}.pid"
+            fi
+        done
     fi
 
-    if ! $PLANNER_TAKEN; then
-        NEW_ROLE="planner"
-    else
-        # Find first free coder slot
-        NEW_ROLE="coder"
-        if [ -f "$INST_DIR/coder.pid" ]; then
-            CPID=$(cat "$INST_DIR/coder.pid" 2>/dev/null)
-            if [ -n "$CPID" ] && [ "$CPID" != "$CLAUDE_PID" ] && kill -0 "$CPID" 2>/dev/null; then
-                N=2
-                while [ "$N" -le 20 ]; do
-                    CPID=$(cat "$INST_DIR/coder${N}.pid" 2>/dev/null)
-                    if [ -z "$CPID" ] || [ "$CPID" = "$CLAUDE_PID" ] || ! kill -0 "$CPID" 2>/dev/null; then
-                        NEW_ROLE="coder${N}"; break
-                    fi
-                    N=$((N + 1))
-                done
-            fi
+    # Find first free coder slot
+    NEW_ROLE="coder"
+    if [ -f "$INST_DIR/coder.pid" ]; then
+        CPID=$(head -1 "$INST_DIR/coder.pid" 2>/dev/null)
+        if [ -n "$CPID" ] && [ "$CPID" != "$CLAUDE_PID" ] && kill -0 "$CPID" 2>/dev/null; then
+            N=2
+            while [ "$N" -le 20 ]; do
+                CPID=$(head -1 "$INST_DIR/coder${N}.pid" 2>/dev/null)
+                if [ -z "$CPID" ] || [ "$CPID" = "$CLAUDE_PID" ] || ! kill -0 "$CPID" 2>/dev/null; then
+                    NEW_ROLE="coder${N}"; break
+                fi
+                N=$((N + 1))
+            done
         fi
     fi
 
@@ -363,14 +391,27 @@ assume)
         ln -s "$PTY_PROXY_SOCK" "$ROLE_SOCK"
         echo "TTY socket mapped: ${NEW_ROLE}.sock -> $(basename "$PTY_PROXY_SOCK")"
     else
-        HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-        TTY_DEV=$(readlink -f /proc/$CLAUDE_PID/fd/0 2>/dev/null)
-        if [ -n "$TTY_DEV" ] && [ -c "$TTY_DEV" ] && [ -x "$HOOK_DIR/tty-listen" ]; then
-            "$HOOK_DIR/tty-listen" "$ROLE_SOCK" "$TTY_DEV" "$CLAUDE_PID" &
-            echo "Standalone TTY listener started: ${NEW_ROLE}.sock -> $TTY_DEV (PID $!)"
-        else
-            echo "Warning: cannot start TTY listener (no TTY device or tty-listen not built)" >&2
+        # No PTY_PROXY_SOCK — walk process tree to find our spawn socket
+        _found_spawn=""
+        _walk_pid="$$"
+        while [ "$_walk_pid" -gt 1 ] 2>/dev/null; do
+            for _sf in "$TTY_SOCK_DIR"/spawn_*.sock; do
+                [ -S "$_sf" ] || continue
+                _spf="${_sf%.sock}.pid"
+                [ -f "$_spf" ] || continue
+                if [ "$(cat "$_spf" 2>/dev/null)" = "$_walk_pid" ]; then
+                    _found_spawn="$_sf"
+                    break 2
+                fi
+            done
+            _walk_pid=$(ps -o ppid= -p "$_walk_pid" 2>/dev/null | tr -d ' ')
+            [ -z "$_walk_pid" ] && break
+        done
+        if [ -n "$_found_spawn" ] && [ -S "$_found_spawn" ]; then
+            ln -s "$_found_spawn" "$ROLE_SOCK"
+            echo "TTY socket mapped: ${NEW_ROLE}.sock -> $(basename "$_found_spawn")"
         fi
+        # No socket is OK — sticky notes provide reliable message delivery
     fi
 
     echo "Role changed: $OLD_ROLE -> $NEW_ROLE (TTY $TTY_ID, PID $CLAUDE_PID)"
@@ -378,7 +419,8 @@ assume)
     ;;
 
 send)
-    # Send a message via TTY injection
+    # Send a message to another coder via sticky note
+    # Sticky notes are checked on every UserPromptSubmit hook (see 'check' action)
     # Usage: claude_ipc.sh send <target-role> <message>
     TARGET="$2"
     MSG="$3"
@@ -388,9 +430,57 @@ send)
         exit 1
     fi
 
-    HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
-    "$HOOKS_DIR/tty-inject.sh" "$TARGET" "$MSG"
-    echo "Sent to $TARGET via TTY: $MSG"
+    # Verify target is alive
+    if [ -f "$INST_DIR/${TARGET}.pid" ]; then
+        TARGET_PID=$(cat "$INST_DIR/${TARGET}.pid" 2>/dev/null)
+        if [ -z "$TARGET_PID" ] || ! kill -0 "$TARGET_PID" 2>/dev/null; then
+            echo "WARNING: Target '$TARGET' appears dead (PID $TARGET_PID)" >&2
+        fi
+    else
+        echo "WARNING: Target '$TARGET' not registered" >&2
+    fi
+
+    # Identify sender: try TTY-based role, fall back to PID-based lookup
+    SENDER=$(get_role)
+    if [ "$SENDER" = "unassigned" ]; then
+        CLAUDE_PID=$(get_claude_pid)
+        for _pf in "$INST_DIR"/*.pid; do
+            [ -f "$_pf" ] || continue
+            if [ "$(cat "$_pf" 2>/dev/null)" = "$CLAUDE_PID" ]; then
+                SENDER=$(basename "$_pf" .pid)
+                break
+            fi
+        done
+    fi
+    TIMESTAMP=$(date '+%H:%M:%S')
+    FORMATTED="[$TIMESTAMP $SENDER] $MSG"
+
+    # Try Unix socket first — delivers immediately into target's terminal
+    TTY_SOCK_DIR="$IPC_DIR/tty"
+    TARGET_SOCK="$TTY_SOCK_DIR/${TARGET}.sock"
+    SOCK_SENT=0
+    if [ -S "$TARGET_SOCK" ]; then
+        python3 -c "
+import socket, sys
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    sock.connect('$TARGET_SOCK')
+    sock.sendall(('$FORMATTED' + '\n').encode())
+    sock.close()
+except Exception as e:
+    print(f'Socket send failed: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null && SOCK_SENT=1
+    fi
+
+    # Sticky note as fallback — picked up on next UserPromptSubmit
+    if [ "$SOCK_SENT" -eq 0 ]; then
+        STICKY_DIR="$IPC_DIR/sticky"
+        mkdir -p "$STICKY_DIR"
+        echo "$FORMATTED" >> "$STICKY_DIR/${TARGET}.msg"
+    fi
+
+    echo "Sent to $TARGET: $MSG"
     exit 0
     ;;
 
@@ -630,11 +720,11 @@ else:
     ) 200>"$LOCKFILE"
     RESULT=$?
     if [ $RESULT -eq 0 ]; then
-        # Send TTY notification to the assigned coder
-        HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
-        if [ -x "$HOOKS_DIR/tty-inject.sh" ]; then
-            "$HOOKS_DIR/tty-inject.sh" "$CODER" "TASK ASSIGNED: $TASK — You own this. Check the workboard and start working."
-        fi
+        # Notify the assigned coder via sticky note
+        STICKY_DIR="$IPC_DIR/sticky"
+        mkdir -p "$STICKY_DIR"
+        echo "[$(date '+%H:%M:%S') manager] TASK ASSIGNED: $TASK — You own this. Check the workboard and start working." \
+            >> "$STICKY_DIR/${CODER}.msg"
     fi
     exit $RESULT
     ;;

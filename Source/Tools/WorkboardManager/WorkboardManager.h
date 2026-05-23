@@ -3,10 +3,16 @@
 
 #pragma once
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #define WORKBOARD_MANAGER_VERSION "0.1.1"
 
 #include "WorkboardBase.h"
 #include "WorkboardDB.h"
+#include "WorkboardLLM.h"
+#include "YukiMemoryDB.h"
 
 #include <Urho3D/Network/Network.h>
 #include <Urho3D/Network/Connection.h>
@@ -76,12 +82,20 @@ private:
     void StartRelaySocket();
     void StopRelaySocket();
     void PollRelaySocket();
+#ifndef _WIN32
     int relayListenFd_{-1};
+#else
+    HANDLE relayPipeHandle_{INVALID_HANDLE_VALUE};
+    OVERLAPPED relayOverlapped_{};
+    bool relayConnectPending_{false};
+    String PipeName(const String& role) const;  ///< Convert role to \\.\pipe\urho_claude_{role}
+#endif
 
-    // ── Yuki singleton management ──
-    void RepairYukiSocket();
-    float yukiRepairCooldown_{10.0f};  // Grace period on startup
-    static constexpr float YUKI_REPAIR_INTERVAL = 15.0f;
+    // ── Embedded Yuki (LLM inference) ──
+    WorkboardLLM yukiLLM_;
+    YukiMemoryDB yukiMemoryDB_;
+    void PollYukiInference();
+    String FindYukiModel();  ///< Locate best available GGUF model
 
     // ── Beacon ──
     void UpdateBeacon();
@@ -90,12 +104,13 @@ private:
     float GetLastActivity(const String& role);
 
     void HandleSendCoder(StringHash eventType, VariantMap& eventData);
-    void HandleSendPlanner(StringHash eventType, VariantMap& eventData);
     void HandleSendUnassigned(StringHash eventType, VariantMap& eventData);
 
     void HandleSendBroadcast(StringHash eventType, VariantMap& eventData);
     void HandleClearFileLocks(StringHash eventType, VariantMap& eventData);
     void HandleSpawnCoder(StringHash eventType, VariantMap& eventData);
+    void HandleToggleScreenshots(StringHash eventType, VariantMap& eventData);
+    void HandleToggleYuki(StringHash eventType, VariantMap& eventData);
 
     // ── Workboard task lookup ──
     String GetCurrentTask(const String& owner);
@@ -149,6 +164,7 @@ private:
     // ── Events ──
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
     void HandleKeyDown(StringHash eventType, VariantMap& eventData);
+    void HandleScreenMode(StringHash eventType, VariantMap& eventData);
 
     // ── Font / Theme ──
     String currentFontName_{"Anonymous Pro"};
@@ -156,6 +172,10 @@ private:
     Vector<String> availableFonts_;
     DropDownList* fontSelector_{};
     DropDownList* fontSizeSelector_{};
+
+    // ── Relay socket polling ──
+    float relayPollAccumulator_{};
+    static constexpr float RELAY_POLL_INTERVAL = 0.1f;  // 100ms — responsive but not every frame
 
     // ── Workboard state (Manager-specific) ──
     float refreshAccumulator_{};
@@ -176,7 +196,6 @@ private:
     // ── Instance status UI ──
     DropDownList* coderStatusDropdown_{};
     Vector<String> knownCoderRoles_;
-    Text* plannerStatusText_{};
     Text* yukiStatusText_{};
     Text* buildStatusText_{};  // Active build indicator
     DropDownList* localsDropdown_{};
@@ -188,12 +207,13 @@ private:
     LineEdit* messageInput_{};
     DropDownList* coderDropdown_{};
     Button* sendCoderBtn_{};
-    Button* sendPlannerBtn_{};
     Button* sendUnassignedBtn_{};
     Button* sendYukiBtn_{};
     Button* sendBroadcastBtn_{};
     Button* clearFileLocksBtn_{};
     Button* spawnCoderBtn_{};
+    Button* screenshotToggleBtn_{};
+    bool screenshotsBlocked_{false};
 
     // ── Tools popup UI ──
     Window* toolsPopup_{};
@@ -220,6 +240,8 @@ private:
     // ── Yuki chat UI ──
     Window* yukiChatPanel_{};
     ListView* yukiChatLog_{};
+    Button* yukiToggleBtn_{};
+    Text* yukiToggleBtnText_{};
 
     // ── IPC state (initialized in Start() via FileSystem::GetTemporaryDir()) ──
     String ipcDir_;
@@ -240,18 +262,25 @@ private:
     // ── System monitor ──
     Text* cpuText_{};
     Text* gpuText_{};
+    Text* ramText_{};
+    Text* swapText_{};
+    Text* diskText_{};
+    Text* yukiCpuText_{};
     void SampleSystemStats();
 #ifdef __linux__
     unsigned long long prevCpuTotal_{0};
     unsigned long long prevCpuIdle_{0};
 #endif
 
-    // ── Singleton lock fd (held for process lifetime) ──
+    // ── Singleton lock (held for process lifetime) ──
+#ifndef _WIN32
     int singletonLockFd_{-1};
+#else
+    HANDLE singletonMutex_{nullptr};
+#endif
 
     // ── Beacon liveness ──
     HashMap<String, float> coderActivityTimers_;
-    float lastPlannerActivity_{999.0f};
     float lastUnassignedActivity_{999.0f};
     static constexpr float LIVENESS_TIMEOUT = 300.0f;
     static constexpr unsigned short BEACON_PORT = 31337;
@@ -259,6 +288,7 @@ private:
     // ── Auto-spawn (doorkeeper) ──
     float autoSpawnCooldown_{60.0f};  // Grace period on startup — let existing instances re-register
     static constexpr float AUTO_SPAWN_COOLDOWN = 30.0f;
+    static constexpr unsigned MAX_LOCAL_CODERS = 4;
 
     // ── Remote workboard sync (Phase 2a) ──
     HashMap<Connection*, WbClientInfo> wbClients_;

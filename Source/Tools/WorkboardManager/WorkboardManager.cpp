@@ -9,6 +9,7 @@
 #include <Urho3D/Engine/Engine.h>
 #include <Urho3D/Engine/EngineDefs.h>
 #include <Urho3D/Graphics/Graphics.h>
+#include <Urho3D/Graphics/GraphicsEvents.h>
 #include <Urho3D/Graphics/Renderer.h>
 #include <Urho3D/Graphics/Zone.h>
 #include <Urho3D/Input/Input.h>
@@ -17,6 +18,7 @@
 #include <Urho3D/IO/FileSystem.h>
 #include <Urho3D/IO/Log.h>
 #include <Urho3D/Network/NetworkEvents.h>
+#include <Urho3D/Network/SHA256.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Resource/XMLFile.h>
 #include <Urho3D/UI/UI.h>
@@ -24,7 +26,6 @@
 
 #include "PlatformUtils.h"
 
-#include <libsodium/sodium.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -35,10 +36,13 @@
 #ifndef _WIN32
 #include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/statvfs.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
+#else
+#include <windows.h>
 #endif
 
 URHO3D_DEFINE_APPLICATION_MAIN(WorkboardManager);
@@ -65,46 +69,41 @@ static const Color COL_RED_DIM(0.5f, 0.0f, 0.0f, 1.0f);
 // Application lifecycle
 // ============================================================================
 
-WorkboardManager::WorkboardManager(Context* context) : WorkboardBase(context) {}
+WorkboardManager::WorkboardManager(Context* context) : WorkboardBase(context), yukiLLM_(context) {}
 
 void WorkboardManager::Setup()
 {
-    // ── Singleton guard — abstract Unix socket (kernel-managed, no file to delete) ──
+    // ── Singleton guard ──
     {
-#ifndef _WIN32
-        String tempBase("/tmp/urho_claude/");
         auto* setupFs = GetSubsystem<FileSystem>();
+        String tempBase = setupFs ? setupFs->GetTemporaryDir() + "urho_claude/" : "/tmp/urho_claude/";
         if (setupFs)
         {
             setupFs->CreateDir(tempBase);
             setupFs->CreateDir(tempBase + "instances/");
         }
 
-        // Primary guard: abstract socket. bind() is atomic, namespace is
+#ifndef _WIN32
+        // Linux: abstract socket. bind() is atomic, namespace is
         // kernel-managed (no filesystem file to accidentally delete), and
-        // the socket auto-closes when the process dies. Immune to all the
-        // TOCTOU and ghost-inode races that plague flock-on-file approaches.
+        // the socket auto-closes when the process dies.
         singletonLockFd_ = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (singletonLockFd_ >= 0)
         {
             struct sockaddr_un addr{};
             addr.sun_family = AF_UNIX;
-            // Abstract socket: sun_path[0] = '\0', rest is the name.
-            // Abstract sockets live in kernel namespace, not filesystem.
             const char abstractName[] = "\0urho_claude_workboard_manager";
             memcpy(addr.sun_path, abstractName, sizeof(abstractName));
             socklen_t addrLen = offsetof(struct sockaddr_un, sun_path) + sizeof(abstractName);
 
             if (bind(singletonLockFd_, (struct sockaddr*)&addr, addrLen) != 0)
             {
-                // EADDRINUSE = another Manager holds this socket = already running
                 close(singletonLockFd_);
                 singletonLockFd_ = -1;
                 URHO3D_LOGERROR("WorkboardManager already running (singleton socket bound). Exiting.");
                 exitCode_ = EXIT_FAILURE;
                 return;
             }
-            // listen() so the socket stays bound for the process lifetime
             listen(singletonLockFd_, 1);
         }
         else
@@ -113,6 +112,22 @@ void WorkboardManager::Setup()
             exitCode_ = EXIT_FAILURE;
             return;
         }
+#else
+        // Windows: named mutex. Auto-releases when the process dies.
+        singletonMutex_ = CreateMutexA(nullptr, TRUE, "Global\\urho_claude_workboard_manager");
+        if (!singletonMutex_ || GetLastError() == ERROR_ALREADY_EXISTS)
+        {
+            if (singletonMutex_)
+            {
+                ReleaseMutex(singletonMutex_);
+                CloseHandle(singletonMutex_);
+                singletonMutex_ = nullptr;
+            }
+            URHO3D_LOGERROR("WorkboardManager already running (singleton mutex held). Exiting.");
+            exitCode_ = EXIT_FAILURE;
+            return;
+        }
+#endif
 
         // Singleton confirmed — write PID for other tools to read.
         {
@@ -121,7 +136,6 @@ void WorkboardManager::Setup()
             if (pidFile.IsOpen())
                 pidFile.WriteLine(String(GetCurrentPID()));
         }
-#endif
     }
 
     engineParameters_[EP_WINDOW_TITLE] = String("Workboard Manager v") + WORKBOARD_MANAGER_VERSION;
@@ -223,11 +237,16 @@ void WorkboardManager::Start()
         {
             if (!IsInstanceAlive(role))
                 return;
+#ifndef _WIN32
             String sockPath = ttySockDir_ + role + ".sock";
             char resolved[PATH_MAX];
             ssize_t len = readlink(sockPath.CString(), resolved, sizeof(resolved) - 1);
             String key = sockPath;
             if (len > 0) { resolved[len] = '\0'; key = String(resolved); }
+#else
+            // Windows pipes are kernel objects — no symlink dedup needed, use role as key
+            String key = role;
+#endif
             if (deliveredBackends.Contains(key))
                 return;
             deliveredBackends.Insert(key);
@@ -236,7 +255,7 @@ void WorkboardManager::Start()
 
         for (const String& role : knownCoderRoles_)
             deliverOnce(role);
-        deliverOnce("planner");
+
         for (const String& role : knownUnassignedRoles_)
             deliverOnce(role);
     }
@@ -254,19 +273,13 @@ void WorkboardManager::Start()
         }
     }
 
-    // Pre-compute BLAKE2b hash of shared secret for PAKE authentication
+    // Pre-compute SHA-256 hash of shared secret for PAKE authentication
     if (!wbSecret_.Empty())
     {
-        if (sodium_init() < 0)
-            URHO3D_LOGERROR("sodium_init() failed — PAKE auth unavailable");
-        else
-        {
-            crypto_generichash(pakeSecretHash_, sizeof(pakeSecretHash_),
-                reinterpret_cast<const unsigned char*>(wbSecret_.CString()), wbSecret_.Length(),
-                nullptr, 0);
-            pakeSecretValid_ = true;
-            URHO3D_LOGINFO("PAKE secret hash computed (BLAKE2b-256)");
-        }
+        SHA256Hash(reinterpret_cast<const unsigned char*>(wbSecret_.CString()),
+                   wbSecret_.Length(), pakeSecretHash_);
+        pakeSecretValid_ = true;
+        URHO3D_LOGINFO("PAKE secret hash computed (SHA-256)");
     }
 
     // Start beacon server on UDP 31337
@@ -299,46 +312,26 @@ void WorkboardManager::Start()
 
     SubscribeToEvent(E_UPDATE, URHO3D_HANDLER(WorkboardManager, HandleUpdate));
     SubscribeToEvent(E_KEYDOWN, URHO3D_HANDLER(WorkboardManager, HandleKeyDown));
+    SubscribeToEvent(E_SCREENMODE, URHO3D_HANDLER(WorkboardManager, HandleScreenMode));
 
     GetSubsystem<Input>()->SetMouseVisible(true);
     GetSubsystem<Input>()->SetMouseGrabbed(false);
 
     AppendLog("System", "WorkboardManager started. Project root: " + projectRoot_);
 
-    // ── Yuki Training Phase 4: kick offline fine-tune if collected data exists ──
+    // ── Embedded Yuki: prepare wiring, but do NOT load model automatically ──
+    // Model is unstable and runs hot — Leith loads it manually when needed.
     {
-        String collectedPath = projectRoot_ + "/Source/Tools/YukiHoho/training/yuki_collected.jsonl";
-        auto* fs2 = GetSubsystem<FileSystem>();
-        if (fs2->FileExists(collectedPath))
+        String dbPath = projectRoot_ + "/bin/Data/GameDB/yuki_memory.db";
+        if (yukiMemoryDB_.Open(dbPath))
         {
-            File checkFile(context_, collectedPath, FILE_READ);
-            if (checkFile.IsOpen() && checkFile.GetSize() > 0)
-            {
-                checkFile.Close();
-                AppendLog("Yuki", "Training data found (" + String(checkFile.GetSize()) + " bytes) — checking for finetune script");
-
-                String scriptPath = projectRoot_ + "/Source/Tools/YukiHoho/scripts/finetune.sh";
-                if (fs2->FileExists(scriptPath))
-                {
-                    // Archive collected data before fine-tune consumes it
-                    time_t now = time(nullptr);
-                    char ts[32];
-                    strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", localtime(&now));
-                    String archivePath = projectRoot_ + "/Source/Tools/YukiHoho/training/yuki_collected_" + String(ts) + ".jsonl";
-                    fs2->Rename(collectedPath, archivePath);
-                    AppendLog("Yuki", "Archived training data to " + GetFileNameAndExtension(archivePath));
-
-                    // Kick fine-tune in background
-                    String cmd = "nohup " + scriptPath + " " + archivePath + " > /tmp/yuki_finetune.log 2>&1 &";
-                    fs2->SystemCommand(cmd);
-                    AppendLog("Yuki", "Fine-tune script launched in background");
-                }
-                else
-                {
-                    AppendLog("Yuki", "Training data waiting — no finetune.sh yet (Leith writes this)");
-                }
-            }
+            yukiMemoryDB_.RecoverStaleTraining();
+            yukiMemoryDB_.PruneConsumed(30);
         }
+
+        yukiLLM_.SetProjectRoot(projectRoot_ + "/");
+        yukiLLM_.SetMemoryDB(&yukiMemoryDB_);
+        AppendLog("Yuki", "Ready (model not loaded — use UI to activate)");
     }
 }
 
@@ -360,11 +353,15 @@ void WorkboardManager::Stop()
         {
             if (!IsInstanceAlive(role))
                 return;
+#ifndef _WIN32
             String sockPath = ttySockDir_ + role + ".sock";
             char resolved[PATH_MAX];
             ssize_t len = readlink(sockPath.CString(), resolved, sizeof(resolved) - 1);
             String key = sockPath;
             if (len > 0) { resolved[len] = '\0'; key = String(resolved); }
+#else
+            String key = role;
+#endif
             if (deliveredBackends.Contains(key))
                 return;
             deliveredBackends.Insert(key);
@@ -375,7 +372,7 @@ void WorkboardManager::Stop()
 
         for (const String& role : knownCoderRoles_)
             deliverOnce(role);
-        deliverOnce("planner");
+
         for (const String& role : knownUnassignedRoles_)
             deliverOnce(role);
     }
@@ -401,25 +398,71 @@ void WorkboardManager::Stop()
 
     StopRelaySocket();
 
+    // Shut down embedded Yuki
+    yukiLLM_.UnloadModel();
+    yukiMemoryDB_.Close();
+
     // Only remove PID file if we own it (a rejected duplicate must not delete the real instance's file)
     if (exitCode_ == EXIT_SUCCESS)
         GetSubsystem<FileSystem>()->Delete(ipcDir_ + "instances/manager.pid");
 
-    // Release singleton socket (abstract socket auto-unbinds on close)
+    // Release singleton lock
 #ifndef _WIN32
     if (singletonLockFd_ >= 0)
     {
         close(singletonLockFd_);
         singletonLockFd_ = -1;
     }
+#else
+    if (singletonMutex_)
+    {
+        ReleaseMutex(singletonMutex_);
+        CloseHandle(singletonMutex_);
+        singletonMutex_ = nullptr;
+    }
 #endif
 }
+
+#ifdef _WIN32
+String WorkboardManager::PipeName(const String& role) const
+{
+    return "\\\\.\\pipe\\urho_claude_" + role;
+}
+#endif
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
 // GetProjectRoot() and GetClaudeDir() are in WorkboardBase
+
+String WorkboardManager::FindYukiModel()
+{
+    auto* fs = GetSubsystem<FileSystem>();
+    String modelsDir = projectRoot_ + "/Source/Tools/YukiHoho/models/";
+
+    // DeepSeek family only — Qwen models can't learn
+    const char* candidates[] = {
+        "deepseek-r1-7b-q4_k_m.gguf",
+        "deepcoder-1.5b.gguf",
+        "deepcoder-planner.gguf",
+        nullptr
+    };
+    for (int i = 0; candidates[i]; ++i)
+    {
+        String path = modelsDir + candidates[i];
+        if (fs->FileExists(path))
+            return path;
+    }
+
+    // Fallback: first .gguf in the directory
+    Vector<String> files;
+    fs->ScanDir(files, modelsDir, "*.gguf", SCAN_FILES, false);
+    if (!files.Empty())
+        return modelsDir + files[0];
+
+    return String::EMPTY;
+}
 
 // ============================================================================
 // UI Creation
@@ -431,32 +474,44 @@ void WorkboardManager::CreateUI()
 
     // UV-based layout — all panels expressed as fractions of window size.
     // Anchors recalculate automatically on resize. No pixel math needed.
+    // All gaps use the same pad value — no overlap.
     //
-    // Vertical bands (approximate):
-    //   Status bar:   0.000 – 0.035   (instances + settings button)
-    //   Content:      0.040 – 0.630   (workboard left, plans right)
-    //   Composer:     0.635 – 0.680
-    //   Message log:  0.685 – 1.000
+    //   Row 0:  Status bar    0.000 – 0.100  (3 rows: instances, stats, buttons)
+    //   Row 1:  Content       0.103 – 0.630  (workboard left, plans+yuki right)
+    //   Row 2:  Composer      0.633 – 0.673
+    //   Row 3:  Message log   0.676 – 0.997
 
-    const float pad = 0.003f;  // ~4px at 1280 — small UV gap between panels
+    const float pad = 0.003f;  // ~4px at 1280
+
+    const float row0Top = 0.0f;
+    const float row0Bot = 0.100f;
+    const float row1Top = row0Bot + pad;
+    const float row1Bot = 0.630f;
+    const float row2Top = row1Bot + pad;
+    const float row2Bot = 0.673f;
+    const float row3Top = row2Bot + pad;
+    const float row3Bot = 1.0f - pad;
+
+    const float midX = 0.5f;  // left/right split
+    const float rightSplit = 0.40f;  // plans/yuki split within right half
 
     // ── Instance status bar (top, full width) ──
-    CreateInstanceStatusBar(uiRoot, pad, 0.0f, 1.0f - pad, 0.035f);
+    CreateInstanceStatusBar(uiRoot, pad, row0Top, 1.0f - pad, row0Bot);
 
     // ── Workboard window (left half) ──
-    CreateWorkboardPanel(uiRoot, pad, 0.04f, 0.5f - pad, 0.63f);
+    CreateWorkboardPanel(uiRoot, pad, row1Top, midX - pad, row1Bot);
 
     // ── Plans window (right half, upper) ──
-    CreatePlanPanel(uiRoot, 0.5f + pad, 0.04f, 1.0f - pad, 0.40f);
+    CreatePlanPanel(uiRoot, midX + pad, row1Top, 1.0f - pad, rightSplit);
 
     // ── Yuki chat panel (right half, lower) ──
-    CreateYukiChatPanel(uiRoot, 0.5f + pad, 0.40f + pad, 1.0f - pad, 0.63f);
+    CreateYukiChatPanel(uiRoot, midX + pad, rightSplit + pad, 1.0f - pad, row1Bot);
 
     // ── Composer bar (full width) ──
-    CreateComposer(uiRoot, pad, 0.635f, 1.0f - pad, 0.68f);
+    CreateComposer(uiRoot, pad, row2Top, 1.0f - pad, row2Bot);
 
     // ── Message log (full width, fills bottom) ──
-    CreateMessageLog(uiRoot, pad, 0.685f, 1.0f - pad, 1.0f - pad);
+    CreateMessageLog(uiRoot, pad, row3Top, 1.0f - pad, row3Bot);
 
     // ── Popups (hidden, toggled from status bar buttons) ──
     CreateToolsPopup();
@@ -473,26 +528,83 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, float minX, fl
     bar->SetMaxAnchor(maxX, maxY);
     bar->SetMovable(false);
     bar->SetResizable(false);
-    bar->SetLayout(LM_HORIZONTAL, 3, IntRect(6, 2, 6, 2));
-    bar->SetClipChildren(true);
+    bar->SetLayout(LM_VERTICAL, 2, IntRect(6, 4, 6, 4));
+    bar->SetMinHeight(70);
 
-    // Roles dropdown
-    localsDropdown_ = bar->CreateChild<DropDownList>("RolesDropdown");
+    // ── Row 1: Instance dropdowns + build status ──
+    auto* row1 = bar->CreateChild<UIElement>("StatusRow1");
+    row1->SetLayout(LM_HORIZONTAL, 6);
+    row1->SetFixedHeight(22);
+
+    localsDropdown_ = row1->CreateChild<DropDownList>("RolesDropdown");
     localsDropdown_->SetStyleAuto();
     localsDropdown_->SetResizePopup(true);
-    localsDropdown_->SetVerticalAlignment(VA_CENTER);
+    localsDropdown_->SetFixedSize(200, 20);
 
-    // Build status
-    buildStatusText_ = bar->CreateChild<Text>("BuildStatus");
+    remotesDropdown_ = row1->CreateChild<DropDownList>("RemotesDropdown");
+    remotesDropdown_->SetStyleAuto();
+    remotesDropdown_->SetResizePopup(true);
+    remotesDropdown_->SetFixedSize(160, 20);
+
+    unassignedStatusDropdown_ = row1->CreateChild<DropDownList>("UnassignedDropdown");
+    unassignedStatusDropdown_->SetStyleAuto();
+    unassignedStatusDropdown_->SetResizePopup(true);
+    unassignedStatusDropdown_->SetFixedSize(160, 20);
+
+    buildStatusText_ = row1->CreateChild<Text>("BuildStatus");
     buildStatusText_->SetFont(font_, currentFontSize_);
     buildStatusText_->SetText("");
     buildStatusText_->SetColor(COL_GREEN);
-    buildStatusText_->SetVerticalAlignment(VA_CENTER);
 
-    // Tools
-    toolsBtn_ = bar->CreateChild<Button>("ToolsBtn");
+    // ── Row 2: System stats ──
+    auto* row2 = bar->CreateChild<UIElement>("StatusRow2");
+    row2->SetLayout(LM_HORIZONTAL, 16);
+    row2->SetFixedHeight(18);
+
+    cpuText_ = row2->CreateChild<Text>("CpuStatus");
+    cpuText_->SetFont(font_, currentFontSize_);
+    cpuText_->SetText("CPU: --");
+    cpuText_->SetColor(COL_YELLOW);
+    cpuText_->SetMinWidth(70);
+
+    gpuText_ = row2->CreateChild<Text>("GpuStatus");
+    gpuText_->SetFont(font_, currentFontSize_);
+    gpuText_->SetText("GPU: --");
+    gpuText_->SetColor(COL_YELLOW);
+    gpuText_->SetMinWidth(70);
+
+    ramText_ = row2->CreateChild<Text>("RamStatus");
+    ramText_->SetFont(font_, currentFontSize_);
+    ramText_->SetText("RAM: --");
+    ramText_->SetColor(COL_YELLOW);
+    ramText_->SetMinWidth(180);
+
+    swapText_ = row2->CreateChild<Text>("SwapStatus");
+    swapText_->SetFont(font_, currentFontSize_);
+    swapText_->SetText("Swap: --");
+    swapText_->SetColor(COL_YELLOW);
+    swapText_->SetMinWidth(180);
+
+    diskText_ = row2->CreateChild<Text>("DiskStatus");
+    diskText_->SetFont(font_, currentFontSize_);
+    diskText_->SetText("Disk: --");
+    diskText_->SetColor(COL_YELLOW);
+    diskText_->SetMinWidth(180);
+
+    yukiCpuText_ = row2->CreateChild<Text>("YukiCpu");
+    yukiCpuText_->SetFont(font_, currentFontSize_);
+    yukiCpuText_->SetText("Yuki: --");
+    yukiCpuText_->SetColor(Color(1.0f, 0.5f, 0.8f));
+    yukiCpuText_->SetMinWidth(70);
+
+    // ── Row 3: Buttons ──
+    auto* row3 = bar->CreateChild<UIElement>("StatusRow3");
+    row3->SetLayout(LM_HORIZONTAL, 6);
+    row3->SetFixedHeight(22);
+
+    toolsBtn_ = row3->CreateChild<Button>("ToolsBtn");
     toolsBtn_->SetStyleAuto();
-    toolsBtn_->SetVerticalAlignment(VA_CENTER);
+    toolsBtn_->SetFixedSize(80, 20);
     toolsBtn_->SetClipChildren(true);
     auto* toolsBtnText = toolsBtn_->CreateChild<Text>();
     toolsBtnText->SetFont(font_, currentFontSize_);
@@ -500,30 +612,15 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, float minX, fl
     toolsBtnText->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(toolsBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleToolsToggle));
 
-    // Settings
-    settingsBtn_ = bar->CreateChild<Button>("SettingsBtn");
+    settingsBtn_ = row3->CreateChild<Button>("SettingsBtn");
     settingsBtn_->SetStyleAuto();
-    settingsBtn_->SetVerticalAlignment(VA_CENTER);
+    settingsBtn_->SetFixedSize(80, 20);
     settingsBtn_->SetClipChildren(true);
     auto* settingsBtnText = settingsBtn_->CreateChild<Text>();
     settingsBtnText->SetFont(font_, currentFontSize_);
     settingsBtnText->SetText("Settings");
     settingsBtnText->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(settingsBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSettingsToggle));
-
-    // CPU
-    cpuText_ = bar->CreateChild<Text>("CpuStatus");
-    cpuText_->SetFont(font_, currentFontSize_);
-    cpuText_->SetText("CPU: --");
-    cpuText_->SetColor(COL_YELLOW);
-    cpuText_->SetVerticalAlignment(VA_CENTER);
-
-    // GPU
-    gpuText_ = bar->CreateChild<Text>("GpuStatus");
-    gpuText_->SetFont(font_, currentFontSize_);
-    gpuText_->SetText("GPU: --");
-    gpuText_->SetColor(COL_YELLOW);
-    gpuText_->SetVerticalAlignment(VA_CENTER);
 }
 
 // CreateWorkboardPanel() is in WorkboardBase
@@ -588,6 +685,20 @@ void WorkboardManager::CreateComposer(UIElement* parent, float minX, float minY,
     sc->SetText("Spawn");
     sc->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(spawnCoderBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSpawnCoder));
+
+    // Screenshot toggle — blocks all Claude instances from taking screenshots
+    screenshotToggleBtn_ = bar->CreateChild<Button>("ScreenshotToggle");
+    screenshotToggleBtn_->SetStyleAuto();
+    screenshotToggleBtn_->SetFixedSize(120, 24);
+    screenshotToggleBtn_->SetVerticalAlignment(VA_CENTER);
+    screenshotToggleBtn_->SetClipChildren(true);
+    auto* ssText = screenshotToggleBtn_->CreateChild<Text>();
+    ssText->SetFont(font_, currentFontSize_ - 1);
+    // Check initial state
+    screenshotsBlocked_ = GetSubsystem<FileSystem>()->FileExists(ipcDir_ + "screenshots_blocked");
+    ssText->SetText(screenshotsBlocked_ ? "Snoop: OFF" : "Snoop: ON");
+    ssText->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(screenshotToggleBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleToggleScreenshots));
 }
 
 void WorkboardManager::CreateToolsPopup()
@@ -1041,14 +1152,32 @@ void WorkboardManager::CreateYukiChatPanel(UIElement* parent, float minX, float 
     yukiChatPanel_->SetResizable(false);
     yukiChatPanel_->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
 
-    auto* title = yukiChatPanel_->CreateChild<Text>("YukiTitle");
+    // Title row with load/unload button
+    auto* titleRow = yukiChatPanel_->CreateChild<UIElement>("YukiTitleRow");
+    titleRow->SetLayout(LM_HORIZONTAL, 6);
+    titleRow->SetFixedHeight(24);
+
+    auto* title = titleRow->CreateChild<Text>("YukiTitle");
     title->SetFont(font_, currentFontSize_ + 1);
     title->SetText("YUKI");
     title->SetColor(Color(1.0f, 0.5f, 0.8f));
+    title->SetVerticalAlignment(VA_CENTER);
+
+    yukiToggleBtn_ = titleRow->CreateChild<Button>("YukiToggle");
+    yukiToggleBtn_->SetStyleAuto();
+    yukiToggleBtn_->SetFixedSize(80, 22);
+    yukiToggleBtn_->SetVerticalAlignment(VA_CENTER);
+    yukiToggleBtn_->SetClipChildren(true);
+    yukiToggleBtnText_ = yukiToggleBtn_->CreateChild<Text>();
+    yukiToggleBtnText_->SetFont(font_, currentFontSize_ - 1);
+    yukiToggleBtnText_->SetText("Load AI");
+    yukiToggleBtnText_->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(yukiToggleBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleToggleYuki));
 
     yukiChatLog_ = yukiChatPanel_->CreateChild<ListView>("YukiLog");
     yukiChatLog_->SetStyleAuto();
     yukiChatLog_->SetMinHeight(60);
+    yukiChatLog_->SetScrollBarsVisible(false, true);
 }
 
 void WorkboardManager::AppendYukiChat(const String& sender, const String& message)
@@ -1058,12 +1187,16 @@ void WorkboardManager::AppendYukiChat(const String& sender, const String& messag
     auto* item = new Text(context_);
     item->SetFont(font_, currentFontSize_ - 1);
     item->SetWordwrap(true);
+
+    // Determine max width for word wrap — use panel width if available, fallback to 300
+    int maxW = 300;
     if (yukiChatPanel_)
     {
         int w = yukiChatPanel_->GetWidth();
         if (w > 40)
-            item->SetMaxWidth(w - 20);
+            maxW = w - 20;
     }
+    item->SetMaxWidth(maxW);
 
     if (sender == "Yuki" || sender == "yuki")
     {
@@ -1076,16 +1209,12 @@ void WorkboardManager::AppendYukiChat(const String& sender, const String& messag
         item->SetColor(Color(0.9f, 0.9f, 0.9f));
     }
 
-    yukiChatLog_->DisableLayoutUpdate();
-
     yukiChatLog_->AddItem(item);
 
     while (yukiChatLog_->GetNumItems() > 200)
         yukiChatLog_->RemoveItem((i32)0);
 
     yukiChatLog_->EnsureItemVisibility(yukiChatLog_->GetNumItems() - 1);
-    yukiChatLog_->EnableLayoutUpdate();
-    yukiChatLog_->UpdateLayout();
 }
 
 // ============================================================================
@@ -1817,6 +1946,7 @@ void WorkboardManager::RefreshInstanceStatus()
             }
         }
 
+#ifndef _WIN32
         String sockPath = ttySockDir_ + "manager_relay.sock";
         if (relayListenFd_ >= 0 && !fs->FileExists(sockPath))
         {
@@ -1833,10 +1963,16 @@ void WorkboardManager::RefreshInstanceStatus()
             URHO3D_LOGINFO("Self-repair: relay socket down — restarting");
             StartRelaySocket();
         }
+#else
+        // Windows named pipes live in kernel namespace — no filesystem entry
+        // to sweep. Just check if the handle went bad.
+        if (relayPipeHandle_ == INVALID_HANDLE_VALUE)
+        {
+            URHO3D_LOGINFO("Self-repair: relay pipe down — restarting");
+            StartRelaySocket();
+        }
+#endif
     }
-
-    // ── Yuki socket health check ──
-    RepairYukiSocket();
 
     // Sweep orphaned .role files from dead sessions before checking liveness
     SweepStaleRoleFiles();
@@ -1897,9 +2033,7 @@ void WorkboardManager::RefreshInstanceStatus()
             if (alive) ++aliveCount;
 
             Color color;
-            if (role == "planner")
-                color = COL_BLUE;
-            else if (role == "yuki")
+            if (role == "yuki")
                 color = Color(1.0f, 0.5f, 0.8f);
             else if (role.StartsWith("coder"))
                 color = Color(0.3f, 0.9f, 1.0f);
@@ -1949,9 +2083,9 @@ void WorkboardManager::RefreshInstanceStatus()
 
             String label = info.name_.Empty() ? "unknown" : info.name_;
             // Show remote instance counts if available
-            if (info.remoteCoderCount_ > 0 || info.remotePlannerAlive_)
+            if (info.remoteCoderCount_ > 0 || info.remoteYukiAlive_)
             {
-                label += " (P:" + String(info.remotePlannerAlive_ ? 1 : 0) +
+                label += " (Y:" + String(info.remoteYukiAlive_ ? 1 : 0) +
                          " C:" + String(info.remoteCoderCount_) + ")";
             }
             else if (!info.role_.Empty())
@@ -2063,7 +2197,6 @@ void WorkboardManager::RefreshInstanceStatus()
             for (const String& role : knownCoderRoles_)
                 addReceiverItem(role, Color(0.3f, 0.9f, 1.0f));
             // Static entries
-            addReceiverItem("planner", Color(1.0f, 0.8f, 0.3f));
             addReceiverItem("yuki", Color(1.0f, 0.5f, 0.8f));
             // Unassigned excluded from send targets — ghosts of living PIDs
             addReceiverItem("broadcast", Color(1.0f, 0.55f, 0.45f));
@@ -2135,63 +2268,7 @@ void WorkboardManager::RefreshInstanceStatus()
             coderStatusDropdown_->SetSelection(0);
     }
 
-    // ── Auto-spawn (doorkeeper) ──
-    // When the shop is empty, open the door: planner first, then a coder.
-    // Cooldown persists across frames but NOT across Manager restarts.
-    // Grace period on startup: wait 60s before first spawn to let existing
-    // instances re-register after a Manager restart.
-    if (autoSpawnCooldown_ <= 0.0f)
-    {
-#ifndef _WIN32
-        int assumeFd = open("/tmp/urho_claude/assume.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0666);
-        if (assumeFd >= 0 && flock(assumeFd, LOCK_EX | LOCK_NB) == 0)
-        {
-#endif
-            bool plannerAlive = IsInstanceAlive("planner");
-            bool anyCoderAlive = !DiscoverCoderRoles().Empty();
-
-            if (!plannerAlive)
-            {
-                AppendLog("Doorkeeper", "No planner alive — spawning");
-                auto* fs2 = GetSubsystem<FileSystem>();
-                String scriptPath = GetProjectRoot() + "/.claude/hooks/claude_ipc.sh";
-                if (fs2->FileExists(scriptPath))
-                {
-                    fs2->SystemCommand(scriptPath + " spawn-coder");
-                    autoSpawnCooldown_ = AUTO_SPAWN_COOLDOWN;
-                }
-            }
-            else if (!anyCoderAlive)
-            {
-                AppendLog("Doorkeeper", "Planner alive but no coders — spawning");
-                auto* fs2 = GetSubsystem<FileSystem>();
-                String scriptPath = GetProjectRoot() + "/.claude/hooks/claude_ipc.sh";
-                if (fs2->FileExists(scriptPath))
-                {
-                    fs2->SystemCommand(scriptPath + " spawn-coder");
-                    autoSpawnCooldown_ = AUTO_SPAWN_COOLDOWN;
-                }
-            }
-
-            // Yuki auto-spawn — singleton, independent of planner/coder cooldown
-            if (!IsInstanceAlive("yuki") && autoSpawnCooldown_ <= 0.0f)
-            {
-                String yukiBin = GetProjectRoot() + "/build/bin/YukiHoho";
-                auto* fs2 = GetSubsystem<FileSystem>();
-                if (fs2->FileExists(yukiBin))
-                {
-                    AppendLog("Doorkeeper", "Yuki is down — spawning YukiHoho");
-                    String cmd = "nohup \"" + yukiBin + "\" > /dev/null 2>&1 &";
-                    system(cmd.CString());
-                    autoSpawnCooldown_ = AUTO_SPAWN_COOLDOWN;
-                }
-            }
-#ifndef _WIN32
-        }
-        if (assumeFd >= 0)
-            close(assumeFd);
-#endif
-    }
+    // Auto-spawn disabled — Leith spawns coders manually
 
     if (anyChanged)
         UpdateBeacon();
@@ -2285,6 +2362,64 @@ bool WorkboardManager::SendToSocket(const String& role, const String& message, c
     URHO3D_LOGINFOF("SendToSocket: sent %d bytes to %s", (int)written, role.CString());
     return true;
 #else
+    // ── Windows: named pipes ──
+    // Pipe names map 1:1 with Unix socket files: \\.\pipe\urho_claude_{role}
+
+    auto sendToPipe = [&](const String& pipeName, const String& msg) -> bool
+    {
+        HANDLE hPipe = CreateFileA(
+            pipeName.CString(),
+            GENERIC_WRITE,
+            0, nullptr,
+            OPEN_EXISTING,
+            0, nullptr);
+        if (hPipe == INVALID_HANDLE_VALUE)
+            return false;
+
+        String flat = msg;
+        flat.Replace("\n", " ");
+        flat.Replace("\r", "");
+
+        DWORD written = 0;
+        BOOL ok = WriteFile(hPipe, flat.CString(), (DWORD)flat.Length(), &written, nullptr);
+        CloseHandle(hPipe);
+        return ok && written > 0;
+    };
+
+    if (role == "coders")
+    {
+        // Broadcast: try coder, coder2, coder3, ... coder16
+        int delivered = 0;
+        const char* names[] = { "coder", "coder2", "coder3", "coder4",
+                                "coder5", "coder6", "coder7", "coder8",
+                                "coder9", "coder10", "coder11", "coder12",
+                                "coder13", "coder14", "coder15", "coder16" };
+        for (int i = 0; i < 16; ++i)
+        {
+            if (!excludeRole.Empty() && excludeRole == names[i])
+                continue;
+            if (sendToPipe(PipeName(names[i]), message))
+            {
+                ++delivered;
+                URHO3D_LOGINFOF("SendToSocket [broadcast]: %s", names[i]);
+            }
+        }
+        if (delivered > 0)
+        {
+            URHO3D_LOGINFOF("SendToSocket: broadcast 'coders' delivered to %d pipe(s)", delivered);
+            return true;
+        }
+        URHO3D_LOGWARNING("SendToSocket: broadcast 'coders' found no live pipes");
+        return false;
+    }
+
+    // Single target
+    if (sendToPipe(PipeName(role), message))
+    {
+        URHO3D_LOGINFOF("SendToSocket: sent to %s", role.CString());
+        return true;
+    }
+    URHO3D_LOGWARNINGF("SendToSocket: no pipe for '%s'", role.CString());
     return false;
 #endif
 }
@@ -2322,6 +2457,38 @@ void WorkboardManager::StartRelaySocket()
     }
 
     URHO3D_LOGINFO("Relay socket listening: " + sockPath);
+#else
+    // Windows: create a named pipe instance for the relay.
+    // PIPE_ACCESS_INBOUND — clients write, we read.
+    // FILE_FLAG_OVERLAPPED — non-blocking via overlapped I/O.
+    String pipeName = PipeName("manager_relay");
+    relayPipeHandle_ = CreateNamedPipeA(
+        pipeName.CString(),
+        PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        PIPE_UNLIMITED_INSTANCES,
+        4096, 4096,
+        0, nullptr);
+
+    if (relayPipeHandle_ == INVALID_HANDLE_VALUE)
+    {
+        URHO3D_LOGERROR("Failed to create relay named pipe");
+        return;
+    }
+
+    // Start async connect — completes when a client connects
+    memset(&relayOverlapped_, 0, sizeof(relayOverlapped_));
+    relayOverlapped_.hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    relayConnectPending_ = !ConnectNamedPipe(relayPipeHandle_, &relayOverlapped_);
+    if (!relayConnectPending_ && GetLastError() != ERROR_PIPE_CONNECTED)
+    {
+        URHO3D_LOGERROR("Failed to start relay pipe connect");
+        CloseHandle(relayPipeHandle_);
+        relayPipeHandle_ = INVALID_HANDLE_VALUE;
+        return;
+    }
+
+    URHO3D_LOGINFO("Relay pipe listening: " + pipeName);
 #endif
 }
 
@@ -2335,32 +2502,75 @@ void WorkboardManager::StopRelaySocket()
     }
     String sockPath = ttySockDir_ + "manager_relay.sock";
     unlink(sockPath.CString());
+#else
+    if (relayPipeHandle_ != INVALID_HANDLE_VALUE)
+    {
+        DisconnectNamedPipe(relayPipeHandle_);
+        CloseHandle(relayPipeHandle_);
+        relayPipeHandle_ = INVALID_HANDLE_VALUE;
+    }
+    if (relayOverlapped_.hEvent)
+    {
+        CloseHandle(relayOverlapped_.hEvent);
+        relayOverlapped_.hEvent = nullptr;
+    }
 #endif
 }
 
 void WorkboardManager::PollRelaySocket()
 {
-#ifndef _WIN32
+#ifdef _WIN32
+    if (relayPipeHandle_ == INVALID_HANDLE_VALUE)
+        return;
+#else
     if (relayListenFd_ < 0)
         return;
+#endif
 
-    // Accept all pending connections (non-blocking)
+    // Accept all pending connections (non-blocking) and read messages.
+    // Transport differs per platform, message parsing is shared.
     for (;;)
     {
+        char buf[4096];
+        int n = 0;
+
+#ifndef _WIN32
         int clientFd = accept(relayListenFd_, nullptr, nullptr);
         if (clientFd < 0)
             break;
 
-        // Read up to 4KB: "target:message"
-        char buf[4096];
-        ssize_t n = read(clientFd, buf, sizeof(buf) - 1);
+        ssize_t r = read(clientFd, buf, sizeof(buf) - 1);
         close(clientFd);
 
-        if (n <= 0)
+        if (r <= 0)
             continue;
+        n = (int)r;
+#else
+        // Check if a client has connected (non-blocking via overlapped)
+        if (relayConnectPending_)
+        {
+            DWORD dummy;
+            if (!GetOverlappedResult(relayPipeHandle_, &relayOverlapped_, &dummy, FALSE))
+                break;  // No client yet
+            relayConnectPending_ = false;
+        }
+
+        // Client connected — read the message
+        DWORD bytesRead = 0;
+        BOOL ok = ReadFile(relayPipeHandle_, buf, sizeof(buf) - 1, &bytesRead, nullptr);
+        // Done with this client — disconnect and re-arm for next
+        DisconnectNamedPipe(relayPipeHandle_);
+        ResetEvent(relayOverlapped_.hEvent);
+        relayConnectPending_ = !ConnectNamedPipe(relayPipeHandle_, &relayOverlapped_);
+
+        if (!ok || bytesRead == 0)
+            continue;
+        n = (int)bytesRead;
+#endif
         buf[n] = '\0';
 
-        // Parse "target:sender:message" (sender may be empty for legacy callers)
+        // ── Shared message parsing (platform-independent) ──
+
         String payload(buf, (unsigned)n);
         unsigned firstColon = payload.Find(':');
         if (firstColon == String::NPOS || firstColon == 0)
@@ -2379,7 +2589,7 @@ void WorkboardManager::PollRelaySocket()
         if (secondColon != String::NPOS && secondColon < rest.Length() - 1)
         {
             String maybeSender = rest.Substring(0, secondColon).Trimmed();
-            // Sender roles are short alphanumeric (coder, coder2, planner, etc.)
+            // Sender roles are short alphanumeric (coder, coder2, coder3, etc.)
             // If maybeSender looks like a role (no spaces, short), treat it as sender
             if (!maybeSender.Empty() && maybeSender.Length() <= 20 && !maybeSender.Contains(' '))
             {
@@ -2416,8 +2626,8 @@ void WorkboardManager::PollRelaySocket()
 
             AppendLog("Broadcast", message);
 
-            // Deliver to each socket except sender — no symlink dedup needed,
-            // each Claudette binds directly to {role}.sock
+            // Deliver to each socket/pipe except sender
+#ifndef _WIN32
             auto* fs = GetSubsystem<FileSystem>();
             Vector<String> sockNames;
             fs->ScanDir(sockNames, ttySockDir_, "*.sock", SCAN_FILES, false);
@@ -2434,6 +2644,19 @@ void WorkboardManager::PollRelaySocket()
 
                 SendToSocket(sockRole, message);
             }
+#else
+            // Windows: try all known coder pipes
+            const char* names[] = { "coder", "coder2", "coder3", "coder4",
+                                    "coder5", "coder6", "coder7", "coder8",
+                                    "coder9", "coder10", "coder11", "coder12",
+                                    "coder13", "coder14", "coder15", "coder16" };
+            for (int i = 0; i < 16; ++i)
+            {
+                if (!senderRole.Empty() && senderRole == names[i])
+                    continue;
+                SendToSocket(names[i], message);
+            }
+#endif
             continue;
         }
 
@@ -2445,16 +2668,32 @@ void WorkboardManager::PollRelaySocket()
             continue;
         }
 
-        // Yuki responses addressed to manager — show in chat panel, don't relay
-        if (sender == "yuki" || (target == "yuki" && !sender.Empty() && sender != "yuki"))
+        // !reload — hot-reload finetuned model (can be sent to manager or yuki)
+        if (message.Trimmed() == "!reload" && (target == "manager" || target == "yuki"))
         {
-            // If Yuki is sending TO manager_relay, she's reporting her inference result
-            if (sender == "yuki")
+            String result = yukiLLM_.ReloadModel();
+            URHO3D_LOGINFOF("LLM reload: %s", result.CString());
+            AppendLog("Yuki", result);
+            AppendYukiChat("System", result);
+
+            // Notify the sender if known
+            if (!sender.Empty())
+                SendToSocket(sender, "Yuki reload: " + result);
+            continue;
+        }
+
+        // Yuki — route to embedded LLM, not a standalone process
+        if (target == "yuki")
+        {
+            if (yukiLLM_.IsModelLoaded() && !yukiLLM_.IsTrainingInProgress())
             {
-                AppendLog("Yuki", message);
-                AppendYukiChat("Yuki", message);
-                continue;
+                String from = sender.Empty() ? "relay" : sender;
+                AppendYukiChat(from, message);
+                yukiLLM_.QueueInference(message);
             }
+            else
+                AppendLog("Yuki", "Message dropped — model not ready");
+            continue;
         }
 
         // Log the relay
@@ -2463,7 +2702,6 @@ void WorkboardManager::PollRelaySocket()
         // Deliver — sender excluded from broadcast (no echo-back)
         SendToSocket(target, message, sender);
     }
-#endif
 }
 
 // ============================================================================
@@ -2579,30 +2817,13 @@ void WorkboardManager::SendMessage(const String& target, const String& message)
     if (message.Empty())
         return;
 
-    // Yuki reads her own socket directly — no TTY injection needed
+    // Yuki is embedded — route directly to LLM
     if (target == "yuki")
     {
-#ifndef _WIN32
-        String sockPath = ttySockDir_ + "yuki.sock";
-        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd >= 0)
-        {
-            struct sockaddr_un addr;
-            memset(&addr, 0, sizeof(addr));
-            addr.sun_family = AF_UNIX;
-            strncpy(addr.sun_path, sockPath.CString(), sizeof(addr.sun_path) - 1);
-
-            if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0)
-            {
-                write(fd, message.CString(), message.Length());
-                close(fd);
-                AppendLog(String("Manager \xe2\x86\x92 Yuki"), message);
-                return;
-            }
-            close(fd);
-        }
-        AppendLog(String("Manager \xe2\x86\x92 Yuki [FAILED]"), "Socket connect failed");
-#endif
+        if (yukiLLM_.IsModelLoaded())
+            yukiLLM_.QueueInference(message);
+        else
+            AppendLog("Yuki", "Message dropped — model not ready");
         return;
     }
 
@@ -2635,19 +2856,25 @@ void WorkboardManager::HandleSendCoder(StringHash /*eventType*/, VariantMap& /*e
             if (IsInstanceAlive(role))
                 SendMessage(role, text);
         }
-        if (IsInstanceAlive("planner"))
-            SendMessage("planner", text);
         for (const String& role : knownUnassignedRoles_)
         {
             if (IsInstanceAlive(role))
                 SendMessage(role, text);
         }
-        if (IsInstanceAlive("yuki"))
-            SendMessage("yuki", "cc:" + text);
+        // CC Yuki on broadcasts via embedded LLM
+        if (yukiLLM_.IsModelLoaded())
+            yukiLLM_.QueueInference("cc:" + text);
     }
     else if (target == "yuki")
     {
-        SendMessage("yuki", "prompt:" + text);
+        // Direct to embedded Yuki
+        if (yukiLLM_.IsModelLoaded())
+        {
+            AppendYukiChat("Leith", text);
+            yukiLLM_.QueueInference(text);
+        }
+        else
+            AppendYukiChat("System", "Model not loaded");
     }
     else if (target == "unassigned")
     {
@@ -2665,7 +2892,7 @@ void WorkboardManager::HandleSendCoder(StringHash /*eventType*/, VariantMap& /*e
 }
 
 // Legacy handlers kept as stubs — routing now goes through unified HandleSendCoder
-void WorkboardManager::HandleSendPlanner(StringHash, VariantMap&) {}
+// HandleSendPlanner removed — planner role no longer exists
 void WorkboardManager::HandleSendUnassigned(StringHash, VariantMap&) {}
 void WorkboardManager::HandleSendBroadcast(StringHash, VariantMap&) {}
 
@@ -2712,6 +2939,14 @@ void WorkboardManager::HandleClearFileLocks(StringHash /*eventType*/, VariantMap
 
 void WorkboardManager::HandleSpawnCoder(StringHash /*eventType*/, VariantMap& /*eventData*/)
 {
+    // Enforce local instance cap
+    Vector<String> liveCoders = DiscoverCoderRoles();
+    if (liveCoders.Size() >= MAX_LOCAL_CODERS)
+    {
+        AppendLog("Manager", "Spawn refused: " + String(liveCoders.Size()) + "/" + String(MAX_LOCAL_CODERS) + " local coders already running");
+        return;
+    }
+
     String scriptPath = GetProjectRoot() + "/.claude/hooks/claude_ipc.sh";
 
     // Check script exists
@@ -2726,9 +2961,65 @@ void WorkboardManager::HandleSpawnCoder(StringHash /*eventType*/, VariantMap& /*
     // which gnome-terminal needs. The script launches in the background (&).
     int ret = fs->SystemCommand(scriptPath + " spawn-coder");
     if (ret == 0)
-        AppendLog("Manager", "Spawn Coder command executed");
+        AppendLog("Manager", "Spawn Coder command executed (" + String(liveCoders.Size() + 1) + "/" + String(MAX_LOCAL_CODERS) + ")");
     else
         AppendLog("Manager", "Spawn Coder failed (exit code " + String(ret) + ")");
+}
+
+void WorkboardManager::HandleToggleScreenshots(StringHash /*eventType*/, VariantMap& /*eventData*/)
+{
+    auto* fs = GetSubsystem<FileSystem>();
+    String flagPath = ipcDir_ + "screenshots_blocked";
+
+    screenshotsBlocked_ = !screenshotsBlocked_;
+
+    if (screenshotsBlocked_)
+    {
+        // Create the block flag — all Claudette hooks check for this
+        File flagFile(context_, flagPath, FILE_WRITE);
+        if (flagFile.IsOpen())
+            flagFile.WriteLine("blocked");
+        AppendLog("Manager", "Screenshots BLOCKED — all instances blinded");
+    }
+    else
+    {
+        fs->Delete(flagPath);
+        AppendLog("Manager", "Screenshots ALLOWED");
+    }
+
+    // Update button label
+    if (screenshotToggleBtn_)
+    {
+        auto* text = screenshotToggleBtn_->GetChildStaticCast<Text>(0);
+        if (text)
+            text->SetText(screenshotsBlocked_ ? "Snoop: OFF" : "Snoop: ON");
+    }
+}
+
+void WorkboardManager::HandleToggleYuki(StringHash /*eventType*/, VariantMap& /*eventData*/)
+{
+    if (yukiLLM_.IsModelLoaded())
+    {
+        yukiLLM_.UnloadModel();
+        AppendLog("Yuki", "Model unloaded");
+        AppendYukiChat("System", "AI offline");
+        if (yukiToggleBtnText_)
+            yukiToggleBtnText_->SetText("Load AI");
+    }
+    else
+    {
+        String modelPath = FindYukiModel();
+        if (modelPath.Empty())
+        {
+            AppendLog("Yuki", "No GGUF model found in YukiHoho/models/");
+            return;
+        }
+        yukiLLM_.LoadModelAsync(modelPath);
+        AppendLog("Yuki", "Loading: " + GetFileNameAndExtension(modelPath));
+        AppendYukiChat("System", "Loading AI...");
+        if (yukiToggleBtnText_)
+            yukiToggleBtnText_->SetText("Unload");
+    }
 }
 
 // ============================================================================
@@ -2780,8 +3071,8 @@ Color WorkboardManager::LogColorForSource(const String& source)
         return Color(1.0f, 0.5f, 0.8f);          // pink/magenta
     if (source.Contains("Coder"))
         return Color(0.3f, 0.9f, 1.0f);         // cyan
-    if (source.Contains("Planner"))
-        return Color(1.0f, 0.8f, 0.3f);          // amber
+    if (source == "Coder" || source == "coder")
+        return Color(1.0f, 0.8f, 0.3f);          // amber — elder coder
     if (source.Contains("Manager"))
         return Color(0.6f, 1.0f, 0.6f);          // light green
     if (source.Contains("Unassigned"))
@@ -2806,8 +3097,7 @@ void WorkboardManager::UpdateBeacon()
     VariantMap beacon;
     beacon["Service"]    = String("WorkboardManager");
     beacon["Version"]    = String("1.0");
-    beacon["Planner"]    = IsInstanceAlive("planner") ? String("ONLINE") : String("OFFLINE");
-    beacon["Yuki"]       = IsInstanceAlive("yuki") ? String("ONLINE") : String("OFFLINE");
+    beacon["Yuki"]       = yukiLLM_.IsModelLoaded() ? String("ONLINE") : String("OFFLINE");
     // Report all known unassigned roles
     for (const String& role : knownUnassignedRoles_)
     {
@@ -2827,75 +3117,35 @@ void WorkboardManager::UpdateBeacon()
     network->SetDiscoveryBeacon(beacon);
 }
 
-void WorkboardManager::RepairYukiSocket()
+void WorkboardManager::PollYukiInference()
 {
-#ifndef _WIN32
-    // Cooldown — don't spam on startup or after a recent repair attempt
-    if (yukiRepairCooldown_ > 0.0f)
+    if (!yukiLLM_.IsInferenceComplete())
+        return;
+
+    String result = yukiLLM_.TakeResult();
+    if (result.Empty())
+        return;
+
+    // Handle remember mode — extract training pairs from Yuki's Q&A output
+    if (yukiLLM_.IsRememberInFlight())
     {
-        yukiRepairCooldown_ -= REFRESH_INTERVAL;
+        yukiLLM_.ExtractAndSaveTrainingPairs(result);
+        AppendYukiChat("Yuki", "[Remembered]");
         return;
     }
 
-    auto* fs = GetSubsystem<FileSystem>();
-    String sockPath = ttySockDir_ + "yuki.sock";
-    String pidPath = ipcDir_ + "instances/yuki.pid";
-    String lockPath = ipcDir_ + "instances/yuki.lock";
+    // Show response in chat panel
+    AppendYukiChat("Yuki", result);
+    AppendLog("Yuki", result.Length() > 120 ? result.Substring(0, 120) + "..." : result);
 
-    int yukiPid = ReadInstancePID("yuki");
-    bool alive = (yukiPid > 0) && IsProcessAlive(yukiPid);
-    bool sockExists = fs->FileExists(sockPath);
+    // Execute any tool commands in the output
+    String toolResults = yukiLLM_.ExecuteTools(result);
+    if (!toolResults.Empty())
+        AppendLog("Yuki-Tools", toolResults.Length() > 200 ? toolResults.Substring(0, 200) + "..." : toolResults);
 
-    if (alive && sockExists)
-        return;  // All good
-
-    if (alive && !sockExists)
-    {
-        // Yuki is running but socket vanished — she self-heals every ~5s.
-        // Just log it and give her time. Don't kill a live process.
-        URHO3D_LOGINFO("Yuki PID alive but socket missing — waiting for self-heal");
-        yukiRepairCooldown_ = YUKI_REPAIR_INTERVAL;
-        return;
-    }
-
-    // Yuki is dead (or never started). Clean up stale files and relaunch.
-    if (yukiPid > 0 && !alive)
-    {
-        // Clean stale PID file (but NEVER delete yuki.lock — only Yuki owns that)
-        fs->Delete(pidPath);
-        unlink(sockPath.CString());  // Remove stale socket file if lingering
-    }
-
-    // Find the model file
-    String modelPath = projectRoot_ + "/Source/Tools/YukiHoho/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf";
-    if (!fs->FileExists(modelPath))
-    {
-        // Try 1.5b fallback
-        modelPath = projectRoot_ + "/Source/Tools/YukiHoho/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
-    }
-    if (!fs->FileExists(modelPath))
-    {
-        URHO3D_LOGWARNING("Yuki repair: no model file found, cannot relaunch");
-        yukiRepairCooldown_ = 60.0f;  // Don't spam
-        return;
-    }
-
-    // Launch Yuki — singleton guard in the binary prevents duplicates
-    String binPath = fs->GetProgramDir() + "YukiHoho";
-    if (!fs->FileExists(binPath))
-    {
-        URHO3D_LOGWARNING("Yuki repair: binary not found at " + binPath);
-        yukiRepairCooldown_ = 60.0f;
-        return;
-    }
-
-    String cmd = binPath + " --model " + modelPath + " --ctx 4096 > /dev/null 2>&1 &";
-    system(cmd.CString());
-
-    AppendLog("Yuki", "Relaunched (singleton guard active)");
-    URHO3D_LOGINFO("Yuki repair: launched fresh instance");
-    yukiRepairCooldown_ = YUKI_REPAIR_INTERVAL;
-#endif
+    // Auto-continue if tools produced results or remember is pending
+    if (yukiLLM_.ShouldAutoContinue())
+        yukiLLM_.AutoContinue();
 }
 
 void WorkboardManager::CleanupStalePID(const String& role, int pid)
@@ -2910,8 +3160,6 @@ void WorkboardManager::CleanupStalePID(const String& role, int pid)
 
 float WorkboardManager::GetLastActivity(const String& role)
 {
-    if (role == "planner")
-        return lastPlannerActivity_;
     if (role == "unassigned")
         return lastUnassignedActivity_;
     // Any coder role (coder, coder1, coder2, ...)
@@ -2950,6 +3198,7 @@ void WorkboardManager::SweepStaleRoleFiles()
     Vector<String> pidFiles;
     fs->ScanDir(pidFiles, instDir, "*.pid", SCAN_FILES, false);
 
+    bool elderDied = false;
     for (const String& filename : pidFiles)
     {
         String pidPath = instDir + filename;
@@ -2965,7 +3214,90 @@ void WorkboardManager::SweepStaleRoleFiles()
             continue;  // Still alive
 
         fs->Delete(pidPath);
-        AppendLog("System", "Swept orphaned PID file: " + filename);
+        // Also clean heartbeat and socket
+        String role = GetFileNameAndExtension(filename).Substring(0, filename.Find('.'));
+        fs->Delete(instDir + role + ".heartbeat");
+        String sockPath = ipcDir_ + "tty/" + role + ".sock";
+        fs->Delete(sockPath);
+
+        if (role == "coder")
+            elderDied = true;
+
+        AppendLog("System", "Swept dead instance: " + role);
+    }
+
+    // Elder died — promote next oldest and renumber everyone down
+    if (elderDied)
+    {
+        // Collect living numbered coders in order
+        Vector<int> liveNums;
+        for (int n = 2; n <= 20; ++n)
+        {
+            String pf = instDir + "coder" + String(n) + ".pid";
+            if (!fs->FileExists(pf))
+                continue;
+            File cf(context_, pf);
+            if (!cf.IsOpen())
+                continue;
+            int cpid = atoi(cf.ReadLine().Trimmed().CString());
+            cf.Close();
+            if (cpid > 0 && IsProcessAlive(cpid))
+                liveNums.Push(n);
+        }
+
+        if (!liveNums.Empty())
+        {
+            String ttyDir = ipcDir_ + "tty/";
+
+            // Rename helper — moves pid, heartbeat, socket for one role
+            auto renameRole = [&](const String& oldRole, const String& newRole)
+            {
+                if (fs->FileExists(instDir + oldRole + ".pid"))
+                    fs->Rename(instDir + oldRole + ".pid", instDir + newRole + ".pid");
+                if (fs->FileExists(instDir + oldRole + ".heartbeat"))
+                    fs->Rename(instDir + oldRole + ".heartbeat", instDir + newRole + ".heartbeat");
+                // Socket may be a symlink — recreate it
+                String oldSock = ttyDir + oldRole + ".sock";
+                String newSock = ttyDir + newRole + ".sock";
+#ifndef _WIN32
+                char target[256];
+                ssize_t len = readlink(oldSock.CString(), target, sizeof(target) - 1);
+                if (len > 0)
+                {
+                    target[len] = '\0';
+                    unlink(oldSock.CString());
+                    symlink(target, newSock.CString());
+                }
+                else
+                {
+                    // Not a symlink — try direct rename
+                    rename(oldSock.CString(), newSock.CString());
+                }
+#endif
+                // Windows: named pipes are kernel objects — no rename needed.
+                // The old pipe name dies when the owning process disconnects,
+                // and the new name is created fresh on next connect.
+            };
+
+            // Promote lowest to elder
+            String promoted = "coder" + String(liveNums[0]);
+            renameRole(promoted, "coder");
+            AppendLog("System", promoted + " promoted to elder (coder)");
+
+            // Renumber the rest contiguously
+            int slot = 2;
+            for (unsigned i = 1; i < liveNums.Size(); ++i)
+            {
+                String oldName = "coder" + String(liveNums[i]);
+                String newName = "coder" + String(slot);
+                if (oldName != newName)
+                {
+                    renameRole(oldName, newName);
+                    AppendLog("System", oldName + " renumbered to " + newName);
+                }
+                ++slot;
+            }
+        }
     }
 }
 
@@ -2993,10 +3325,9 @@ void WorkboardManager::CheckTrainingLump()
             if (ftPid > 0 && IsProcessAlive(ftPid))
                 return;  // Fine-tune still running
         }
-        // Fine-tune just finished — clean up PID and tell Yuki to reload
+        // Fine-tune just finished — clean up PID (model is embedded, no reload needed)
         fs->Delete(pidLockPath);
-        AppendLog("Yuki", "Fine-tune complete — sending reload");
-        SendMessage("yuki", "!reload");
+        AppendLog("Yuki", "Fine-tune complete");
     }
 
     // Count lines
@@ -3192,7 +3523,6 @@ void WorkboardManager::HandleUpdate(StringHash /*eventType*/, VariantMap& eventD
     float timeStep = eventData[P_TIMESTEP].GetFloat();
 
     // Increment liveness timers
-    lastPlannerActivity_ += timeStep;
     lastUnassignedActivity_ += timeStep;
     for (auto it = coderActivityTimers_.Begin(); it != coderActivityTimers_.End(); ++it)
         it->second_ += timeStep;
@@ -3201,7 +3531,14 @@ void WorkboardManager::HandleUpdate(StringHash /*eventType*/, VariantMap& eventD
         autoSpawnCooldown_ -= timeStep;
 
     CheckDownloadProgress();
-    PollRelaySocket();
+
+    relayPollAccumulator_ += timeStep;
+    if (relayPollAccumulator_ >= RELAY_POLL_INTERVAL)
+    {
+        relayPollAccumulator_ = 0.0f;
+        PollRelaySocket();
+    }
+
     ProcessBuildQueue();
 
     refreshAccumulator_ += timeStep;
@@ -3280,6 +3617,25 @@ void WorkboardManager::HandleUpdate(StringHash /*eventType*/, VariantMap& eventD
     {
         trainingCheckAccumulator_ = 0.0f;
         CheckTrainingLump();
+    }
+
+    // ── Embedded Yuki: tick cooldowns and poll inference ──
+    yukiLLM_.Tick(timeStep);
+    PollYukiInference();
+}
+
+void WorkboardManager::HandleScreenMode(StringHash /*eventType*/, VariantMap& /*eventData*/)
+{
+    // Window resized — force all anchored children to recompute position/size
+    auto* root = GetSubsystem<UI>()->GetRoot();
+    if (!root)
+        return;
+
+    const auto& children = root->GetChildren();
+    for (unsigned i = 0; i < children.Size(); ++i)
+    {
+        if (children[i]->GetEnableAnchor())
+            children[i]->UpdateAnchoring();
     }
 }
 
@@ -3423,13 +3779,11 @@ void WorkboardManager::HandleClientIdentity(StringHash /*eventType*/, VariantMap
 
 void WorkboardManager::HandleKeyExchangeAuth(StringHash /*eventType*/, VariantMap& eventData)
 {
-    // PAKE: provide the BLAKE2b hash of the shared secret for key exchange
     using namespace KeyExchangeAuth;
     String username = eventData[P_USERNAME].GetString();
 
     if (!pakeSecretValid_)
     {
-        // No secret configured — cannot authenticate
         eventData[P_FOUND] = false;
         AppendLog("Network", "PAKE: no secret hash available for user '" + username + "'");
         return;
@@ -3633,7 +3987,6 @@ void WorkboardManager::HandleWbInstanceStatus(StringHash /*eventType*/, VariantM
     if (it == wbClients_.End())
         return;
 
-    it->second_.remotePlannerAlive_ = eventData["PlannerAlive"].GetBool();
     it->second_.remoteYukiAlive_ = eventData["YukiAlive"].GetBool();
     it->second_.remoteCoderCount_ = eventData["CoderCount"].GetI32();
     it->second_.remoteCoderRoles_ = eventData["CoderRoles"].GetString();
@@ -3643,11 +3996,18 @@ void WorkboardManager::SampleSystemStats()
 {
 #ifdef __linux__
     // ── CPU usage from /proc/stat ──
+    // Note: /proc is a virtual filesystem — Urho File reports size 0, so
+    // IsEof() is true immediately and ReadLine() returns empty.  Use fopen.
     {
-        File procStat(context_, "/proc/stat", FILE_READ);
-        if (procStat.IsOpen())
+        FILE* procStat = fopen("/proc/stat", "r");
+        if (procStat)
         {
-            String line = procStat.ReadLine();  // "cpu  user nice system idle iowait irq softirq steal ..."
+            char buf[512];
+            String line;
+            if (fgets(buf, sizeof(buf), procStat))
+                line = String(buf).Trimmed();
+            fclose(procStat);
+
             Vector<String> parts = line.Split(' ');
             // Split may produce empty strings from consecutive spaces — filter
             Vector<String> fields;
@@ -3684,20 +4044,27 @@ void WorkboardManager::SampleSystemStats()
     // ── GPU usage ──
     {
         bool found = false;
-        // Try AMD sysfs first (no subprocess needed)
-        auto* fs = GetSubsystem<FileSystem>();
-        if (fs->FileExists("/sys/class/drm/card0/device/gpu_busy_percent"))
+        // Try AMD sysfs — scan card0..card7
+        // Note: sysfs is virtual like /proc — Urho File sees size 0.  Use fopen.
+        for (int card = 0; card < 8 && !found; ++card)
         {
-            File gpuFile(context_, "/sys/class/drm/card0/device/gpu_busy_percent", FILE_READ);
-            if (gpuFile.IsOpen())
+            String path = "/sys/class/drm/card" + String(card) + "/device/gpu_busy_percent";
+            FILE* gpuFile = fopen(path.CString(), "r");
+            if (gpuFile)
             {
-                String val = gpuFile.ReadLine().Trimmed();
-                if (!val.Empty())
+                char buf[32];
+                if (fgets(buf, sizeof(buf), gpuFile))
                 {
-                    if (gpuText_)
-                        gpuText_->SetText("GPU: " + val + "%");
-                    found = true;
+                    String val(buf);
+                    val = val.Trimmed();
+                    if (!val.Empty())
+                    {
+                        if (gpuText_)
+                            gpuText_->SetText("GPU: " + val + "%");
+                        found = true;
+                    }
                 }
+                fclose(gpuFile);
             }
         }
         // Try NVIDIA via nvidia-smi
@@ -3724,10 +4091,84 @@ void WorkboardManager::SampleSystemStats()
         if (!found && gpuText_)
             gpuText_->SetText("GPU: N/A");
     }
+
+    // ── RAM from /proc/meminfo ──
+    // Note: Urho File reports size 0 for /proc virtual files, causing IsEof()
+    // to return true immediately. Use fopen/fgets for multi-line virtual files.
+    {
+        FILE* memFile = fopen("/proc/meminfo", "r");
+        if (memFile)
+        {
+            unsigned long long memTotal = 0, memAvail = 0, swapTotal = 0, swapFree = 0;
+            char buf[256];
+            while (fgets(buf, sizeof(buf), memFile))
+            {
+                if (strncmp(buf, "MemTotal:", 9) == 0)
+                    memTotal = strtoull(buf + 9, nullptr, 10);
+                else if (strncmp(buf, "MemAvailable:", 13) == 0)
+                    memAvail = strtoull(buf + 13, nullptr, 10);
+                else if (strncmp(buf, "SwapTotal:", 10) == 0)
+                    swapTotal = strtoull(buf + 10, nullptr, 10);
+                else if (strncmp(buf, "SwapFree:", 9) == 0)
+                    swapFree = strtoull(buf + 9, nullptr, 10);
+            }
+            fclose(memFile);
+
+            if (memTotal > 0)
+            {
+                unsigned long long memUsed = memTotal - memAvail;
+                int ramPct = (int)(100 * memUsed / memTotal);
+                if (ramText_)
+                    ramText_->SetText("RAM: " + String(memUsed / 1024) + "/" + String(memTotal / 1024) + "MB (" + String(ramPct) + "%)");
+            }
+            if (swapTotal > 0)
+            {
+                unsigned long long swapUsed = swapTotal - swapFree;
+                int swapPct = (int)(100 * swapUsed / swapTotal);
+                if (swapText_)
+                    swapText_->SetText("Swap: " + String(swapUsed / 1024) + "/" + String(swapTotal / 1024) + "MB (" + String(swapPct) + "%)");
+            }
+            else if (swapText_)
+                swapText_->SetText("Swap: none");
+        }
+    }
+
+    // ── Yuki CPU ──
+    {
+        yukiLLM_.SampleCpuUsage();
+        float yukiPct = yukiLLM_.GetCpuUsage();
+        if (yukiCpuText_)
+        {
+            if (yukiLLM_.IsModelLoaded() || yukiLLM_.IsModelLoading())
+                yukiCpuText_->SetText("Yuki: " + String((int)yukiPct) + "%");
+            else
+                yukiCpuText_->SetText("Yuki: off");
+        }
+    }
+
+    // ── Disk usage via statvfs ──
+    {
+        struct statvfs stat;
+        if (statvfs(projectRoot_.CString(), &stat) == 0)
+        {
+            unsigned long long totalGB = (stat.f_blocks * stat.f_frsize) / (1024ULL * 1024 * 1024);
+            unsigned long long freeGB = (stat.f_bavail * stat.f_frsize) / (1024ULL * 1024 * 1024);
+            unsigned long long usedGB = totalGB - freeGB;
+            int diskPct = totalGB > 0 ? (int)(100 * usedGB / totalGB) : 0;
+            if (diskText_)
+                diskText_->SetText("Disk: " + String((unsigned)usedGB) + "/" + String((unsigned)totalGB) + "GB (" + String(diskPct) + "%)");
+        }
+    }
 #else
     if (cpuText_)
         cpuText_->SetText("CPU: N/A");
     if (gpuText_)
         gpuText_->SetText("GPU: N/A");
+    if (ramText_)
+        ramText_->SetText("RAM: N/A");
+    if (swapText_)
+        swapText_->SetText("Swap: N/A");
+    if (diskText_)
+        diskText_->SetText("Disk: N/A");
 #endif
 }
