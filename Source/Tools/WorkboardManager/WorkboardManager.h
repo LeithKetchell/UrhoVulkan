@@ -179,7 +179,7 @@ private:
 
     // ── Workboard state (Manager-specific) ──
     float refreshAccumulator_{};
-    static constexpr float REFRESH_INTERVAL = 5.0f;
+    static constexpr float REFRESH_INTERVAL = 2.5f;
     unsigned lastWriteMtime_{0};
     float reconcileAccumulator_{0.0f};
     static constexpr float RECONCILE_INTERVAL = 60.0f;

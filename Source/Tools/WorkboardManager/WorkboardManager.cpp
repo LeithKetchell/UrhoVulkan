@@ -484,11 +484,11 @@ void WorkboardManager::CreateUI()
     const float pad = 0.003f;  // ~4px at 1280
 
     const float row0Top = 0.0f;
-    const float row0Bot = 0.100f;
+    const float row0Bot = 0.130f;  // 4 rows: dropdowns, stats x2, buttons
     const float row1Top = row0Bot + pad;
     const float row1Bot = 0.630f;
     const float row2Top = row1Bot + pad;
-    const float row2Bot = 0.673f;
+    const float row2Bot = 0.700f;   // Composer needs ~56px for two 24px rows + padding
     const float row3Top = row2Bot + pad;
     const float row3Bot = 1.0f - pad;
 
@@ -528,8 +528,8 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, float minX, fl
     bar->SetMaxAnchor(maxX, maxY);
     bar->SetMovable(false);
     bar->SetResizable(false);
-    bar->SetLayout(LM_VERTICAL, 2, IntRect(6, 4, 6, 4));
-    bar->SetMinHeight(70);
+    bar->SetLayout(LM_VERTICAL, 4, IntRect(6, 4, 6, 4));
+    bar->SetMinHeight(110);
 
     // ── Row 1: Instance dropdowns + build status ──
     auto* row1 = bar->CreateChild<UIElement>("StatusRow1");
@@ -539,72 +539,87 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, float minX, fl
     localsDropdown_ = row1->CreateChild<DropDownList>("RolesDropdown");
     localsDropdown_->SetStyleAuto();
     localsDropdown_->SetResizePopup(true);
-    localsDropdown_->SetFixedSize(200, 20);
+    localsDropdown_->SetMinSize(120, 20);
+    localsDropdown_->SetLayoutFlexScale(Vector2(2.0f, 0.0f));
 
     remotesDropdown_ = row1->CreateChild<DropDownList>("RemotesDropdown");
     remotesDropdown_->SetStyleAuto();
     remotesDropdown_->SetResizePopup(true);
-    remotesDropdown_->SetFixedSize(160, 20);
+    remotesDropdown_->SetMinSize(100, 20);
+    remotesDropdown_->SetLayoutFlexScale(Vector2(1.5f, 0.0f));
 
     unassignedStatusDropdown_ = row1->CreateChild<DropDownList>("UnassignedDropdown");
     unassignedStatusDropdown_->SetStyleAuto();
     unassignedStatusDropdown_->SetResizePopup(true);
-    unassignedStatusDropdown_->SetFixedSize(160, 20);
+    unassignedStatusDropdown_->SetMinSize(100, 20);
+    unassignedStatusDropdown_->SetLayoutFlexScale(Vector2(1.5f, 0.0f));
 
     buildStatusText_ = row1->CreateChild<Text>("BuildStatus");
     buildStatusText_->SetFont(font_, currentFontSize_);
     buildStatusText_->SetText("");
     buildStatusText_->SetColor(COL_GREEN);
+    buildStatusText_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
 
-    // ── Row 2: System stats ──
-    auto* row2 = bar->CreateChild<UIElement>("StatusRow2");
-    row2->SetLayout(LM_HORIZONTAL, 16);
-    row2->SetFixedHeight(18);
+    // ── Row 2a: System stats (CPU, GPU, RAM) ──
+    auto* row2a = bar->CreateChild<UIElement>("StatusRow2a");
+    row2a->SetLayout(LM_HORIZONTAL, 8);
+    row2a->SetFixedHeight(20);
+    row2a->SetClipChildren(true);
 
-    cpuText_ = row2->CreateChild<Text>("CpuStatus");
+    cpuText_ = row2a->CreateChild<Text>("CpuStatus");
     cpuText_->SetFont(font_, currentFontSize_);
     cpuText_->SetText("CPU: --");
     cpuText_->SetColor(COL_YELLOW);
-    cpuText_->SetMinWidth(70);
+    cpuText_->SetMinWidth(90);
+    cpuText_->SetFixedHeight(20);
 
-    gpuText_ = row2->CreateChild<Text>("GpuStatus");
+    gpuText_ = row2a->CreateChild<Text>("GpuStatus");
     gpuText_->SetFont(font_, currentFontSize_);
     gpuText_->SetText("GPU: --");
     gpuText_->SetColor(COL_YELLOW);
-    gpuText_->SetMinWidth(70);
+    gpuText_->SetMinWidth(90);
+    gpuText_->SetFixedHeight(20);
 
-    ramText_ = row2->CreateChild<Text>("RamStatus");
+    ramText_ = row2a->CreateChild<Text>("RamStatus");
     ramText_->SetFont(font_, currentFontSize_);
     ramText_->SetText("RAM: --");
     ramText_->SetColor(COL_YELLOW);
-    ramText_->SetMinWidth(180);
+    ramText_->SetFixedHeight(20);
 
-    swapText_ = row2->CreateChild<Text>("SwapStatus");
+    // ── Row 2b: System stats (Swap, Disk, Yuki) ──
+    auto* row2b = bar->CreateChild<UIElement>("StatusRow2b");
+    row2b->SetLayout(LM_HORIZONTAL, 8);
+    row2b->SetFixedHeight(18);
+    row2b->SetClipChildren(true);
+
+    swapText_ = row2b->CreateChild<Text>("SwapStatus");
     swapText_->SetFont(font_, currentFontSize_);
     swapText_->SetText("Swap: --");
     swapText_->SetColor(COL_YELLOW);
-    swapText_->SetMinWidth(180);
+    swapText_->SetVerticalAlignment(VA_CENTER);
 
-    diskText_ = row2->CreateChild<Text>("DiskStatus");
+    diskText_ = row2b->CreateChild<Text>("DiskStatus");
     diskText_->SetFont(font_, currentFontSize_);
     diskText_->SetText("Disk: --");
     diskText_->SetColor(COL_YELLOW);
-    diskText_->SetMinWidth(180);
+    diskText_->SetVerticalAlignment(VA_CENTER);
 
-    yukiCpuText_ = row2->CreateChild<Text>("YukiCpu");
+    yukiCpuText_ = row2b->CreateChild<Text>("YukiCpu");
     yukiCpuText_->SetFont(font_, currentFontSize_);
     yukiCpuText_->SetText("Yuki: --");
     yukiCpuText_->SetColor(Color(1.0f, 0.5f, 0.8f));
-    yukiCpuText_->SetMinWidth(70);
+    yukiCpuText_->SetVerticalAlignment(VA_CENTER);
 
     // ── Row 3: Buttons ──
     auto* row3 = bar->CreateChild<UIElement>("StatusRow3");
     row3->SetLayout(LM_HORIZONTAL, 6);
-    row3->SetFixedHeight(22);
+    row3->SetFixedHeight(24);
 
     toolsBtn_ = row3->CreateChild<Button>("ToolsBtn");
     toolsBtn_->SetStyleAuto();
-    toolsBtn_->SetFixedSize(80, 20);
+    toolsBtn_->SetMinSize(60, 20);
+    toolsBtn_->SetMaxWidth(120);
+    toolsBtn_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     toolsBtn_->SetClipChildren(true);
     auto* toolsBtnText = toolsBtn_->CreateChild<Text>();
     toolsBtnText->SetFont(font_, currentFontSize_);
@@ -614,7 +629,9 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, float minX, fl
 
     settingsBtn_ = row3->CreateChild<Button>("SettingsBtn");
     settingsBtn_->SetStyleAuto();
-    settingsBtn_->SetFixedSize(80, 20);
+    settingsBtn_->SetMinSize(60, 20);
+    settingsBtn_->SetMaxWidth(120);
+    settingsBtn_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     settingsBtn_->SetClipChildren(true);
     auto* settingsBtnText = settingsBtn_->CreateChild<Text>();
     settingsBtnText->SetFont(font_, currentFontSize_);
@@ -635,25 +652,34 @@ void WorkboardManager::CreateComposer(UIElement* parent, float minX, float minY,
     bar->SetEnableAnchor(true);
     bar->SetMinAnchor(minX, minY);
     bar->SetMaxAnchor(maxX, maxY);
-    bar->SetLayout(LM_HORIZONTAL, 4, IntRect(4, 2, 4, 2));
+    bar->SetLayout(LM_VERTICAL, 2, IntRect(4, 2, 4, 2));
+
+    // ── Row 1: Message input + receiver + send ──
+    auto* row1 = bar->CreateChild<UIElement>("ComposerRow1");
+    row1->SetLayout(LM_HORIZONTAL, 4);
+    row1->SetFixedHeight(24);
 
     // Message input
-    messageInput_ = bar->CreateChild<LineEdit>("MsgInput");
+    messageInput_ = row1->CreateChild<LineEdit>("MsgInput");
     messageInput_->SetStyle("LineEdit");
-    messageInput_->SetFixedSize(200, 24);
+    messageInput_->SetMinSize(100, 24);
+    messageInput_->SetLayoutFlexScale(Vector2(3.0f, 0.0f));
     messageInput_->SetVerticalAlignment(VA_CENTER);
 
     // Receiver dropdown
-    coderDropdown_ = bar->CreateChild<DropDownList>("ReceiverDropdown");
+    coderDropdown_ = row1->CreateChild<DropDownList>("ReceiverDropdown");
     coderDropdown_->SetStyleAuto();
-    coderDropdown_->SetFixedSize(110, 24);
+    coderDropdown_->SetMinSize(80, 24);
+    coderDropdown_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     coderDropdown_->SetResizePopup(true);
     coderDropdown_->SetVerticalAlignment(VA_CENTER);
 
     // Send
-    sendCoderBtn_ = bar->CreateChild<Button>("SendBtn");
+    sendCoderBtn_ = row1->CreateChild<Button>("SendBtn");
     sendCoderBtn_->SetStyleAuto();
-    sendCoderBtn_->SetFixedSize(100, 24);
+    sendCoderBtn_->SetMinSize(60, 24);
+    sendCoderBtn_->SetMaxWidth(140);
+    sendCoderBtn_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     sendCoderBtn_->SetVerticalAlignment(VA_CENTER);
     sendCoderBtn_->SetClipChildren(true);
     auto* cl = sendCoderBtn_->CreateChild<Text>();
@@ -662,10 +688,17 @@ void WorkboardManager::CreateComposer(UIElement* parent, float minX, float minY,
     cl->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(sendCoderBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSendCoder));
 
+    // ── Row 2: Action buttons ──
+    auto* row2 = bar->CreateChild<UIElement>("ComposerRow2");
+    row2->SetLayout(LM_HORIZONTAL, 4);
+    row2->SetFixedHeight(24);
+
     // Clear Locks
-    clearFileLocksBtn_ = bar->CreateChild<Button>("ClearLocks");
+    clearFileLocksBtn_ = row2->CreateChild<Button>("ClearLocks");
     clearFileLocksBtn_->SetStyleAuto();
-    clearFileLocksBtn_->SetFixedSize(120, 24);
+    clearFileLocksBtn_->SetMinSize(80, 24);
+    clearFileLocksBtn_->SetMaxWidth(160);
+    clearFileLocksBtn_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     clearFileLocksBtn_->SetVerticalAlignment(VA_CENTER);
     clearFileLocksBtn_->SetClipChildren(true);
     auto* cfl = clearFileLocksBtn_->CreateChild<Text>();
@@ -675,9 +708,11 @@ void WorkboardManager::CreateComposer(UIElement* parent, float minX, float minY,
     SubscribeToEvent(clearFileLocksBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleClearFileLocks));
 
     // Spawn
-    spawnCoderBtn_ = bar->CreateChild<Button>("SpawnCoder");
+    spawnCoderBtn_ = row2->CreateChild<Button>("SpawnCoder");
     spawnCoderBtn_->SetStyleAuto();
-    spawnCoderBtn_->SetFixedSize(100, 24);
+    spawnCoderBtn_->SetMinSize(60, 24);
+    spawnCoderBtn_->SetMaxWidth(140);
+    spawnCoderBtn_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     spawnCoderBtn_->SetVerticalAlignment(VA_CENTER);
     spawnCoderBtn_->SetClipChildren(true);
     auto* sc = spawnCoderBtn_->CreateChild<Text>();
@@ -687,15 +722,25 @@ void WorkboardManager::CreateComposer(UIElement* parent, float minX, float minY,
     SubscribeToEvent(spawnCoderBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSpawnCoder));
 
     // Screenshot toggle — blocks all Claude instances from taking screenshots
-    screenshotToggleBtn_ = bar->CreateChild<Button>("ScreenshotToggle");
+    screenshotToggleBtn_ = row2->CreateChild<Button>("ScreenshotToggle");
     screenshotToggleBtn_->SetStyleAuto();
-    screenshotToggleBtn_->SetFixedSize(120, 24);
+    screenshotToggleBtn_->SetMinSize(80, 24);
+    screenshotToggleBtn_->SetMaxWidth(160);
+    screenshotToggleBtn_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     screenshotToggleBtn_->SetVerticalAlignment(VA_CENTER);
     screenshotToggleBtn_->SetClipChildren(true);
     auto* ssText = screenshotToggleBtn_->CreateChild<Text>();
     ssText->SetFont(font_, currentFontSize_ - 1);
     // Check initial state
-    screenshotsBlocked_ = GetSubsystem<FileSystem>()->FileExists(ipcDir_ + "screenshots_blocked");
+    // Default: screenshots blocked. Create flag file if absent.
+    String ssFlag = ipcDir_ + "screenshots_blocked";
+    if (!GetSubsystem<FileSystem>()->FileExists(ssFlag))
+    {
+        File flagFile(context_, ssFlag, FILE_WRITE);
+        if (flagFile.IsOpen())
+            flagFile.WriteLine("blocked");
+    }
+    screenshotsBlocked_ = GetSubsystem<FileSystem>()->FileExists(ssFlag);
     ssText->SetText(screenshotsBlocked_ ? "Snoop: OFF" : "Snoop: ON");
     ssText->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(screenshotToggleBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleToggleScreenshots));
@@ -708,8 +753,9 @@ void WorkboardManager::CreateToolsPopup()
     toolsPopup_ = uiRoot->CreateChild<Window>("ToolsPopup");
     toolsPopup_->SetStyle("Window");
     toolsPopup_->SetColor(Color(0.09f, 0.078f, 0.129f));
-    toolsPopup_->SetFixedSize(600, 50);
-    toolsPopup_->SetPosition(uiRoot->GetWidth() - 620, 40);
+    toolsPopup_->SetEnableAnchor(true);
+    toolsPopup_->SetMinAnchor(0.3f, 0.04f);
+    toolsPopup_->SetMaxAnchor(0.98f, 0.10f);
     toolsPopup_->SetLayout(LM_VERTICAL, 6, IntRect(8, 8, 8, 8));
     toolsPopup_->SetVisible(false);
 
@@ -726,12 +772,15 @@ void WorkboardManager::CreateToolsPopup()
 
     downloadUrlInput_ = dlRow->CreateChild<LineEdit>("DLUrl");
     downloadUrlInput_->SetStyleAuto();
-    downloadUrlInput_->SetMinWidth(340);
-    downloadUrlInput_->SetFixedHeight(24);
+    downloadUrlInput_->SetMinWidth(100);
+    downloadUrlInput_->SetMinHeight(24);
+    downloadUrlInput_->SetLayoutFlexScale(Vector2(4.0f, 0.0f));
 
     downloadBtn_ = dlRow->CreateChild<Button>("DLBtn");
     downloadBtn_->SetStyleAuto();
-    downloadBtn_->SetFixedSize(80, 24);
+    downloadBtn_->SetMinSize(60, 24);
+    downloadBtn_->SetMaxWidth(120);
+    downloadBtn_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     auto* btnText = downloadBtn_->CreateChild<Text>();
     btnText->SetFont(font_, currentFontSize_);
     btnText->SetText("Download");
@@ -762,8 +811,9 @@ void WorkboardManager::CreateSettingsPopup()
     settingsPopup_ = uiRoot->CreateChild<Window>("SettingsPopup");
     settingsPopup_->SetStyle("Window");
     settingsPopup_->SetColor(Color(0.09f, 0.078f, 0.129f));
-    settingsPopup_->SetFixedSize(600, 50);
-    settingsPopup_->SetPosition(uiRoot->GetWidth() - 620, 95);
+    settingsPopup_->SetEnableAnchor(true);
+    settingsPopup_->SetMinAnchor(0.3f, 0.10f);
+    settingsPopup_->SetMaxAnchor(0.98f, 0.16f);
     settingsPopup_->SetLayout(LM_VERTICAL, 6, IntRect(8, 8, 8, 8));
     settingsPopup_->SetVisible(false);
 
@@ -780,7 +830,8 @@ void WorkboardManager::CreateSettingsPopup()
 
     fontSelector_ = themeRow->CreateChild<DropDownList>();
     fontSelector_->SetStyle("DropDownList");
-    fontSelector_->SetFixedSize(200, 22);
+    fontSelector_->SetMinSize(100, 22);
+    fontSelector_->SetLayoutFlexScale(Vector2(2.0f, 0.0f));
     fontSelector_->SetResizePopup(true);
 
     int selectedIdx = 0;
@@ -806,7 +857,9 @@ void WorkboardManager::CreateSettingsPopup()
 
     fontSizeSelector_ = themeRow->CreateChild<DropDownList>();
     fontSizeSelector_->SetStyle("DropDownList");
-    fontSizeSelector_->SetFixedSize(70, 22);
+    fontSizeSelector_->SetMinSize(50, 22);
+    fontSizeSelector_->SetMaxWidth(100);
+    fontSizeSelector_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
     fontSizeSelector_->SetResizePopup(true);
 
     int sizes[] = {9, 10, 11, 12, 13, 14, 16, 18};
@@ -1134,10 +1187,12 @@ void WorkboardManager::CreateMessageLog(UIElement* parent, float minX, float min
     logTitle->SetFont(font_, currentFontSize_ + 1);
     logTitle->SetText("MESSAGE LOG");
     logTitle->SetColor(Color(0.6f, 0.6f, 0.6f));
+    logTitle->SetFixedHeight(20);
+    logTitle->SetLayoutFlexScale(Vector2(0.0f, 0.0f));
 
     logListView_ = logPanel_->CreateChild<ListView>("LogList");
     logListView_->SetStyleAuto();
-    logListView_->SetMinHeight(100);
+    logListView_->SetLayoutFlexScale(Vector2(1.0f, 1.0f));  // Fill remaining space
 }
 
 void WorkboardManager::CreateYukiChatPanel(UIElement* parent, float minX, float minY, float maxX, float maxY)
@@ -1156,17 +1211,20 @@ void WorkboardManager::CreateYukiChatPanel(UIElement* parent, float minX, float 
     auto* titleRow = yukiChatPanel_->CreateChild<UIElement>("YukiTitleRow");
     titleRow->SetLayout(LM_HORIZONTAL, 6);
     titleRow->SetFixedHeight(24);
+    titleRow->SetHorizontalAlignment(HA_LEFT);
 
     auto* title = titleRow->CreateChild<Text>("YukiTitle");
     title->SetFont(font_, currentFontSize_ + 1);
     title->SetText("YUKI");
     title->SetColor(Color(1.0f, 0.5f, 0.8f));
     title->SetVerticalAlignment(VA_CENTER);
+    title->SetLayoutFlexScale(Vector2(0.0f, 0.0f));
 
     yukiToggleBtn_ = titleRow->CreateChild<Button>("YukiToggle");
     yukiToggleBtn_->SetStyleAuto();
     yukiToggleBtn_->SetFixedSize(80, 22);
     yukiToggleBtn_->SetVerticalAlignment(VA_CENTER);
+    yukiToggleBtn_->SetLayoutFlexScale(Vector2(0.0f, 0.0f));
     yukiToggleBtn_->SetClipChildren(true);
     yukiToggleBtnText_ = yukiToggleBtn_->CreateChild<Text>();
     yukiToggleBtnText_->SetFont(font_, currentFontSize_ - 1);

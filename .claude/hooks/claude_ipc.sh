@@ -376,6 +376,10 @@ assume)
     if [ -f "$INST_DIR/${OLD_ROLE}.pid" ]; then
         [ "$(cat "$INST_DIR/${OLD_ROLE}.pid" 2>/dev/null)" = "$CLAUDE_PID" ] && rm -f "$INST_DIR/${OLD_ROLE}.pid"
     fi
+    # Always clean stale unassigned.pid pointing to us (announce writes it before assume runs)
+    if [ -f "$INST_DIR/unassigned.pid" ]; then
+        [ "$(cat "$INST_DIR/unassigned.pid" 2>/dev/null)" = "$CLAUDE_PID" ] && rm -f "$INST_DIR/unassigned.pid"
+    fi
 
     # Claim
     printf '%s\n%s\n' "$NEW_ROLE" "$CLAUDE_PID" > "$INST_DIR/${TTY_ID}.role"
