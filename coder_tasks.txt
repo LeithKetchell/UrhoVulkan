@@ -1,0 +1,33 @@
+!wb-add-ready coder_tasks.txt
+!wb-assign coder_tasks.txt
+!wb-move-done coder_tasks.txt
+!ipc coder1 "Review completed work"
+!ipc coder2 "Assign new tasks"
+!ipc coder3 "Check for any issues"
+!sh "git pull"
+!build urho3d_game
+!spawn-coder
+!read plan.txt
+!ls team_members.txt
+!write coder_tasks.txt
+!wb-add-ready coder_tasks.txt
+!wb-assign coder_tasks.txt
+!wb-move-done coder_tasks.txt
+!ipc coder1 "Review completed work"
+!ipc coder2 "Assign new tasks"
+!ipc coder3 "Check for any issues"
+!sh "git pull"
+!build urho3d_game
+!spawn-coder
+!read plan.txt
+!ls team_members.txt
+!write coder_tasks.txt
+!wb-add-ready coder_tasks.txt
+!wb-assign coder_tasks.txt
+!wb-move-done coder_tasks.txt
+!ipc coder1 "Review completed work"
+!ipc coder2 "Assign new tasks"
+!ipc coder3 "Check for any issues"
+!sh "git pull"
+!build urho3d_game
+!spawn-coder
