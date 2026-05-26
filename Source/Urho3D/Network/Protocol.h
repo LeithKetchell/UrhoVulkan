@@ -208,6 +208,10 @@ static const int MSG_STORAGE_CONTENTS = 0xDA;
 static const int MSG_QUERY_DEATH_LOG  = 0xDB;
 /// Server->client: death log response (u16 count, then per-entry: name, species, f32 x, f32 z, u8 cause, killer, i32 game_day).
 static const int MSG_DEATH_LOG_RESULT = 0xDC;
+/// Client->server: request death analytics (population trends, aggregated stats).
+static const int MSG_QUERY_DEATH_ANALYTICS = 0xDD;
+/// Server->client: death analytics result (see HandleDeathAnalyticsResult for format).
+static const int MSG_DEATH_ANALYTICS_RESULT = 0xDE;
 
 /// Client->server: melee or ranged attack (target_node_id u32, weapon_item_id i32).
 static const int MSG_ATTACK          = 0xE0;

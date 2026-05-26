@@ -1,0 +1,2 @@
+Materials/MI_WoodTrim.xml
+Materials/MI_WindowGlass.xml

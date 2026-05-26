@@ -264,6 +264,7 @@ private:
     void HandleSleep(Connection* connection, MemoryBuffer& msg);
     void HandleSetRespawn(Connection* connection, MemoryBuffer& msg);
     void HandleQueryDeathLog(Connection* connection, MemoryBuffer& msg);
+    void HandleQueryDeathAnalytics(Connection* connection, MemoryBuffer& msg);
     void BroadcastBuildingSpawn(int placedId, int typeId, float px, float py, float pz,
                                 float rotation, int hp);
     void BroadcastBuildingRemove(int placedId);

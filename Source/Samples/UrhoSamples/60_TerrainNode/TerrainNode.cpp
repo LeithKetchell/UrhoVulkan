@@ -6668,6 +6668,9 @@ void TerrainNode::MoveCamera(float timeStep)
     if (input->GetKeyPress(KEY_F10))
         RequestDeathLog();
 
+    if (input->GetKeyPress(KEY_HOME))
+        RequestDeathAnalytics();
+
     if (input->GetKeyPress(KEY_F11))
         GetSubsystem<Graphics>()->ToggleFullscreen();
 
@@ -13564,6 +13567,14 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
         return;
     }
 
+    // Death analytics response
+    if (msgID == MSG_DEATH_ANALYTICS_RESULT)
+    {
+        MemoryBuffer msg(data);
+        HandleDeathAnalyticsResult(msg);
+        return;
+    }
+
     // Settlement patch ownership
     if (msgID == MSG_SETTLEMENT_CLAIMS)
     {
@@ -15568,6 +15579,73 @@ void TerrainNode::HandleDeathLogResult(MemoryBuffer& msg)
     URHO3D_LOGRAW(log);
 
     // Also display in the UI chat area if it exists
+    auto* ui = GetSubsystem<UI>();
+    if (ui)
+    {
+        auto* chatLog = ui->GetRoot()->GetChildDynamicCast<Text>("ChatLog", true);
+        if (chatLog)
+            chatLog->SetText(chatLog->GetText() + log);
+    }
+}
+
+// ============================================================================
+// Death Analytics — Home key admin query
+// ============================================================================
+
+void TerrainNode::RequestDeathAnalytics()
+{
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (!serverConn)
+        return;
+
+    VectorBuffer buf;
+    serverConn->SendMessage(MSG_QUERY_DEATH_ANALYTICS, true, true, buf);
+}
+
+void TerrainNode::HandleDeathAnalyticsResult(MemoryBuffer& msg)
+{
+    static const char* causeNames[] = {
+        "combat", "drown", "starve", "age", "scavenge", "fall", "fire", "dehydrate", "freeze"
+    };
+
+    String log = "\n=== DEATH ANALYTICS ===\n\n";
+
+    // Section 1: deaths by cause
+    unsigned char byCauseCount = msg.ReadU8();
+    log += "--- Deaths by Cause ---\n";
+    for (unsigned i = 0; i < byCauseCount; ++i)
+    {
+        unsigned char cause = msg.ReadU8();
+        unsigned short total = msg.ReadU16();
+        const char* name = (cause < 9) ? causeNames[cause] : "unknown";
+        log += "  " + String(name) + ": " + String(total) + "\n";
+    }
+
+    // Section 2: deaths by species
+    unsigned char bySpeciesCount = msg.ReadU8();
+    log += "\n--- Deaths by Species ---\n";
+    for (unsigned i = 0; i < bySpeciesCount; ++i)
+    {
+        String species = msg.ReadString();
+        unsigned short total = msg.ReadU16();
+        log += "  " + species + ": " + String(total) + "\n";
+    }
+
+    // Section 3: deaths per game day
+    unsigned char byDayCount = msg.ReadU8();
+    log += "\n--- Deaths per Day (last 30) ---\n";
+    for (unsigned i = 0; i < byDayCount; ++i)
+    {
+        int day = msg.ReadI32();
+        unsigned short deaths = msg.ReadU16();
+        log += "  Day " + String(day) + ": " + String(deaths) + "\n";
+    }
+    log += "===========================\n";
+
+    URHO3D_LOGRAW(log);
+
+    // Display in chat area
     auto* ui = GetSubsystem<UI>();
     if (ui)
     {

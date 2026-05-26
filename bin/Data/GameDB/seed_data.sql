@@ -1237,7 +1237,7 @@ UPDATE items SET model = 'Models/Nature/BushBerries_1.mdl'           WHERE id = 
 -- Tools
 UPDATE items SET model = 'Models/Survival/trowel.mdl'               WHERE id = 102;  -- Digging Stick
 UPDATE items SET model = 'Models/Survival/handdrill.mdl'             WHERE id = 104;  -- Fire Kit
-UPDATE items SET model = 'Models/Weapons/Spear.mdl'                  WHERE id = 105;  -- Fishing Rod (placeholder)
+UPDATE items SET model = 'Models/CharacterItems/FishingRod.mdl'      WHERE id = 105;  -- Fishing Rod
 UPDATE items SET model = 'Models/CharacterItems/Chain_Coil.mdl'      WHERE id = 418;  -- Fishing Net
 UPDATE items SET model = 'Models/CharacterItems/Chain_Coil.mdl'      WHERE id = 419;  -- Cargo Net
 

@@ -1,0 +1,3 @@
+Materials/MI_Trim_Furniture.xml
+Materials/MI_Trim_Metal_Vertex.xml
+Materials/MI_Trim_Props.xml

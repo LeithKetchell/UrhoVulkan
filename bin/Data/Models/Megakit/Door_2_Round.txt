@@ -1,0 +1,2 @@
+Materials/MI_MetalOrnaments.xml
+Materials/MI_WoodTrim_Wear.xml

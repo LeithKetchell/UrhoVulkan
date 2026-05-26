@@ -1,0 +1,4 @@
+Materials/MI_WoodTrim.xml
+Materials/MI_RockTrim.xml
+Materials/MI_RoundTiles.xml
+Materials/MI_MetalOrnaments.xml

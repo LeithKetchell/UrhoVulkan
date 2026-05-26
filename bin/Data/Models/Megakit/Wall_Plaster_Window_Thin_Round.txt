@@ -1,0 +1,3 @@
+Materials/MI_Brick.xml
+Materials/MI_Plaster.xml
+Materials/MI_WoodTrim.xml

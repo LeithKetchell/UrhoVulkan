@@ -1135,6 +1135,8 @@ private:
     void HandleCreatureAIState(MemoryBuffer& msg);
     void RequestDeathLog();
     void HandleDeathLogResult(MemoryBuffer& msg);
+    void RequestDeathAnalytics();
+    void HandleDeathAnalyticsResult(MemoryBuffer& msg);
     /// Map server-assigned spawnId → local scene node for AI state correlation.
     HashMap<unsigned, WeakPtr<Node>> spawnIdToNode_;
 

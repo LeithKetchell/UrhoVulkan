@@ -4324,6 +4324,12 @@ void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventDat
         break;
     }
 
+    case MSG_QUERY_DEATH_ANALYTICS:
+    {
+        HandleQueryDeathAnalytics(connection, msg);
+        break;
+    }
+
     case MSG_ATTACK:
     {
         HandleAttack(connection, msg);
@@ -21103,6 +21109,94 @@ void AuthServer::HandleQueryDeathLog(Connection* connection, MemoryBuffer& msg)
 
     connection->SendMessage(MSG_DEATH_LOG_RESULT, false, false, buf);
     LogMessage("[DeathLog] Sent " + String(count) + " entries to client");
+#endif
+}
+
+void AuthServer::HandleQueryDeathAnalytics(Connection* connection, MemoryBuffer& /*msg*/)
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    if (!worldDB_)
+        return;
+
+    auto sit = sessions_.Find(connection);
+    if (sit == sessions_.End() || !sit->second_.authenticated)
+        return;
+
+    sqlite3* db = worldDB_->GetHandle();
+    if (!db)
+        return;
+
+    // Wire format: 3 sections back-to-back.
+    //   Section 1 — deaths by cause:  u8 count, then count × (u8 cause, u16 total)
+    //   Section 2 — deaths by species: u8 count, then count × (string species, u16 total)
+    //   Section 3 — deaths per game day (last 30 days): u8 count, then count × (i32 day, u16 deaths)
+    VectorBuffer buf;
+    sqlite3_stmt* stmt = nullptr;
+
+    // Section 1: deaths by cause
+    unsigned char byCauseCount = 0;
+    unsigned byCausePos = buf.GetSize();
+    buf.WriteU8(0);  // placeholder
+    if (sqlite3_prepare_v2(db,
+        "SELECT cause, COUNT(*) FROM death_log GROUP BY cause ORDER BY COUNT(*) DESC",
+        -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        while (sqlite3_step(stmt) == SQLITE_ROW && byCauseCount < 20)
+        {
+            buf.WriteU8((unsigned char)sqlite3_column_int(stmt, 0));
+            buf.WriteU16((unsigned short)Min(sqlite3_column_int(stmt, 1), 65535));
+            ++byCauseCount;
+        }
+        sqlite3_finalize(stmt);
+    }
+    const_cast<std::byte*>(buf.GetData())[byCausePos] = static_cast<std::byte>(byCauseCount);
+
+    // Section 2: deaths by species (top 15)
+    unsigned char bySpeciesCount = 0;
+    unsigned bySpeciesPos = buf.GetSize();
+    buf.WriteU8(0);  // placeholder
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT species, COUNT(*) FROM death_log GROUP BY species ORDER BY COUNT(*) DESC LIMIT 15",
+        -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        while (sqlite3_step(stmt) == SQLITE_ROW && bySpeciesCount < 15)
+        {
+            const char* sp = (const char*)sqlite3_column_text(stmt, 0);
+            buf.WriteString(sp ? sp : "");
+            buf.WriteU16((unsigned short)Min(sqlite3_column_int(stmt, 1), 65535));
+            ++bySpeciesCount;
+        }
+        sqlite3_finalize(stmt);
+    }
+    const_cast<std::byte*>(buf.GetData())[bySpeciesPos] = static_cast<std::byte>(bySpeciesCount);
+
+    // Section 3: deaths per game day (last 30 days)
+    unsigned char byDayCount = 0;
+    unsigned byDayPos = buf.GetSize();
+    buf.WriteU8(0);  // placeholder
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT game_day, COUNT(*) FROM death_log "
+        "WHERE game_day >= (SELECT MAX(game_day) FROM death_log) - 30 "
+        "GROUP BY game_day ORDER BY game_day ASC",
+        -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        while (sqlite3_step(stmt) == SQLITE_ROW && byDayCount < 60)
+        {
+            buf.WriteI32(sqlite3_column_int(stmt, 0));
+            buf.WriteU16((unsigned short)Min(sqlite3_column_int(stmt, 1), 65535));
+            ++byDayCount;
+        }
+        sqlite3_finalize(stmt);
+    }
+    const_cast<std::byte*>(buf.GetData())[byDayPos] = static_cast<std::byte>(byDayCount);
+
+    connection->SendMessage(MSG_DEATH_ANALYTICS_RESULT, false, false, buf);
+    LogMessage("[DeathLog] Sent analytics to " + sit->second_.username +
+               " (" + String((int)byCauseCount) + " causes, " +
+               String((int)bySpeciesCount) + " species, " +
+               String((int)byDayCount) + " days)");
 #endif
 }
 

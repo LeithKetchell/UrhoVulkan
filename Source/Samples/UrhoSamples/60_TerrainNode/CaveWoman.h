@@ -1,8 +1,9 @@
-// CaveWoman — proto-human NPC. Shares animations with CaveMan via Mixamo skeleton.
+// CaveWoman — proto-human female NPC.
+// Animation getters and CaveAnims namespace live in HumanNPC.h (shared with CaveMan).
 
 #pragma once
 
-#include "CaveMan.h"  // for CaveAnims namespace
+#include "HumanNPC.h"
 
 class CaveWoman : public HumanNPC
 {
@@ -15,34 +16,6 @@ public:
 
 protected:
     String GetModelPath() const override { return "Models/Characters/CavemanWoman.mdl"; }
-    String GetModelDir() const override { return CaveAnims::DIR; }
-
-    String GetIdleAnim() const override { return String(CaveAnims::DIR) + CaveAnims::IDLE; }
-    String GetWalkAnim() const override { return String(CaveAnims::DIR) + CaveAnims::WALK; }
-    String GetRunAnim() const override { return String(CaveAnims::DIR) + CaveAnims::RUN; }
-    String GetDieAnim() const override { return String(CaveAnims::DIR) + CaveAnims::DIE; }
-    String GetGreetAnim() const override { return String(CaveAnims::DIR) + CaveAnims::GREET; }
-    String GetSwimAnim() const override { return String(CaveAnims::DIR) + CaveAnims::SWIM; }
-    String GetJumpAnim() const override { return String(CaveAnims::DIR) + CaveAnims::JUMP; }
-    String GetCrouchWalkAnim() const override { return String(CaveAnims::DIR) + CaveAnims::CROUCH; }
-
-    String GetEatAnim() const override { return CaveAnims::Pick(CaveAnims::EAT_VARIANTS, 4); }
-    String GetSitAnim() const override { return CaveAnims::Pick(CaveAnims::SIT_VARIANTS, 2); }
-    String GetSleepAnim() const override { return CaveAnims::Pick(CaveAnims::SLEEP_VARIANTS, 2); }
-    String GetLookAnim() const override { return CaveAnims::Pick(CaveAnims::LOOK_VARIANTS, 2); }
-    String GetAttackAnim() const override { return String(CaveAnims::DIR) + CaveAnims::ATTACK; }
-    String GetVictoryAnim() const override { return String(CaveAnims::DIR) + CaveAnims::VICTORY; }
-    String GetScreamAnim() const override { return String(CaveAnims::DIR) + CaveAnims::SCREAM; }
-    // Shared caveman rig — reuses the same pickup anim as CaveMan for the
-    // brief reach/stoke gesture overlaid on SIT arrival.
-    String GetTendAnim() const override { return String(CaveAnims::DIR) + "Caveman_Picking_Up.ani"; }
-    String GetTreadWaterAnim() const override { return String(CaveAnims::DIR) + CaveAnims::TREAD_WATER; }
-    String GetCrawlAnim() const override { return String(CaveAnims::DIR) + CaveAnims::CRAWL; }
-    String GetStandingAnim() const override { return String(CaveAnims::DIR) + CaveAnims::STANDING; }
-    String GetDisappointedAnim() const override { return String(CaveAnims::DIR) + CaveAnims::DISAPPOINTED; }
-    String GetDanceAnim() const override { return String(CaveAnims::DIR) + CaveAnims::SAMBA; }
-    String GetShearAnim() const override { return String(CaveAnims::DIR) + "Caveman_Picking_Up.ani"; }
-    String GetFishAnim() const override { return String(CaveAnims::DIR) + "Caveman_Sitting_Idle.ani"; }
 
     bool HasVitals() const override { return true; }
     int GetCreatureId() const override { return 21; }

@@ -35,9 +35,32 @@ void HumanNPC::Start()
             campfireNode_ = scene->GetChild("Campfire", true);
     }
 
-    // Find the model child node and AnimatedModel — used by 4a, 4b, 4c
+    // Find the model child node and AnimatedModel — used by skin, 4a, 4b, 4c
     Node* modelNode = node_ ? node_->GetChild(node_->GetName() + "Model") : nullptr;
     auto* animModel = modelNode ? modelNode->GetComponent<AnimatedModel>() : nullptr;
+
+    // Phase 5: PP character skin variety — randomly assign a PP model so NPCs
+    // don't all look like clones. Male NPCs pick from 4 male PP skins + original
+    // Caveman; female NPCs pick from PP_AnimatedWoman + original CaveWoman.
+    if (animModel && node_)
+    {
+        int creatureId = GetCreatureId();
+        // 60% chance to get a PP skin for visual variety
+        if (Random(1.0f) < 0.6f)
+        {
+            static const char* maleSkins[] = {"PP_Farmer", "PP_Worker", "PP_Adventurer", "PP_Man"};
+            static const char* femaleSkins[] = {"PP_AnimatedWoman"};
+
+            const char* skin = nullptr;
+            if (creatureId == 20)
+                skin = maleSkins[Random(0, 4)];
+            else if (creatureId == 21)
+                skin = femaleSkins[0];
+
+            if (skin)
+                ApplySkin(skin);
+        }
+    }
 
     // Equipment visuals — read server-replicated Equip_* Vars and attach models.
     // Bone mapping: hand→RightHand, offhand→LeftHand, head→Head, body→Spine1
@@ -117,6 +140,105 @@ void HumanNPC::Start()
         node_->SetScale(baseScale * variation);
     }
 
+}
+
+void HumanNPC::ApplySkin(const String& skinName)
+{
+    Node* modelNode = node_ ? node_->GetChild(node_->GetName() + "Model") : nullptr;
+    auto* animModel = modelNode ? modelNode->GetComponent<AnimatedModel>() : nullptr;
+    auto* cache = GetSubsystem<ResourceCache>();
+    if (!animModel || !cache)
+        return;
+
+    String modelPath = "Models/Characters/" + skinName + ".mdl";
+    String matList   = "Models/Characters/" + skinName + ".txt";
+
+    auto* mdl = cache->GetResource<Model>(modelPath);
+    if (!mdl)
+    {
+        URHO3D_LOGWARNINGF("ApplySkin: model '%s' not found", modelPath.CString());
+        return;
+    }
+
+    // Swap model and materials
+    animModel->SetModel(mdl, true, true);
+    animModel->ApplyMaterialList(matList);
+
+    // Re-scale to desired size after model swap (Creature::Start() scaled the old model)
+    BoundingBox bb = animModel->GetBoundingBox();
+    Vector3 size = bb.Size();
+    float longest = Max(size.x_, Max(size.y_, size.z_));
+    if (longest > 0.001f)
+        node_->SetScale(GetDesiredSize() / longest);
+
+    // Re-offset Y so feet sit at ground level
+    if (modelNode != node_ && bb.min_.y_ < -0.001f)
+        modelNode->SetPosition(Vector3(modelNode->GetPosition().x_, -bb.min_.y_, modelNode->GetPosition().z_));
+
+    skinName_ = skinName;
+    hasSkin_ = true;
+
+    // Build animation paths based on the skin's armature naming convention.
+    // PP_Man uses "HumanArmatureMan_" prefix; all other PP models use "CharacterArmature".
+    String dir = "Models/Characters/";
+
+    if (skinName == "PP_Man")
+    {
+        String p = dir + "PP_Man_HumanArmatureMan_";
+        skinAnims_.idle         = p + "Idle.ani";
+        skinAnims_.walk         = p + "Walk.ani";
+        skinAnims_.run          = p + "Run.ani";
+        skinAnims_.die          = p + "Death.ani";
+        skinAnims_.greet        = p + "Clapping.ani";
+        skinAnims_.jump         = p + "Jump.ani";
+        skinAnims_.attack       = p + "Punch.ani";
+        skinAnims_.victory      = p + "SwordSlash.ani";
+        skinAnims_.eat          = p + "Standing.ani";
+        skinAnims_.sit          = p + "Sitting.ani";
+        skinAnims_.sleep        = p + "Sitting.ani";
+        skinAnims_.look         = p + "Standing.ani";
+        skinAnims_.scream       = p + "Punch.ani";
+        skinAnims_.tend         = p + "Standing.ani";
+        skinAnims_.swim         = p + "Walk.ani";
+        skinAnims_.treadWater   = p + "Idle.ani";
+        skinAnims_.crouchWalk   = p + "Walk.ani";
+        skinAnims_.crawl        = p + "Walk.ani";
+        skinAnims_.standing     = p + "Standing.ani";
+        skinAnims_.disappointed = p + "Standing.ani";
+        skinAnims_.dance        = p + "Clapping.ani";
+        skinAnims_.shear        = p + "Standing.ani";
+        skinAnims_.fish         = p + "Sitting.ani";
+    }
+    else
+    {
+        // CharacterArmature family: PP_Farmer, PP_Worker, PP_Adventurer, PP_AnimatedWoman
+        String p = dir + skinName + "_CharacterArmature";
+        skinAnims_.idle         = p + "Idle.ani";
+        skinAnims_.walk         = p + "Walk.ani";
+        skinAnims_.run          = p + "Run.ani";
+        skinAnims_.die          = p + "Death.ani";
+        skinAnims_.greet        = p + "Wave.ani";
+        skinAnims_.jump         = p + "Roll.ani";
+        skinAnims_.attack       = p + "Punch_Right.ani";
+        skinAnims_.victory      = p + "Sword_Slash.ani";
+        skinAnims_.eat          = p + "Interact.ani";
+        skinAnims_.sit          = p + "Idle_Neutral.ani";
+        skinAnims_.sleep        = p + "Idle_Neutral.ani";
+        skinAnims_.look         = p + "Idle_Neutral.ani";
+        skinAnims_.scream       = p + "HitRecieve.ani";
+        skinAnims_.tend         = p + "Interact.ani";
+        skinAnims_.swim         = p + "Walk.ani";
+        skinAnims_.treadWater   = p + "Idle.ani";
+        skinAnims_.crouchWalk   = p + "Walk.ani";
+        skinAnims_.crawl        = p + "Walk.ani";
+        skinAnims_.standing     = p + "Idle_Neutral.ani";
+        skinAnims_.disappointed = p + "HitRecieve.ani";
+        skinAnims_.dance        = p + "Wave.ani";
+        skinAnims_.shear        = p + "Interact.ani";
+        skinAnims_.fish         = p + "Idle_Neutral.ani";
+    }
+
+    URHO3D_LOGINFOF("NPC %u: applied PP skin '%s'", GetSpawnId(), skinName.CString());
 }
 
 // FindNearbyResource() and PickTask() removed — all NPC decision-making
@@ -789,3 +911,4 @@ void HumanNPC::GrantPrimitiveTechniques()
         techniques_[(unsigned)id] = entry;
     }
 }
+

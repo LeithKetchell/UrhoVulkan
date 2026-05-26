@@ -1,0 +1,2 @@
+Materials/MI_Trim_Cloth.xml
+Materials/MI_Trim_Furniture.xml

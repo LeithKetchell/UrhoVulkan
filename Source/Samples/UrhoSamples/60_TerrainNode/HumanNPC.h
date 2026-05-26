@@ -10,8 +10,58 @@
 #include "ResourceMap.h"
 #include <Urho3D/Container/HashMap.h>
 #include <Urho3D/Input/Controls.h>
+#include <Urho3D/Math/MathDefs.h>
 #include <Urho3D/Scene/Node.h>
 #include <Urho3D/Core/Object.h>
+
+// Shared animation paths for caveman characters (default human NPC skin).
+namespace CaveAnims
+{
+    static const char* DIR = "Models/Characters/";
+
+    // Single animations
+    static const char* IDLE    = "Caveman_idle.ani";
+    static const char* WALK    = "Caveman_walk.ani";
+    static const char* RUN     = "Caveman_running.ani";
+    static const char* DIE     = "Caveman_die.ani";
+    static const char* GREET   = "Caveman_Standing_Greeting.ani";
+    static const char* SWIM    = "Caveman_Swimming.ani";
+    static const char* CROUCH  = "Caveman_Crouched_Walking.ani";
+    static const char* ATTACK  = "Caveman_attack.ani";
+    static const char* VICTORY = "Caveman_victory.ani";
+    static const char* SCREAM  = "Caveman_scream.ani";
+    static const char* JUMP    = "Caveman_jump.ani";
+    static const char* TREAD_WATER = "Caveman_Treading_Water.ani";
+    static const char* CRAWL  = "Caveman_Low_Crawl.ani";
+    static const char* STANDING = "Caveman_standing.ani";
+    static const char* DISAPPOINTED = "Caveman_isappointed.ani";
+    static const char* SAMBA  = "Caveman_samba.ani";
+
+    // Variants — randomly picked each time
+    static const char* EAT_VARIANTS[] = {
+        "Caveman_Gathering_Objects.ani",
+        "Caveman_Pick_Fruit.ani",
+        "Caveman_Picking_Up.ani",
+        "Caveman_Watering.ani"
+    };
+    static const char* SIT_VARIANTS[] = {
+        "Caveman_Sitting_Idle.ani",
+        "Caveman_Sitting_Dazed.ani"
+    };
+    static const char* SLEEP_VARIANTS[] = {
+        "Caveman_Sleeping_Idle.ani",
+        "Caveman_Laying_Sleeping.ani"
+    };
+    static const char* LOOK_VARIANTS[] = {
+        "Caveman_Look_Around.ani",
+        "Caveman_Looking_Around.ani"
+    };
+
+    inline String Pick(const char* variants[], unsigned count)
+    {
+        return String(DIR) + variants[Urho3D::Random((int)count)];
+    }
+}
 
 /// Control bit flags for possession input routing.
 const unsigned CTRL_FORWARD = 1;
@@ -30,6 +80,16 @@ struct InsightEntry
     int phenomenonType{0};  ///< Category of observed phenomenon
     int count{0};           ///< Successful observations accumulated
     float lastSeen{0.0f};   ///< Scene time of last observation
+};
+
+/// Pre-resolved animation paths for a PP character skin.
+/// Populated once at spawn by ApplySkin(); animation getters return these
+/// instead of the default CaveAnims paths when hasSkin_ is true.
+struct SkinAnims
+{
+    String idle, walk, run, die, greet, swim, jump, crouchWalk;
+    String eat, sit, sleep, look, attack, victory, scream;
+    String tend, treadWater, crawl, standing, disappointed, dance, shear, fish;
 };
 
 /// Per-NPC technique knowledge entry.
@@ -85,6 +145,37 @@ public:
     void GrantPrimitiveTechniques();
     /// Set settlement epoch tier (gates technique availability).
     void SetEpochTier(int tier) { epochTier_ = tier; }
+
+    /// Apply a PP character skin by name (e.g. "PP_Farmer").
+    /// Swaps model, materials, and animation paths. Call before tint/equipment.
+    void ApplySkin(const String& skinName);
+
+    // --- Skin-aware animation getters (shared by CaveMan/CaveWoman) ---
+    String GetModelDir() const override { return CaveAnims::DIR; }
+
+    String GetIdleAnim() const override { return hasSkin_ ? skinAnims_.idle : String(CaveAnims::DIR) + CaveAnims::IDLE; }
+    String GetWalkAnim() const override { return hasSkin_ ? skinAnims_.walk : String(CaveAnims::DIR) + CaveAnims::WALK; }
+    String GetRunAnim() const override { return hasSkin_ ? skinAnims_.run : String(CaveAnims::DIR) + CaveAnims::RUN; }
+    String GetDieAnim() const override { return hasSkin_ ? skinAnims_.die : String(CaveAnims::DIR) + CaveAnims::DIE; }
+    String GetGreetAnim() const override { return hasSkin_ ? skinAnims_.greet : String(CaveAnims::DIR) + CaveAnims::GREET; }
+    String GetSwimAnim() const override { return hasSkin_ ? skinAnims_.swim : String(CaveAnims::DIR) + CaveAnims::SWIM; }
+    String GetJumpAnim() const override { return hasSkin_ ? skinAnims_.jump : String(CaveAnims::DIR) + CaveAnims::JUMP; }
+    String GetCrouchWalkAnim() const override { return hasSkin_ ? skinAnims_.crouchWalk : String(CaveAnims::DIR) + CaveAnims::CROUCH; }
+    String GetEatAnim() const override { return hasSkin_ ? skinAnims_.eat : CaveAnims::Pick(CaveAnims::EAT_VARIANTS, 4); }
+    String GetSitAnim() const override { return hasSkin_ ? skinAnims_.sit : CaveAnims::Pick(CaveAnims::SIT_VARIANTS, 2); }
+    String GetSleepAnim() const override { return hasSkin_ ? skinAnims_.sleep : CaveAnims::Pick(CaveAnims::SLEEP_VARIANTS, 2); }
+    String GetLookAnim() const override { return hasSkin_ ? skinAnims_.look : CaveAnims::Pick(CaveAnims::LOOK_VARIANTS, 2); }
+    String GetAttackAnim() const override { return hasSkin_ ? skinAnims_.attack : String(CaveAnims::DIR) + CaveAnims::ATTACK; }
+    String GetVictoryAnim() const override { return hasSkin_ ? skinAnims_.victory : String(CaveAnims::DIR) + CaveAnims::VICTORY; }
+    String GetScreamAnim() const override { return hasSkin_ ? skinAnims_.scream : String(CaveAnims::DIR) + CaveAnims::SCREAM; }
+    String GetTendAnim() const override { return hasSkin_ ? skinAnims_.tend : String(CaveAnims::DIR) + "Caveman_Picking_Up.ani"; }
+    String GetTreadWaterAnim() const override { return hasSkin_ ? skinAnims_.treadWater : String(CaveAnims::DIR) + CaveAnims::TREAD_WATER; }
+    String GetCrawlAnim() const override { return hasSkin_ ? skinAnims_.crawl : String(CaveAnims::DIR) + CaveAnims::CRAWL; }
+    String GetStandingAnim() const override { return hasSkin_ ? skinAnims_.standing : String(CaveAnims::DIR) + CaveAnims::STANDING; }
+    String GetDisappointedAnim() const override { return hasSkin_ ? skinAnims_.disappointed : String(CaveAnims::DIR) + CaveAnims::DISAPPOINTED; }
+    String GetDanceAnim() const override { return hasSkin_ ? skinAnims_.dance : String(CaveAnims::DIR) + CaveAnims::SAMBA; }
+    String GetShearAnim() const override { return hasSkin_ ? skinAnims_.shear : String(CaveAnims::DIR) + "Caveman_Picking_Up.ani"; }
+    String GetFishAnim() const override { return hasSkin_ ? skinAnims_.fish : String(CaveAnims::DIR) + "Caveman_Sitting_Idle.ani"; }
 
     /// Possession — when true, AI suspends and player controls drive movement.
     void SetPossessed(bool possessed);
@@ -153,6 +244,11 @@ protected:
     /// Cooldown after greeting to avoid spamming.
     float greetCooldown_{0.0f};
     static constexpr float GREET_COOLDOWN_TIME = 30.0f;
+
+    // --- PP Character Skin system ---
+    bool hasSkin_{false};       ///< True when a PP skin is active (animation getters check this)
+    String skinName_;           ///< e.g. "PP_Farmer", empty = default Caveman
+    SkinAnims skinAnims_;       ///< Pre-resolved animation paths for the active skin
 
     // --- Observation / Insight system ---
     HashMap<unsigned, InsightEntry> insights_;  ///< phenomenonType → observation accumulator

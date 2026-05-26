@@ -1,0 +1,2 @@
+Materials/MI_Banner.xml
+Materials/MI_Trim_Metal.xml
