@@ -224,31 +224,20 @@ void WorkboardManager::Start()
     RefreshInstanceStatus();
 
     // Notify any surviving instances that Manager is back online.
-    // Deliver once per unique backend socket. Use specific role names so
-    // SendToSocket takes the single-target path (role == "coders" triggers
-    // internal broadcast to ALL coder sockets, causing N*M deliveries).
+    // Deliver once per unique PID — dedup by process, not socket path.
     {
         const String onlineMsg = "=== WORKBOARD MANAGER ONLINE === The WorkboardManager is back. "
             "Message delivery restored. Resume normal operations.";
-        HashSet<String> deliveredBackends;
+        HashSet<int> deliveredPIDs;
 
         auto deliverOnce = [&](const String& role)
         {
-            if (!IsInstanceAlive(role))
+            int pid = ReadInstancePID(role);
+            if (pid <= 0 || !IsProcessAlive(pid))
                 return;
-#ifndef _WIN32
-            String sockPath = ttySockDir_ + role + ".sock";
-            char resolved[PATH_MAX];
-            ssize_t len = readlink(sockPath.CString(), resolved, sizeof(resolved) - 1);
-            String key = sockPath;
-            if (len > 0) { resolved[len] = '\0'; key = String(resolved); }
-#else
-            // Windows pipes are kernel objects — no symlink dedup needed, use role as key
-            String key = role;
-#endif
-            if (deliveredBackends.Contains(key))
+            if (deliveredPIDs.Contains(pid))
                 return;
-            deliveredBackends.Insert(key);
+            deliveredPIDs.Insert(pid);
             SendToSocket(role, onlineMsg);
         };
 
@@ -341,31 +330,18 @@ void WorkboardManager::Stop()
         "Continue your current task. TTY injection will resume when Manager restarts. "
         "Do NOT attempt to send messages to Manager until you receive a 'Manager back online' notice.";
 
-    // Deliver once per unique backend socket. SendToSocket("coder") triggers
-    // internal broadcast to ALL coder*.sock, so calling it per-role causes
-    // N*M deliveries. Instead, resolve every known role to its real socket
-    // and deliver exactly once per backend.
+    // Deliver once per unique PID — dedup by process, not socket path.
     {
-        HashSet<String> deliveredBackends;
+        HashSet<int> deliveredPIDs;
 
         auto deliverOnce = [&](const String& role)
         {
-            if (!IsInstanceAlive(role))
+            int pid = ReadInstancePID(role);
+            if (pid <= 0 || !IsProcessAlive(pid))
                 return;
-#ifndef _WIN32
-            String sockPath = ttySockDir_ + role + ".sock";
-            char resolved[PATH_MAX];
-            ssize_t len = readlink(sockPath.CString(), resolved, sizeof(resolved) - 1);
-            String key = sockPath;
-            if (len > 0) { resolved[len] = '\0'; key = String(resolved); }
-#else
-            String key = role;
-#endif
-            if (deliveredBackends.Contains(key))
+            if (deliveredPIDs.Contains(pid))
                 return;
-            deliveredBackends.Insert(key);
-            // Use the specific role name so SendToSocket takes the single-target
-            // path, not the "coders" broadcast path.
+            deliveredPIDs.Insert(pid);
             SendToSocket(role, shutdownMsg);
         };
 
@@ -559,31 +535,15 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, float minX, fl
     buildStatusText_->SetColor(COL_GREEN);
     buildStatusText_->SetLayoutFlexScale(Vector2(1.0f, 0.0f));
 
-    // ── Row 2a: System stats (CPU, GPU, RAM) ──
+    // ── Row 2a: System stats (CPU, GPU, RAM) — each with progress bar ──
     auto* row2a = bar->CreateChild<UIElement>("StatusRow2a");
     row2a->SetLayout(LM_HORIZONTAL, 8);
     row2a->SetFixedHeight(20);
     row2a->SetClipChildren(true);
 
-    cpuText_ = row2a->CreateChild<Text>("CpuStatus");
-    cpuText_->SetFont(font_, currentFontSize_);
-    cpuText_->SetText("CPU: --");
-    cpuText_->SetColor(COL_YELLOW);
-    cpuText_->SetMinWidth(90);
-    cpuText_->SetFixedHeight(20);
-
-    gpuText_ = row2a->CreateChild<Text>("GpuStatus");
-    gpuText_->SetFont(font_, currentFontSize_);
-    gpuText_->SetText("GPU: --");
-    gpuText_->SetColor(COL_YELLOW);
-    gpuText_->SetMinWidth(90);
-    gpuText_->SetFixedHeight(20);
-
-    ramText_ = row2a->CreateChild<Text>("RamStatus");
-    ramText_->SetFont(font_, currentFontSize_);
-    ramText_->SetText("RAM: --");
-    ramText_->SetColor(COL_YELLOW);
-    ramText_->SetFixedHeight(20);
+    CreateStatCell(row2a, "Cpu", cpuText_, cpuBar_, Color(0.2f, 0.6f, 1.0f, 0.35f), 90, 20);
+    CreateStatCell(row2a, "Gpu", gpuText_, gpuBar_, Color(0.2f, 0.8f, 0.3f, 0.35f), 90, 20);
+    CreateStatCell(row2a, "Ram", ramText_, ramBar_, Color(0.9f, 0.6f, 0.1f, 0.35f), 180, 20);
 
     // ── Row 2b: System stats (Swap, Disk, Yuki) ──
     auto* row2b = bar->CreateChild<UIElement>("StatusRow2b");
@@ -591,18 +551,10 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, float minX, fl
     row2b->SetFixedHeight(18);
     row2b->SetClipChildren(true);
 
-    swapText_ = row2b->CreateChild<Text>("SwapStatus");
-    swapText_->SetFont(font_, currentFontSize_);
-    swapText_->SetText("Swap: --");
-    swapText_->SetColor(COL_YELLOW);
-    swapText_->SetVerticalAlignment(VA_CENTER);
+    CreateStatCell(row2b, "Swap", swapText_, swapBar_, Color(0.7f, 0.3f, 0.9f, 0.35f), 0, 18);
+    CreateStatCell(row2b, "Disk", diskText_, diskBar_, Color(0.9f, 0.3f, 0.3f, 0.35f), 0, 18);
 
-    diskText_ = row2b->CreateChild<Text>("DiskStatus");
-    diskText_->SetFont(font_, currentFontSize_);
-    diskText_->SetText("Disk: --");
-    diskText_->SetColor(COL_YELLOW);
-    diskText_->SetVerticalAlignment(VA_CENTER);
-
+    // Yuki gets plain text — no progress bar
     yukiCpuText_ = row2b->CreateChild<Text>("YukiCpu");
     yukiCpuText_->SetFont(font_, currentFontSize_);
     yukiCpuText_->SetText("Yuki: --");
@@ -642,6 +594,43 @@ void WorkboardManager::CreateInstanceStatusBar(UIElement* parent, float minX, fl
 // CreateWorkboardPanel() is in WorkboardBase
 
 // CreatePlanPanel() is in WorkboardBase
+
+UIElement* WorkboardManager::CreateStatCell(UIElement* parent, const String& name, Text*& textOut,
+                                            BorderImage*& barOut, const Color& barColor, int minW, int fixedH)
+{
+    auto* cell = parent->CreateChild<UIElement>(name + "Cell");
+    cell->SetLayout(LM_FREE);
+    cell->SetFixedHeight(fixedH);
+    if (minW > 0)
+        cell->SetMinWidth(minW);
+    cell->SetClipChildren(true);
+
+    // Bar fill — anchor-based so it scales with cell width automatically
+    barOut = cell->CreateChild<BorderImage>(name + "Bar");
+    barOut->SetColor(barColor);
+    barOut->SetEnableAnchor(true);
+    barOut->SetMinAnchor(0.0f, 0.0f);
+    barOut->SetMaxAnchor(0.0f, 1.0f);  // starts empty
+    barOut->SetPriority(0);
+
+    // Text label — rendered on top
+    textOut = cell->CreateChild<Text>(name + "Status");
+    textOut->SetFont(font_, currentFontSize_);
+    textOut->SetText(name + ": --");
+    textOut->SetColor(COL_YELLOW);
+    textOut->SetVerticalAlignment(VA_CENTER);
+    textOut->SetPriority(1);
+
+    return cell;
+}
+
+void WorkboardManager::SetBarPercent(BorderImage* bar, UIElement* /*cell*/, int pct)
+{
+    if (!bar)
+        return;
+    pct = Clamp(pct, 0, 100);
+    bar->SetMaxAnchor(pct / 100.0f, 1.0f);
+}
 
 void WorkboardManager::CreateComposer(UIElement* parent, float minX, float minY, float maxX, float maxY)
 {
@@ -2284,64 +2273,123 @@ void WorkboardManager::RefreshInstanceStatus()
 bool WorkboardManager::SendToSocket(const String& role, const String& message, const String& excludeRole)
 {
 #ifndef _WIN32
-    // Broadcast to all coders: scan coder*.sock, write to each
+    // Broadcast to all coders: scan coder*.pid, send to each live one
     if (role == "coders")
     {
-        Vector<String> sockNames;
+        Vector<String> pidFiles;
         auto* fs = GetSubsystem<FileSystem>();
-        fs->ScanDir(sockNames, ttySockDir_, "coder*.sock", SCAN_FILES, false);
+        String instDir = ipcDir_ + "instances/";
+        fs->ScanDir(pidFiles, instDir, "coder*.pid", SCAN_FILES, false);
 
         int delivered = 0;
-        for (unsigned i = 0; i < sockNames.Size(); ++i)
+        HashSet<int> seen;  // deduplicate by PID (stale files may share a PID)
+        for (unsigned i = 0; i < pidFiles.Size(); ++i)
         {
-            // Skip sender by role name (no symlink dedup needed — each socket is real)
-            String sockRole = sockNames[i];
-            sockRole.Replace(".sock", "");
-            if (!excludeRole.Empty() && sockRole == excludeRole)
+            String coderRole = pidFiles[i];
+            coderRole.Replace(".pid", "");
+            if (!excludeRole.Empty() && coderRole == excludeRole)
                 continue;
 
-            String sockPath = ttySockDir_ + sockNames[i];
-            int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-            if (fd < 0) continue;
+            int pid = ReadInstancePID(coderRole);
+            if (pid <= 0 || !IsProcessAlive(pid) || seen.Contains(pid))
+                continue;
+            seen.Insert(pid);
 
-            struct sockaddr_un addr;
-            memset(&addr, 0, sizeof(addr));
-            addr.sun_family = AF_UNIX;
-            strncpy(addr.sun_path, sockPath.CString(), sizeof(addr.sun_path) - 1);
-
-            if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
-            { close(fd); continue; }
-
-            String flat = message;
-            flat.Replace("\n", " ");
-            flat.Replace("\r", "");
-
-            ssize_t written = write(fd, flat.CString(), flat.Length());
-            close(fd);
-
-            if (written > 0)
-            {
+            if (SendToSocket(coderRole, message))
                 ++delivered;
-                URHO3D_LOGINFOF("SendToSocket [broadcast]: %s", sockNames[i].CString());
-            }
         }
 
         if (delivered > 0)
         {
-            URHO3D_LOGINFOF("SendToSocket: broadcast 'coders' delivered to %d socket(s)", delivered);
+            URHO3D_LOGINFOF("SendToSocket: broadcast 'coders' delivered to %d instance(s)", delivered);
             return true;
         }
-        URHO3D_LOGWARNING("SendToSocket: broadcast 'coders' found no live sockets");
+        URHO3D_LOGWARNING("SendToSocket: broadcast 'coders' found no live instances");
         return false;
     }
 
-    // Single-target: connect directly to {role}.sock
-    String sockPath = ttySockDir_ + role + ".sock";
+    // Single-target: resolve role → PID → find socket owned by that PID
+    int targetPid = ReadInstancePID(role);
+    if (targetPid <= 0 || !IsProcessAlive(targetPid))
+    {
+        URHO3D_LOGWARNINGF("SendToSocket: '%s' not alive (PID %d)", role.CString(), targetPid);
+        return false;
+    }
+
+    // Scan tty socket dir for a socket this PID owns
+    String sockPath;
+    {
+        auto* fs = GetSubsystem<FileSystem>();
+        Vector<String> sockFiles;
+        fs->ScanDir(sockFiles, ttySockDir_, "*.sock", SCAN_FILES, false);
+        String pidStr = String(targetPid);
+
+        for (unsigned i = 0; i < sockFiles.Size(); ++i)
+        {
+            String candidate = ttySockDir_ + sockFiles[i];
+            struct stat cst;
+            if (stat(candidate.CString(), &cst) != 0 || !S_ISSOCK(cst.st_mode))
+                continue;
+
+            // Try connecting — if the target PID is listening, it will accept
+            int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (probe < 0) continue;
+
+            struct sockaddr_un probeAddr;
+            memset(&probeAddr, 0, sizeof(probeAddr));
+            probeAddr.sun_family = AF_UNIX;
+            strncpy(probeAddr.sun_path, candidate.CString(), sizeof(probeAddr.sun_path) - 1);
+
+            if (connect(probe, (struct sockaddr*)&probeAddr, sizeof(probeAddr)) == 0)
+            {
+                // Connected — check if this socket's listener is our target PID
+                // by reading /proc/net/unix or using fuser-style lookup.
+                // Simpler: if the socket filename contains the PID, it's ours.
+                // Claudette names sockets as {role}_{pid}.sock or spawn_{n}.sock.
+                // For spawn sockets, check the companion .pid file.
+                close(probe);
+
+                // Check spawn_N.pid companion file
+                String baseName = sockFiles[i];
+                baseName.Replace(".sock", ".pid");
+                String pidFile = ttySockDir_ + baseName;
+                if (fs->FileExists(pidFile))
+                {
+                    File pf(context_, pidFile);
+                    if (pf.IsOpen())
+                    {
+                        int ownerPid = atoi(pf.ReadLine().Trimmed().CString());
+                        if (ownerPid == targetPid)
+                        {
+                            sockPath = candidate;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
+                // Check if socket name contains the PID (Claudette pattern: unassigned_PID.sock)
+                if (sockFiles[i].Contains(pidStr))
+                {
+                    sockPath = candidate;
+                    break;
+                }
+            }
+            else
+                close(probe);
+        }
+    }
+
+    if (sockPath.Empty())
+    {
+        URHO3D_LOGWARNINGF("SendToSocket: no socket found for '%s' (PID %d)", role.CString(), targetPid);
+        return false;
+    }
 
     struct stat st;
     if (stat(sockPath.CString(), &st) != 0 || !S_ISSOCK(st.st_mode))
     {
-        URHO3D_LOGWARNINGF("SendToSocket: no socket for '%s'", role.CString());
+        URHO3D_LOGWARNINGF("SendToSocket: resolved path not a socket for '%s'", role.CString());
         return false;
     }
 
@@ -3335,30 +3383,18 @@ void WorkboardManager::SweepStaleRoleFiles()
 
             String ttyDir = ipcDir_ + "tty/";
 
-            // Rename helper — moves pid, heartbeat, socket for one role
+            // Rename helper — moves pid and heartbeat for one role.
+            // Sockets are resolved by PID at send time — no symlinks to manage.
             auto renameRole = [&](const String& oldRole, const String& newRole)
             {
                 if (fs->FileExists(instDir + oldRole + ".pid"))
                     fs->Rename(instDir + oldRole + ".pid", instDir + newRole + ".pid");
                 if (fs->FileExists(instDir + oldRole + ".heartbeat"))
                     fs->Rename(instDir + oldRole + ".heartbeat", instDir + newRole + ".heartbeat");
-                // Socket may be a symlink — recreate it
-                String oldSock = ttyDir + oldRole + ".sock";
-                String newSock = ttyDir + newRole + ".sock";
+                // Clean up any stale symlinks from the old system
 #ifndef _WIN32
-                char target[256];
-                ssize_t len = readlink(oldSock.CString(), target, sizeof(target) - 1);
-                if (len > 0)
-                {
-                    target[len] = '\0';
-                    unlink(oldSock.CString());
-                    symlink(target, newSock.CString());
-                }
-                else
-                {
-                    // Not a symlink — try direct rename
-                    rename(oldSock.CString(), newSock.CString());
-                }
+                String oldSock = ttyDir + oldRole + ".sock";
+                unlink(oldSock.CString());
 #endif
             };
 
@@ -4054,7 +4090,10 @@ void WorkboardManager::SampleSystemStats()
                     unsigned long long dIdle = idle - prevCpuIdle_;
                     int pct = (dTotal > 0) ? (int)(100 * (dTotal - dIdle) / dTotal) : 0;
                     if (cpuText_)
+                    {
                         cpuText_->SetText("CPU: " + String(pct) + "%");
+                        SetBarPercent(cpuBar_, cpuText_->GetParent(), pct);
+                    }
                 }
                 prevCpuTotal_ = total;
                 prevCpuIdle_ = idle;
@@ -4076,7 +4115,10 @@ void WorkboardManager::SampleSystemStats()
                 if (!val.Empty())
                 {
                     if (gpuText_)
+                    {
                         gpuText_->SetText("GPU: " + val + "%");
+                        SetBarPercent(gpuBar_, gpuText_->GetParent(), atoi(val.CString()));
+                    }
                     found = true;
                 }
             }
@@ -4098,7 +4140,10 @@ void WorkboardManager::SampleSystemStats()
                         if (!val.Empty() && val != "N/A")
                         {
                             if (gpuText_)
+                            {
                                 gpuText_->SetText("GPU: " + val + "%");
+                                SetBarPercent(gpuBar_, gpuText_->GetParent(), atoi(val.CString()));
+                            }
                             found = true;
                         }
                     }
@@ -4149,14 +4194,20 @@ void WorkboardManager::SampleSystemStats()
                 unsigned long long memUsed = memTotal - memAvail;
                 int ramPct = (int)(100 * memUsed / memTotal);
                 if (ramText_)
+                {
                     ramText_->SetText("RAM: " + String(memUsed / 1024) + "/" + String(memTotal / 1024) + "MB (" + String(ramPct) + "%)");
+                    SetBarPercent(ramBar_, ramText_->GetParent(), ramPct);
+                }
             }
             if (swapTotal > 0)
             {
                 unsigned long long swapUsed = swapTotal - swapFree;
                 int swapPct = (int)(100 * swapUsed / swapTotal);
                 if (swapText_)
+                {
                     swapText_->SetText("Swap: " + String(swapUsed / 1024) + "/" + String(swapTotal / 1024) + "MB (" + String(swapPct) + "%)");
+                    SetBarPercent(swapBar_, swapText_->GetParent(), swapPct);
+                }
             }
             else if (swapText_)
                 swapText_->SetText("Swap: none");
@@ -4186,7 +4237,10 @@ void WorkboardManager::SampleSystemStats()
             unsigned long long usedGB = totalGB - freeGB;
             int diskPct = totalGB > 0 ? (int)(100 * usedGB / totalGB) : 0;
             if (diskText_)
+            {
                 diskText_->SetText("Disk: " + String((unsigned)usedGB) + "/" + String((unsigned)totalGB) + "GB (" + String(diskPct) + "%)");
+                SetBarPercent(diskBar_, diskText_->GetParent(), diskPct);
+            }
         }
     }
 #else

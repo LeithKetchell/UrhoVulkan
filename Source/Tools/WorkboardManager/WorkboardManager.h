@@ -264,6 +264,17 @@ private:
     Text* swapText_{};
     Text* diskText_{};
     Text* yukiCpuText_{};
+    // Progress bar fills behind stat text
+    BorderImage* cpuBar_{};
+    BorderImage* gpuBar_{};
+    BorderImage* ramBar_{};
+    BorderImage* swapBar_{};
+    BorderImage* diskBar_{};
+    /// Create a stat cell: container with a progress bar behind a text label
+    UIElement* CreateStatCell(UIElement* parent, const String& name, Text*& textOut, BorderImage*& barOut,
+                              const Color& barColor, int minW, int fixedH);
+    /// Set a progress bar fill width to match a percentage (0–100)
+    void SetBarPercent(BorderImage* bar, UIElement* cell, int pct);
     void SampleSystemStats();
 #ifdef __linux__
     unsigned long long prevCpuTotal_{0};
