@@ -285,9 +285,13 @@ static const int MSG_FISH_SPAWNS = 0xFD;
 /// Format: u16 count, then count × (u8 spatch_x, u8 spatch_z, u16 settlement_id).
 static const int MSG_SETTLEMENT_CLAIMS = 0xFE;
 
-/// Server->client: phenomenon observed near NPC (spawnId u32, phenomenonType i32, pos vec3).
-/// Client routes to NPC's ObservePhenomenon() for WIS-gated insight accumulation.
+/// Server->client: phenomenon observed near NPC (spawnId u32, phenomenonType i32, pos vec3, visualHint string).
+/// Client routes to NPC's ObservePhenomenon() for WIS-gated insight accumulation and spawns visual effect.
 static const int MSG_PHENOMENON = 0xFF;
+
+/// Server->client: settlement epoch advancement (campfireId u32, newEpoch i32, epochName string).
+/// Client shows advancement notification and updates local epoch state.
+static const int MSG_EPOCH_CHANGED = 0x100;
 
 /// Used to define custom messages, usually of the form MSG_USER + x, where x is an integer value.
 static const int MSG_USER = 0x200;

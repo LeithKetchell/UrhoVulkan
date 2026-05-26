@@ -1127,6 +1127,9 @@ private:
     /// and (x, 0, z) from the message; snaps Y to terrain; calls SpawnCreatureAt.
     void HandleSpawnCreatureMsg(StringHash eventType, VariantMap& eventData);
 
+    /// Spawn a timed visual effect at a phenomenon location (client-side only).
+    void SpawnPhenomenonEffect(const Vector3& pos, const String& visualHint);
+
     // ── Server-Authoritative Creature AI (NPC AI Phase 1) ──────────────
     /// Handle MSG_CREATURE_AI_STATE — server pushes authoritative creature state.
     void HandleCreatureAIState(MemoryBuffer& msg);
