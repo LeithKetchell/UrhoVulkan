@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS recipe_inputs (
     recipe_id   INTEGER NOT NULL REFERENCES recipes(id),
     item_id     INTEGER NOT NULL REFERENCES items(id),
     quantity    INTEGER DEFAULT 1,
-    consumed    INTEGER DEFAULT 1
+    consumed    INTEGER DEFAULT 1,
+    UNIQUE(recipe_id, item_id)
 );
 
 -- Combat stats for weapons and armor
