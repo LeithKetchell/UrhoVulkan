@@ -1884,12 +1884,17 @@ void GameDB::CacheTechniqueDiscovery()
     }
     sqlite3_finalize(stmt);
 
-    // Cache epoch tiers
+    // Cache epoch tiers and level caps from technique_tiers
     stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, "SELECT skill_id, epoch_tier FROM technique_tiers", -1, &stmt, nullptr) == SQLITE_OK)
+    skillLevelCaps_.Clear();
+    if (sqlite3_prepare_v2(db_, "SELECT skill_id, epoch_tier, level_cap FROM technique_tiers", -1, &stmt, nullptr) == SQLITE_OK)
     {
         while (sqlite3_step(stmt) == SQLITE_ROW)
-            skillEpochTier_[sqlite3_column_int(stmt, 0)] = sqlite3_column_int(stmt, 1);
+        {
+            int skillId = sqlite3_column_int(stmt, 0);
+            skillEpochTier_[skillId] = sqlite3_column_int(stmt, 1);
+            skillLevelCaps_[skillId] = sqlite3_column_int(stmt, 2);
+        }
     }
     sqlite3_finalize(stmt);
 
@@ -1964,6 +1969,7 @@ String GameDB::CheckTechniqueDiscovery(int playerId, int sourceSkillId, int sour
         URHO3D_LOGINFOF("[Technique] Player %d discovered %s (from %s %d, roll %d vs DC %d)",
             playerId, name.CString(), sourceName.CString(), sourceLevel, roll, chain.dc);
 
+        pendingDiscoveries_.Push({playerId, chain.targetSkillId, name});
         return name;
     }
 
@@ -2055,6 +2061,70 @@ bool GameDB::AwardXP(int playerId, const String& action, float xpMultiplier)
             CheckTechniqueDiscovery(playerId, trigger.skillId, newLevel);
     }
     return awarded;
+}
+
+bool GameDB::AwardXP(int playerId, const String& action, float xpMultiplier, int settlementEpoch)
+{
+    if (!db_) return false;
+
+    auto it = xpTriggers_.Find(action);
+    if (it == xpTriggers_.End())
+        return false;
+
+    bool awarded = false;
+    for (const XPTrigger& trigger : it->second_)
+    {
+        int scaledXP = static_cast<int>(trigger.xpAmount * xpMultiplier + 0.5f);
+        if (scaledXP < 1) scaledXP = 1;
+        int oldLevel = GetSkillLevel(playerId, trigger.skillId);
+        int currentXP = GetSkillXP(playerId, trigger.skillId);
+        int newXP = currentXP + scaledXP;
+        int newLevel = ComputeLevel(newXP);
+
+        // Cap at epoch-gated effective max level
+        int maxLevel = GetEffectiveMaxLevel(trigger.skillId, settlementEpoch);
+        if (maxLevel <= 0)
+            continue;  // skill not available at this epoch
+        if (newLevel > maxLevel)
+            newLevel = maxLevel;
+
+        sqlite3_stmt* stmt = nullptr;
+        const char* sql = "INSERT OR REPLACE INTO player_skills (player_id, skill_id, xp, level) "
+                          "VALUES (?, ?, ?, ?)";
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            sqlite3_bind_int(stmt, 1, playerId);
+            sqlite3_bind_int(stmt, 2, trigger.skillId);
+            sqlite3_bind_int(stmt, 3, newXP);
+            sqlite3_bind_int(stmt, 4, newLevel);
+            sqlite3_step(stmt);
+            awarded = true;
+        }
+        sqlite3_finalize(stmt);
+
+        // Check technique discovery on level-up (epoch-aware)
+        if (newLevel > oldLevel && !discoveryChains_.Empty())
+            CheckTechniqueDiscovery(playerId, trigger.skillId, newLevel, settlementEpoch);
+    }
+    return awarded;
+}
+
+int GameDB::GetEffectiveMaxLevel(int skillId, int settlementEpoch) const
+{
+    auto tierIt = skillEpochTier_.Find(skillId);
+    if (tierIt == skillEpochTier_.End())
+    {
+        // No epoch restriction — use absolute max from skills table
+        auto maxIt = skillMaxLevels_.Find(skillId);
+        return (maxIt != skillMaxLevels_.End()) ? maxIt->second_ : 10;
+    }
+
+    if (settlementEpoch < tierIt->second_)
+        return 0;  // epoch not reached — skill unavailable
+
+    // Use technique_tiers.level_cap
+    auto capIt = skillLevelCaps_.Find(skillId);
+    return (capIt != skillLevelCaps_.End()) ? capIt->second_ : 10;
 }
 
 int GameDB::GetSkillLevel(int playerId, int skillId)

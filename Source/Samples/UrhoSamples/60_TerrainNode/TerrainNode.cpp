@@ -13442,13 +13442,83 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
         unsigned spawnId = msg.ReadU32();
         int phenomenonType = msg.ReadI32();
         Vector3 pos = msg.ReadVector3();
+        String visualHint = msg.ReadString();
 
+        // Route observation to the witnessing NPC
         auto it = spawnIdToNode_.Find(spawnId);
         if (it != spawnIdToNode_.End() && it->second_)
         {
             auto* npc = it->second_->GetDerivedComponent<HumanNPC>(false);
             if (npc)
                 npc->ObservePhenomenon(phenomenonType, pos);
+        }
+
+        // Technique discovery — floating text above NPC
+        if (phenomenonType == 100)
+        {
+            URHO3D_LOGINFOF("[Technique] NPC %u discovered %s", spawnId, visualHint.CString());
+
+            // Show discovery text on HUD at NPC's screen position
+            auto* cache = GetSubsystem<ResourceCache>();
+            auto* ui = GetSubsystem<UI>();
+            auto* graphics = GetSubsystem<Graphics>();
+            if (ui && graphics && cameraNode_)
+            {
+                auto* cam = cameraNode_->GetComponent<Camera>();
+                if (cam)
+                {
+                    Vector2 screen = cam->WorldToScreenPoint(pos + Vector3(0, 2.5f, 0));
+                    if (screen.x_ >= 0 && screen.x_ <= 1 && screen.y_ >= 0 && screen.y_ <= 1)
+                    {
+                        auto* font = cache ? cache->GetResource<Font>("Fonts/Anonymous Pro.ttf") : nullptr;
+                        if (font)
+                        {
+                            auto* text = ui->GetRoot()->CreateChild<Text>();
+                            text->SetFont(font, 14);
+                            text->SetText("Discovered: " + visualHint);
+                            text->SetColor(Color(0.2f, 1.0f, 0.6f));
+                            text->SetPosition((int)(screen.x_ * graphics->GetWidth()) - 60,
+                                              (int)(screen.y_ * graphics->GetHeight()) - 20);
+                            text->SetVar("fadeTimer", 3.0f);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // Spawn client-side visual hint effect at the phenomenon location
+        SpawnPhenomenonEffect(pos, visualHint);
+        return;
+    }
+
+    // Settlement epoch advancement notification
+    if (msgID == MSG_EPOCH_CHANGED)
+    {
+        MemoryBuffer msg(data);
+        unsigned campfireId = msg.ReadU32();
+        int newEpoch = msg.ReadI32();
+        String epochName = msg.ReadString();
+
+        URHO3D_LOGINFOF("[Epoch] Settlement %u advanced to %s (tier %d)",
+            campfireId, epochName.CString(), newEpoch);
+
+        // Show epoch advancement on HUD
+        auto* ui = GetSubsystem<UI>();
+        auto* cache = GetSubsystem<ResourceCache>();
+        if (ui && cache)
+        {
+            auto* font = cache->GetResource<Font>("Fonts/Anonymous Pro.ttf");
+            if (font)
+            {
+                auto* text = ui->GetRoot()->CreateChild<Text>();
+                text->SetFont(font, 20);
+                text->SetText("Settlement enters the " + epochName + "!");
+                text->SetColor(Color(1.0f, 0.85f, 0.2f));
+                text->SetAlignment(HA_CENTER, VA_CENTER);
+                text->SetPosition(0, -80);
+                text->SetVar("fadeTimer", 5.0f);
+            }
         }
         return;
     }
@@ -17611,6 +17681,42 @@ void TerrainNode::BuildSpawnTable()
 
     URHO3D_LOGINFOF("BuildSpawnTable: %u species from GameDB", gSpawnTable.Size());
 #endif
+}
+
+void TerrainNode::SpawnPhenomenonEffect(const Vector3& pos, const String& visualHint)
+{
+    if (!scene_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    // Map visual hint names to particle effect resources
+    String effectPath;
+    if (visualHint == "ember_glow")
+        effectPath = "Particle/Fire.xml";
+    else if (visualHint == "sprout_particles")
+        effectPath = "Particle/Burst.xml";
+    else if (visualHint == "steam_wisps")
+        effectPath = "Particle/Smoke.xml";
+    else if (visualHint == "flash_burn")
+        effectPath = "Particle/Burst.xml";
+    else
+        effectPath = "Particle/Burst.xml";  // fallback
+
+    auto* effect = cache->GetResource<ParticleEffect>(effectPath);
+    if (!effect)
+        return;
+
+    Node* effectNode = scene_->CreateTemporaryChild("PhenomenonFX", LOCAL);
+    effectNode->SetPosition(pos + Vector3(0.0f, 1.0f, 0.0f));
+
+    auto* emitter = effectNode->CreateComponent<ParticleEmitter>();
+    emitter->SetEffect(effect);
+    emitter->SetEmitting(true);
+    emitter->SetAutoRemoveMode(REMOVE_NODE);
+
+    URHO3D_LOGINFOF("[Phenomena] Visual hint '%s' at (%.1f, %.1f, %.1f)",
+        visualHint.CString(), pos.x_, pos.y_, pos.z_);
 }
 
 void TerrainNode::HandleAnimalDied(StringHash /*eventType*/, VariantMap& eventData)

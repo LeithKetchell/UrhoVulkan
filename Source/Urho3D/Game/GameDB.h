@@ -539,6 +539,11 @@ public:
     bool AwardXP(int playerId, const String& action);
     /// Award XP with a multiplier (e.g., 1.1f for +10% from Master Trader).
     bool AwardXP(int playerId, const String& action, float xpMultiplier);
+    /// Award XP with epoch-gated level cap. settlementEpoch constrains max level per technique_tiers.
+    bool AwardXP(int playerId, const String& action, float xpMultiplier, int settlementEpoch);
+    /// Get effective max level for a skill given the settlement's epoch tier.
+    /// Returns 0 if the skill's epoch hasn't been reached (can't learn yet).
+    int GetEffectiveMaxLevel(int skillId, int settlementEpoch) const;
     /// Check if a skill level-up triggers technique discovery. Called internally after XP award.
     /// Returns discovered skill name (empty if none). settlementEpoch = current epoch tier (0-3).
     String CheckTechniqueDiscovery(int playerId, int sourceSkillId, int sourceLevel, int settlementEpoch = 0);
@@ -601,8 +606,20 @@ private:
     HashMap<int, Vector<DiscoveryChain>> discoveryChains_;
     /// skill_id → minimum epoch tier required (from technique_tiers)
     HashMap<int, int> skillEpochTier_;
+    /// skill_id → level_cap at its minimum epoch tier (from technique_tiers)
+    HashMap<int, int> skillLevelCaps_;
+public:
+    /// Read-only access to epoch tiers for settlement epoch derivation.
+    const HashMap<int, int>& GetSkillEpochTiers() const { return skillEpochTier_; }
+private:
     /// skill_id → name (for logging)
     HashMap<int, String> skillNames_;
+
+public:
+    /// Pending discovery events for AuthServer to drain and broadcast.
+    struct DiscoveryEvent { int playerId; int skillId; String skillName; };
+    Vector<DiscoveryEvent> pendingDiscoveries_;
+private:
 
     sqlite3* db_{nullptr};
 };

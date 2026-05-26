@@ -399,6 +399,19 @@ void AuthServer::Start()
     SpawnInitialCreatures();
     SpawnInitialTrees();
 
+    // Seed settlement epoch cache from NPC skills
+    for (auto cfIt = serverCampfires_.Begin(); cfIt != serverCampfires_.End(); ++cfIt)
+    {
+        int epoch = GetSettlementEpoch(cfIt->first_);
+        settlementEpochs_[cfIt->first_] = epoch;
+        if (epoch > 0)
+        {
+            static const char* epochNames[] = {"Stone Age", "Bronze Age", "Iron Age", "Steel Age"};
+            LogMessage("[Epoch] Settlement campfire " + String(cfIt->first_) +
+                       " at " + String(epochNames[epoch]) + " (tier " + String(epoch) + ")");
+        }
+    }
+
     // Load campfire burn curve (non-linear fuel→burn rate mapping)
     {
         auto* cache = GetSubsystem<ResourceCache>();
@@ -13293,12 +13306,36 @@ void AuthServer::NPCAwardXP(ServerCreatureAI& ai, const String& action)
     if (npcPlayerId <= 0)
         return;
 
+    // Get settlement epoch for level cap gating
+    auto epochIt = settlementEpochs_.Find(ai.campfireId);
+    int epoch = (epochIt != settlementEpochs_.End()) ? epochIt->second_ : GetSettlementEpoch(ai.campfireId);
+
     // Master Trader: +10% craft XP for all NPCs in the settlement
-    bool traderBonus = HasMasterTrader(ai.campfireId);
-    if (traderBonus)
-        gameDB_->AwardXP(npcPlayerId, action, 1.1f);
-    else
-        gameDB_->AwardXP(npcPlayerId, action);
+    float multiplier = HasMasterTrader(ai.campfireId) ? 1.1f : 1.0f;
+    gameDB_->AwardXP(npcPlayerId, action, multiplier, epoch);
+
+    // Drain pending technique discoveries and broadcast to clients
+    while (!gameDB_->pendingDiscoveries_.Empty())
+    {
+        auto disc = gameDB_->pendingDiscoveries_.Front();
+        gameDB_->pendingDiscoveries_.Erase(0);
+
+        // Broadcast as MSG_PHENOMENON type 100 = skill discovery
+        VectorBuffer buf;
+        buf.WriteU32(ai.spawnId);
+        buf.WriteI32(100);  // phenomenonType 100 = technique discovered
+        buf.WriteVector3(ai.position);
+        buf.WriteString(disc.skillName);
+        for (auto sIt = sessions_.Begin(); sIt != sessions_.End(); ++sIt)
+        {
+            if (!sIt->second_.authenticated)
+                continue;
+            sIt->first_->SendMessage(MSG_PHENOMENON, true, true, buf);
+        }
+
+        // Check if this discovery advanced the settlement epoch
+        UpdateSettlementEpoch(ai.campfireId);
+    }
 }
 
 int AuthServer::GetNPCSkillLevel(unsigned spawnId, int skillId)
@@ -21497,6 +21534,11 @@ void AuthServer::PhenomenaTick(float dt)
                 if (cfIt->second_.state != PIT_LIT && cfIt->second_.state != PIT_EMBERS)
                     continue;
 
+                // Epoch gate: skip if settlement hasn't reached required tier
+                if (rule.epochTierRequired > 0 &&
+                    GetSettlementEpoch(cfIt->first_) < rule.epochTierRequired)
+                    continue;
+
                 const Vector3& firePos = cfIt->second_.position;
 
                 // Sample deposit map in a radius around the fire
@@ -21541,6 +21583,21 @@ void AuthServer::PhenomenaTick(float dt)
                 if (crops[c].growthStage != 0)
                     continue;
 
+                // Epoch gate: find nearest campfire to the crop for epoch check
+                if (rule.epochTierRequired > 0)
+                {
+                    unsigned nearestCf = 0;
+                    float bestDist = 1e9f;
+                    Vector3 cropPos3(crops[c].posX, 0.0f, crops[c].posZ);
+                    for (auto cfIt = serverCampfires_.Begin(); cfIt != serverCampfires_.End(); ++cfIt)
+                    {
+                        float d = (cfIt->second_.position - cropPos3).Length();
+                        if (d < bestDist) { bestDist = d; nearestCf = cfIt->first_; }
+                    }
+                    if (GetSettlementEpoch(nearestCf) < rule.epochTierRequired)
+                        continue;
+                }
+
                 float fertility = ecosystem_->SampleFertility(crops[c].posX, crops[c].posZ);
                 unsigned char fertByte = (unsigned char)(fertility * 255.0f);
                 if (fertByte >= FERTILE_THRESHOLD)
@@ -21560,6 +21617,11 @@ void AuthServer::PhenomenaTick(float dt)
             for (auto cfIt = serverCampfires_.Begin(); cfIt != serverCampfires_.End(); ++cfIt)
             {
                 if (cfIt->second_.state != PIT_LIT)
+                    continue;
+
+                // Epoch gate: CLAY_NEAR_HEAT requires tier 1 (Bronze Age)
+                if (rule.epochTierRequired > 0 &&
+                    GetSettlementEpoch(cfIt->first_) < rule.epochTierRequired)
                     continue;
 
                 const Vector3& firePos = cfIt->second_.position;
@@ -21610,36 +21672,124 @@ void AuthServer::BroadcastPhenomenon(const Vector3& pos, int phenomenonType)
         }
     }
 
-    // Find human NPCs within observation range of the phenomenon
+    // Find the single closest human NPC within observation range.
+    // Only one NPC gains insight per occurrence — prevents duplicate visuals
+    // and models realistic observation (one NPC notices first).
     static constexpr float NPC_OBSERVE_RADIUS = 30.0f;
+    unsigned closestSpawnId = 0;
+    float closestDist = NPC_OBSERVE_RADIUS + 1.0f;
     for (auto aiIt = creatureAI_.Begin(); aiIt != creatureAI_.End(); ++aiIt)
     {
         if (!aiIt->second_.isHuman)
             continue;
-        if ((aiIt->second_.position - pos).Length() > NPC_OBSERVE_RADIUS)
+        float dist = (aiIt->second_.position - pos).Length();
+        if (dist < closestDist)
+        {
+            closestDist = dist;
+            closestSpawnId = aiIt->first_;
+        }
+    }
+
+    // Build message: spawnId (0 = visual-only, no NPC observation),
+    // phenomenonType, position, visualHint
+    VectorBuffer buf;
+    buf.WriteU32(closestSpawnId);
+    buf.WriteI32(phenomenonType);
+    buf.WriteVector3(pos);
+    buf.WriteString(visualHint);
+
+    // Send to all authenticated clients within broadcast radius.
+    // One message per client — players see the visual even without a nearby NPC.
+    for (auto sIt = sessions_.Begin(); sIt != sessions_.End(); ++sIt)
+    {
+        if (!sIt->second_.authenticated)
             continue;
 
-        // Build per-NPC message: spawnId, phenomenonType, pos, visualHint
-        VectorBuffer buf;
-        buf.WriteU32(aiIt->first_);
-        buf.WriteI32(phenomenonType);
-        buf.WriteVector3(pos);
-        buf.WriteString(visualHint);
+        auto avIt = serverObjects_.Find(sIt->first_);
+        if (avIt == serverObjects_.End() || !avIt->second_)
+            continue;
+        if ((avIt->second_->GetWorldPosition() - pos).Length() > PHENOMENA_BROADCAST_RADIUS)
+            continue;
 
-        // Send to all authenticated clients within broadcast radius
-        for (auto sIt = sessions_.Begin(); sIt != sessions_.End(); ++sIt)
+        sIt->first_->SendMessage(MSG_PHENOMENON, true, true, buf);
+    }
+}
+
+int AuthServer::GetSettlementEpoch(unsigned campfireId) const
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    if (!gameDB_)
+        return 0;
+
+    // Check highest epoch-gated skill discovered by any NPC at this campfire.
+    // A settlement reaches epoch N when an NPC there has rating >= 1 in a
+    // skill that requires epoch tier N.
+    int maxEpoch = 0;
+    for (auto aiIt = creatureAI_.Begin(); aiIt != creatureAI_.End(); ++aiIt)
+    {
+        if (!aiIt->second_.isHuman || aiIt->second_.campfireId != campfireId)
+            continue;
+
+        auto pidIt = npcPlayerIds_.Find(aiIt->second_.spawnId);
+        int npcPlayerId = (pidIt != npcPlayerIds_.End()) ? pidIt->second_ : 0;
+        if (npcPlayerId <= 0)
+            continue;
+
+        // Check each epoch-gated skill
+        const auto& tiers = gameDB_->GetSkillEpochTiers();
+        for (auto tIt = tiers.Begin(); tIt != tiers.End(); ++tIt)
         {
-            if (!sIt->second_.authenticated)
-                continue;
-
-            auto avIt = serverObjects_.Find(sIt->first_);
-            if (avIt == serverObjects_.End() || !avIt->second_)
-                continue;
-            if ((avIt->second_->GetWorldPosition() - pos).Length() > PHENOMENA_BROADCAST_RADIUS)
-                continue;
-
-            sIt->first_->SendMessage(MSG_PHENOMENON, true, true, buf);
+            int epoch = tIt->second_;
+            if (epoch <= maxEpoch)
+                continue;  // already matched this tier or higher
+            int level = gameDB_->GetSkillLevel(npcPlayerId, tIt->first_);
+            if (level >= 1)
+                maxEpoch = epoch;
         }
+        if (maxEpoch >= 3)
+            break;  // Steel Age — can't go higher
+    }
+    return maxEpoch;
+#else
+    return 0;
+#endif
+}
+
+bool AuthServer::UpdateSettlementEpoch(unsigned campfireId)
+{
+    int newEpoch = GetSettlementEpoch(campfireId);
+    auto it = settlementEpochs_.Find(campfireId);
+    int oldEpoch = (it != settlementEpochs_.End()) ? it->second_ : 0;
+
+    settlementEpochs_[campfireId] = newEpoch;
+
+    if (newEpoch > oldEpoch)
+    {
+        static const char* epochNames[] = {"Stone Age", "Bronze Age", "Iron Age", "Steel Age"};
+        const char* name = (newEpoch >= 0 && newEpoch <= 3) ? epochNames[newEpoch] : "Unknown";
+        LogMessage("[Epoch] Settlement campfire " + String(campfireId) +
+                   " advanced to " + String(name) + " (tier " + String(newEpoch) + ")");
+        BroadcastEpochChanged(campfireId, newEpoch);
+        return true;
+    }
+    return false;
+}
+
+void AuthServer::BroadcastEpochChanged(unsigned campfireId, int newEpoch)
+{
+    static const char* epochNames[] = {"Stone Age", "Bronze Age", "Iron Age", "Steel Age"};
+    const char* name = (newEpoch >= 0 && newEpoch <= 3) ? epochNames[newEpoch] : "Unknown";
+
+    VectorBuffer buf;
+    buf.WriteU32(campfireId);
+    buf.WriteI32(newEpoch);
+    buf.WriteString(String(name));
+
+    for (auto sIt = sessions_.Begin(); sIt != sessions_.End(); ++sIt)
+    {
+        if (!sIt->second_.authenticated)
+            continue;
+        sIt->first_->SendMessage(MSG_EPOCH_CHANGED, true, true, buf);
     }
 }
 

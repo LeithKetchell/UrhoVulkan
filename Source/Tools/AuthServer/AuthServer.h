@@ -393,9 +393,20 @@ private:
     float phenomenaTickTimer_{0.0f};
     static constexpr float PHENOMENA_TICK_INTERVAL = 30.0f;
     /// Broadcast MSG_PHENOMENON to all authenticated clients within range.
+    /// Picks the single closest observing NPC (avoids duplicate visuals).
+    /// Clients with no NPC nearby still get the visual hint (spawnId=0).
     void BroadcastPhenomenon(const Vector3& pos, int phenomenonType);
     /// Radius within which clients receive a phenomenon broadcast.
     static constexpr float PHENOMENA_BROADCAST_RADIUS = 100.0f;
+    /// Get the effective epoch tier for a settlement (campfire).
+    /// Derived from the highest epoch-gated skill any NPC at that campfire has discovered.
+    int GetSettlementEpoch(unsigned campfireId) const;
+    /// Cached settlement epoch tiers. Updated on technique discovery.
+    HashMap<unsigned, int> settlementEpochs_;
+    /// Recompute and cache a settlement's epoch. Returns true if epoch changed.
+    bool UpdateSettlementEpoch(unsigned campfireId);
+    /// Broadcast MSG_EPOCH_CHANGED to all authenticated clients.
+    void BroadcastEpochChanged(unsigned campfireId, int newEpoch);
     /// Distance between fire pit and deposit for FIRE_NEAR_ORE detection.
     static constexpr float FIRE_ORE_PROXIMITY = 15.0f;
     /// Minimum fertility for SEED_ON_FERTILE (0-255 scale from ecosystem).
