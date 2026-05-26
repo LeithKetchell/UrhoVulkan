@@ -22,9 +22,9 @@ public:
     explicit WorkboardBase(Context* context);
 
 protected:
-    // ── Shared UI creation ──
-    void CreateWorkboardPanel(UIElement* parent, int x, int y, int w, int h);
-    void CreatePlanPanel(UIElement* parent, int x, int y, int w, int h);
+    // ── Shared UI creation (UV-anchored: minX, minY, maxX, maxY in 0–1 range) ──
+    void CreateWorkboardPanel(UIElement* parent, float minX, float minY, float maxX, float maxY);
+    void CreatePlanPanel(UIElement* parent, float minX, float minY, float maxX, float maxY);
 
     // ── Workboard parsing & rendering ──
     void ParseWorkboard(const String& content);

@@ -10,6 +10,7 @@
 using namespace Urho3D;
 
 class EcosystemManager;
+namespace Urho3D { class GameDB; }
 
 /// Resource type encoded in the R channel of the resource map texture.
 /// New entries APPEND ONLY — existing serialized maps store the byte value
@@ -61,6 +62,24 @@ inline int ResourceTypeToItemId(ResourceType type)
     }
 }
 
+/// Map item ID to ResourceType. Returns RES_NONE if no mapping.
+inline ResourceType ItemIdToResourceType(int itemId)
+{
+    switch (itemId)
+    {
+    case 1:  return RES_STONE;
+    case 2:  return RES_STICK;
+    case 3:  return RES_FIBER;
+    case 4:  return RES_CLAY;
+    case 5:  return RES_FLINT;
+    case 6:  return RES_BERRIES;
+    case 11: return RES_LOG;
+    case 15: return RES_SOFTWOOD;
+    case 16: return RES_HARDWOOD;
+    default: return RES_NONE;
+    }
+}
+
 /// Texture-based spatial resource database.
 /// One 2048x2048 RGBA image encodes every harvestable resource on the terrain.
 /// R = type, G = quantity, B = variant, A = flags.
@@ -73,7 +92,8 @@ public:
     static void RegisterObject(Context* context);
 
     /// Generate resource map from terrain + ecosystem data.
-    void Generate(Terrain* terrain, EcosystemManager* eco, float waterLevel);
+    /// If gameDB is provided, placement rules come from gather_sources table.
+    void Generate(Terrain* terrain, EcosystemManager* eco, float waterLevel, GameDB* gameDB = nullptr);
 
     /// Load pre-generated map from ResourceCache (PNG).
     bool LoadMap(const String& path);

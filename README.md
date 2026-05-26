@@ -131,7 +131,7 @@ Standalone model inspection and repair tool (`build/bin/ModelViewer`).
 GUI dashboard for coordinating multiple Claude Code instances (`build/bin/WorkboardManager`).
 
 - Workboard display with Planned / In Progress / Done tables, plan browser with full markdown rendering
-- **Multi-instance status dropdowns** — separate dropdowns for Coders (auto-numbered: coder, coder2, ...) and Unassigned instances, Planner singleton
+- **Multi-instance status dropdowns** — separate dropdowns for Coders (auto-numbered: coder, coder2, ...) and Unassigned instances
 - **TTY injection messaging** — messages delivered directly into Claude Code terminals via PTY proxy Unix sockets. No polling, no user interaction required — messages arrive and submit automatically
 - Message composer with per-role send buttons and broadcast
 - Automatic liveness detection — crashed instances culled from status display
@@ -276,9 +276,9 @@ Bottom-right corner, GPU-rendered orthographic RTT camera. Rotates with camera y
 
 A complete coordination system for running multiple Claude Code instances on the same project as a team. Included as `ClaudeCodeTeamHooks.zip` in the project root.
 
-- **Role-based coordination**: Planner (architecture/docs) + multiple Coders (implementation). First instance becomes Planner, subsequent instances become Coders
-- **spawn-coder**: Launch new Coder instances from Planner — opens a real terminal via PTY proxy, registers via SessionStart hook, receives initial prompt automatically
-- **Zero-interaction startup**: Spawned instances use `--dangerously-skip-permissions` to bypass Claude Code's workspace trust and hook approval prompts. These instances run inside our own PTY (ClaudeTerminal or pty-proxy) on the local machine — there is no security boundary being crossed, and the two mandatory Enter presses were just friction. The flag is applied in `ClaudeTerminal.cpp` (SpawnChild args) and `claude_ipc.sh` (gnome-terminal fallback)
+- **Flat coordination**: All instances are Coders (auto-numbered: coder, coder2, ...) that can plan when asked. No dedicated Planner role.
+- **spawn-coder**: Launch new Coder instances — opens a real terminal via PTY proxy, registers via SessionStart hook, receives initial prompt automatically
+- **Zero-interaction startup**: Spawned instances use `--dangerously-skip-permissions` to bypass Claude Code's workspace trust and hook approval prompts. These instances run inside our own PTY (Claudette or pty-proxy) on the local machine — there is no security boundary being crossed, and the two mandatory Enter presses were just friction. The flag is applied in `Claudette.cpp` (SpawnChild args) and `claude_ipc.sh` (gnome-terminal fallback)
 - **Build safety**: Per-target `flock` wrapper prevents concurrent `make` corruption when multiple Coders build simultaneously
 - **File locking**: Atomic `mkdir`-based locks on Read/Write/Edit operations via PreToolUse/PostToolUse hooks
 - **Dead instance culling**: Stale PIDs detected and cleaned on startup and at runtime

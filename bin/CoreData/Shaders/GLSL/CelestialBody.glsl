@@ -38,6 +38,9 @@ void PS()
         vec4 bodyColor = vec4(cMatDiffColor.rgb, disc);
     #endif
 
+    // Moon phase rendering now uses a separate shadow disc billboard
+    // positioned in front of the moon — no shader terminator needed.
+
     // Simple alpha from texture and material color
     float alpha = bodyColor.a * cMatDiffColor.a;
 

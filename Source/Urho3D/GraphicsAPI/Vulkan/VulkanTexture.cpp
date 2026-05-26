@@ -59,9 +59,35 @@ void Texture2D::Release_Vulkan()
         return;
 
     Graphics* graphics = GetSubsystem<Graphics>();
+
+    // Clear any Graphics texture slots referencing this texture (matches D3D11 pattern)
+    if (graphics)
+    {
+        for (unsigned i = 0; i < MAX_TEXTURE_UNITS; ++i)
+        {
+            if (graphics->GetTexture(i) == this)
+                graphics->SetTexture(i, nullptr);
+        }
+    }
+
     VulkanGraphicsImpl* impl = graphics ? graphics->GetImpl_Vulkan() : nullptr;
     VkDevice device = (impl && impl->GetDevice()) ? impl->GetDevice() : VK_NULL_HANDLE;
     VmaAllocator allocator = (impl && impl->GetAllocator()) ? impl->GetAllocator() : VK_NULL_HANDLE;
+
+    // Release MSAA resources
+    if (msaaImageView_)
+    {
+        if (device)
+            vkDestroyImageView(device, (VkImageView)msaaImageView_, nullptr);
+        msaaImageView_ = nullptr;
+    }
+    if (msaaImage_)
+    {
+        if (allocator)
+            vmaDestroyImage(allocator, (VkImage)msaaImage_, (VmaAllocation)msaaAllocation_);
+        msaaImage_ = nullptr;
+        msaaAllocation_ = nullptr;
+    }
 
     // Release image view
     if (shaderResourceView_)
@@ -344,10 +370,70 @@ bool Texture2D::Create_Vulkan()
     sampler_ = vkSampler;
     dataPending_ = true;
 
-    // RTT: Create single-mip image view for framebuffer attachment
+    // RTT: Create framebuffer attachment view
     if (renderSurface_ && (usage_ == TEXTURE_RENDERTARGET || usage_ == TEXTURE_DEPTHSTENCIL))
     {
-        if (levels_ == 1)
+        // Create MSAA image for multisampled render targets
+        if (multiSample_ > 1 && usage_ == TEXTURE_RENDERTARGET)
+        {
+            VkImageCreateInfo msaaInfo{};
+            msaaInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            msaaInfo.imageType = VK_IMAGE_TYPE_2D;
+            msaaInfo.format = vkFormat;
+            msaaInfo.extent = {(uint32_t)width_, (uint32_t)height_, 1};
+            msaaInfo.mipLevels = 1;
+            msaaInfo.arrayLayers = 1;
+            msaaInfo.samples = (VkSampleCountFlagBits)multiSample_;
+            msaaInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            msaaInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            msaaInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            msaaInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+            VmaAllocationCreateInfo msaaAllocInfo{};
+            msaaAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+
+            VkImage msaaImg;
+            VmaAllocation msaaAlloc;
+            if (vmaCreateImage(impl->GetAllocator(), &msaaInfo, &msaaAllocInfo, &msaaImg, &msaaAlloc, nullptr) == VK_SUCCESS)
+            {
+                msaaImage_ = (void*)msaaImg;
+                msaaAllocation_ = msaaAlloc;
+
+                // Create image view for MSAA image
+                VkImageViewCreateInfo msaaViewInfo{};
+                msaaViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                msaaViewInfo.image = msaaImg;
+                msaaViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                msaaViewInfo.format = vkFormat;
+                msaaViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                msaaViewInfo.subresourceRange.baseMipLevel = 0;
+                msaaViewInfo.subresourceRange.levelCount = 1;
+                msaaViewInfo.subresourceRange.baseArrayLayer = 0;
+                msaaViewInfo.subresourceRange.layerCount = 1;
+
+                VkImageView msaaView;
+                if (vkCreateImageView(impl->GetDevice(), &msaaViewInfo, nullptr, &msaaView) == VK_SUCCESS)
+                {
+                    msaaImageView_ = msaaView;
+                    // Render into MSAA image; resolve to single-sample for shader reading
+                    renderSurface_->renderTargetView_ = msaaView;
+                }
+                else
+                {
+                    URHO3D_LOGWARNING("Failed to create MSAA image view, falling back to single-sample");
+                    vmaDestroyImage(impl->GetAllocator(), msaaImg, msaaAlloc);
+                    msaaImage_ = nullptr;
+                    msaaAllocation_ = nullptr;
+                    renderSurface_->renderTargetView_ = imageView;
+                }
+            }
+            else
+            {
+                URHO3D_LOGWARNING("Failed to create MSAA image, falling back to single-sample");
+                renderSurface_->renderTargetView_ = imageView;
+            }
+        }
+        else if (levels_ == 1)
         {
             renderSurface_->renderTargetView_ = imageView;
         }
@@ -622,7 +708,7 @@ bool Texture2D::SetData_Vulkan(Image* image, bool useAlpha)
         return false;
     }
 
-    URHO3D_LOGINFO("SetData_Vulkan: image=" + String((unsigned long long)(uintptr_t)vkImage) +
+    URHO3D_LOGDEBUG("SetData_Vulkan: image=" + String((unsigned long long)(uintptr_t)vkImage) +
                    ", size=" + String(width) + "x" + String(height) +
                    ", levels=" + String(levels_) +
                    ", format=" + String((unsigned)format_));
@@ -1290,9 +1376,35 @@ void TextureCube::Release_Vulkan()
         return;
 
     Graphics* graphics = GetSubsystem<Graphics>();
+
+    // Clear any Graphics texture slots referencing this texture (matches D3D11 pattern)
+    if (graphics)
+    {
+        for (unsigned i = 0; i < MAX_TEXTURE_UNITS; ++i)
+        {
+            if (graphics->GetTexture(i) == this)
+                graphics->SetTexture(i, nullptr);
+        }
+    }
+
     VulkanGraphicsImpl* impl = graphics ? graphics->GetImpl_Vulkan() : nullptr;
     VkDevice device = (impl && impl->GetDevice()) ? impl->GetDevice() : VK_NULL_HANDLE;
     VmaAllocator allocator = (impl && impl->GetAllocator()) ? impl->GetAllocator() : VK_NULL_HANDLE;
+
+    // Release MSAA resources
+    if (msaaImageView_)
+    {
+        if (device)
+            vkDestroyImageView(device, (VkImageView)msaaImageView_, nullptr);
+        msaaImageView_ = nullptr;
+    }
+    if (msaaImage_)
+    {
+        if (allocator)
+            vmaDestroyImage(allocator, (VkImage)msaaImage_, (VmaAllocation)msaaAllocation_);
+        msaaImage_ = nullptr;
+        msaaAllocation_ = nullptr;
+    }
 
     if (shaderResourceView_)
     {
@@ -1468,6 +1580,60 @@ bool TextureCube::Create_Vulkan()
 
     sampler_ = vkSampler;
     dataPending_ = true;
+
+    // Create MSAA cube image for multisampled render targets
+    if (multiSample_ > 1 && usage_ == TEXTURE_RENDERTARGET)
+    {
+        VkImageCreateInfo msaaInfo{};
+        msaaInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        msaaInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        msaaInfo.imageType = VK_IMAGE_TYPE_2D;
+        msaaInfo.format = vkFormat;
+        msaaInfo.extent = {(uint32_t)width_, (uint32_t)height_, 1};
+        msaaInfo.mipLevels = 1;
+        msaaInfo.arrayLayers = MAX_CUBEMAP_FACES;
+        msaaInfo.samples = (VkSampleCountFlagBits)multiSample_;
+        msaaInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        msaaInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        msaaInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        msaaInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo msaaAllocInfo{};
+        msaaAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+
+        VkImage msaaImg;
+        VmaAllocation msaaAlloc;
+        if (vmaCreateImage(impl->GetAllocator(), &msaaInfo, &msaaAllocInfo, &msaaImg, &msaaAlloc, nullptr) == VK_SUCCESS)
+        {
+            msaaImage_ = (void*)msaaImg;
+            msaaAllocation_ = msaaAlloc;
+
+            // Create cube image view for MSAA image (all 6 faces)
+            VkImageViewCreateInfo msaaViewInfo{};
+            msaaViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            msaaViewInfo.image = msaaImg;
+            msaaViewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+            msaaViewInfo.format = vkFormat;
+            msaaViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            msaaViewInfo.subresourceRange.baseMipLevel = 0;
+            msaaViewInfo.subresourceRange.levelCount = 1;
+            msaaViewInfo.subresourceRange.baseArrayLayer = 0;
+            msaaViewInfo.subresourceRange.layerCount = MAX_CUBEMAP_FACES;
+
+            VkImageView msaaView;
+            if (vkCreateImageView(impl->GetDevice(), &msaaViewInfo, nullptr, &msaaView) == VK_SUCCESS)
+                msaaImageView_ = msaaView;
+            else
+            {
+                URHO3D_LOGWARNING("Failed to create cubemap MSAA image view, falling back to single-sample");
+                vmaDestroyImage(impl->GetAllocator(), msaaImg, msaaAlloc);
+                msaaImage_ = nullptr;
+                msaaAllocation_ = nullptr;
+            }
+        }
+        else
+            URHO3D_LOGWARNING("Failed to create cubemap MSAA image, falling back to single-sample");
+    }
 
     return true;
 }

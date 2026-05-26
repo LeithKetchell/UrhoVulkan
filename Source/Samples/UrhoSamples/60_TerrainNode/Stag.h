@@ -18,15 +18,10 @@ protected:
     String GetAnimPrefix() const override { return "Stag_AnimalArmature"; }
 
     int GetCreatureId() const override { return 4; }
-    float GetFoodGrassWeight() const override { return 0.4f; }
     float GetFoodShrubWeight() const override { return 0.5f; }  // browser like deer
     float GetDesiredSize() const override { return 1.7f; }
     float GetWanderRadius() const override { return 35.0f; }
     float GetWanderSpeed() const override { return 2.0f; }
-    float GetFleeSpeed() const override { return 9.0f; }
-    float GetFleeDistance() const override { return 35.0f; }
     float GetMinIdleDuration() const override { return 5.0f; }
     float GetMaxIdleDuration() const override { return 12.0f; }
-    float GetVisionRange() const override { return 35.0f; }
-    float GetVisionCosAngle() const override { return 0.4f; }  // ~130 degrees
 };

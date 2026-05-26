@@ -98,7 +98,8 @@ INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, description)
 (500, 'Leather Bag',     'container',1,  1.0, 'Carry +5 inventory slots.'),
 (501, 'Clay Pot',        'container',1,  2.0, 'Store water, grain, or stew. Cooking vessel.'),
 (502, 'Clay Jar',        'container',5,  1.5, 'Smaller storage. Preserves food longer.'),
-(503, 'Basket',          'container',1,  0.5, 'Woven fiber. Carry foraged goods.');
+(503, 'Basket',          'container',1,  0.5, 'Woven fiber. Carry foraged goods.'),
+(504, 'Barrel',          'container',1,  3.0, 'Wooden barrel. Bulk storage for liquids and grain.');
 
 -- Buildings/structures
 INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, description) VALUES
@@ -132,7 +133,7 @@ INSERT OR IGNORE INTO food_properties (item_id, hunger, health, warmth, spoil_ti
 -- Crop type rules (seed -> harvest mapping)
 INSERT OR IGNORE INTO crop_types (seed_item_id, harvest_item_id, harvest_qty, seed_return, plant_season, harvest_season, grow_days, min_flat, near_water_range, tool_req, model) VALUES
 (700, 710, 4, 2, 'spring', 'autumn', 90, 0.9, 30.0, 102, 'Models/Crops/WheatCrop.mdl'),
-(701, 711, 3, 1, 'spring', 'autumn', 90, 0.9, 30.0, 102, 'Models/Crops/FlaxCrop.mdl'),
+(701, 711, 3, 1, 'spring', 'autumn', 90, 0.9, 30.0, 102, 'Models/Nature/Wheat.mdl'),
 (702, 712, 5, 2, 'any',    'any',    60, 0.85, 15.0, 102, 'Models/Crops/BerryBush.mdl');
 
 -- Metals (later tiers)
@@ -619,40 +620,40 @@ INSERT OR IGNORE INTO creatures VALUES
      'Models/Animals/Rabbit.mdl', 'Idle', 'Run', NULL, 'Die', 0.35, 12.0, 0.5, 15.0,
      7.0, 20.0, 2.0, 6.0, 15.0, 0.4, 0, 0, 0.8),
 (2,  'Deer',      8,  1, 11,  2, 4,  8,  20.0, 'flee',        3, 'forest',
-     'Models/Animals/Ult_Deer.mdl', 'Idle', 'Gallop', 'Attack_Headbutt', 'Death', 1.5, 30.0, 1.0, 40.0,
+     'Models/Animals/Deer.mdl', 'Idle', 'Gallop', 'Attack_Headbutt', 'Death', 1.5, 30.0, 1.0, 40.0,
      8.0, 30.0, 4.0, 10.0, 30.0, 0.4, 0, 0, 0.4),
 (3,  'Fox',       5,  2, 13,  2, 4,  7,  15.0, 'flee',        1, 'forest',
-     'Models/Animals/Ult_Fox.mdl', 'Idle', 'Gallop', 'Attack', 'Death', 0.8, 25.0, 0.8, 30.0,
+     'Models/Animals/Fox.mdl', 'Idle', 'Gallop', 'Attack', 'Death', 0.8, 25.0, 0.8, 30.0,
      7.0, 25.0, 3.0, 7.0, 25.0, 0.5, 1, 1, 0.0),
 (4,  'Stag',     12,  3, 12,  4, 4,  7,  25.0, 'defensive',   2, 'forest',
-     'Models/Animals/Ult_Stag.mdl', 'Idle', 'Gallop', 'Attack_Headbutt', 'Death', 1.8, 35.0, 1.5, 60.0,
+     'Models/Animals/Stag.mdl', 'Idle', 'Gallop', 'Attack_Headbutt', 'Death', 1.8, 35.0, 1.5, 60.0,
      9.0, 35.0, 5.0, 12.0, 35.0, 0.4, 0, 0, 0.4),
 (5,  'Wolf',     12,  5, 13,  5, 4,  8,  25.0, 'aggressive',  4, 'forest',
-     'Models/Animals/Ult_Wolf.mdl', 'Idle', 'Gallop', 'Attack', 'Death', 1.0, 35.0, 2.0, 80.0,
+     'Models/Animals/Wolf.mdl', 'Idle', 'Gallop', 'Attack', 'Death', 1.0, 35.0, 2.0, 80.0,
      9.0, 35.0, 3.0, 8.0, 35.0, 0.5, 1, 1, 0.0),
 (6,  'Bull',     20,  4, 14,  8, 6,  5,  12.0, 'territorial', 1, 'grassland',
-     'Models/Animals/Ult_Bull.mdl', 'Idle', 'Gallop', 'Attack_Headbutt', 'Death', 2.0, 20.0, 2.0, 70.0,
+     'Models/Animals/Bull.mdl', 'Idle', 'Gallop', 'Attack_Headbutt', 'Death', 2.0, 20.0, 2.0, 70.0,
      7.0, 15.0, 5.0, 15.0, 25.0, 0.5, 0, 0, 0.7),
 (7,  'Cow',      12,  1, 10,  2, 2,  4,  10.0, 'flee',        3, 'grassland',
-     'Models/Animals/Ult_Cow.mdl', 'Idle', 'Gallop', 'Attack_Kick', 'Death', 1.8, 15.0, 1.5, 60.0,
+     'Models/Animals/Cow.mdl', 'Idle', 'Gallop', 'Attack_Kick', 'Death', 1.8, 15.0, 1.5, 60.0,
      5.0, 20.0, 6.0, 15.0, 20.0, 0.4, 0, 0, 0.7),
 (8,  'Fish',      1,  0, 14,  0, 0,  8,   5.0, 'flee',        1, 'water',
-     'Models/Animals/Fish.mdl', 'Swim', 'Swim', NULL, NULL, 0.2, 10.0, 0.3, 5.0,
+     'Models/UrhoFish.mdl', 'Swim', 'Swim', NULL, NULL, 0.2, 10.0, 0.3, 5.0,
      4.0, 10.0, 2.0, 5.0, 0.0, 0.5, 0, 0, 0.0),
 (9,  'Donkey',   10,  1, 11,  3, 4,  5,  12.0, 'flee',        2, 'grassland',
-     'Models/Animals/Ult_Donkey.mdl', 'Idle', 'Gallop', 'Attack_Kick', 'Death', 1.6, 20.0, 2.0, 80.0,
+     'Models/Animals/Donkey.mdl', 'Idle', 'Gallop', 'Attack_Kick', 'Death', 1.6, 20.0, 2.0, 80.0,
      6.0, 25.0, 5.0, 12.0, 25.0, 0.4, 0, 0, 0.7),
 (10, 'Horse',    14,  2, 12,  4, 4,  9,  20.0, 'flee',        3, 'grassland',
-     'Models/Animals/Ult_Horse.mdl', 'Idle', 'Gallop', 'Attack_Kick', 'Death', 2.2, 40.0, 2.0, 80.0,
+     'Models/Animals/Horse.mdl', 'Idle', 'Gallop', 'Attack_Kick', 'Death', 2.2, 40.0, 2.0, 80.0,
      12.0, 45.0, 4.0, 10.0, 35.0, 0.3, 0, 0, 0.8),
 (11, 'Alpaca',    8,  0, 10,  1, 2,  5,  12.0, 'flee',        4, 'mountain',
-     'Models/Animals/Ult_Alpaca.mdl', 'Idle', 'Gallop', 'Attack_Kick', 'Death', 1.2, 15.0, 1.0, 40.0,
+     'Models/Animals/Alpaca.mdl', 'Idle', 'Gallop', 'Attack_Kick', 'Death', 1.2, 15.0, 1.0, 40.0,
      6.0, 20.0, 4.0, 10.0, 20.0, 0.4, 0, 0, 0.7),
 (12, 'Husky',     6,  3, 12,  3, 4,  8,  20.0, 'defensive',   2, 'any',
-     'Models/Animals/Ult_Husky.mdl', 'Idle', 'Gallop', 'Attack', 'Death', 0.7, 20.0, 1.5, 60.0,
+     'Models/Animals/Husky.mdl', 'Idle', 'Gallop', 'Attack', 'Death', 0.7, 20.0, 1.5, 60.0,
      8.0, 15.0, 2.0, 5.0, 25.0, 0.5, 1, 1, 0.0),
 (13, 'ShibaInu',  4,  2, 11,  2, 2,  7,  15.0, 'flee',        1, 'any',
-     'Models/Animals/Ult_ShibaInu.mdl', 'Idle', 'Gallop', 'Attack', 'Death', 0.5, 15.0, 1.0, 40.0,
+     'Models/Animals/ShibaInu.mdl', 'Idle', 'Gallop', 'Attack', 'Death', 0.5, 15.0, 1.0, 40.0,
      7.0, 15.0, 2.0, 6.0, 20.0, 0.5, 0, 0, 0.6),
 (20, 'CaveMan',  15,  3, 12,  4, 4,  5,  20.0, 'defensive',   3, 'inland',
      'Models/Characters/CavemanMan.mdl', 'Caveman_idle', 'Caveman_running', 'Caveman_attack', 'Caveman_die', 1.8, 20.0, 1.5, 50.0,
@@ -769,12 +770,80 @@ INSERT OR IGNORE INTO loot_table VALUES
 
 INSERT OR IGNORE INTO gather_sources VALUES
 (1, 'Loose Stone',    1,  1, 0,   'any',       -999, 999, 'Models/Props/Stone.mdl',     0,    'any'),
-(2, 'Fallen Stick',   2,  1, 0,   'forest',    -999, 999, 'Models/Props/Stick.mdl',     600,  'any'),
+(2, 'Fallen Stick',   2,  1, 0,   'forest',    -999, 999, 'Models/Nature/log.mdl',     600,  'any'),
 (3, 'Tall Grass',     3,  2, 0,   'grassland', -999, 10,  'Models/Props/TallGrass.mdl', 300,  'spring,summer'),
 (4, 'River Clay',     4,  1, 0,   'riverbank', -999, 8,   NULL,                         1800, 'any'),
-(5, 'Berry Bush',     6,  3, 0,   'forest',    -999, 15,  'Models/Props/BerryBush.mdl', 3600, 'summer,autumn'),
-(6, 'Flint Outcrop',  5,  2, 0,   'mountain',  15,   999, 'Models/Props/FlintRock.mdl', 0,    'any'),
-(7, 'Reed Bed',       3,  3, 0,   'water',     -999, 7,   'Models/Props/Reeds.mdl',     600,  'spring,summer,autumn');
+(5, 'Berry Bush',     6,  3, 0,   'forest',    -999, 15,  'Models/Nature/BushBerries_1.mdl', 3600, 'summer,autumn'),
+(6, 'Flint Outcrop',  5,  2, 0,   'mountain',  15,   999, 'Models/Nature/Rock_1.mdl', 0,    'any'),
+(7, 'Reed Bed',       3,  3, 0,   'water',     -999, 7,   'Models/Nature/Grass_Common_Tall.mdl',     600,  'spring,summer,autumn');
+
+-- Trees (terrain=forest, yield=Log, tool_req=Hand Axe)
+INSERT OR IGNORE INTO gather_sources VALUES
+(10, 'Birch Tree',     11, 2, 100, 'forest',    -999, 999, 'Models/Nature/BirchTree_1.mdl',   0, 'any'),
+(11, 'Common Tree',    11, 2, 100, 'forest',    -999, 999, 'Models/Nature/CommonTree_1.mdl',  0, 'any'),
+(12, 'Pine Tree',      11, 2, 100, 'forest',    -999, 999, 'Models/Nature/PineTree_1.mdl',    0, 'any'),
+(13, 'Willow Tree',    11, 2, 100, 'forest',    -999, 999, 'Models/Nature/Willow_1.mdl',      0, 'any'),
+(14, 'Palm Tree',      11, 2, 100, 'forest',    -999, 999, 'Models/Nature/PalmTree_1.mdl',    0, 'any'),
+(15, 'Twisted Tree',   11, 2, 100, 'forest',    -999, 999, 'Models/Nature/TwistedTree_1.mdl', 0, 'any'),
+(16, 'Oak Tree',       11, 2, 100, 'forest',    -999, 999, 'Models/Nature/tree_oak.mdl',      0, 'any');
+
+-- Rocks (terrain=any, yield=Rough Stone, no tool)
+INSERT OR IGNORE INTO gather_sources VALUES
+(20, 'Boulder',        1,  2, 0,   'any',       -999, 999, 'Models/Nature/Rock_1.mdl',        0, 'any'),
+(21, 'Medium Rock',    1,  1, 0,   'any',       -999, 999, 'Models/Nature/Rock_Medium_1.mdl', 0, 'any'),
+(22, 'River Pebbles',  1,  1, 0,   'riverbank', -999, 8,   'Models/Nature/Pebble_Round_1.mdl',0, 'any');
+
+-- Bushes (terrain=grassland, yield=Plant Fiber, no tool)
+INSERT OR IGNORE INTO gather_sources VALUES
+(30, 'Wild Bush',      3,  2, 0,   'grassland', -999, 15,  'Models/Nature/Bush_1.mdl',        1800, 'any'),
+(31, 'Common Bush',    3,  2, 0,   'grassland', -999, 15,  'Models/Nature/Bush_Common.mdl',   1800, 'any'),
+(32, 'Flowering Bush', 3,  1, 0,   'grassland', -999, 15,  'Models/Nature/Bush_Common_Flowers.mdl', 1800, 'spring,summer');
+
+-- Mushrooms (terrain=forest, yield=Berries as foraged food, no tool)
+INSERT OR IGNORE INTO gather_sources VALUES
+(40, 'Common Mushroom',    6, 1, 0, 'forest',   -999, 15,  'Models/Nature/Mushroom_Common.mdl',     3600, 'autumn'),
+(41, 'Red Mushroom',       6, 1, 0, 'forest',   -999, 15,  'Models/Nature/mushroom_red.mdl',        3600, 'summer,autumn'),
+(42, 'Tan Mushroom',       6, 1, 0, 'forest',   -999, 15,  'Models/Nature/mushroom_tan.mdl',        3600, 'summer,autumn'),
+(43, 'Chicken of Woods',   6, 2, 0, 'forest',   -999, 15,  'Models/Nature/Mushroom_Laetiporus.mdl', 3600, 'autumn');
+
+-- Ferns (terrain=forest, yield=Plant Fiber, no tool)
+INSERT OR IGNORE INTO gather_sources VALUES
+(50, 'Forest Fern',    3,  1, 0,   'forest',    -999, 15,  'Models/Nature/Fern_1.mdl',        600, 'spring,summer,autumn');
+
+-- Water plants (terrain=water, yield=Plant Fiber, no tool)
+INSERT OR IGNORE INTO gather_sources VALUES
+(60, 'Cattail',        3,  2, 0,   'water',     -999, 7,   'Models/Pond/CatTail_1.mdl',       1200, 'spring,summer,autumn'),
+(61, 'Water Hyacinth', 3,  1, 0,   'water',     -999, 7,   'Models/Pond/Water_Hyacinth_1.mdl',1200, 'summer'),
+(62, 'Water Lily',     3,  1, 0,   'water',     -999, 7,   'Models/Pond/Water_Lily_Leaf_1.mdl',1200, 'summer'),
+(63, 'Water Mint',     3,  1, 0,   'water',     -999, 7,   'Models/Pond/Water_Mint_1.mdl',    1200, 'spring,summer'),
+(64, 'Swamp Calla',    3,  1, 0,   'water',     -999, 7,   'Models/Pond/Swamp_Calla_1.mdl',   1200, 'spring,summer');
+
+-- KayKit Trees (stylized, terrain=forest, yield=Log, tool_req=Hand Axe)
+INSERT OR IGNORE INTO gather_sources VALUES
+(70, 'KayKit Tree 1',      11, 2, 100, 'forest',    -999, 999, 'Models/KayKit/Tree_1_A_Color1.mdl',      0, 'any'),
+(71, 'KayKit Tree 2',      11, 2, 100, 'forest',    -999, 999, 'Models/KayKit/Tree_2_A_Color1.mdl',      0, 'any'),
+(72, 'KayKit Tree 3',      11, 2, 100, 'forest',    -999, 999, 'Models/KayKit/Tree_3_A_Color1.mdl',      0, 'any'),
+(73, 'KayKit Tree 4',      11, 2, 100, 'forest',    -999, 999, 'Models/KayKit/Tree_4_A_Color1.mdl',      0, 'any'),
+(74, 'KayKit Dead Tree 1', 11, 1, 100, 'forest',    -999, 999, 'Models/KayKit/Tree_Bare_1_A_Color1.mdl', 0, 'any'),
+(75, 'KayKit Dead Tree 2', 11, 1, 100, 'forest',    -999, 999, 'Models/KayKit/Tree_Bare_2_A_Color1.mdl', 0, 'any');
+
+-- KayKit Bushes (stylized, terrain=grassland, yield=Plant Fiber, no tool)
+INSERT OR IGNORE INTO gather_sources VALUES
+(76, 'KayKit Bush 1',      3,  2, 0,   'grassland', -999, 15,  'Models/KayKit/Bush_1_A_Color1.mdl',      1800, 'any'),
+(77, 'KayKit Bush 2',      3,  2, 0,   'grassland', -999, 15,  'Models/KayKit/Bush_2_A_Color1.mdl',      1800, 'any'),
+(78, 'KayKit Bush 3',      3,  2, 0,   'grassland', -999, 15,  'Models/KayKit/Bush_3_A_Color1.mdl',      1800, 'any'),
+(79, 'KayKit Bush 4',      3,  2, 0,   'grassland', -999, 15,  'Models/KayKit/Bush_4_A_Color1.mdl',      1800, 'any');
+
+-- KayKit Rocks (stylized, terrain=any, yield=Rough Stone, no tool)
+INSERT OR IGNORE INTO gather_sources VALUES
+(80, 'KayKit Rock 1',      1,  2, 0,   'any',       -999, 999, 'Models/KayKit/Rock_1_A_Color1.mdl',      0, 'any'),
+(81, 'KayKit Rock 2',      1,  1, 0,   'any',       -999, 999, 'Models/KayKit/Rock_2_A_Color1.mdl',      0, 'any'),
+(82, 'KayKit Rock 3',      1,  2, 0,   'any',       -999, 999, 'Models/KayKit/Rock_3_A_Color1.mdl',      0, 'any');
+
+-- KayKit Grass (stylized, terrain=grassland, yield=Plant Fiber, no tool)
+INSERT OR IGNORE INTO gather_sources VALUES
+(83, 'KayKit Grass 1',     3,  2, 0,   'grassland', -999, 10,  'Models/KayKit/Grass_1_A_Color1.mdl',     300, 'spring,summer'),
+(84, 'KayKit Grass 2',     3,  2, 0,   'grassland', -999, 10,  'Models/KayKit/Grass_2_A_Color1.mdl',     300, 'spring,summer');
 
 -- ============================================================
 -- TRAP RULES
@@ -903,21 +972,23 @@ UPDATE items SET decay_time = 50.0 WHERE id = 710;  -- Wheat Grain (long shelf l
 -- ITEM MODELS — Wire existing 3D models to item definitions
 -- ============================================================
 
--- Stone Age tools
-UPDATE items SET model = 'Models/Survival/Axe.mdl'          WHERE id = 100;  -- Hand Axe (primitive)
-UPDATE items SET model = 'Models/Props/Stone.mdl'            WHERE id = 101;  -- Scraper
-UPDATE items SET model = 'Models/Props/Torch_Metal.mdl'      WHERE id = 108;  -- Torch (unlit)
-UPDATE items SET model = 'Models/Props/Torch_Metal.mdl'      WHERE id = 109;  -- Burning Torch
-UPDATE items SET model = 'Models/Props/Pickaxe_Bronze.mdl'   WHERE id = 106;  -- Stone Pick (reuse bronze pick)
-UPDATE items SET model = 'Models/Props/Anvil_Log.mdl'        WHERE id = 107;  -- Hammer Stone
+-- Stone Age tools — promoted to Models/Tools/ (correct pickup visuals)
+UPDATE items SET model = 'Models/Tools/axe.mdl'              WHERE id = 100;  -- Hand Axe
+UPDATE items SET model = 'Models/Tools/knife.mdl'            WHERE id = 101;  -- Scraper (knife model)
+UPDATE items SET model = 'Models/Tools/chisel.mdl'           WHERE id = 103;  -- Bone Needle (chisel model)
+UPDATE items SET model = 'Models/Tools/pickaxe.mdl'          WHERE id = 106;  -- Stone Pick
+UPDATE items SET model = 'Models/Tools/hammer.mdl'           WHERE id = 107;  -- Hammer Stone
+UPDATE items SET model = 'Models/Tools/torch.mdl'            WHERE id = 108;  -- Torch (unlit)
+UPDATE items SET model = 'Models/Tools/torch.mdl'            WHERE id = 109;  -- Burning Torch
 
 -- Stone Age weapons
 UPDATE items SET model = 'Models/Weapons/Spear.mdl'          WHERE id = 200;  -- Spear
 UPDATE items SET model = 'Models/Weapons/Bow_Wooden.mdl'     WHERE id = 201;  -- Bow
+UPDATE items SET model = 'Models/Weapons/Arrow.mdl'          WHERE id = 202;  -- Arrow
 UPDATE items SET model = 'Models/Weapons/Dagger.mdl'         WHERE id = 206;  -- Knife
 
 -- Copper Age
-UPDATE items SET model = 'Models/Survival/Axe_Small.mdl'     WHERE id = 810;  -- Copper Axe
+UPDATE items SET model = 'Models/Weapons/Axe_Small.mdl'      WHERE id = 810;  -- Copper Axe (small, primitive)
 UPDATE items SET model = 'Models/Weapons/Spear.mdl'          WHERE id = 811;  -- Copper Spear
 
 -- Bronze Age
@@ -930,13 +1001,48 @@ UPDATE items SET model = 'Models/Weapons/Dagger.mdl'         WHERE id = 817;  --
 -- Iron Age
 UPDATE items SET model = 'Models/Weapons/Axe.mdl'            WHERE id = 820;  -- Iron Axe
 UPDATE items SET model = 'Models/Weapons/Sword.mdl'          WHERE id = 821;  -- Iron Sword
-UPDATE items SET model = 'Models/Weapons/Shield_Round.mdl'   WHERE id = 834;  -- Iron Shield
+UPDATE items SET model = 'Models/Weapons/Shield_Round_2.mdl' WHERE id = 834;  -- Iron Shield (upgraded round)
 
 -- Steel Age
 UPDATE items SET model = 'Models/Weapons/Axe_Double.mdl'     WHERE id = 830;  -- Steel Axe (double-headed)
 UPDATE items SET model = 'Models/Weapons/Sword_2.mdl'        WHERE id = 831;  -- Steel Sword (upgraded model)
 UPDATE items SET model = 'Models/Weapons/Spear.mdl'          WHERE id = 833;  -- Steel Spear
 UPDATE items SET model = 'Models/Weapons/Shield_Heater.mdl'  WHERE id = 835;  -- Steel Shield (heater shape)
+
+-- Resources: raw ores
+UPDATE items SET model = 'Models/Resources/Copper_Nugget_Large.mdl' WHERE id = 800;  -- Copper Ore
+UPDATE items SET model = 'Models/Resources/Copper_Nugget_Medium.mdl' WHERE id = 801; -- Tin Ore
+UPDATE items SET model = 'Models/Resources/Iron_Nugget_Large.mdl'   WHERE id = 802;  -- Iron Ore
+UPDATE items SET model = 'Models/Resources/Gold_Nugget_Large.mdl'   WHERE id = 803;  -- Gold Nugget
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Small.mdl'  WHERE id = 840;  -- Manganese Ore
+UPDATE items SET model = 'Models/Resources/Silver_Nugget_Large.mdl' WHERE id = 841;  -- Chromium Ore
+UPDATE items SET model = 'Models/Resources/Iron_Nugget_Medium.mdl'  WHERE id = 842;  -- Tungsten Ore
+UPDATE items SET model = 'Models/Resources/Copper_Nugget_Small.mdl' WHERE id = 843;  -- Nickel Ore
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Large.mdl'  WHERE id = 844;  -- Rich Carbon
+
+-- Resources: metal bars / ingots
+UPDATE items SET model = 'Models/Resources/Copper_Bar.mdl'   WHERE id = 804;  -- Copper Ingot
+UPDATE items SET model = 'Models/Resources/Copper_Bar.mdl'   WHERE id = 805;  -- Tin Ingot (reuse copper bar)
+UPDATE items SET model = 'Models/Resources/Iron_Bar.mdl'     WHERE id = 806;  -- Bronze Ingot
+UPDATE items SET model = 'Models/Resources/Iron_Bar.mdl'     WHERE id = 807;  -- Iron Ingot
+UPDATE items SET model = 'Models/Resources/Iron_Bar.mdl'     WHERE id = 825;  -- Steel Ingot
+UPDATE items SET model = 'Models/Resources/Iron_Bar.mdl'      WHERE id = 850;  -- Mystery Alloy Ingot
+UPDATE items SET model = 'Models/Resources/Iron_Bar.mdl'      WHERE id = 851;  -- Manganese Steel Ingot
+UPDATE items SET model = 'Models/Resources/Silver_Bar.mdl'    WHERE id = 852;  -- Chromium Steel Ingot
+UPDATE items SET model = 'Models/Resources/Iron_Bar.mdl'      WHERE id = 853;  -- Tungsten Steel Ingot
+UPDATE items SET model = 'Models/Resources/Silver_Bar.mdl'    WHERE id = 854;  -- Nickel Steel Ingot
+UPDATE items SET model = 'Models/Resources/Gold_Bar.mdl'      WHERE id = 855;  -- Carbon Steel Ingot
+UPDATE items SET model = 'Models/Resources/Gold_Bar.mdl'      WHERE id = 860;  -- Hybrid Alloy Ingot
+
+-- Resources: stone, wood
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Large.mdl' WHERE id = 1;  -- Rough Stone
+UPDATE items SET model = 'Models/Resources/Wood_Log_A.mdl'   WHERE id = 11;   -- Log
+UPDATE items SET model = 'Models/Resources/Wood_Plank_A.mdl' WHERE id = 12;   -- Plank
+
+-- Character items — promoted from Staging/CharacterItems/
+UPDATE items SET model = 'Models/CharacterItems/Backpack.mdl' WHERE id = 500;  -- Leather Bag (backpack visual)
+UPDATE items SET model = 'Models/CharacterItems/Barrel.mdl'   WHERE id = 504;  -- Barrel (wooden storage)
+UPDATE items SET model = 'Models/CharacterItems/Bonfire.mdl'  WHERE id = 602;  -- Stone Ring (fire pit visual)
 
 -- ============================================================
 -- Iron Age Textiles — Wool Production (Phase 1)
@@ -980,9 +1086,268 @@ INSERT OR IGNORE INTO clothing_warmth (item_id, warmth) VALUES
     (883, 12),   -- Wool Tunic: better than Cloth Tunic
     (884, 18);   -- Wool Cloak: best non-fur warmth (Fur Cloak = 20)
 
--- Props / Resources
-UPDATE items SET model = 'Models/Nature/WoodLog.mdl'         WHERE id = 11;   -- Log
+-- ============================================================
+-- Iron Age Textiles Phase 2 — Natural Dyes
+-- ============================================================
+-- Dye materials (crafted from existing resources)
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, decay_time, description, tier) VALUES
+    (885, 'Berry Dye',       'material', 10, 0.2, 0, 0.0, 'Deep red-purple pigment from crushed berries.', 3),
+    (886, 'Ochre Dye',       'material', 10, 0.3, 0, 0.0, 'Warm earth-tone pigment from clay deposits.', 3),
+    (887, 'Charcoal Dye',    'material', 10, 0.2, 0, 0.0, 'Dark black pigment from ground charcoal.', 3);
+
+-- Dyed cloth variants (wool cloth + dye)
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, decay_time, description, tier) VALUES
+    (888, 'Red Dyed Cloth',  'material', 10, 0.5, 0, 0.0, 'Wool cloth dyed berry red. For garments and banners.', 3),
+    (889, 'Ochre Dyed Cloth','material', 10, 0.5, 0, 0.0, 'Wool cloth dyed warm ochre. Earth tones.', 3),
+    (890, 'Black Dyed Cloth','material', 10, 0.5, 0, 0.0, 'Wool cloth dyed charcoal black. Status garment.', 3);
+
+-- Recipes: Dye production (no station needed — mortar and pestle implied)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, craft_time, tool_req, station_req, tier, description) VALUES
+    (164, 'Berry Dye',       885, 2, 2.0, 0, 0, 3, 'Crush berries into pigment paste.'),
+    (165, 'Ochre Dye',       886, 2, 2.0, 0, 0, 3, 'Grind clay into ochre pigment.'),
+    (166, 'Charcoal Dye',    887, 3, 2.0, 0, 0, 3, 'Grind charcoal into black pigment.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity, consumed) VALUES
+    (164, 6,  5, 1),    -- Berries x5 → Berry Dye x2
+    (165, 4,  3, 1),    -- Clay x3 → Ochre Dye x2
+    (166, 43, 2, 1);    -- Charcoal x2 → Charcoal Dye x3
+
+-- Recipes: Dyeing cloth (wool cloth + dye at loom)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, craft_time, tool_req, station_req, tier, description) VALUES
+    (167, 'Red Dyed Cloth',   888, 1, 3.0, 0, 91, 3, 'Dye wool cloth berry red at loom.'),
+    (168, 'Ochre Dyed Cloth', 889, 1, 3.0, 0, 91, 3, 'Dye wool cloth warm ochre at loom.'),
+    (169, 'Black Dyed Cloth', 890, 1, 3.0, 0, 91, 3, 'Dye wool cloth charcoal black at loom.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity, consumed) VALUES
+    (167, 882, 1, 1), (167, 885, 1, 1),  -- Wool Cloth x1 + Berry Dye x1
+    (168, 882, 1, 1), (168, 886, 1, 1),  -- Wool Cloth x1 + Ochre Dye x1
+    (169, 882, 1, 1), (169, 887, 1, 1);  -- Wool Cloth x1 + Charcoal Dye x1
+
+-- Tier assignments for dye recipes
+UPDATE recipes SET tier = 3 WHERE id IN (164, 165, 166, 167, 168, 169);
+
+-- ============================================================
+-- Iron Age Textiles Phase 3 — Advanced Garments (Weaving 5+)
+-- ============================================================
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, decay_time, description, tier) VALUES
+    (891, 'Canvas',          'material',  5, 1.0, 0, 0.0, 'Heavy woven fabric. Tents, sails, bedrolls.', 4),
+    (892, 'Padded Gambeson', 'armor',     1, 2.5, 4, 0.0, 'Layered wool padding. Light armor, good warmth.', 4),
+    (893, 'Bedroll',         'furniture', 1, 2.0, 3, 0.0, 'Portable sleeping mat. Warmth bonus near campfire.', 4),
+    (894, 'Banner',          'decoration',1, 0.8, 2, 0.0, 'Dyed cloth on a pole. Settlement morale +2.', 4);
+
+-- Recipes: Advanced garments (Loom required, Weaving 5+ implied by tier 4)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, craft_time, tool_req, station_req, tier, description) VALUES
+    (170, 'Canvas',          891, 1, 5.0, 0, 91, 4, 'Heavy-weave cloth at loom. Durable fabric.'),
+    (171, 'Padded Gambeson', 892, 1, 8.0, 103, 91, 4, 'Layer wool cloth and thread into padded armor.'),
+    (172, 'Bedroll',         893, 1, 6.0, 103, 91, 4, 'Sew canvas and wool into a sleeping roll.'),
+    (173, 'Banner',          894, 1, 4.0, 0, 91, 4, 'Mount dyed cloth on a stick. Settlement pride.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity, consumed) VALUES
+    (170, 882, 3, 1), (170, 881, 2, 1),                -- Wool Cloth x3 + Wool Thread x2 → Canvas
+    (171, 882, 4, 1), (171, 881, 3, 1), (171, 24, 2, 1), -- Wool Cloth x4 + Thread x3 + Fur x2 → Gambeson
+    (172, 891, 2, 1), (172, 882, 1, 1),                -- Canvas x2 + Wool Cloth x1 → Bedroll
+    (173, 888, 1, 1), (173, 2, 2, 1);                  -- Red Dyed Cloth x1 + Stick x2 → Banner
+
+-- Clothing warmth for advanced garments
+INSERT OR IGNORE INTO clothing_warmth (item_id, warmth) VALUES
+    (892, 14);   -- Padded Gambeson: warmth + light armor
+
+-- Bedroll warmth bonus handled in AuthServer (campfire proximity check)
+-- Banner morale bonus handled in AuthServer (settlement buff)
+
+UPDATE recipes SET tier = 4 WHERE id IN (170, 171, 172, 173);
+
+-- ============================================================
+-- Iron Age Textiles Phase 4 — Sail & Tapestry (Weaving 5+/7+)
+-- ============================================================
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, decay_time, description, tier) VALUES
+    (895, 'Sail',     'material',   1, 3.0, 5, 0.0, 'Canvas sail. Attach to canoe for faster travel.', 5),
+    (896, 'Tapestry', 'decoration', 1, 2.0, 8, 0.0, 'Woven tapestry depicting settlement history. Morale +5.', 7);
+
+-- Recipes: Sail (Canvas x2 + Cordage x2 at Loom, Weaving 5+)
+--          Tapestry (Dyed Cloth x3 at Loom, Weaving 7+)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, craft_time, tool_req, station_req, tier, description) VALUES
+    (174, 'Sail',     895, 1, 8.0, 0, 91, 5, 'Stitch canvas panels into a boat sail. Loom required.'),
+    (175, 'Tapestry', 896, 1, 12.0, 103, 91, 7, 'Weave dyed cloth into a decorative tapestry. Master work.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity, consumed) VALUES
+    (174, 891, 2, 1), (174, 41, 2, 1),                 -- Canvas x2 + Cordage x2 → Sail
+    (175, 888, 1, 1), (175, 889, 1, 1), (175, 890, 1, 1); -- Red + Ochre + Black Dyed Cloth → Tapestry
+
+UPDATE recipes SET tier = 5 WHERE id = 174;
+UPDATE recipes SET tier = 7 WHERE id = 175;
+
+-- Sail speed bonus handled in AuthServer (FISHING_BOAT_BONUS doubled when sail present)
+-- Tapestry morale bonus handled in AuthServer (settlement buff +5, description from settlement_history)
+
+-- Props / Resources (Log/Plank/Stone models set in weapons/resources section above)
 UPDATE items SET model = 'Models/Props/Bag.mdl'              WHERE id = 24;   -- Fur
 UPDATE items SET model = 'Models/Props/Rope_1.mdl'           WHERE id = 41;   -- Cordage
 UPDATE items SET model = 'Models/Props/Bucket_Wooden_1.mdl'  WHERE id = 46;   -- Clay Jar
-UPDATE items SET model = 'Models/Props/Workbench.mdl'        WHERE id = 107;  -- Hammer Stone (alt: workbench for station)
+-- (Hammer Stone model set to Models/Tools/hammer.mdl above — workbench removed)
+
+-- ============================================================
+-- ITEM MODEL WIRING — Phase 2: Map existing on-disk assets
+-- Assets sourced from: Megakit, Survival, Props, CharacterItems,
+-- Buildings, Pond, Nature, Resources folders
+-- ============================================================
+
+-- Raw materials
+UPDATE items SET model = 'Models/Nature/log.mdl'                     WHERE id = 2;    -- Stick
+UPDATE items SET model = 'Models/Nature/Grass_Common_Tall.mdl'       WHERE id = 3;    -- Plant Fiber
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Small.mdl'   WHERE id = 4;    -- Clay
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Small.mdl'   WHERE id = 5;    -- Flint
+UPDATE items SET model = 'Models/Props/Rope_1.mdl'                   WHERE id = 20;   -- Sinew
+UPDATE items SET model = 'Models/CharacterItems/Pouch_Large.mdl'     WHERE id = 21;   -- Hide
+UPDATE items SET model = 'Models/CharacterItems/Pouch_Large.mdl'     WHERE id = 22;   -- Leather
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Small.mdl'   WHERE id = 23;   -- Bone (placeholder)
+UPDATE items SET model = 'Models/Props/Rope_2.mdl'                   WHERE id = 25;   -- Gut
+UPDATE items SET model = 'Models/Megakit/SmallBottle.mdl'            WHERE id = 26;   -- Fat
+UPDATE items SET model = 'Models/Nature/log.mdl'                     WHERE id = 27;   -- Antler (placeholder)
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Small.mdl'   WHERE id = 28;   -- Tusk (placeholder)
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Small.mdl'   WHERE id = 29;   -- Claw (placeholder)
+UPDATE items SET model = 'Models/Nature/Plant_1.mdl'                 WHERE id = 30;   -- Feather (placeholder)
+UPDATE items SET model = 'Models/Nature/Grass_Common_Tall.mdl'       WHERE id = 711;  -- Flax Fiber
+
+-- Processed materials
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Small.mdl'   WHERE id = 40;   -- Sharp Stone
+UPDATE items SET model = 'Models/Survival/rope_bundle_A.mdl'         WHERE id = 42;   -- Rope
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Large.mdl'   WHERE id = 44;   -- Fired Clay
+
+-- Fuel
+UPDATE items SET model = 'Models/Resources/Wood_Log_B.mdl'           WHERE id = 15;   -- Softwood
+UPDATE items SET model = 'Models/Resources/Wood_Log_A.mdl'           WHERE id = 16;   -- Hardwood
+UPDATE items SET model = 'Models/Resources/Stone_Chunks_Small.mdl'   WHERE id = 43;   -- Charcoal
+
+-- Food
+UPDATE items SET model = 'Models/Nature/BushBerries_1.mdl'           WHERE id = 6;    -- Berries
+UPDATE items SET model = 'Models/Megakit/Carrot.mdl'                 WHERE id = 7;    -- Raw Meat (placeholder)
+UPDATE items SET model = 'Models/Megakit/Carrot.mdl'                 WHERE id = 8;    -- Cooked Meat (placeholder)
+UPDATE items SET model = 'Models/Megakit/Carrot.mdl'                 WHERE id = 9;    -- Dried Meat (placeholder)
+UPDATE items SET model = 'Models/UrhoFish.mdl'                       WHERE id = 10;   -- Small Fish
+UPDATE items SET model = 'Models/Megakit/Bottle_1.mdl'               WHERE id = 13;   -- Milk
+UPDATE items SET model = 'Models/Nature/Wheat.mdl'                   WHERE id = 710;  -- Wheat Grain
+UPDATE items SET model = 'Models/Nature/BushBerries_2.mdl'           WHERE id = 712;  -- Fresh Berries
+
+-- Seeds
+UPDATE items SET model = 'Models/Nature/Wheat.mdl'                   WHERE id = 700;  -- Wheat Seed
+UPDATE items SET model = 'Models/Nature/Plant_1.mdl'                 WHERE id = 701;  -- Flax Seed
+UPDATE items SET model = 'Models/Nature/BushBerries_1.mdl'           WHERE id = 702;  -- Berry Bush Seed
+
+-- Tools
+UPDATE items SET model = 'Models/Survival/trowel.mdl'               WHERE id = 102;  -- Digging Stick
+UPDATE items SET model = 'Models/Survival/handdrill.mdl'             WHERE id = 104;  -- Fire Kit
+UPDATE items SET model = 'Models/Weapons/Spear.mdl'                  WHERE id = 105;  -- Fishing Rod (placeholder)
+UPDATE items SET model = 'Models/CharacterItems/Chain_Coil.mdl'      WHERE id = 418;  -- Fishing Net
+UPDATE items SET model = 'Models/CharacterItems/Chain_Coil.mdl'      WHERE id = 419;  -- Cargo Net
+
+-- Weapons
+UPDATE items SET model = 'Models/Survival/rope_bundle_B.mdl'         WHERE id = 203;  -- Sling
+UPDATE items SET model = 'Models/Survival/mallet.mdl'                WHERE id = 204;  -- Club
+UPDATE items SET model = 'Models/Weapons/Spear.mdl'                  WHERE id = 205;  -- Javelin
+UPDATE items SET model = 'Models/Tools/torch.mdl'                    WHERE id = 871;  -- Resin Torch
+
+-- Traps
+UPDATE items SET model = 'Models/CharacterItems/BearTrap_Open.mdl'   WHERE id = 400;  -- Simple Snare
+UPDATE items SET model = 'Models/CharacterItems/BearTrap_Open.mdl'   WHERE id = 401;  -- Meat Trap
+UPDATE items SET model = 'Models/CharacterItems/BearTrap_Open.mdl'   WHERE id = 402;  -- Berry Trap
+UPDATE items SET model = 'Models/CharacterItems/Cage_Small.mdl'      WHERE id = 403;  -- Fish Trap
+UPDATE items SET model = 'Models/CharacterItems/BearTrap_Closed.mdl' WHERE id = 404;  -- Pit Trap
+UPDATE items SET model = 'Models/CharacterItems/BearTrap_Closed.mdl' WHERE id = 405;  -- Deadfall Trap
+
+-- Containers
+UPDATE items SET model = 'Models/Megakit/FarmCrate_Empty.mdl'        WHERE id = 410;  -- Reed Basket
+UPDATE items SET model = 'Models/Pond/Clay_Pot.mdl'                  WHERE id = 501;  -- Clay Pot
+UPDATE items SET model = 'Models/Megakit/Bottle_1.mdl'               WHERE id = 502;  -- Clay Jar
+UPDATE items SET model = 'Models/Megakit/FarmCrate_Empty.mdl'        WHERE id = 503;  -- Basket
+
+-- Buildings
+UPDATE items SET model = 'Models/Buildings/Fence.mdl'                WHERE id = 600;  -- Lean-To
+UPDATE items SET model = 'Models/Buildings/Barn.mdl'                 WHERE id = 601;  -- Hut
+UPDATE items SET model = 'Models/Megakit/WeaponStand.mdl'            WHERE id = 603;  -- Drying Rack
+UPDATE items SET model = 'Models/Buildings/LowPolyForge.mdl'         WHERE id = 604;  -- Kiln
+UPDATE items SET model = 'Models/Buildings/Silo.mdl'                 WHERE id = 605;  -- Storage Pit
+UPDATE items SET model = 'Models/Megakit/Peg_Rack.mdl'              WHERE id = 606;  -- Tanning Frame
+UPDATE items SET model = 'Models/Buildings/StoneWall.mdl'            WHERE id = 607;  -- Fish Weir
+UPDATE items SET model = 'Models/Buildings/MedievalForge.mdl'        WHERE id = 608;  -- Charcoal Kiln
+
+-- Clothing & Armor (pickup/inventory visuals — equip appearance is separate)
+UPDATE items SET model = 'Models/Props/Textiles_A.mdl'              WHERE id = 300;  -- Hide Wrap
+UPDATE items SET model = 'Models/Props/Textiles_B.mdl'              WHERE id = 301;  -- Leather Tunic
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large.mdl'    WHERE id = 302;  -- Fur Cloak
+UPDATE items SET model = 'Models/CharacterItems/Pouch_Large.mdl'    WHERE id = 303;  -- Hide Boots
+UPDATE items SET model = 'Models/CharacterItems/Pouch_Large.mdl'    WHERE id = 304;  -- Leather Cap
+UPDATE items SET model = 'Models/Megakit/Shield_Wooden.mdl'         WHERE id = 305;  -- Wood Shield
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large.mdl'    WHERE id = 815;  -- Bronze Armor
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large.mdl'    WHERE id = 822;  -- Iron Armor
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large.mdl'    WHERE id = 832;  -- Steel Armor
+
+-- Textiles & Weaving
+UPDATE items SET model = 'Models/Props/Textiles_A.mdl'              WHERE id = 411;  -- Woven Mat
+UPDATE items SET model = 'Models/Props/Rope_1.mdl'                  WHERE id = 412;  -- Flax Thread
+UPDATE items SET model = 'Models/Props/Textiles_B.mdl'              WHERE id = 413;  -- Rough Cloth
+UPDATE items SET model = 'Models/Props/Textiles_C.mdl'              WHERE id = 414;  -- Fine Cloth
+UPDATE items SET model = 'Models/Props/Textiles_A.mdl'              WHERE id = 415;  -- Cloth Wrap
+UPDATE items SET model = 'Models/Props/Textiles_B.mdl'              WHERE id = 416;  -- Cloth Tunic
+UPDATE items SET model = 'Models/CharacterItems/Bandages.mdl'       WHERE id = 417;  -- Cloth Bandage
+
+-- Wool products
+UPDATE items SET model = 'Models/Resources/Textiles_Stack_Small.mdl' WHERE id = 880; -- Wool
+UPDATE items SET model = 'Models/Props/Rope_1.mdl'                  WHERE id = 881;  -- Wool Thread
+UPDATE items SET model = 'Models/Props/Textiles_A.mdl'              WHERE id = 882;  -- Wool Cloth
+UPDATE items SET model = 'Models/Props/Textiles_B.mdl'              WHERE id = 883;  -- Wool Tunic
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large.mdl'    WHERE id = 884;  -- Wool Cloak
+
+-- Dyes
+UPDATE items SET model = 'Models/Megakit/Potion_1.mdl'              WHERE id = 885;  -- Berry Dye
+UPDATE items SET model = 'Models/Megakit/Potion_2.mdl'              WHERE id = 886;  -- Ochre Dye
+UPDATE items SET model = 'Models/Megakit/Potion_4.mdl'              WHERE id = 887;  -- Charcoal Dye
+
+-- Dyed cloth
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large_Colored.mdl' WHERE id = 888; -- Red Dyed Cloth
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large_Colored.mdl' WHERE id = 889; -- Ochre Dyed Cloth
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large_Colored.mdl' WHERE id = 890; -- Black Dyed Cloth
+
+-- Advanced garments & decorations
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large.mdl'    WHERE id = 891;  -- Canvas
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large.mdl'    WHERE id = 892;  -- Padded Gambeson
+UPDATE items SET model = 'Models/Megakit/Bed_Twin1.mdl'             WHERE id = 893;  -- Bedroll
+UPDATE items SET model = 'Models/CharacterItems/Banner_1_Cloth.mdl' WHERE id = 894;  -- Banner
+UPDATE items SET model = 'Models/Props/Textiles_Stack_Large.mdl'    WHERE id = 895;  -- Sail
+UPDATE items SET model = 'Models/CharacterItems/Banner_2_Cloth.mdl' WHERE id = 896;  -- Tapestry
+
+-- Botanicals & medicine
+UPDATE items SET model = 'Models/Nature/Plant_1.mdl'                WHERE id = 720;  -- Medicinal Herbs
+UPDATE items SET model = 'Models/Megakit/Potion_1.mdl'              WHERE id = 870;  -- Tree Resin
+UPDATE items SET model = 'Models/Survival/rope_bundle_A.mdl'        WHERE id = 872;  -- Fire Bundle
+UPDATE items SET model = 'Models/Props/Bucket_Wooden_1.mdl'         WHERE id = 873;  -- Bark Vessel
+UPDATE items SET model = 'Models/Megakit/Potion_2.mdl'              WHERE id = 875;  -- Willow Extract
+UPDATE items SET model = 'Models/Nature/Plant_1.mdl'                WHERE id = 877;  -- Eucalyptus Leaves
+UPDATE items SET model = 'Models/CharacterItems/Bandages.mdl'       WHERE id = 878;  -- Eucalyptus Poultice
+UPDATE items SET model = 'Models/Resources/Wood_Plank_B.mdl'        WHERE id = 879;  -- She-Oak Bark
+
+-- ============================================================
+-- FURNITURE, CONTAINERS & PROPS — Megakit models
+-- Promoted from brainfarts/Props_converted 2026-05-09
+-- ============================================================
+
+-- Furniture
+INSERT OR IGNORE INTO items VALUES (900, 'Bench',            'furniture', 1, 3.0,  50, 0, 'Models/Megakit/Bench.mdl',             NULL, 'Simple wooden bench. Seats two.',           1);
+INSERT OR IGNORE INTO items VALUES (901, 'Stool',            'furniture', 1, 1.5,  30, 0, 'Models/Megakit/Stool.mdl',              NULL, 'Three-legged stool.',                       1);
+INSERT OR IGNORE INTO items VALUES (902, 'Table',            'furniture', 1, 5.0,  60, 0, 'Models/Megakit/Table_Large.mdl',         NULL, 'Large wooden table.',                        1);
+INSERT OR IGNORE INTO items VALUES (903, 'Wall Shelf',       'furniture', 1, 2.0,  30, 0, 'Models/Megakit/Shelf_Arch.mdl',          NULL, 'Arched wall shelf for display.',             1);
+INSERT OR IGNORE INTO items VALUES (904, 'Simple Shelf',     'furniture', 1, 1.5,  25, 0, 'Models/Megakit/Shelf_Simple.mdl',        NULL, 'Plain shelf for storage.',                   1);
+INSERT OR IGNORE INTO items VALUES (905, 'Tool Bench',       'furniture', 1, 8.0,  80, 0, 'Models/Megakit/Workbench_Drawers.mdl',   NULL, 'Workbench with drawers for crafting.',       2);
+
+-- Containers
+INSERT OR IGNORE INTO items VALUES (910, 'Wooden Crate',     'container', 1, 3.0,  40, 0, 'Models/Megakit/Crate_Wooden.mdl',        NULL, 'Rough wooden crate. Stores goods.',          1);
+INSERT OR IGNORE INTO items VALUES (911, 'Metal Crate',      'container', 1, 6.0,  80, 0, 'Models/Megakit/Crate_Metal.mdl',         NULL, 'Reinforced metal crate.',                    2);
+INSERT OR IGNORE INTO items VALUES (912, 'Wooden Chest',     'container', 1, 4.0,  60, 0, 'Models/Megakit/Chest_Wood.mdl',          NULL, 'Lockable wooden chest.',                     1);
+INSERT OR IGNORE INTO items VALUES (913, 'Cabinet',          'container', 1, 6.0,  50, 0, 'Models/Megakit/Cabinet.mdl',             NULL, 'Tall wooden cabinet with doors.',            2);
+INSERT OR IGNORE INTO items VALUES (914, 'Wooden Bucket',    'container', 5, 1.0,  20, 0, 'Models/Megakit/Bucket_Wooden_1.mdl',     NULL, 'Carries water or small goods.',              0);
+INSERT OR IGNORE INTO items VALUES (915, 'Cauldron',         'container', 1, 8.0, 100, 0, 'Models/Megakit/Cauldron.mdl',            NULL, 'Iron cauldron for cooking or brewing.',      2);
+
+-- Props
+INSERT OR IGNORE INTO items VALUES (920, 'Bronze Pickaxe',   'tool',      1, 2.0,  40, 0, 'Models/Megakit/Pickaxe_Bronze.mdl',      NULL, 'Bronze-tipped pickaxe for mining.',          2);
+INSERT OR IGNORE INTO items VALUES (921, 'Market Stall',     'furniture', 1, 12.0, 60, 0, 'Models/Megakit/Stall_Empty.mdl',          NULL, 'Open market stall for trading.',             2);
+INSERT OR IGNORE INTO items VALUES (922, 'Market Cart',      'furniture', 1, 15.0, 80, 0, 'Models/Megakit/Stall_Cart_Empty.mdl',     NULL, 'Wheeled cart for mobile trade.',             2);

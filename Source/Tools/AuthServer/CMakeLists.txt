@@ -14,10 +14,7 @@ define_source_files (
 )
 include_directories (${SAMPLE60_DIR})
 
-# Propagate database backend define (not auto-exported by Urho3D lib target)
-if (URHO3D_DATABASE_SQLITE)
-    add_definitions (-DURHO3D_DATABASE_SQLITE)
-endif ()
+# URHO3D_DATABASE_SQLITE is exported via Urho3D.h — no add_definitions needed
 
 # Setup target
 setup_main_executable (NOBUNDLE)

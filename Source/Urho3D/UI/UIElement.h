@@ -147,6 +147,9 @@ public:
     /// React to double mouse click.
     virtual void OnDoubleClick
         (const IntVector2& position, const IntVector2& screenPosition, MouseButton button, MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor) { }
+    /// React to triple mouse click.
+    virtual void OnTripleClick
+        (const IntVector2& position, const IntVector2& screenPosition, MouseButton button, MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor) { }
     /// React to mouse drag begin.
     virtual void
         OnDragBegin(const IntVector2& position, const IntVector2& screenPosition, MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor);
@@ -201,16 +204,20 @@ public:
     /// Set name.
     /// @property
     void SetName(const String& name);
-    /// Set position.
+    /// Set position in pixels. Auto-computes normalized coords from parent.
     /// @property
     void SetPosition(const IntVector2& position);
-    /// Set position.
+    /// Set position in pixels.
     void SetPosition(int x, int y);
-    /// Set size.
+    /// Set position in normalized windowspace coords (0-1 fraction of parent).
+    void SetPosition(const Vector2& normalizedPosition);
+    /// Set size in pixels. Auto-computes normalized coords from parent.
     /// @property
     void SetSize(const IntVector2& size);
-    /// Set size.
+    /// Set size in pixels.
     void SetSize(int width, int height);
+    /// Set size in normalized windowspace coords (0-1 fraction of parent).
+    void SetSize(const Vector2& normalizedSize);
     /// Set width only.
     /// @property
     void SetWidth(int width);
@@ -781,8 +788,18 @@ protected:
     bool FilterUIStyleAttributes(XMLElement& dest, const XMLElement& styleElem) const;
     /// Filter implicit attributes in serialization process.
     virtual bool FilterImplicitAttributes(XMLElement& dest) const;
+    /// Capture normalized coordinates from current pixel position/size relative to parent.
+    void CaptureNormalizedCoords();
+    /// Apply normalized coordinates: recompute pixel position/size from parent dimensions.
+    void ApplyNormalizedCoords();
+
+public:
     /// Update anchored size & position. Only called when anchoring is enabled.
     void UpdateAnchoring();
+    /// Propagate parent resize to direct children with normalized coords. Called by UI subsystem.
+    void PropagateParentResize();
+
+protected:
 
     /// Name.
     String name_;
@@ -929,6 +946,14 @@ private:
     static XPathQuery styleXPathQuery_;
     /// Tag list.
     StringVector tags_;
+    /// Normalized position (0-1 fraction of parent size). Source of truth for resize.
+    Vector2 normalizedPosition_{Vector2::ZERO};
+    /// Normalized size (0-1 fraction of parent size). Source of truth for resize.
+    Vector2 normalizedSize_{Vector2::ZERO};
+    /// Whether normalized coordinates have been captured.
+    bool normalizedCoordsSet_{false};
+    /// Guard: true while applying normalized coords to prevent re-capture.
+    bool applyingNormalized_{false};
 };
 
 template <class T> T* UIElement::CreateChild(const String& name, i32 index/* = ENDPOS*/)

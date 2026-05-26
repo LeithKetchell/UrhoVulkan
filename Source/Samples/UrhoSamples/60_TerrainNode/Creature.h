@@ -8,6 +8,7 @@
 #include <Urho3D/Graphics/Terrain.h>
 #include <Urho3D/Core/Object.h>
 #include <Urho3D/UI/Text.h>
+#include <Urho3D/Game/GameDB.h>
 
 using namespace Urho3D;
 
@@ -47,7 +48,9 @@ enum CreatureState
     CREATURE_HUNT,      ///< Predator chasing live prey — pursues at run speed until catch or lose sight
     CREATURE_ALERT,     ///< Prey spotted a threat — frozen stare, then flee. Naturalistic delay.
     CREATURE_VICTORY,   ///< Brief celebration after a successful kill (2-3s, then idle)
-    CREATURE_FORAGE     ///< Herbivore moving toward best food source in perception radius
+    CREATURE_FORAGE,    ///< Herbivore moving toward best food source in perception radius
+    CREATURE_SHEAR,     ///< Shearing a tamed alpaca for wool
+    CREATURE_FISH       ///< Fishing at water's edge — sit/wait for catch
 };
 
 /// Base class for all creatures. Thin by design — only what every creature shares.
@@ -75,6 +78,9 @@ public:
     /// Initialize combat stats from GameDB values.
     void InitCombatStats(int hp, int attack, int defense, int damage, int damageVar,
                          int speed, float fleeFraction, const String& aggression);
+    /// Set DB-driven behavior overrides (flee, vision, predator, food preference).
+    void InitBehaviorStats(float fleeSpeed, float fleeDistance, float visionRange,
+                           float visionAngle, bool isPredator, bool isScavenger, float foodGrassWt);
     /// Apply damage. Returns true if creature died.
     bool TakeDamage(int amount);
     /// Authoritative HP overwrite from the server (Combat Phase 2).
@@ -84,6 +90,32 @@ public:
     int GetHp() const { return hp_; }
     int GetMaxHp() const { return maxHp_; }
     int GetDefense() const { return defense_; }
+
+    // --- DnD Ability Scores (rolled at birth, manifest as behavior) ---
+    struct AbilityScores
+    {
+        int strength{10};
+        int dexterity{10};
+        int constitution{10};
+        int intelligence{10};
+        int wisdom{10};
+        int charisma{10};
+
+        /// Standard DnD modifier: (score - 10) / 2
+        static int Mod(int score) { return (score - 10) / 2; }
+        int StrMod() const { return Mod(strength); }
+        int DexMod() const { return Mod(dexterity); }
+        int ConMod() const { return Mod(constitution); }
+        int IntMod() const { return Mod(intelligence); }
+        int WisMod() const { return Mod(wisdom); }
+        int ChaMod() const { return Mod(charisma); }
+    };
+    const AbilityScores& GetStats() const { return stats_; }
+
+    /// Roll ability scores using the given method. Call at creature creation.
+    void RollStats(int method = 1);  // 0=3d6, 1=4d6-drop-lowest
+    /// Roll ability scores with parental bias (lineage inheritance).
+    void RollStatsWithLineage(const AbilityScores& parent1, const AbilityScores& parent2);
 
     /// Server-driven state injection (Resource Chain Phase 2 trap-catch).
     /// Externally-set states like CREATURE_TRAPPED need a public setter so the
@@ -102,12 +134,20 @@ public:
     bool IsServerDriven() const { return serverDriven_; }
 
     // --- Vision ---
-    /// Maximum sight distance in world units. Override per-species. 0 = blind.
-    virtual float GetVisionRange() const { return 0.0f; }
-    /// Cosine of the half-angle of the vision cone. 0.5 = 120 degrees, 0.7 = ~90 degrees.
-    virtual float GetVisionCosAngle() const { return 0.5f; }
-    /// True if this creature is a predator (hunts live prey). Default false.
-    virtual bool IsPredator() const { return false; }
+    /// Maximum sight distance in world units. DB value if set, else subclass override.
+    /// WIS modifier scales vision range for prey creatures: +10% per +1 WIS mod.
+    /// Wise prey spot predators sooner. Predator vision is unchanged (hunting instinct, not wisdom).
+    virtual float GetVisionRange() const
+    {
+        float base = dbVisionRange_ >= 0.0f ? dbVisionRange_ : 0.0f;
+        if (!IsPredator() && base > 0.0f)
+            base *= (1.0f + stats_.WisMod() * 0.1f);
+        return Max(0.0f, base);
+    }
+    /// Cosine of the half-angle of the vision cone. DB value if set, else subclass override.
+    virtual float GetVisionCosAngle() const { return dbVisionAngle_ >= 0.0f ? dbVisionAngle_ : 0.5f; }
+    /// True if this creature is a predator. DB value if set, else subclass override.
+    virtual bool IsPredator() const { return dbIsPredator_ >= 0 ? (dbIsPredator_ != 0) : false; }
     /// Dot-product vision cone test. Returns true if 'other' is within this
     /// creature's vision range AND inside the forward-facing cone.
     bool CanSee(const Creature* other) const;
@@ -123,11 +163,24 @@ public:
     }
     virtual bool HasVitals() const { return false; }
 
+    /// Load survival rules from GameDB into static caches. Call once after InitGameDB().
+    static void LoadSurvivalRules(GameDB* db);
+
+    /// Public read access to cached DB survival thresholds for HUD status icons.
+    static const HungerRules&  GetHungerRules()  { return hungerRules_; }
+    static const ThirstRules&  GetThirstRules()  { return thirstRules_; }
+    static const WarmthRules&  GetWarmthRules()  { return warmthRules_; }
+    static const StaminaRules& GetStaminaRules() { return staminaRules_; }
+    static const DeathRules&   GetDeathRules()   { return deathRules_; }
+
     /// Bark vessel contents (0=empty, 1=fire, 2=water). Broadcast via trailing u8 on AI state.
     void SetVesselContents(unsigned char v) { vesselContents_ = v; }
     unsigned char GetVesselContents() const { return vesselContents_; }
 
 protected:
+    /// DnD ability scores — rolled at creation, affect all behavior.
+    AbilityScores stats_;
+
     // --- Subclass overrides: asset paths ---
     virtual String GetModelPath() const = 0;
     virtual String GetIdleAnim() const { return String::EMPTY; }
@@ -153,13 +206,27 @@ protected:
     /// stoke the fire" gesture on the client. Non-empty only for species that
     /// tend fires (humans). Empty = no overlay, sit loop plays straight.
     virtual String GetTendAnim() const { return String::EMPTY; }
+    /// Treading water — idle animation while in water (not swimming forward).
+    virtual String GetTreadWaterAnim() const { return String::EMPTY; }
+    /// Low crawl — stealth/sneak movement.
+    virtual String GetCrawlAnim() const { return String::EMPTY; }
+    /// Standing idle — upright idle variant (e.g. alert/aware).
+    virtual String GetStandingAnim() const { return String::EMPTY; }
+    /// Disappointed reaction animation.
+    virtual String GetDisappointedAnim() const { return String::EMPTY; }
+    /// Dance/celebration animation.
+    virtual String GetDanceAnim() const { return String::EMPTY; }
+    /// Shearing animation (kneeling gather gesture at animal).
+    virtual String GetShearAnim() const { return String::EMPTY; }
+    /// Fishing animation (sitting at water's edge, waiting for a bite).
+    virtual String GetFishAnim() const { return String::EMPTY; }
 
     // --- Subclass overrides: behavior tuning ---
     virtual float GetDesiredSize() const { return 1.0f; }
     virtual float GetWanderRadius() const { return 20.0f; }
     virtual float GetWanderSpeed() const { return 2.0f; }
-    virtual float GetFleeSpeed() const { return 6.0f; }
-    virtual float GetFleeDistance() const { return 30.0f; }
+    virtual float GetFleeSpeed() const { return dbFleeSpeed_ >= 0.0f ? dbFleeSpeed_ : 6.0f; }
+    virtual float GetFleeDistance() const { return dbFleeDistance_ >= 0.0f ? dbFleeDistance_ : 30.0f; }
     virtual float GetMinIdleDuration() const { return 3.0f; }
     virtual float GetMaxIdleDuration() const { return 8.0f; }
 
@@ -199,6 +266,14 @@ protected:
     float stamina_{100.0f};     ///< Full = rested. Depletes with activity. Restored by SLEEP/SIT.
     float warmth_{100.0f};      ///< Full = warm. Depletes faster at night. Restored by campfire.
 
+    // --- Cached DB rules (loaded once via LoadSurvivalRules) ---
+    static HungerRules  hungerRules_;
+    static ThirstRules  thirstRules_;
+    static WarmthRules  warmthRules_;
+    static StaminaRules staminaRules_;
+    static DeathRules   deathRules_;
+    static bool         rulesLoaded_;
+
     /// Tick vitals based on time of day. Pass sun altitude in [-1, 1].
     void UpdateVitals(float timeStep, float sunAltitude);
     /// Pick the most urgent need and return the matching state. Returns CREATURE_IDLE if none urgent.
@@ -233,6 +308,15 @@ protected:
     float fleeFraction_{0.3f};
     String aggression_{"passive"};
     float combatTimer_{0.0f};
+
+    // --- DB-driven behavior stats (set via InitBehaviorStats) ---
+    float dbFleeSpeed_{-1.0f};       ///< <0 = use subclass override
+    float dbFleeDistance_{-1.0f};
+    float dbVisionRange_{-1.0f};
+    float dbVisionAngle_{-1.0f};
+    float dbFoodGrassWt_{-1.0f};
+    int   dbIsPredator_{-1};         ///< <0 = use subclass override
+    int   dbIsScavenger_{-1};
 
     // --- Damage text (self-owned floating UI) ---
     void HandleCombatResult(StringHash eventType, VariantMap& eventData);

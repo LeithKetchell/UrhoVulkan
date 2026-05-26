@@ -732,11 +732,12 @@ void Serializable::WriteInitialDeltaUpdate(Serializer& dest, unsigned char timeS
     unsigned numAttributes = attributes->Size();
     DirtyBits attributeBits;
 
-    // Compare against defaults
+    // Snapshot current attribute values before comparing — currentValues_ may
+    // not have been populated yet if PrepareNetworkUpdate hasn't run.
     for (unsigned i = 0; i < numAttributes; ++i)
     {
-        const AttributeInfo& attr = attributes->At(i);
-        if (networkState_->currentValues_[i] != attr.defaultValue_)
+        OnGetAttribute(attributes->At(i), networkState_->currentValues_[i]);
+        if (networkState_->currentValues_[i] != attributes->At(i).defaultValue_)
             attributeBits.Set(i);
     }
 

@@ -54,6 +54,7 @@
 #include <Urho3D/Audio/AudioDefs.h>
 #include <Urho3D/Audio/SoundListener.h>
 #include "MetalDeposits.h"
+#include "SoilMap.h"
 #include "Soundscape.h"
 #include "WaterRippleSystem.h"
 #include "CampfireEvents.h"
@@ -399,7 +400,8 @@ static const int MSG_AUTH_REGISTER   = 101;
 static const int MSG_AUTH_RESULT     = 102;
 static const int MSG_LOAD_SCENE      = 103;
 static const int MSG_REGISTER_GUID   = 104;  // Client → AuthServer: register NAT GUID after auth
-static const int MSG_WEATHER_UPDATE  = 120;  // AuthServer → Client: weather forecast
+static const int MSG_WEATHER_UPDATE    = 120;  // AuthServer → Client: weather forecast
+static const int MSG_CELESTIAL_STATE   = 121;  // AuthServer → Client: moon phase, eclipse
 
 // Remote event for telling clients which avatar node they control
 static const StringHash E_CLIENTOBJECTID("ClientObjectID");
@@ -482,7 +484,7 @@ void TerrainNode::Start()
     BuildingSystem::RegisterObject(context_);  // Re-enabled: needed for network replication
     Soundscape::RegisterObject(context_);
     MetalDeposits::RegisterObject(context_);
-
+    SoilMap::RegisterObject(context_);
     // Driven key / response curve system
     {
         context_->RegisterSubsystem(new DrivenKeySystem(context_));
@@ -1126,15 +1128,16 @@ void TerrainNode::OnGameSceneLoaded(StringHash, VariantMap&)
     // Connection::HandleAsyncLoadFinished sends MSG_SCENELOADED to the server.
     // No explicit send needed — verified working.
 
+    // Create client-only visual entities (LOCAL nodes — not replicated)
+    // Must happen BEFORE SetupSceneBindings so water/sky/camera nodes exist when bindings resolve
+    URHO3D_LOGINFO("[NetDebug] Calling CreateLocalVisuals...");
+    CreateLocalVisuals();
+    URHO3D_LOGINFO("[NetDebug] CreateLocalVisuals done");
+
     // Bind cached pointers from the loaded scene (terrain_, zone_, etc.)
     URHO3D_LOGINFO("[NetDebug] Calling SetupSceneBindings...");
     SetupSceneBindings();
     URHO3D_LOGINFO("[NetDebug] SetupSceneBindings done");
-
-    // Create client-only visual entities (LOCAL nodes — not replicated)
-    URHO3D_LOGINFO("[NetDebug] Calling CreateLocalVisuals...");
-    CreateLocalVisuals();
-    URHO3D_LOGINFO("[NetDebug] CreateLocalVisuals done");
 
     // Enter the world — UI, camera, HUD
     URHO3D_LOGINFO("[NetDebug] Calling FinishEnterWorld...");
@@ -1189,7 +1192,7 @@ void TerrainNode::CreateLocalVisuals()
     camera->SetFarClip(750.0f);
     cameraNode_->SetPosition(Vector3(0.0f, 50.0f, 0.0f));
 
-    // Client-only entities
+    // Client-only entities — things the server doesn't replicate
     CreateCelestialBodies();
     CreateOOFOs();
     CreateFish();
@@ -1690,6 +1693,9 @@ void TerrainNode::SetupSceneBindings()
     // Metal deposits — must be cached so terrain brush can expose buried deposits
     metalDeposits_ = scene_->GetDerivedComponent<MetalDeposits>(true);
 
+    // Soil map — cached for O(1) soil queries
+    soilMap_ = scene_->GetDerivedComponent<SoilMap>(true);
+
     // Restore settings from scene Vars (auto-serialized with scene)
     {
         const Variant& gr = scene_->GetVar("GodRays");
@@ -1801,6 +1807,17 @@ void TerrainNode::CreateSceneGraph()
         int hmSize = terrain->GetHeightMap()->GetWidth();
         if (md->LoadMap("Textures/MetalDeposits.png", hmSize))
             md->SpawnOutcrops(scene_, terrain, 5.0f);
+    }
+
+    // Soil map (Plan 9 — soil type, fertility, mineral density, moisture)
+    {
+        auto* sm = terrainNode->CreateComponent<SoilMap>();
+        int hmSize = terrain->GetHeightMap()->GetWidth();
+        if (!sm->LoadMap("Textures/SoilMap.png", hmSize))
+        {
+            sm->GenerateDefault(terrain, 5.0f);
+            sm->SaveMap("Data/Textures/SoilMap.png");
+        }
     }
 
     // 1000 boxes
@@ -2030,7 +2047,7 @@ void TerrainNode::SetupViewport()
         waterPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
         waterClipPlane_ = Plane(waterNode_->GetWorldRotation() * Vector3(0.0f, 1.0f, 0.0f), waterNode_->GetWorldPosition());
 
-        reflectionCameraNode_ = cameraNode_->CreateChild();
+        reflectionCameraNode_ = scene_->CreateChild("ReflectionCamera", LOCAL);
         auto* reflectionCamera = reflectionCameraNode_->CreateComponent<Camera>();
         reflectionCamera->SetFarClip(750.0f);  // Must reach sun/moon billboards for water reflection
         reflectionCamera->SetViewMask(0x7fffffff);
@@ -3423,18 +3440,23 @@ void TerrainNode::HandleTimeOfDaySlider(StringHash eventType, VariantMap& eventD
         todLabel_->SetText(buf);
     }
 
-    // Send admin time override to server — god of gods only
+    // Send adjusted UTC epoch to server — privileged clients only
     auto* network = GetSubsystem<Network>();
     Connection* serverConn = network ? network->GetServerConnection() : nullptr;
     if (serverConn && loggedIn_)
     {
-        float overrideHour = timeOfDay_ + timeOfDayOffset_;
-        if (overrideHour < 0.0f) overrideHour += 24.0f;
-        if (overrideHour >= 24.0f) overrideHour -= 24.0f;
+        // Compute total scrub delta in seconds from all sliders
+        float hourDelta = timeOfDayOffset_ * 3600.0f;
+        float dayDelta = (daySliderOffset_ + monthSliderOffset_ + yearSliderOffset_) * 86400.0f;
+        long long scrubDeltaSeconds = (long long)(hourDelta + dayDelta);
+
+        // Client's real UTC + scrub = the new epoch basis for the server
+        long long adjustedEpoch = (long long)time(nullptr) + scrubDeltaSeconds;
 
         VectorBuffer buf;
-        buf.WriteFloat(overrideHour);
-        buf.WriteI32(dayOfYear_);
+        buf.WriteFloat(0.0f);   // legacy hour (ignored when epoch present)
+        buf.WriteI32(0);        // legacy doy (ignored when epoch present)
+        buf.WriteI64((long long)adjustedEpoch);
         serverConn->SendMessage(MSG_ADMIN_TIME_OVERRIDE, true, true, buf);
     }
 }
@@ -3493,6 +3515,23 @@ void TerrainNode::ApplyDateOffsets()
 
     // Force atmosphere update
     UpdateAtmosphere(CalculateSunAltitude());
+
+    // Send adjusted UTC epoch to server so NPC behavior syncs to god's chosen time
+    auto* network = GetSubsystem<Network>();
+    Connection* serverConn = network ? network->GetServerConnection() : nullptr;
+    if (serverConn && loggedIn_)
+    {
+        float hourDelta = timeOfDayOffset_ * 3600.0f;
+        float dayDelta = (daySliderOffset_ + monthSliderOffset_ + yearSliderOffset_) * 86400.0f;
+        long long scrubDeltaSeconds = (long long)(hourDelta + dayDelta);
+        long long adjustedEpoch = (long long)time(nullptr) + scrubDeltaSeconds;
+
+        VectorBuffer buf;
+        buf.WriteFloat(0.0f);
+        buf.WriteI32(0);
+        buf.WriteI64((long long)adjustedEpoch);
+        serverConn->SendMessage(MSG_ADMIN_TIME_OVERRIDE, true, true, buf);
+    }
 }
 
 void TerrainNode::HandleFishWiggleSlider(StringHash eventType, VariantMap& eventData)
@@ -6808,6 +6847,13 @@ void TerrainNode::MoveCamera(float timeStep)
         UpdateCharacterCamera();
     }
 
+    // Sync reflection camera to main camera each frame
+    if (reflectionCameraNode_ && cameraNode_)
+    {
+        reflectionCameraNode_->SetWorldPosition(cameraNode_->GetWorldPosition());
+        reflectionCameraNode_->SetWorldRotation(cameraNode_->GetWorldRotation());
+    }
+
     // Terrain brush raycast — only in editor camera mode
     hasBrushHit_ = false;
     bool showBrush = cameraMode_ == CAM_GOD && ((brushMode_ != 0) || (terrainPanel_ && terrainPanel_->IsVisible()) || prefabBrush_);
@@ -7798,7 +7844,6 @@ void TerrainNode::CreateCelestialBodies()
     auto* moonTech = cache->GetResource<Technique>("Techniques/MoonPhaseDiffMap.xml");
     moonMat_->SetTechnique(0, moonTech ? moonTech : sunTech);
     moonMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, 1.0f));
-    moonMat_->SetShaderParameter("MoonPhase", 0.0f);
     moonMat_->SetTexture(TU_DIFFUSE, cache->GetResource<Texture2D>("Textures/Moon.png"));
     auto* moonBB = moonNode_->CreateComponent<BillboardSet>();
     moonBB->SetNumBillboards(1);
@@ -7810,6 +7855,23 @@ void TerrainNode::CreateCelestialBodies()
     moonQuad->size_ = Vector2(20.0f, 20.0f);
     moonQuad->enabled_ = true;
     moonBB->Commit();
+
+    // Earth shadow disc — sits in front of the moon, slides by phase angle
+    moonShadowNode_ = moonNode_->CreateChild("EarthShadow", LOCAL);
+    moonShadowMat_ = new Material(context_);
+    auto* shadowTech = cache->GetResource<Technique>("Techniques/EarthShadow.xml");
+    moonShadowMat_->SetTechnique(0, shadowTech ? shadowTech : sunTech);
+    moonShadowMat_->SetShaderParameter("MatDiffColor", Color(0.0f, 0.0f, 0.0f, 1.0f));
+    auto* shadowBB = moonShadowNode_->CreateComponent<BillboardSet>();
+    shadowBB->SetNumBillboards(1);
+    shadowBB->SetMaterial(moonShadowMat_);
+    shadowBB->SetFaceCameraMode(FC_ROTATE_XYZ);
+    shadowBB->SetSorted(false);
+    Billboard* shadowQuad = shadowBB->GetBillboard(0);
+    shadowQuad->position_ = Vector3::ZERO;
+    shadowQuad->size_ = Vector2(22.0f, 22.0f);  // Slightly larger than moon for full coverage
+    shadowQuad->enabled_ = true;
+    shadowBB->Commit();
 
     // Reuse MoonLight from loaded scene XML if present, else create
     Node* moonLightNode = scene_->GetChild("MoonLight", true);
@@ -7921,9 +7983,20 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
     moonAge_ += timeStep * CELESTIAL_TIME_SCALE / 86400.0f;
     if (moonAge_ >= 29.53f) moonAge_ -= 29.53f;
 
-    // Phase 1 lunar cycle: pass phase to moon material shader
-    if (moonMat_)
-        moonMat_->SetShaderParameter("MoonPhase", moonAge_ / 29.53f);
+    // Earth shadow disc position — offset by phase angle
+    if (moonShadowNode_)
+    {
+        float phase = moonAge_ / 29.53f;  // 0..1 (0 = new moon, 0.5 = full)
+        float phaseAngle = phase * 2.0f * M_PI;
+        // cos(0) = 1 → new moon, shadow centered on moon (fully dark)
+        // cos(PI) = -1 → full moon, shadow way off to the side (fully lit)
+        // Moon billboard radius is 10 units (20x20 quad / 2)
+        float moonRadius = 10.0f;
+        float shadowOffset = -cosf(phaseAngle) * moonRadius * 2.0f;
+        // Waxing (phase 0→0.5): shadow retreats from right to left
+        // Waning (phase 0.5→1): shadow advances from right to left
+        moonShadowNode_->SetPosition(Vector3(shadowOffset, 0.0f, -0.5f));  // z=-0.5 = slightly in front
+    }
 
     cloudAngle_ += timeStep * CELESTIAL_TIME_SCALE * 6.2831853f / (18.0f * 3600.0f);
     if (cloudAngle_ > 6.2831853f) cloudAngle_ -= 6.2831853f;
@@ -7950,7 +8023,22 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
         if (bb) bb->SetEnabled(cachedSunAlt_ > 0.0f);  // hide at/below horizon
     }
     if (sunLight_)
-        sunLight_->GetNode()->SetDirection((camPos - (sunNode_ ? sunNode_->GetPosition() : Vector3::ZERO)).Normalized());
+    {
+        // Quantize light direction to discrete angular steps to prevent shadow
+        // map shimmer. The real-time Melbourne sun moves continuously, and even
+        // with texel snapping the shadow frustum rotation causes per-frame
+        // texel swimming. Snapping to ~0.2 degree steps makes the direction
+        // perceptually smooth while keeping the shadow map stable.
+        Vector3 rawDir = (camPos - (sunNode_ ? sunNode_->GetPosition() : Vector3::ZERO)).Normalized();
+        static constexpr float SHADOW_DIR_STEP = 0.0035f;  // ~0.2 degrees in radians
+        float invStep = 1.0f / SHADOW_DIR_STEP;
+        rawDir.x_ = roundf(rawDir.x_ * invStep) * SHADOW_DIR_STEP;
+        rawDir.y_ = roundf(rawDir.y_ * invStep) * SHADOW_DIR_STEP;
+        rawDir.z_ = roundf(rawDir.z_ * invStep) * SHADOW_DIR_STEP;
+        float len = rawDir.Length();
+        if (len > 0.001f)
+            sunLight_->GetNode()->SetDirection(rawDir / len);
+    }
 
     cachedMoonAlt_ = CalculateMoonAltitude();
     cachedMoonAz_ = CalculateMoonAzimuth(cachedMoonAlt_);
@@ -7985,7 +8073,8 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                 cachedSunOccluded_ = false;
                 for (unsigned i = 0; i < results.Size(); ++i)
                 {
-                    if (!dynamic_cast<TerrainPatch*>(results[i].drawable_))
+                    auto* drawable = results[i].drawable_;
+                    if (!dynamic_cast<TerrainPatch*>(drawable) && !drawable->IsOccluder())
                         continue;
                     if (results[i].distance_ < sunDist)
                     {
@@ -8007,7 +8096,8 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
                 cachedMoonOccluded_ = false;
                 for (unsigned i = 0; i < results.Size(); ++i)
                 {
-                    if (!dynamic_cast<TerrainPatch*>(results[i].drawable_))
+                    auto* drawable = results[i].drawable_;
+                    if (!dynamic_cast<TerrainPatch*>(drawable) && !drawable->IsOccluder())
                         continue;
                     if (results[i].distance_ < moonDist)
                     {
@@ -8028,11 +8118,7 @@ void TerrainNode::UpdateCelestialBodies(float timeStep)
         float moonTarget = cachedMoonOccluded_ ? 0.0f : 1.0f;
         moonOcclusionFade_ = Lerp(moonOcclusionFade_, moonTarget, Min(1.0f, timeStep * 2.0f));
         if (moonMat_)
-        {
             moonMat_->SetShaderParameter("MatDiffColor", Color(1.0f, 1.0f, 1.0f, moonOcclusionFade_));
-            // Phase 1 lunar cycle: pass phase to terminator shader
-            moonMat_->SetShaderParameter("MoonPhase", moonAge_ / 29.53f);
-        }
     }
 
     UpdateAtmosphere(cachedSunAlt_);
@@ -8349,56 +8435,84 @@ void TerrainNode::CreateSnow()
     URHO3D_LOGINFO("Snow particle system created");
 }
 
+void TerrainNode::UpdateCachedClimate()
+{
+    if (!gameDB_)
+        return;
+
+    // Determine current season string from dayOfYear_
+    float seasonAngle = fmodf((dayOfYear_ - 81) / 365.0f + 1.0f, 1.0f);
+    String season;
+    if (seasonAngle < 0.25f)
+        season = "spring";
+    else if (seasonAngle < 0.5f)
+        season = "summer";
+    else if (seasonAngle < 0.75f)
+        season = "autumn";
+    else
+        season = "winter";
+
+    gameDB_->GetClimateRules(season, "day", cachedClimateDay_);
+    gameDB_->GetClimateRules(season, "night", cachedClimateNight_);
+}
+
 float TerrainNode::CalculateTemperature() const
 {
-    // Base temp from season: summer ~25C, winter ~-5C
-    // seasonAngle: 0=spring equinox, 0.25=summer, 0.5=autumn, 0.75=winter
-    float seasonAngle = fmodf((dayOfYear_ - 81) / 365.0f + 1.0f, 1.0f);
-    float baseTemp;
-    if (seasonAngle < 0.25f)       // spring: 5..20
-        baseTemp = Lerp(5.0f, 20.0f, seasonAngle / 0.25f);
-    else if (seasonAngle < 0.5f)   // summer: 20..25..20
-        baseTemp = 20.0f + 5.0f * sinf((seasonAngle - 0.25f) / 0.25f * 3.14159f);
-    else if (seasonAngle < 0.75f)  // autumn: 20..0
-        baseTemp = Lerp(20.0f, 0.0f, (seasonAngle - 0.5f) / 0.25f);
-    else                            // winter: 0..-5..0
-        baseTemp = -5.0f * sinf((seasonAngle - 0.75f) / 0.25f * 3.14159f);
+    // Interpolate between cached day and night base temps from DB
+    float effectiveTime = fmodf(timeOfDay_ + timeOfDayOffset_ + 24.0f, 24.0f);
+
+    // Day/night blend: 0.0 = full night, 1.0 = full day
+    float dayFactor;
+    if (effectiveTime >= 7.0f && effectiveTime <= 17.0f)
+        dayFactor = 1.0f;   // full day
+    else if (effectiveTime >= 20.0f || effectiveTime <= 4.0f)
+        dayFactor = 0.0f;   // full night
+    else if (effectiveTime < 7.0f)
+        dayFactor = (effectiveTime - 4.0f) / 3.0f;   // dawn transition 4-7
+    else
+        dayFactor = 1.0f - (effectiveTime - 17.0f) / 3.0f;  // dusk transition 17-20
+
+    float baseTemp = Lerp(cachedClimateNight_.baseTemp, cachedClimateDay_.baseTemp, dayFactor);
 
     // Altitude effect: -6C per 100 units above water level (lapse rate)
     float cameraY = cameraNode_ ? cameraNode_->GetWorldPosition().y_ : 5.0f;
     float altAboveWater = Max(cameraY - 5.0f, 0.0f);
     float altEffect = altAboveWater * 0.06f;  // 6C per 100 units
 
-    // Night cooling: -5C at midnight, 0 at noon
-    float effectiveTime = fmodf(timeOfDay_ + timeOfDayOffset_ + 24.0f, 24.0f);
-    float nightEffect = 0.0f;
-    if (effectiveTime < 6.0f)
-        nightEffect = 5.0f * (1.0f - effectiveTime / 6.0f);       // midnight→dawn: 5→0
-    else if (effectiveTime > 18.0f)
-        nightEffect = 5.0f * ((effectiveTime - 18.0f) / 6.0f);    // dusk→midnight: 0→5
-
-    return baseTemp - altEffect - nightEffect;
+    return baseTemp - altEffect;
 }
 
 float TerrainNode::CalculateEffectiveTemperature() const
 {
     float temp = CalculateTemperature();
 
-    // Wind chill: wind speed reduces perceived temperature
-    // weather_.windSpeed is 0..1 normalized; strong wind at 1.0 = -8C chill
-    float windChill = weather_.windSpeed * 8.0f;
-    temp -= windChill;
+    // Interpolate wind/rain chill between day and night DB values
+    float effectiveTime = fmodf(timeOfDay_ + timeOfDayOffset_ + 24.0f, 24.0f);
+    float dayFactor;
+    if (effectiveTime >= 7.0f && effectiveTime <= 17.0f)
+        dayFactor = 1.0f;
+    else if (effectiveTime >= 20.0f || effectiveTime <= 4.0f)
+        dayFactor = 0.0f;
+    else if (effectiveTime < 7.0f)
+        dayFactor = (effectiveTime - 4.0f) / 3.0f;
+    else
+        dayFactor = 1.0f - (effectiveTime - 17.0f) / 3.0f;
 
-    // Rain chill: being in rain is cold; precipitation 0..1, max -5C chill
+    float windChillMax = Lerp(cachedClimateNight_.windChill, cachedClimateDay_.windChill, dayFactor);
+    float rainChillMax = Lerp(cachedClimateNight_.rainChill, cachedClimateDay_.rainChill, dayFactor);
+
+    // Wind chill: wind speed reduces perceived temperature
+    temp -= weather_.windSpeed * windChillMax;
+
+    // Rain chill: being in rain is cold
     if (weather_.precipitation > 0.1f)
     {
-        float rainChill = (weather_.precipitation - 0.1f) / 0.9f * 5.0f;
+        float rainChill = (weather_.precipitation - 0.1f) / 0.9f * rainChillMax;
         temp -= rainChill;
     }
 
-    // Cloud cover reduces solar warming during day
-    // Overcast dims warmth by up to 3C
-    temp -= weather_.cloudCover * 3.0f;
+    // Cloud cover reduces solar warming during day (proportional to day wind chill as proxy)
+    temp -= weather_.cloudCover * cachedClimateDay_.windChill;
 
     return temp;
 }
@@ -8523,16 +8637,14 @@ void TerrainNode::CreateCampfire()
     campfireNode_ = scene_->CreateChild("Campfire");
     campfireNode_->SetPosition(bestPos);
 
-    // Fire pit base — small dark cylinder for selection, bounding box, and visual grounding
+    // Fire pit base — Bonfire model with wood materials
     Node* pitNode = campfireNode_->CreateChild("Pit");
-    pitNode->SetScale(Vector3(0.4f, 0.4f, 0.4f));
     auto* pitModel = pitNode->CreateComponent<StaticModel>();
-    Model* pitMdl = cache->GetResource<Model>("Models/Props/Anvil_Log.mdl");
+    Model* pitMdl = cache->GetResource<Model>("Models/Buildings/Bonfire.mdl");
     if (!pitMdl) pitMdl = cache->GetResource<Model>("Models/Cylinder.mdl");  // fallback
     pitModel->SetModel(pitMdl);
-    pitModel->SetMaterial(0, cache->GetResource<Material>("Materials/MI_Trim_Furniture.xml"));
-    pitModel->SetMaterial(1, cache->GetResource<Material>("Materials/MI_Trim_Props.xml"));
-    pitModel->SetMaterial(2, cache->GetResource<Material>("Materials/MI_Trim_Metal.xml"));
+    pitModel->SetMaterial(0, cache->GetResource<Material>("Materials/Wood.xml"));
+    pitModel->SetMaterial(1, cache->GetResource<Material>("Materials/LightWood.xml"));
 
     // Fire emitter — load existing Fire.xml particle effect
     auto* fireEffect = cache->GetResource<ParticleEffect>("Particle/Fire.xml");
@@ -8851,6 +8963,37 @@ void TerrainNode::UpdateCampfireFuel(float realTimeStep)
         }
     }
 
+    // Offline fire state machine — drive activeFirePitState_ locally when no server
+    if (activeFirePitId_ == 0)
+    {
+        if (fuelSeconds_ > 0.0f)
+        {
+            if (activeFirePitState_ != 1 /* PIT_LIT */)
+            {
+                activeFirePitState_ = 1;
+                fireOut_ = false;
+                embersTimeRemaining_ = 0.0f;
+                URHO3D_LOGINFO("Campfire (local): fire revived — LIT");
+            }
+        }
+        else if (activeFirePitState_ == 1 /* PIT_LIT */)
+        {
+            activeFirePitState_ = 2;
+            embersTimeRemaining_ = EMBERS_DURATION;
+            URHO3D_LOGINFO("Campfire (local): fuel exhausted — EMBERS");
+        }
+        else if (activeFirePitState_ == 2 /* PIT_EMBERS */)
+        {
+            embersTimeRemaining_ -= realTimeStep;
+            if (embersTimeRemaining_ <= 0.0f)
+            {
+                embersTimeRemaining_ = 0.0f;
+                activeFirePitState_ = 3;
+                URHO3D_LOGINFO("Campfire (local): embers died — COLD");
+            }
+        }
+    }
+
     // Embers emitter — pulsating red/yellow glow only during EMBERS state
     if (campfireEmbersEmitter_)
     {
@@ -8882,8 +9025,15 @@ void TerrainNode::UpdateCampfireFuel(float realTimeStep)
         }
     }
 
+    // COLD state — kill the light entirely
+    if (activeFirePitState_ == 3 /* PIT_COLD */ && campfireLight_)
+    {
+        campfireLight_->SetBrightness(0.0f);
+        campfireLight_->SetRange(0.0f);
+    }
+
     // Track latched fire-out state for log spam control + future events
-    if (!fireOut_ && fireIntensity_ <= 0.0f)
+    if (!fireOut_ && fireIntensity_ <= 0.0f && activeFirePitState_ != 2 /* not embers */)
     {
         fireOut_ = true;
         URHO3D_LOGINFO("Campfire: fuel exhausted — fire is out");
@@ -8908,14 +9058,13 @@ void TerrainNode::TryPlantCrop()
     if (!serverConn)
         return;
 
-    // Find first seed in inventory (700=Wheat, 701=Flax, 702=Berry Bush)
+    // Find first seed in inventory (any item registered in crop_types)
     int seedItemId = 0;
     for (unsigned i = 0; i < inventory_.Size(); ++i)
     {
-        int id = inventory_[i].itemId;
-        if (id == 700 || id == 701 || id == 702)
+        if (seedItemIds_.Contains(inventory_[i].itemId))
         {
-            seedItemId = id;
+            seedItemId = inventory_[i].itemId;
             break;
         }
     }
@@ -9121,11 +9270,27 @@ void TerrainNode::TryCampfireInteract()
         return;
     }
 
-    // Offline fallback: no server pit adopted, keep the Phase 1 free-fuel hack
-    // so single-player Sample 60 testing still works.
-    fuelSeconds_ = Min(fuelSeconds_ + STICK_BURN_SECONDS, maxFuelSeconds_);
+    // Offline fallback: no server pit adopted. Local state machine drives transitions.
+    if (activeFirePitState_ == 3 /* PIT_COLD */)
+    {
+        if (hud_)
+            hud_->SetContextHint("Fire is cold — need Softwood + Hardwood to relight");
+        return;
+    }
+
+    if (activeFirePitState_ == 2 /* PIT_EMBERS */)
+    {
+        // Embers revival — cheap, just softwood
+        fuelSeconds_ = Min(fuelSeconds_ + stickBurnSeconds_, maxFuelSeconds_);
+        URHO3D_LOGINFOF("Campfire (local): embers revived! +%.0fs fuel (now %.0f / %.0f)",
+            stickBurnSeconds_, fuelSeconds_, maxFuelSeconds_);
+        return;
+    }
+
+    // LIT or UNLIT — add fuel normally
+    fuelSeconds_ = Min(fuelSeconds_ + stickBurnSeconds_, maxFuelSeconds_);
     URHO3D_LOGINFOF("Campfire (local): +%.0fs fuel (now %.0f / %.0f)",
-        STICK_BURN_SECONDS, fuelSeconds_, maxFuelSeconds_);
+        stickBurnSeconds_, fuelSeconds_, maxFuelSeconds_);
 }
 
 // ============================================================================
@@ -9135,7 +9300,15 @@ void TerrainNode::TryCampfireInteract()
 void TerrainNode::CreateFish()
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* fishModel = cache->GetResource<Model>("Models/UrhoFish.mdl");
+
+    // Query DB creature id=8 for fish stats
+    CreatureInfo fishCI;
+    bool hasFishDB = false;
+    if (gameDB_)
+        hasFishDB = gameDB_->GetCreature(8, fishCI);
+
+    String fishModelPath = hasFishDB && !fishCI.model.Empty() ? fishCI.model : "Models/UrhoFish.mdl";
+    auto* fishModel = cache->GetResource<Model>(fishModelPath);
     auto* fishMat = cache->GetResource<Material>("Materials/UrhoFish.xml");
 
     if (!fishModel || !fishMat)
@@ -9232,6 +9405,13 @@ void TerrainNode::CreateFish()
 
         // Attach Fish component — handles its own swim AI
         auto* fish = fishNode->CreateComponent<Fish>();
+        if (hasFishDB)
+        {
+            float speed = (float)fishCI.speed * 0.0625f;  // DB speed 8 → 0.5 swim units
+            float vr = fishCI.visionRange > 0.0f ? fishCI.visionRange : fishCI.detectionRange * 4.0f;
+            fish->InitFromDB(fishCI.id, fishCI.model, speed, fishCI.wanderRadius,
+                             vr, fishCI.visionAngle, true);  // big fish = predator
+        }
         fish->SetMaterials(baseMat, orbitMat, stareMat);
         fish->SetCameraNode(cameraNode_);
         fish->SetSpatialHash(&fishSpatialHash_);
@@ -9246,7 +9426,15 @@ void TerrainNode::CreateFish()
 void TerrainNode::CreateSchoolFish()
 {
     auto* cache = GetSubsystem<ResourceCache>();
-    auto* fishModel = cache->GetResource<Model>("Models/UrhoFish.mdl");
+
+    // Query DB creature id=8 for model path
+    CreatureInfo fishCI;
+    bool hasFishDB = false;
+    if (gameDB_)
+        hasFishDB = gameDB_->GetCreature(8, fishCI);
+
+    String fishModelPath = hasFishDB && !fishCI.model.Empty() ? fishCI.model : "Models/UrhoFish.mdl";
+    auto* fishModel = cache->GetResource<Model>(fishModelPath);
     auto* fishMat = cache->GetResource<Material>("Materials/UrhoFish.xml");
 
     if (!fishModel || !fishMat)
@@ -9258,9 +9446,9 @@ void TerrainNode::CreateSchoolFish()
     schoolMat->SetShaderParameter("WiggleFrequency", 8.0f);
 
     const float waterY = 5.0f;
-    const float TINY_SCALE = 0.3f;  // ~1/3 of regular fish size
+    const float TINY_SCALE = hasFishDB ? fishCI.desiredSize * 1.5f : 0.3f;
     const int NUM_SCHOOLS = 3;
-    const int FISH_PER_SCHOOL = 15;
+    const int FISH_PER_SCHOOL = hasFishDB ? Max(fishCI.packSize * 5, 15) : 15;
     Terrain* t = terrain_;
     Node* sunLightNode = scene_->GetChild("DirectionalLight", true);
 
@@ -9285,6 +9473,16 @@ void TerrainNode::CreateSchoolFish()
 
     // Distribute schools evenly across all deep water, not random clustering
     const float schoolStride = deepPoints.Empty() ? 1.0f : (float)deepPoints.Size() / (float)NUM_SCHOOLS;
+
+    // Initialize per-school population tracking
+    schoolPopStates_.Resize(NUM_SCHOOLS);
+    for (int s = 0; s < NUM_SCHOOLS; ++s)
+    {
+        schoolPopStates_[s].schoolID = (unsigned)s;
+        schoolPopStates_[s].currentCount = FISH_PER_SCHOOL;
+        schoolPopStates_[s].populationCap = FISH_PER_SCHOOL;  // habitat-driven cap = initial size
+        schoolPopStates_[s].totalCaught = 0;
+    }
 
     for (int school = 0; school < NUM_SCHOOLS; ++school)
     {
@@ -9314,10 +9512,18 @@ void TerrainNode::CreateSchoolFish()
             sm->SetCastShadows(false);
 
             auto* fish = fishNode->CreateComponent<SchoolFish>();
+            if (hasFishDB)
+            {
+                float speed = (float)fishCI.speed * 0.1f;  // DB speed 8 → 0.8 school swim speed
+                float vr = fishCI.detectionRange * 3.0f;   // school fish: wider awareness
+                fish->InitFromDB(fishCI.id, fishCI.model, speed, fishCI.wanderRadius * 4.0f,
+                                 vr, 0.3f, false);  // school fish = prey
+            }
             fish->SetSchoolID(school);
             fish->SetCameraNode(cameraNode_);
             fish->SetSpatialHash(&fishSpatialHash_);
             fish->SetSchoolCache(&schoolStateCache_);
+            fish->SetPopulationState(&schoolPopStates_[school]);
             if (sunLightNode)
                 fish->SetSunLightNode(sunLightNode);
             fishNodes_.Push(WeakPtr<Node>(fishNode));
@@ -9367,48 +9573,33 @@ void TerrainNode::RebuildLandAnimalSpatialHash()
 // Animals
 // ============================================================================
 
-// Spawn table — moved to file scope so SpawnCreatureAt() and CreateAnimals()
-// share one source of truth. Maps species name → model path, material list,
+// Spawn table — built dynamically from GameDB::GetCreaturesByHabitat()
+// at InitGameDB time. Maps species name → model path, material list,
 // creature DB ID, and a fallback default count for habitat-rule fallback.
 namespace
 {
     struct SpawnEntry {
-        const char* name;
-        const char* modelPath;
-        const char* matList;
+        String name;
+        String modelPath;
+        String matList;
         int creatureId;
         int defaultCount;
     };
 
-    static const SpawnEntry kSpawnTable[] = {
-        {"Rabbit",   "Models/Animals/Rabbit.mdl",           "Models/Animals/Rabbit.txt",           1,  5},
-        {"Deer",     "Models/Animals/Deer.mdl",             "Models/Animals/Deer.txt",             2,  8},
-        {"Fox",      "Models/Animals/Fox.mdl",              "Models/Animals/Fox.txt",              3,  3},
-        {"Stag",     "Models/Animals/Stag.mdl",             "Models/Animals/Stag.txt",             4,  3},
-        {"Wolf",     "Models/Animals/Wolf.mdl",             "Models/Animals/Wolf.txt",             5,  2},
-        {"Bull",     "Models/Animals/Bull.mdl",             "Models/Animals/Bull.txt",             6,  2},
-        {"Cow",      "Models/Animals/Cow.mdl",              "Models/Animals/Cow.txt",              7,  3},
-        {"Donkey",   "Models/Animals/Donkey.mdl",           "Models/Animals/Donkey.txt",           9,  2},
-        {"Horse",    "Models/Animals/Horse.mdl",            "Models/Animals/Horse.txt",           10,  2},
-        {"Alpaca",   "Models/Animals/Alpaca.mdl",           "Models/Animals/Alpaca.txt",          11,  3},
-        {"Husky",    "Models/Animals/Husky.mdl",            "Models/Animals/Husky.txt",           12,  2},
-        {"ShibaInu", "Models/Animals/ShibaInu.mdl",         "Models/Animals/ShibaInu.txt",        13,  2},
-        {"CaveMan",  "Models/Characters/CavemanMan.mdl",    "Models/Characters/CavemanMan.txt",   20,  3},
-        {"CaveWoman","Models/Characters/CavemanWoman.mdl",  "Models/Characters/CavemanWoman.txt", 21,  3},
-    };
+    static Vector<SpawnEntry> gSpawnTable;
 
     static const SpawnEntry* FindSpawnEntryByCreatureId(int creatureId)
     {
-        for (const SpawnEntry& e : kSpawnTable)
+        for (const SpawnEntry& e : gSpawnTable)
             if (e.creatureId == creatureId)
                 return &e;
         return nullptr;
     }
 
-    static const SpawnEntry* FindSpawnEntryByName(const char* name)
+    static const SpawnEntry* FindSpawnEntryByName(const String& name)
     {
-        for (const SpawnEntry& e : kSpawnTable)
-            if (strcmp(e.name, name) == 0)
+        for (const SpawnEntry& e : gSpawnTable)
+            if (e.name == name)
                 return &e;
         return nullptr;
     }
@@ -9471,7 +9662,7 @@ void TerrainNode::CreateAnimals()
 
     unsigned totalSpawned = 0;
 
-    for (const auto& entry : kSpawnTable)
+    for (const auto& entry : gSpawnTable)
     {
         // Determine target count: habitat rule density > PopulationManager > hardcoded default
         int count = entry.defaultCount;
@@ -9512,7 +9703,7 @@ void TerrainNode::CreateAnimals()
 
         if (validIndices.Empty())
         {
-            URHO3D_LOGWARNINGF("CreateAnimals: no valid habitat for %s, skipping", entry.name);
+            URHO3D_LOGWARNINGF("CreateAnimals: no valid habitat for %s, skipping", entry.name.CString());
             continue;
         }
 
@@ -9578,18 +9769,18 @@ void TerrainNode::CreateAnimals()
                 // or missing scene — neither possible inside this loop.
                 LandAnimal* spawned_a = SpawnCreatureAt(entry.creatureId, pos);
                 if (spawned_a)
-                    URHO3D_LOGINFOF("  spawn %s at (%.1f, %.1f, %.1f)", entry.name, pos.x_, pos.y_, pos.z_);
+                    URHO3D_LOGINFOF("  spawn %s at (%.1f, %.1f, %.1f)", entry.name.CString(), pos.x_, pos.y_, pos.z_);
                 ++spawned;
             }
         }
 
         URHO3D_LOGINFOF("CreateAnimals: %s — %d spawned (%u valid grid points)",
-            entry.name, spawned, validIndices.Size());
+            entry.name.CString(), spawned, validIndices.Size());
         totalSpawned += spawned;
     }
 
     URHO3D_LOGINFOF("CreateAnimals: %u total animals across %u species",
-        totalSpawned, (unsigned)(sizeof(kSpawnTable) / sizeof(kSpawnTable[0])));
+        totalSpawned, gSpawnTable.Size());
 
     // Place ALL cavepeople near the campfire — supports multiple NPCs per camp
     Node* campfire = scene_->GetChild("Campfire", true);
@@ -9661,7 +9852,7 @@ void TerrainNode::CreateResourceMap()
     ResourceMap::RegisterObject(context_);
 
     const float waterLevel = 5.0f;
-    resourceMap_->Generate(terrain_, ecosystem_, waterLevel);
+    resourceMap_->Generate(terrain_, ecosystem_, waterLevel, gameDB_);
 
     URHO3D_LOGINFOF("ResourceMap: %u resource pixels generated", resourceMap_->GetResourceCount());
 }
@@ -9728,31 +9919,31 @@ void TerrainNode::UpdateResourceStreaming()
     int minPz = Clamp((int)(((minWZ - originZ) / terrainSizeZ) * MAP_SIZE), 0, MAP_SIZE - 1);
     int maxPz = Clamp((int)(((maxWZ - originZ) / terrainSizeZ) * MAP_SIZE), 0, MAP_SIZE - 1);
 
-    // Model/material lookup per resource type
-    struct VisualDef
+    // Fallback material/scale per resource type (DB doesn't carry these)
+    struct VisualFallback
     {
         const char* modelPath;
         const char* matPath;
         Vector3 scale;
         const char* name;
     };
-    static const VisualDef visuals[] = {
+    static const VisualFallback fallbackVisuals[] = {
         { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 0 = NONE
-        { "Models/Nature/stump_round.mdl",      "Models/Nature/Materials/_defaultMat.xml",        Vector3(0.3f, 0.3f, 0.3f),  "Loose Stone" },   // 1 = STONE (no rock model — stump placeholder)
-        { "Models/Nature/log.mdl",              "Models/Nature/Materials/woodBark.xml",            Vector3(0.3f, 0.3f, 0.3f),  "Fallen Stick" },  // 2 = STICK
-        { "Models/Nature/fern_02.mdl",          "Models/Nature/Materials/leafsGreen.xml",         Vector3(0.3f, 0.4f, 0.3f),  "Plant Fiber" },   // 3 = FIBER
-        { "Models/Nature/stump_round.mdl",      "Models/Nature/Materials/_defaultMat.xml",        Vector3(0.5f, 0.4f, 0.5f),  "Clay" },          // 4 = CLAY (no pebble model — stump placeholder)
-        { "Models/Nature/stump_roundDetailed.mdl", "Models/Nature/Materials/_defaultMat.xml",     Vector3(0.2f, 0.2f, 0.2f),  "Flint" },         // 5 = FLINT (no rock model — stump placeholder)
-        { "Models/Nature/BushBerries_1.mdl",    "Materials/Berry.xml",                            Vector3(0.2f, 0.2f, 0.2f),  "Berries" },       // 6 = BERRIES
-        { "Models/Nature/log.mdl",              "Models/Nature/Materials/woodBark.xml",            Vector3(0.4f, 0.4f, 0.4f),  "Log" },           // 7 = LOG
-        { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 8 = MUSHROOM (placeholder)
-        { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 9 = HERB (placeholder)
+        { "Models/Pickups/Pebble_Round_1.mdl",  "Materials/_defaultMat.xml",                      Vector3(0.3f, 0.3f, 0.3f),  "Loose Stone" },   // 1 = STONE
+        { "Models/Pickups/WoodLog.mdl",         "Materials/Wood.xml",                             Vector3(0.3f, 0.3f, 0.3f),  "Fallen Stick" },  // 2 = STICK
+        { "Models/Pickups/Fern_1.mdl",          "Materials/leafsGreen.xml",                       Vector3(0.3f, 0.4f, 0.3f),  "Plant Fiber" },   // 3 = FIBER
+        { "Models/Pickups/Pebble_Round_2.mdl",  "Materials/_defaultMat.xml",                      Vector3(0.5f, 0.4f, 0.5f),  "Clay" },          // 4 = CLAY
+        { "Models/Pickups/Pebble_Round_3.mdl",  "Materials/_defaultMat.xml",                      Vector3(0.2f, 0.2f, 0.2f),  "Flint" },         // 5 = FLINT
+        { "Models/Pickups/BushBerries_1.mdl",   "Materials/Berry.xml",                            Vector3(0.2f, 0.2f, 0.2f),  "Berries" },       // 6 = BERRIES
+        { "Models/Pickups/WoodLog.mdl",         "Materials/Wood.xml",                             Vector3(0.4f, 0.4f, 0.4f),  "Log" },           // 7 = LOG
+        { "Models/Pickups/Mushroom_Common.mdl", "Materials/Wood.xml",                             Vector3(0.3f, 0.3f, 0.3f),  "Mushroom" },      // 8 = MUSHROOM
+        { "Models/Pickups/Fern_1.mdl",          "Materials/leafsGreen.xml",                       Vector3(0.2f, 0.3f, 0.2f),  "Herb" },          // 9 = HERB
         { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 10 = SHELL (placeholder)
-        { nullptr, nullptr, Vector3::ZERO, nullptr },                                                                          // 11 = REEDS (placeholder)
-        { "Models/Nature/log.mdl",              "Models/Nature/Materials/woodBark.xml",            Vector3(0.35f, 0.35f, 0.35f), "Softwood" },    // 12 = SOFTWOOD
-        { "Models/Nature/log.mdl",              "Models/Nature/Materials/woodBark.xml",            Vector3(0.45f, 0.45f, 0.45f), "Hardwood" },    // 13 = HARDWOOD
+        { "Models/Pickups/Grass_Common_Tall.mdl", "Materials/Green.xml",                          Vector3(0.3f, 0.4f, 0.3f),  "Reeds" },         // 11 = REEDS
+        { "Models/Pickups/WoodLog.mdl",         "Materials/Wood.xml",                             Vector3(0.35f, 0.35f, 0.35f), "Softwood" },    // 12 = SOFTWOOD
+        { "Models/Pickups/WoodLog_Moss.mdl",    "Materials/Wood.xml",                             Vector3(0.45f, 0.45f, 0.45f), "Hardwood" },    // 13 = HARDWOOD
     };
-    static const int NUM_VISUALS = sizeof(visuals) / sizeof(visuals[0]);
+    static const int NUM_VISUALS = sizeof(fallbackVisuals) / sizeof(fallbackVisuals[0]);
 
     unsigned spawned = 0;
     const unsigned MAX_SPAWN_PER_FRAME = 50;
@@ -9770,8 +9961,8 @@ void TerrainNode::UpdateResourceStreaming()
             unsigned char type = (unsigned char)(pixel & 0xFF);
             if (type == RES_NONE || type >= NUM_VISUALS)
                 continue;
-            // Skip placeholder slots (Future types in the visuals array have nullptr model paths)
-            if (!visuals[type].modelPath)
+            // Skip placeholder slots
+            if (!fallbackVisuals[type].modelPath)
                 continue;
 
             unsigned char qty = (unsigned char)((pixel >> 8) & 0xFF);
@@ -9791,22 +9982,46 @@ void TerrainNode::UpdateResourceStreaming()
 
             float wy = terrain_->GetHeight(Vector3(wx, 0.f, wz));
 
-            const VisualDef& vis = visuals[type];
-            Model* mdl = cache->GetResource<Model>(vis.modelPath);
+            // Resolve model/name from DB gather sources, fall back to static table
+            int itemId = ResourceTypeToItemId((ResourceType)type);
+            const VisualFallback& fb = fallbackVisuals[type];
+            const char* modelPath = fb.modelPath;
+            const char* matPath   = fb.matPath;
+            Vector3 scale         = fb.scale;
+            String  displayName   = fb.name;
+
+            auto it = gatherSourceByItem_.Find(itemId);
+            if (it != gatherSourceByItem_.End())
+            {
+                const GatherSourceInfo& gs = it->second_;
+
+                // Terrain biome filter — skip resources that don't belong in this biome
+                BiomeType biome = ClassifyTerrain(Vector3(wx, wy, wz));
+                if (!TerrainMatchesSource(gs.terrain, biome))
+                    continue;
+
+                displayName = gs.name;
+                if (!gs.model.Empty())
+                    modelPath = gs.model.CString();
+            }
+
+            Model* mdl = cache->GetResource<Model>(modelPath);
+            if (!mdl)
+                mdl = cache->GetResource<Model>(fb.modelPath);  // fallback to hardcoded
             if (!mdl)
                 mdl = cache->GetResource<Model>("Models/Box.mdl");
 
-            Node* node = scene_->CreateTemporaryChild(vis.name, LOCAL);
+            Node* node = scene_->CreateTemporaryChild(displayName, LOCAL);
             node->SetPosition(Vector3(wx, wy, wz));
 
             // Variant-based scale variation
             unsigned char variant = (unsigned char)((pixel >> 16) & 0xFF);
             float sv = 0.8f + (float)variant / 255.f * 0.4f;
-            node->SetScale(vis.scale * sv);
+            node->SetScale(scale * sv);
 
             auto* sm = node->CreateComponent<StaticModel>();
             sm->SetModel(mdl);
-            Material* mat = cache->GetResource<Material>(vis.matPath);
+            Material* mat = cache->GetResource<Material>(matPath);
             if (mat)
                 sm->SetMaterial(mat);
             sm->SetCastShadows(false);
@@ -9816,14 +10031,13 @@ void TerrainNode::UpdateResourceStreaming()
             body->SetKinematic(true);
             body->SetMass(0.f);
             auto* shape = node->CreateComponent<CollisionShape>();
-            shape->SetSphere(vis.scale.x_ * sv * 2.5f);
+            shape->SetSphere(scale.x_ * sv * 2.5f);
 
-            int itemId = ResourceTypeToItemId((ResourceType)type);
             node->SetVar("ItemID", itemId);
             node->SetVar("ItemQty", (int)qty);
 
             auto* pickup = node->CreateComponent<ResourcePickup>();
-            pickup->sourceName_ = vis.name;
+            pickup->sourceName_ = displayName;
             pickup->itemId_ = itemId;
             pickup->quantity_ = (int)qty;
 
@@ -9991,6 +10205,9 @@ void TerrainNode::UpdateSeasonalEffects()
     if (dayOfYear_ == lastSeasonDay_)
         return;
     lastSeasonDay_ = dayOfYear_;
+
+    // Refresh climate rules from DB for the new season
+    UpdateCachedClimate();
 
     // Season factor: 0=winter solstice, 1=summer solstice
     cachedSeasonFactor_ = 0.5f + 0.5f * sinf((dayOfYear_ - 81) * 6.2831853f / 365.0f);
@@ -10259,35 +10476,59 @@ void TerrainNode::UpdateAtmosphere(float sunAltitude)
     bool sunEnabled = true;
     bool moonEnabled = false;
 
-    if (sunAltitude > 10.0f)
+    // Multi-stop crepuscular color ramp keyed to sun altitude (degrees)
+    // Daylight (>20) → Golden (10-20) → Deep Orange (5-10) → Rose/Magenta (0-5)
+    // → Purple (-5 to 0) → Deep Blue (<-5)
+    if (sunAltitude > 20.0f)
     {
+        // Full daylight
         ambient = Color(0.15f, 0.15f, 0.15f);
         fogColor = Color(0.7f, 0.7f, 0.75f);
         sunColor = Color(1.2f, 1.2f, 1.2f);
     }
+    else if (sunAltitude > 10.0f)
+    {
+        // Daylight → Golden hour
+        float t = (sunAltitude - 10.0f) / 10.0f;
+        ambient = Color(0.16f, 0.13f, 0.08f).Lerp(Color(0.15f, 0.15f, 0.15f), t);
+        fogColor = Color(0.85f, 0.7f, 0.45f).Lerp(Color(0.7f, 0.7f, 0.75f), t);
+        sunColor = Color(1.4f, 1.1f, 0.7f).Lerp(Color(1.2f, 1.2f, 1.2f), t);
+    }
+    else if (sunAltitude > 5.0f)
+    {
+        // Golden → Deep orange
+        float t = (sunAltitude - 5.0f) / 5.0f;
+        ambient = Color(0.14f, 0.09f, 0.05f).Lerp(Color(0.16f, 0.13f, 0.08f), t);
+        fogColor = Color(0.95f, 0.5f, 0.2f).Lerp(Color(0.85f, 0.7f, 0.45f), t);
+        sunColor = Color(1.5f, 0.7f, 0.25f).Lerp(Color(1.4f, 1.1f, 0.7f), t);
+    }
     else if (sunAltitude > 0.0f)
     {
-        float t = sunAltitude / 10.0f;
-        ambient = Color(0.15f, 0.15f, 0.15f).Lerp(Color(0.12f, 0.08f, 0.05f), 1.0f - t);
-        fogColor = Color(0.7f, 0.7f, 0.75f).Lerp(Color(1.0f, 0.6f, 0.3f), 1.0f - t);
-        sunColor = Color(1.2f, 1.2f, 1.2f).Lerp(Color(1.5f, 0.8f, 0.3f), 1.0f - t);
+        // Deep orange → Rose/magenta
+        float t = sunAltitude / 5.0f;
+        ambient = Color(0.12f, 0.06f, 0.07f).Lerp(Color(0.14f, 0.09f, 0.05f), t);
+        fogColor = Color(0.8f, 0.3f, 0.35f).Lerp(Color(0.95f, 0.5f, 0.2f), t);
+        sunColor = Color(1.3f, 0.4f, 0.3f).Lerp(Color(1.5f, 0.7f, 0.25f), t);
     }
-    else if (sunAltitude > -6.0f)
+    else if (sunAltitude > -5.0f)
     {
-        float t = sunAltitude / -6.0f;
-        ambient = Color(0.12f, 0.08f, 0.05f).Lerp(Color(0.03f, 0.03f, 0.06f), t);
-        fogColor = Color(1.0f, 0.6f, 0.3f).Lerp(Color(0.1f, 0.08f, 0.2f), t);
-        sunColor = Color(1.5f, 0.8f, 0.3f).Lerp(Color(0.0f, 0.0f, 0.0f), t);
-        moonColor = Color(0.0f, 0.0f, 0.0f).Lerp(Color(0.6f, 0.6f, 1.0f), t);
+        // Rose/magenta → Purple twilight
+        float t = sunAltitude / -5.0f;
+        ambient = Color(0.12f, 0.06f, 0.07f).Lerp(Color(0.06f, 0.04f, 0.09f), t);
+        fogColor = Color(0.8f, 0.3f, 0.35f).Lerp(Color(0.3f, 0.15f, 0.35f), t);
+        sunColor = Color(1.3f, 0.4f, 0.3f).Lerp(Color(0.3f, 0.1f, 0.15f), t);
+        moonColor = Color(0.0f, 0.0f, 0.0f).Lerp(Color(0.3f, 0.3f, 0.5f), t);
         moonEnabled = true;
     }
     else
     {
-        ambient = Color(0.02f, 0.02f, 0.04f);
-        fogColor = Color(0.05f, 0.05f, 0.15f);
-        sunColor = Color(0.0f, 0.0f, 0.0f);
-        sunEnabled = false;
-        moonColor = Color(0.6f, 0.6f, 1.0f);
+        // Deep blue night (below -5)
+        float t = Clamp((sunAltitude + 5.0f) / -3.0f, 0.0f, 1.0f);
+        ambient = Color(0.06f, 0.04f, 0.09f).Lerp(Color(0.02f, 0.02f, 0.04f), t);
+        fogColor = Color(0.3f, 0.15f, 0.35f).Lerp(Color(0.05f, 0.05f, 0.15f), t);
+        sunColor = Color(0.3f, 0.1f, 0.15f).Lerp(Color(0.0f, 0.0f, 0.0f), t);
+        sunEnabled = (sunAltitude > -8.0f);
+        moonColor = Color(0.3f, 0.3f, 0.5f).Lerp(Color(0.6f, 0.6f, 1.0f), t);
         moonEnabled = true;
     }
 
@@ -10355,25 +10596,38 @@ void TerrainNode::UpdateAtmosphere(float sunAltitude)
     if (skyboxMat_)
     {
         Color skyTint;
-        if (sunAltitude > 15.0f)
+        if (sunAltitude > 20.0f)
             skyTint = Color(0.85f, 0.85f, 0.9f);
-        else if (sunAltitude > 2.5f)
+        else if (sunAltitude > 10.0f)
         {
-            float t = (sunAltitude - 2.5f) / 12.5f;
-            skyTint = Color(0.9f, 0.5f, 0.3f).Lerp(Color(0.85f, 0.85f, 0.9f), t);
+            // Daylight → Golden sky
+            float t = (sunAltitude - 10.0f) / 10.0f;
+            skyTint = Color(0.9f, 0.75f, 0.5f).Lerp(Color(0.85f, 0.85f, 0.9f), t);
+        }
+        else if (sunAltitude > 5.0f)
+        {
+            // Golden → Deep orange sky
+            float t = (sunAltitude - 5.0f) / 5.0f;
+            skyTint = Color(0.95f, 0.5f, 0.25f).Lerp(Color(0.9f, 0.75f, 0.5f), t);
         }
         else if (sunAltitude > 0.0f)
         {
-            float t = sunAltitude / 2.5f;
-            skyTint = Color(0.8f, 0.4f, 0.25f).Lerp(Color(0.9f, 0.5f, 0.3f), t);
+            // Deep orange → Rose/magenta sky
+            float t = sunAltitude / 5.0f;
+            skyTint = Color(0.85f, 0.35f, 0.4f).Lerp(Color(0.95f, 0.5f, 0.25f), t);
         }
-        else if (sunAltitude > -6.0f)
+        else if (sunAltitude > -5.0f)
         {
-            float t = sunAltitude / -6.0f;
-            skyTint = Color(1.0f, 0.5f, 0.3f).Lerp(Color(0.05f, 0.05f, 0.15f), t);
+            // Rose → Purple twilight sky
+            float t = sunAltitude / -5.0f;
+            skyTint = Color(0.85f, 0.35f, 0.4f).Lerp(Color(0.25f, 0.12f, 0.35f), t);
         }
         else
-            skyTint = Color(0.03f, 0.03f, 0.08f);
+        {
+            // Purple → Deep blue night sky
+            float t = Clamp((sunAltitude + 5.0f) / -3.0f, 0.0f, 1.0f);
+            skyTint = Color(0.25f, 0.12f, 0.35f).Lerp(Color(0.03f, 0.03f, 0.08f), t);
+        }
 
         skyboxMat_->SetShaderParameter("MatDiffColor", skyTint);
 
@@ -11132,6 +11386,22 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         UpdateResourceStreaming();
     }
 
+    // Decoration scatter — static Nature/ models placed by biome, streamed by camera distance.
+    decorScatterTimer_ += timeStep;
+    if (decorScatterTimer_ >= 0.5f)
+    {
+        decorScatterTimer_ = 0.f;
+        UpdateDecorScatter();
+    }
+
+    // Water edge scatter — Pond/ models at waterline, streamed by camera distance.
+    waterEdgeScatterTimer_ += timeStep;
+    if (waterEdgeScatterTimer_ >= 0.5f)
+    {
+        waterEdgeScatterTimer_ = 0.f;
+        UpdateWaterEdgeScatter();
+    }
+
     // Offline-mode connect retry — drives the spawn-and-retry state machine.
     // No-op when offlineMode_ == OFFLINE_NONE.
     TickOfflineConnect(timeStep);
@@ -11369,13 +11639,30 @@ void TerrainNode::HandleUpdate(StringHash eventType, VariantMap& eventData)
         float distToFire = (characterNode_->GetWorldPosition() - campfireNode_->GetWorldPosition()).Length();
         hud_->SetStatusIcon(ICON_NEAR_FIRE, distToFire < 8.0f);
     }
+    if (hud_ && buildingSystem_ && characterNode_)
+    {
+        bool inShelter = false;
+        int nearId = buildingSystem_->FindNearestBuilding(characterNode_->GetWorldPosition(), 4.0f);
+        if (nearId >= 0)
+        {
+            PlacedBuilding* pb = buildingSystem_->FindPlacedMutable(nearId);
+            if (pb)
+            {
+                const BuildingTypeInfo* info = buildingSystem_->FindTypeInfo(pb->buildingTypeId);
+                if (info && info->sleepCapacity > 0)
+                    inShelter = true;
+            }
+        }
+        hud_->SetStatusIcon(ICON_IN_SHELTER, inShelter);
+    }
 
     // Campfire fuel decay (real wallclock seconds, immune to time scrub)
     UpdateCampfireFuel(timeStep);
 
     // Campfire light flicker — lerp brightness and color toward random targets,
     // then multiply by fireIntensity_ so a dying fire dims to nothing.
-    if (campfireLight_)
+    // Skip during EMBERS state — UpdateCampfireFuel handles pulsation directly.
+    if (campfireLight_ && activeFirePitState_ != 2 /* PIT_EMBERS */)
     {
         fireFadeTimer_ += timeStep;
         float t = Clamp(fireFadeTimer_ / fireFadeTime_, 0.0f, 1.0f);
@@ -11578,6 +11865,18 @@ void TerrainNode::SetShaderParamCached(const String& name, const Variant& value)
     renderPath_->SetShaderParameter(name, value);
 }
 
+/// Draw a detection ray with flat colour based on world distance from camera.
+/// Close creatures = bright, far creatures = dim. One colour for the whole line.
+static void DrawFadedRay(DebugRenderer* debug, const Vector3& from, const Vector3& to, const Color& color)
+{
+    // 'to' is the cursor (camera near plane). Distance = how far the creature is.
+    float dist = (from - to).Length();
+    // Fade: full brightness within 50m, dim to 15% at 500m+
+    float brightness = Clamp(1.0f - (dist - 50.0f) / 450.0f, 0.15f, 1.0f);
+    Color flatColor(color.r_ * brightness, color.g_ * brightness, color.b_ * brightness, color.a_);
+    debug->AddLine(from, to, flatColor, true);
+}
+
 void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
 {
     if (asyncSceneLoading_)
@@ -11609,19 +11908,19 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
                 {
                     Node* n = oofos_[i]->GetNode();
                     if (n && n->IsEnabled())
-                        debug->AddLine(n->GetWorldPosition(), cursorNear, Color::GREEN, true);
+                        DrawFadedRay(debug, n->GetWorldPosition(), cursorNear, Color::GREEN);
                 }
             }
 
             // Sun & Moon locator rays — visible whenever god rays are enabled
             if (godRaysEnabled_ && sunNode_)
-                debug->AddLine(sunNode_->GetWorldPosition(), cursorNear, Color(1.0f, 0.6f, 0.0f), true);
+                DrawFadedRay(debug, sunNode_->GetWorldPosition(), cursorNear, Color(1.0f, 0.6f, 0.0f));
             if (godRaysEnabled_ && moonNode_)
-                debug->AddLine(moonNode_->GetWorldPosition(), cursorNear, Color(0.0f, 0.8f, 1.0f), true);
+                DrawFadedRay(debug, moonNode_->GetWorldPosition(), cursorNear, Color(0.0f, 0.8f, 1.0f));
 
             // Campfire ray
             if (campfireRayVisible_ && campfireNode_)
-                debug->AddLine(campfireNode_->GetWorldPosition(), cursorNear, campfireLight_ ? campfireLight_->GetColor() : Color(1.0f, 0.5f, 0.0f), true);
+                DrawFadedRay(debug, campfireNode_->GetWorldPosition(), cursorNear, campfireLight_ ? campfireLight_->GetColor() : Color(1.0f, 0.5f, 0.0f));
 
             // Animal rays — lines from cursor to each animal, color coded by species
             // Category toggle + per-species toggles filter
@@ -11653,7 +11952,7 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
                         else if (name == "CaveMan"  && caveManRayVisible_)  { color = Color(0.0f, 1.0f, 1.0f); show = true; }
                         else if (name == "CaveWoman" && caveWomanRayVisible_) { color = Color(1.0f, 0.0f, 1.0f); show = true; }
                         if (show)
-                            debug->AddLine(n->GetWorldPosition(), cursorNear, color, true);
+                            DrawFadedRay(debug, n->GetWorldPosition(), cursorNear, color);
                     }
                 }
 
@@ -11669,15 +11968,9 @@ void TerrainNode::HandlePostRenderUpdate(StringHash eventType, VariantMap& event
                         if (!n) continue;
                         const String& name = n->GetName();
                         if (name == "Fish" && fishRayVisible_)
-                        {
-                            debug->AddLine(n->GetWorldPosition(), cursorNear,
-                                Color(0.2f, 0.7f, 1.0f), true);
-                        }
+                            DrawFadedRay(debug, n->GetWorldPosition(), cursorNear, Color(0.2f, 0.7f, 1.0f));
                         else if (name == "SchoolFish" && schoolFishRayVisible_)
-                        {
-                            debug->AddLine(n->GetWorldPosition(), cursorNear,
-                                Color(0.1f, 1.0f, 0.8f), true);
-                        }
+                            DrawFadedRay(debug, n->GetWorldPosition(), cursorNear, Color(0.1f, 1.0f, 0.8f));
                     }
                 }
             }
@@ -13062,6 +13355,27 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
         return;
     }
 
+    if (msgID == MSG_CELESTIAL_STATE)
+    {
+        MemoryBuffer msg(data);
+        float serverMoonAge = msg.ReadFloat();
+        bool eclipse = msg.ReadBool();
+
+        // Server-authoritative moon age — override local calculation
+        moonAge_ = serverMoonAge;
+        lunarEclipseActive_ = eclipse;
+
+        // Update shadow disc tint for eclipse (blood moon)
+        if (moonShadowMat_)
+        {
+            if (eclipse)
+                moonShadowMat_->SetShaderParameter("MatDiffColor", Color(0.3f, 0.05f, 0.02f, 1.0f));
+            else
+                moonShadowMat_->SetShaderParameter("MatDiffColor", Color(0.0f, 0.0f, 0.0f, 1.0f));
+        }
+        return;
+    }
+
     if (msgID == MSG_VITAL_UPDATE)
     {
         MemoryBuffer msg(data);
@@ -13118,6 +13432,24 @@ void TerrainNode::HandleAuthMessage(StringHash eventType, VariantMap& eventData)
     {
         MemoryBuffer msg(data);
         HandleCreatureAIState(msg);
+        return;
+    }
+
+    // NPC Observation System — phenomenon witnessed near an NPC
+    if (msgID == MSG_PHENOMENON)
+    {
+        MemoryBuffer msg(data);
+        unsigned spawnId = msg.ReadU32();
+        int phenomenonType = msg.ReadI32();
+        Vector3 pos = msg.ReadVector3();
+
+        auto it = spawnIdToNode_.Find(spawnId);
+        if (it != spawnIdToNode_.End() && it->second_)
+        {
+            auto* npc = it->second_->GetDerivedComponent<HumanNPC>(false);
+            if (npc)
+                npc->ObservePhenomenon(phenomenonType, pos);
+        }
         return;
     }
 
@@ -14784,6 +15116,16 @@ void TerrainNode::HandleNodeAdded(StringHash, VariantMap& eventData)
             }
         }
 
+        // Roll ability scores — CON modifier adjusts maxHp inside RollStats
+        animal->RollStats(1);
+        {
+            const auto& s = animal->GetStats();
+            URHO3D_LOGINFOF("[Stats] %s (spawnId %u): STR %d DEX %d CON %d INT %d WIS %d CHA %d",
+                creatureNode->GetName().CString(), spawnId,
+                s.strength, s.dexterity, s.constitution,
+                s.intelligence, s.wisdom, s.charisma);
+        }
+
         animalNodes_.Push(WeakPtr<Node>(creatureNode));
         URHO3D_LOGINFOF("HandleNodeAdded: attached %s (creatureId=%d spawnId=%u)",
             creatureNode->GetName().CString(), creatureId, spawnId);
@@ -14839,6 +15181,16 @@ void TerrainNode::AttachCreatureComponent(Node* creatureNode, int creatureId)
             }
         }
 
+        // Roll ability scores — CON modifier adjusts maxHp inside RollStats
+        animal->RollStats(1);
+        {
+            const auto& s = animal->GetStats();
+            URHO3D_LOGINFOF("[Stats] %s (spawnId %u): STR %d DEX %d CON %d INT %d WIS %d CHA %d",
+                creatureNode->GetName().CString(), spawnId,
+                s.strength, s.dexterity, s.constitution,
+                s.intelligence, s.wisdom, s.charisma);
+        }
+
         URHO3D_LOGINFOF("[AttachCreature] %s creatureId=%d spawnId=%u",
             creatureNode->GetName().CString(), creatureId, spawnId);
     }
@@ -14866,7 +15218,26 @@ void TerrainNode::CreateEcosystem()
     {
         auto* terrainMat = terrain_->GetMaterial();
         if (terrainMat)
+        {
             terrainMat->SetTexture(static_cast<TextureUnit>(5), soilTex);
+            // Enable TRAMPLING define so the shader samples the trampling map
+            auto* tech = terrainMat->GetTechnique(0);
+            if (tech)
+            {
+                auto* pass = tech->GetPass("base");
+                if (pass)
+                    pass->SetPixelShaderDefines(pass->GetPixelShaderDefines() + " TRAMPLING");
+                pass = tech->GetPass("litbase");
+                if (pass)
+                    pass->SetPixelShaderDefines(pass->GetPixelShaderDefines() + " TRAMPLING");
+                pass = tech->GetPass("light");
+                if (pass)
+                    pass->SetPixelShaderDefines(pass->GetPixelShaderDefines() + " TRAMPLING");
+                pass = tech->GetPass("deferred");
+                if (pass)
+                    pass->SetPixelShaderDefines(pass->GetPixelShaderDefines() + " TRAMPLING");
+            }
+        }
     }
 }
 
@@ -15349,7 +15720,16 @@ void TerrainNode::UpdateVitalBars()
     hud_->SetHunger(Clamp(vitalHunger_ / 100.0f, 0.0f, 1.0f));
     hud_->SetThirst(Clamp(vitalThirst_ / 100.0f, 0.0f, 1.0f));
     hud_->SetStamina(Clamp(vitalStamina_ / 100.0f, 0.0f, 1.0f));
-    hud_->SetTemperature(CalculateEffectiveTemperature());
+
+    float effectiveTemp = CalculateEffectiveTemperature();
+    hud_->SetTemperature(effectiveTemp);
+
+    // Status icons driven by survival stats (DB thresholds)
+    hud_->SetStatusIcon(ICON_STARVING,    vitalHunger_  < (float)Creature::GetHungerRules().criticalThreshold);
+    hud_->SetStatusIcon(ICON_DEHYDRATED,  vitalThirst_  < (float)Creature::GetThirstRules().criticalThreshold);
+    hud_->SetStatusIcon(ICON_EXHAUSTED,   vitalStamina_ < (float)Creature::GetStaminaRules().lowThreshold);
+    hud_->SetStatusIcon(ICON_FREEZING,    effectiveTemp < Creature::GetWarmthRules().coldThreshold);
+    hud_->SetStatusIcon(ICON_OVERHEATING, effectiveTemp > Creature::GetWarmthRules().heatThreshold);
 }
 
 void TerrainNode::UpdateContextHintRaycast()
@@ -17135,14 +17515,101 @@ void TerrainNode::InitGameDB()
     // Population dynamics schema (idempotent)
     gameDB_->ExecuteFile(dataDir + "GameDB/population_schema.sql");
 
+    // Survival rules schema + seed (idempotent)
+    gameDB_->ExecuteFile(dataDir + "GameDB/survival_schema.sql");
+    gameDB_->ExecuteFile(dataDir + "GameDB/survival_seed.sql");
+    Creature::LoadSurvivalRules(gameDB_);
+
+    // Fire rules and fuel values from DB
+    if (gameDB_->GetFireRules(fireRules_))
+    {
+        cfBaseLightRange_ = fireRules_.lightRadius;
+        URHO3D_LOGINFOF("Fire rules loaded: light_radius=%.1f warmth_radius=%.1f warmth=%.1f",
+            fireRules_.lightRadius, fireRules_.warmthRadius, fireRules_.warmthValue);
+    }
+    FuelInfo fuelInfo;
+    if (gameDB_->GetFuelInfo(2, fuelInfo))   // Stick
+        stickBurnSeconds_ = fuelInfo.fuelValue * 3600.0f / fireRules_.fuelPerHour;
+    if (gameDB_->GetFuelInfo(43, fuelInfo))  // Charcoal
+        charcoalBurnSeconds_ = fuelInfo.fuelValue * 3600.0f / fireRules_.fuelPerHour;
+    URHO3D_LOGINFOF("Fuel: stick=%.0fs charcoal=%.0fs", stickBurnSeconds_, charcoalBurnSeconds_);
+
+    // Cache seed item IDs from crop_types for client-side planting
+    Vector<CropTypeInfo> cropTypes = gameDB_->GetAllCropTypes();
+    for (unsigned i = 0; i < cropTypes.Size(); ++i)
+        seedItemIds_.Insert(cropTypes[i].seedItemId);
+    URHO3D_LOGINFOF("Cached %u seed item IDs from crop_types", seedItemIds_.Size());
+
     // Initialise population manager and subscribe to animal death events
     popManager_ = new PopulationManager(context_);
     popManager_->Initialize(gameDB_);
     SubscribeToEvent(E_CREATUREDIED, URHO3D_HANDLER(TerrainNode, HandleAnimalDied));
+    SubscribeToEvent(E_FISHBORN, URHO3D_HANDLER(TerrainNode, HandleFishBorn));
 
     // Load all tier 0-3 recipes
     recipes_ = gameDB_->GetRecipesForTier(3);
     URHO3D_LOGINFOF("GameDB loaded: %d recipes", recipes_.Size());
+
+    // Build creature spawn table from DB habitats
+    BuildSpawnTable();
+
+    // Cache gather sources by item ID for resource streaming — load per terrain type
+    {
+        unsigned totalLoaded = 0;
+        const char* terrainTypes[] = {"grassland", "forest", "mountain", "water", "riverbank", "any"};
+        for (const char* terrain : terrainTypes)
+        {
+            Vector<GatherSourceInfo> sources = gameDB_->GetGatherSourcesByTerrain(terrain);
+            for (const GatherSourceInfo& gs : sources)
+            {
+                if (!gatherSourceByItem_.Contains(gs.itemId))
+                    gatherSourceByItem_[gs.itemId] = gs;
+            }
+            totalLoaded += sources.Size();
+        }
+        URHO3D_LOGINFOF("GameDB: cached %u gather sources (%u unique items) via terrain-filtered queries",
+            totalLoaded, gatherSourceByItem_.Size());
+    }
+
+    // Cache water sources
+    waterSources_ = gameDB_->GetAllWaterSources();
+    URHO3D_LOGINFOF("GameDB: cached %u water sources", waterSources_.Size());
+#endif
+}
+
+void TerrainNode::BuildSpawnTable()
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    gSpawnTable.Clear();
+    if (!gameDB_)
+        return;
+
+    // Query each land habitat — GetCreaturesByHabitat also returns habitat='any' creatures
+    const char* habitats[] = {"grassland", "forest", "mountain", "inland"};
+    HashSet<int> seen;
+
+    for (const char* habitat : habitats)
+    {
+        Vector<CreatureInfo> creatures = gameDB_->GetCreaturesByHabitat(habitat);
+        for (const CreatureInfo& ci : creatures)
+        {
+            if (seen.Contains(ci.id))
+                continue;
+            seen.Insert(ci.id);
+
+            SpawnEntry entry;
+            entry.name = ci.name;
+            entry.modelPath = ci.model;
+            // Material list convention: .mdl → .txt
+            entry.matList = ci.model;
+            entry.matList.Replace(".mdl", ".txt");
+            entry.creatureId = ci.id;
+            entry.defaultCount = Max(ci.packSize, 2);
+            gSpawnTable.Push(entry);
+        }
+    }
+
+    URHO3D_LOGINFOF("BuildSpawnTable: %u species from GameDB", gSpawnTable.Size());
 #endif
 }
 
@@ -17176,6 +17643,14 @@ void TerrainNode::HandleAnimalDied(StringHash /*eventType*/, VariantMap& eventDa
     }
 }
 
+void TerrainNode::HandleFishBorn(StringHash /*eventType*/, VariantMap& eventData)
+{
+    using namespace FishBorn;
+    Node* fishNode = static_cast<Node*>(eventData[P_NODE].GetPtr());
+    if (fishNode)
+        fishNodes_.Push(WeakPtr<Node>(fishNode));
+}
+
 LandAnimal* TerrainNode::SpawnCreatureAt(int creatureId, const Vector3& pos)
 {
     if (!scene_)
@@ -17194,7 +17669,7 @@ LandAnimal* TerrainNode::SpawnCreatureAt(int creatureId, const Vector3& pos)
     node->SetPosition(pos);
 
     // Model on child node with 180° Y flip — meshes face -Z, Urho3D forward is +Z
-    Node* modelNode = node->CreateChild(String(entry->name) + "Model");
+    Node* modelNode = node->CreateChild(entry->name + "Model");
     modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
 
     auto* model = modelNode->CreateComponent<AnimatedModel>();
@@ -17209,20 +17684,20 @@ LandAnimal* TerrainNode::SpawnCreatureAt(int creatureId, const Vector3& pos)
     // a missing #include shows up as a build error rather than a runtime
     // "unknown component type" log spam.
     LandAnimal* animal = nullptr;
-    if      (strcmp(entry->name, "Rabbit")    == 0) animal = node->CreateComponent<Rabbit>();
-    else if (strcmp(entry->name, "Deer")      == 0) animal = node->CreateComponent<Deer>();
-    else if (strcmp(entry->name, "Fox")       == 0) animal = node->CreateComponent<Fox>();
-    else if (strcmp(entry->name, "Wolf")      == 0) animal = node->CreateComponent<Wolf>();
-    else if (strcmp(entry->name, "Stag")      == 0) animal = node->CreateComponent<Stag>();
-    else if (strcmp(entry->name, "Bull")      == 0) animal = node->CreateComponent<Bull>();
-    else if (strcmp(entry->name, "Cow")       == 0) animal = node->CreateComponent<Cow>();
-    else if (strcmp(entry->name, "Horse")     == 0) animal = node->CreateComponent<Horse>();
-    else if (strcmp(entry->name, "Donkey")    == 0) animal = node->CreateComponent<Donkey>();
-    else if (strcmp(entry->name, "Alpaca")    == 0) animal = node->CreateComponent<Alpaca>();
-    else if (strcmp(entry->name, "Husky")     == 0) animal = node->CreateComponent<Husky>();
-    else if (strcmp(entry->name, "ShibaInu")  == 0) animal = node->CreateComponent<ShibaInu>();
-    else if (strcmp(entry->name, "CaveMan")   == 0) animal = node->CreateComponent<CaveMan>();
-    else if (strcmp(entry->name, "CaveWoman") == 0) animal = node->CreateComponent<CaveWoman>();
+    if      (entry->name == "Rabbit")    animal = node->CreateComponent<Rabbit>();
+    else if (entry->name == "Deer")      animal = node->CreateComponent<Deer>();
+    else if (entry->name == "Fox")       animal = node->CreateComponent<Fox>();
+    else if (entry->name == "Wolf")      animal = node->CreateComponent<Wolf>();
+    else if (entry->name == "Stag")      animal = node->CreateComponent<Stag>();
+    else if (entry->name == "Bull")      animal = node->CreateComponent<Bull>();
+    else if (entry->name == "Cow")       animal = node->CreateComponent<Cow>();
+    else if (entry->name == "Horse")     animal = node->CreateComponent<Horse>();
+    else if (entry->name == "Donkey")    animal = node->CreateComponent<Donkey>();
+    else if (entry->name == "Alpaca")    animal = node->CreateComponent<Alpaca>();
+    else if (entry->name == "Husky")     animal = node->CreateComponent<Husky>();
+    else if (entry->name == "ShibaInu")  animal = node->CreateComponent<ShibaInu>();
+    else if (entry->name == "CaveMan")   animal = node->CreateComponent<CaveMan>();
+    else if (entry->name == "CaveWoman") animal = node->CreateComponent<CaveWoman>();
 
     // Phase 5: Cavemen always spawn near the campfire, not at random terrain positions
     if (animal && (entry->creatureId == 20 || entry->creatureId == 21))
@@ -17254,6 +17729,8 @@ LandAnimal* TerrainNode::SpawnCreatureAt(int creatureId, const Vector3& pos)
     {
         if (buildingSystem_)
             animal->SetBuildingSystem(buildingSystem_);
+        if (gameDB_)
+            animal->SetGameDB(gameDB_.Get());
         animal->SetSpatialHash(&landAnimalHash_);
         if (ecosystem_)
             animal->SetEcosystem(ecosystem_);
@@ -17265,12 +17742,23 @@ LandAnimal* TerrainNode::SpawnCreatureAt(int creatureId, const Vector3& pos)
                 float fleeFrac = (ci.aggression == "aggressive") ? 0.25f : 0.75f;
                 animal->InitCombatStats(ci.hp, ci.attack, ci.defense, ci.damage, ci.damageVar,
                     ci.speed, fleeFrac, ci.aggression);
+                animal->InitBehaviorStats(ci.fleeSpeed, ci.fleeDistance, ci.visionRange,
+                    ci.visionAngle, ci.isPredator != 0, ci.isScavenger != 0, ci.foodGrassWt);
             }
         }
+
+        // Roll ability scores (4d6-drop-lowest) — CON modifier adjusts maxHp inside RollStats
+        animal->RollStats(1);
+
+        const auto& s = animal->GetStats();
+        URHO3D_LOGINFOF("[Stats] %s (spawnId %u): STR %d DEX %d CON %d INT %d WIS %d CHA %d",
+            entry->name.CString(), animal->GetSpawnId(),
+            s.strength, s.dexterity, s.constitution,
+            s.intelligence, s.wisdom, s.charisma);
     }
     else
     {
-        URHO3D_LOGWARNINGF("SpawnCreatureAt: no component constructor for species '%s'", entry->name);
+        URHO3D_LOGWARNINGF("SpawnCreatureAt: no component constructor for species '%s'", entry->name.CString());
     }
 
     animalNodes_.Push(WeakPtr<Node>(node));
@@ -18516,52 +19004,33 @@ void TerrainNode::LoadBuildingTypes()
     if (!gameDB_ || !buildingSystem_)
         return;
 
-    // Use the Urho3D Database subsystem for the query
-    auto* database = GetSubsystem<Database>();
-    if (!database)
-        return;
-
-    // Open a read-only connection to the same DB file
-    String dbPath = GetSubsystem<ResourceCache>()->GetResourceDirs()[1] + "GameDB/game_rules.db";
-    DbConnection* conn = database->Connect("file:" + dbPath + "?mode=ro");
-    if (!conn)
-    {
-        URHO3D_LOGWARNING("Could not open DB connection for building types");
-        return;
-    }
-
-    DbResult result = conn->Execute(
-        "SELECT id, name, category, tier, footprint_x, footprint_z, "
-        "height, max_hp, decay_rate, warmth, storage_slots, "
-        "sleep_capacity, respawn, snap_type, model, ghost_model, "
-        "description FROM building_types ORDER BY tier, id");
+    Vector<BuildingTypeDBInfo> dbTypes = gameDB_->GetAllBuildingTypes();
 
     Vector<BuildingTypeInfo> types;
-    for (unsigned i = 0; i < result.GetNumRows(); ++i)
+    for (unsigned i = 0; i < dbTypes.Size(); ++i)
     {
-        const VariantVector& row = result.GetRows()[i];
+        const BuildingTypeDBInfo& dt = dbTypes[i];
         BuildingTypeInfo info;
-        info.id = row[0].GetI32();
-        info.name = row[1].GetString();
-        info.category = row[2].GetString();
-        info.tier = row[3].GetI32();
-        info.footprintX = row[4].GetFloat();
-        info.footprintZ = row[5].GetFloat();
-        info.height = row[6].GetFloat();
-        info.maxHp = row[7].GetI32();
-        info.decayRate = row[8].GetFloat();
-        info.warmth = row[9].GetFloat();
-        info.storageSlots = row[10].GetI32();
-        info.sleepCapacity = row[11].GetI32();
-        info.respawn = row[12].GetI32() != 0;
-        info.snapType = row[13].GetString();
-        info.modelPath = row[14].GetString();
-        info.ghostModelPath = row[15].GetString();
-        info.description = row[16].GetString();
+        info.id = dt.id;
+        info.name = dt.name;
+        info.category = dt.category;
+        info.tier = dt.tier;
+        info.footprintX = dt.footprintX;
+        info.footprintZ = dt.footprintZ;
+        info.height = dt.height;
+        info.maxHp = dt.maxHp;
+        info.decayRate = dt.decayRate;
+        info.warmth = dt.warmth;
+        info.storageSlots = dt.storageSlots;
+        info.sleepCapacity = dt.sleepCapacity;
+        info.respawn = dt.respawn;
+        info.snapType = dt.snapType;
+        info.modelPath = dt.model;
+        info.ghostModelPath = dt.ghostModel;
+        info.description = dt.description;
         types.Push(info);
     }
 
-    database->Disconnect(conn);
     buildingSystem_->SetBuildingTypes(types);
     URHO3D_LOGINFOF("Loaded %u building types from GameDB", types.Size());
 #endif
@@ -18573,32 +19042,12 @@ void TerrainNode::LoadSnapRules()
     if (!buildingSystem_)
         return;
 
-    auto* database = GetSubsystem<Database>();
-    if (!database)
-        return;
-
-    String dbPath = GetSubsystem<ResourceCache>()->GetResourceDirs()[1] + "GameDB/game_rules.db";
-    DbConnection* conn = database->Connect("file:" + dbPath + "?mode=ro");
-    if (!conn)
-        return;
-
-    DbResult result = conn->Execute(
-        "SELECT from_type, to_type, align FROM snap_rules");
-
-    Vector<SnapRule> rules;
-    for (unsigned i = 0; i < result.GetNumRows(); ++i)
+    // Pass GameDB to BuildingSystem for live GetSnapAlign() lookups in FindSnapPoint
+    if (gameDB_)
     {
-        const VariantVector& row = result.GetRows()[i];
-        SnapRule rule;
-        rule.fromType = row[0].GetString();
-        rule.toType = row[1].GetString();
-        rule.align = row[2].GetString();
-        rules.Push(rule);
+        buildingSystem_->SetGameDB(gameDB_.Get());
+        URHO3D_LOGINFO("Snap rules: BuildingSystem wired to GameDB::GetSnapAlign()");
     }
-
-    database->Disconnect(conn);
-    buildingSystem_->SetSnapRules(rules);
-    URHO3D_LOGINFOF("Loaded %u snap rules from GameDB", rules.Size());
 #endif
 }
 
@@ -18780,6 +19229,7 @@ void TerrainNode::TryBuildingInteract()
     const auto& buildings = buildingSystem_->GetPlacedBuildings();
     int typeId = -1;
     int hp = 0, maxHp = 0;
+    Vector3 buildingPos;
     for (unsigned i = 0; i < buildings.Size(); ++i)
     {
         if (buildings[i].placedId == nearId)
@@ -18787,6 +19237,7 @@ void TerrainNode::TryBuildingInteract()
             typeId = buildings[i].buildingTypeId;
             hp = buildings[i].hp;
             maxHp = buildings[i].maxHp;
+            buildingPos = buildings[i].position;
             break;
         }
     }
@@ -18819,8 +19270,24 @@ void TerrainNode::TryBuildingInteract()
     if (info->sleepCapacity > 0)
     {
         buildingSystem_->RequestSleep(serverConn, nearId);
+        if (!serverConn)
+        {
+            // Offline sleep — replicate server vitals boost locally
+            vitalHp_ = Min(vitalMaxHp_, vitalHp_ + 5);
+            vitalStamina_ = Min(100.0f, vitalStamina_ + 30.0f);
+            if (info->warmth > 0.0f)
+                vitalWarmth_ = Max(vitalWarmth_, info->warmth);
+            UpdateVitalBars();
+        }
         if (info->respawn)
+        {
             buildingSystem_->RequestSetRespawn(serverConn, nearId);
+            if (!serverConn)
+            {
+                respawnBuildingId_ = nearId;
+                respawnPosition_ = buildingPos;
+            }
+        }
         return;
     }
 
@@ -19026,6 +19493,32 @@ void TerrainNode::SampleWeightMap(const Vector2& uv, float& outR, float& outG, f
     outR = c.r_;
     outG = c.g_;
     outB = c.b_;
+}
+
+// --- Soil query API (Plan 9) ---
+
+SoilType TerrainNode::GetSoilType(const Vector3& worldPos) const
+{
+    if (!soilMap_ || !terrain_)
+        return SOIL_ROCK;
+    IntVector2 hm = terrain_->WorldToHeightMap(worldPos);
+    return soilMap_->SampleSoilType(hm.x_, hm.y_);
+}
+
+unsigned char TerrainNode::GetFertility(const Vector3& worldPos) const
+{
+    if (!soilMap_ || !terrain_)
+        return 0;
+    IntVector2 hm = terrain_->WorldToHeightMap(worldPos);
+    return soilMap_->SampleFertility(hm.x_, hm.y_);
+}
+
+unsigned char TerrainNode::GetMineralDensity(const Vector3& worldPos) const
+{
+    if (!soilMap_ || !terrain_)
+        return 0;
+    IntVector2 hm = terrain_->WorldToHeightMap(worldPos);
+    return soilMap_->SampleMineralDensity(hm.x_, hm.y_);
 }
 
 BiomeType TerrainNode::ClassifyTerrain(const Vector3& worldPos) const
@@ -19907,4 +20400,548 @@ void TerrainNode::UpdateTerritoryOverlay()
     }
 
     URHO3D_LOGINFOF("[Settlement] Created %u territory overlay quads", patchOverlayNodes_.Size());
+}
+
+// ============================================================================
+// Decoration Scatter — static Nature/ models placed by biome, streamed by camera
+// ============================================================================
+
+void TerrainNode::InitDecorModels()
+{
+    if (decorModelsReady_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    struct DecorDef
+    {
+        const char* modelPath;
+        const char* matPath;
+        float scale;
+    };
+
+    // Bushes — grassland and forest
+    static const DecorDef bushDefs[] = {
+        { "Models/Nature/Bush_1.mdl",              "Models/Nature/Materials/DarkGreen.xml",  0.6f },
+        { "Models/Nature/Bush_2.mdl",              "Models/Nature/Materials/DarkGreen.xml",  0.6f },
+        { "Models/Nature/Bush_Common.mdl",         "Models/Nature/Materials/Green.xml",      0.5f },
+        { "Models/Nature/Bush_Common_Flowers.mdl", "Models/Nature/Materials/Green.xml",      0.5f },
+        { "Models/Nature/BushBerries_1.mdl",       "Models/Nature/Materials/Berry.xml",      0.4f },
+        { "Models/Nature/BushBerries_2.mdl",       "Models/Nature/Materials/Berry.xml",      0.4f },
+        { "Models/Nature/plant_bush.mdl",          "Models/Nature/Materials/leafsGreen.xml", 0.5f },
+        { "Models/Nature/plant_bushLarge.mdl",     "Models/Nature/Materials/leafsGreen.xml", 0.4f },
+    };
+
+    // Flowers — grassland
+    static const DecorDef flowerDefs[] = {
+        { "Models/Nature/Flower_3_Single.mdl",  "Models/Nature/Materials/Flowers.xml",   0.3f },
+        { "Models/Nature/Flower_3_Group.mdl",   "Models/Nature/Materials/Flowers.xml",   0.3f },
+        { "Models/Nature/Flower_4_Single.mdl",  "Models/Nature/Materials/Flowers.xml",   0.3f },
+        { "Models/Nature/Flower_4_Group.mdl",   "Models/Nature/Materials/Flowers.xml",   0.3f },
+        { "Models/Nature/flower_redA.mdl",      "Models/Nature/Materials/Pink.xml",      0.3f },
+        { "Models/Nature/flower_purpleA.mdl",   "Models/Nature/Materials/Flowers.xml",   0.3f },
+        { "Models/Nature/flower_yellowA.mdl",   "Models/Nature/Materials/Yellow.xml",    0.3f },
+        { "Models/Nature/Clover_1.mdl",         "Models/Nature/Materials/leafsGreen.xml",0.25f },
+        { "Models/Nature/Clover_2.mdl",         "Models/Nature/Materials/leafsGreen.xml",0.25f },
+    };
+
+    // Mushrooms — forest
+    static const DecorDef mushroomDefs[] = {
+        { "Models/Nature/Mushroom_Common.mdl",     "Models/Nature/Materials/Mushrooms.xml",    0.3f },
+        { "Models/Nature/Mushroom_Laetiporus.mdl", "Models/Nature/Materials/Orange.xml",       0.3f },
+        { "Models/Nature/mushroom_red.mdl",        "Models/Nature/Materials/Mushroom_Top.xml", 0.25f },
+        { "Models/Nature/mushroom_tan.mdl",        "Models/Nature/Materials/Mushroom_Top.xml", 0.25f },
+        { "Models/Nature/mushroom_redGroup.mdl",   "Models/Nature/Materials/Mushroom_Top.xml", 0.25f },
+        { "Models/Nature/mushroom_tanGroup.mdl",   "Models/Nature/Materials/Mushroom_Top.xml", 0.25f },
+    };
+
+    // Stumps and logs — any biome
+    static const DecorDef stumpDefs[] = {
+        { "Models/Nature/stump_round.mdl",         "Models/Nature/Materials/woodBark.xml", 0.4f },
+        { "Models/Nature/stump_roundDetailed.mdl", "Models/Nature/Materials/woodBark.xml", 0.4f },
+        { "Models/Nature/stump_old.mdl",           "Models/Nature/Materials/woodBark.xml", 0.35f },
+        { "Models/Nature/stump_oldTall.mdl",       "Models/Nature/Materials/woodBark.xml", 0.35f },
+        { "Models/Nature/TreeStump.mdl",           "Models/Nature/Materials/Wood.xml",     0.4f },
+        { "Models/Nature/TreeStump_Moss.mdl",      "Models/Nature/Materials/Wood.xml",     0.4f },
+        { "Models/Nature/log.mdl",                 "Models/Nature/Materials/woodBark.xml", 0.5f },
+        { "Models/Nature/log_large.mdl",           "Models/Nature/Materials/woodBark.xml", 0.4f },
+        { "Models/Nature/WoodLog.mdl",             "Models/Nature/Materials/Wood.xml",     0.4f },
+        { "Models/Nature/WoodLog_Moss.mdl",        "Models/Nature/Materials/Wood.xml",     0.4f },
+    };
+
+    // Rocks — mountain and scattered
+    static const DecorDef rockDefs[] = {
+        { "Models/Nature/Rock_1.mdl",        "Models/Nature/Materials/Rock.xml",  0.5f },
+        { "Models/Nature/Rock_2.mdl",        "Models/Nature/Materials/Rock.xml",  0.5f },
+        { "Models/Nature/Rock_3.mdl",        "Models/Nature/Materials/Rock.xml",  0.5f },
+        { "Models/Nature/Rock_Moss_1.mdl",   "Models/Nature/Materials/Rock.xml",  0.5f },
+        { "Models/Nature/Rock_Moss_2.mdl",   "Models/Nature/Materials/Rock.xml",  0.5f },
+        { "Models/Nature/Pebble_Round_1.mdl","Models/Nature/Materials/Rock.xml",  0.3f },
+        { "Models/Nature/Pebble_Round_4.mdl","Models/Nature/Materials/Rock.xml",  0.3f },
+    };
+
+    // Ferns — forest
+    static const DecorDef fernDefs[] = {
+        { "Models/Nature/Fern_1.mdl",  "Models/Nature/Materials/leafsGreen.xml", 0.4f },
+        { "Models/Nature/fern_02.mdl", "Models/Nature/Materials/fern_02.xml",    0.4f },
+    };
+
+    struct CategoryDefs
+    {
+        const DecorDef* defs;
+        unsigned count;
+    };
+    CategoryDefs categories[NUM_DECOR_CATEGORIES] = {
+        { bushDefs,     sizeof(bushDefs) / sizeof(bushDefs[0]) },
+        { flowerDefs,   sizeof(flowerDefs) / sizeof(flowerDefs[0]) },
+        { mushroomDefs, sizeof(mushroomDefs) / sizeof(mushroomDefs[0]) },
+        { stumpDefs,    sizeof(stumpDefs) / sizeof(stumpDefs[0]) },
+        { rockDefs,     sizeof(rockDefs) / sizeof(rockDefs[0]) },
+        { fernDefs,     sizeof(fernDefs) / sizeof(fernDefs[0]) },
+    };
+
+    unsigned totalLoaded = 0;
+    for (int cat = 0; cat < NUM_DECOR_CATEGORIES; ++cat)
+    {
+        const CategoryDefs& cd = categories[cat];
+        for (unsigned i = 0; i < cd.count; ++i)
+        {
+            auto* mdl = cache->GetResource<Model>(cd.defs[i].modelPath, false);
+            if (!mdl)
+                continue;
+            DecorEntry entry;
+            entry.model = mdl;
+            entry.material = cache->GetResource<Material>(cd.defs[i].matPath, false);
+            entry.baseScale = cd.defs[i].scale;
+            decorModels_[cat].Push(entry);
+            ++totalLoaded;
+        }
+    }
+
+    decorModelsReady_ = true;
+    URHO3D_LOGINFOF("[DecorScatter] Loaded %u decoration models across %d categories", totalLoaded, NUM_DECOR_CATEGORIES);
+}
+
+void TerrainNode::UpdateDecorScatter()
+{
+    if (!terrain_ || !scene_ || !cameraNode_ || !ecosystem_)
+        return;
+
+    InitDecorModels();
+    if (!decorModelsReady_)
+        return;
+
+    Vector3 camPos = cameraNode_->GetWorldPosition();
+    const float SPAWN_RADIUS = 120.0f;
+    const float DESPAWN_RADIUS = 150.0f;
+    const float SPAWN_RADIUS_SQ = SPAWN_RADIUS * SPAWN_RADIUS;
+    const float DESPAWN_RADIUS_SQ = DESPAWN_RADIUS * DESPAWN_RADIUS;
+    const float CELL_SIZE = 4.0f;  // one potential decor per 4m cell
+
+    // Despawn nodes beyond radius
+    Vector<unsigned> toRemove;
+    for (auto it = activeDecorNodes_.Begin(); it != activeDecorNodes_.End(); ++it)
+    {
+        Node* node = it->second_;
+        if (!node)
+        {
+            toRemove.Push(it->first_);
+            continue;
+        }
+        Vector3 diff = node->GetWorldPosition() - camPos;
+        diff.y_ = 0.0f;
+        if (diff.LengthSquared() > DESPAWN_RADIUS_SQ)
+        {
+            node->Remove();
+            toRemove.Push(it->first_);
+        }
+    }
+    for (unsigned key : toRemove)
+        activeDecorNodes_.Erase(key);
+
+    // Grid bounds around camera
+    int minCellX = (int)Floor((camPos.x_ - SPAWN_RADIUS) / CELL_SIZE);
+    int maxCellX = (int)Floor((camPos.x_ + SPAWN_RADIUS) / CELL_SIZE);
+    int minCellZ = (int)Floor((camPos.z_ - SPAWN_RADIUS) / CELL_SIZE);
+    int maxCellZ = (int)Floor((camPos.z_ + SPAWN_RADIUS) / CELL_SIZE);
+
+    unsigned spawned = 0;
+    const unsigned MAX_SPAWN_PER_FRAME = 40;
+
+    for (int cz = minCellZ; cz <= maxCellZ && spawned < MAX_SPAWN_PER_FRAME; ++cz)
+    {
+        for (int cx = minCellX; cx <= maxCellX && spawned < MAX_SPAWN_PER_FRAME; ++cx)
+        {
+            // Deterministic hash from cell coords — same cell always produces same result
+            unsigned cellKey = (unsigned)(cz + 32768) * 65536u + (unsigned)(cx + 32768);
+            if (activeDecorNodes_.Contains(cellKey))
+                continue;
+
+            // Deterministic pseudo-random from cell key
+            unsigned h = cellKey;
+            h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16;
+
+            // Density gate — only ~15% of cells get decoration
+            if ((h & 0xFF) > 38)
+                continue;
+
+            // World position with jitter within cell
+            float wx = ((float)cx + (float)((h >> 8) & 0xFF) / 255.0f) * CELL_SIZE;
+            float wz = ((float)cz + (float)((h >> 16) & 0xFF) / 255.0f) * CELL_SIZE;
+
+            // Distance check
+            float dx = wx - camPos.x_;
+            float dz = wz - camPos.z_;
+            if (dx * dx + dz * dz > SPAWN_RADIUS_SQ)
+                continue;
+
+            float wy = terrain_->GetHeight(Vector3(wx, 0.0f, wz));
+            const float waterLevel = 5.0f;
+            if (wy < waterLevel + 0.5f)
+                continue;
+
+            // Biome classification determines which category to use
+            EcoBiome biome = ecosystem_->SampleBiome(wx, wz);
+            float shrubDensity = ecosystem_->SampleShrubDensity(wx, wz);
+
+            // Skip barren areas
+            if (biome == ECO_BARREN || biome == ECO_ALPINE)
+                continue;
+            if (shrubDensity < 0.1f && biome != ECO_FOREST)
+                continue;
+
+            // Pick category based on biome + hash variety
+            int category = -1;
+            unsigned variety = (h >> 24) & 0xFF;
+
+            if (biome == ECO_GRASSLAND)
+            {
+                if (variety < 100)
+                    category = DECOR_BUSH;
+                else if (variety < 180)
+                    category = DECOR_FLOWER;
+                else if (variety < 220)
+                    category = DECOR_STUMP;
+                else
+                    category = DECOR_ROCK;
+            }
+            else if (biome == ECO_FOREST)
+            {
+                if (variety < 80)
+                    category = DECOR_BUSH;
+                else if (variety < 140)
+                    category = DECOR_MUSHROOM;
+                else if (variety < 200)
+                    category = DECOR_FERN;
+                else if (variety < 230)
+                    category = DECOR_STUMP;
+                else
+                    category = DECOR_ROCK;
+            }
+            else if (biome == ECO_WETLAND)
+            {
+                if (variety < 120)
+                    category = DECOR_FERN;
+                else if (variety < 200)
+                    category = DECOR_BUSH;
+                else
+                    category = DECOR_STUMP;
+            }
+            else
+            {
+                // Fallback — stumps and rocks
+                category = (variety < 128) ? DECOR_STUMP : DECOR_ROCK;
+            }
+
+            if (category < 0 || category >= NUM_DECOR_CATEGORIES)
+                continue;
+            if (decorModels_[category].Empty())
+                continue;
+
+            // Pick model from category using hash
+            unsigned modelIdx = h % decorModels_[category].Size();
+            const DecorEntry& entry = decorModels_[category][modelIdx];
+
+            // Scale variation: 80%-120% of base
+            float scaleVar = 0.8f + (float)((h >> 4) & 0xFF) / 255.0f * 0.4f;
+            float finalScale = entry.baseScale * scaleVar;
+
+            // Y rotation from hash
+            float yRot = (float)(h & 0xFFF) / 4096.0f * 360.0f;
+
+            Node* node = scene_->CreateTemporaryChild("Decor", LOCAL);
+            node->SetWorldPosition(Vector3(wx, wy, wz));
+            node->SetRotation(Quaternion(0.0f, yRot, 0.0f));
+            node->SetScale(finalScale);
+
+            auto* sm = node->CreateComponent<StaticModel>();
+            sm->SetModel(entry.model);
+            if (entry.material)
+                sm->SetMaterial(entry.material);
+            sm->SetCastShadows(false);
+            sm->SetViewMask(0x01);
+
+            activeDecorNodes_[cellKey] = node;
+            ++spawned;
+        }
+    }
+}
+
+// ============================================================================
+// Water Edge Scatter — Pond/ models at waterline, streamed by camera
+// ============================================================================
+
+void TerrainNode::InitWaterEdgeModels()
+{
+    if (waterEdgeModelsReady_)
+        return;
+
+    auto* cache = GetSubsystem<ResourceCache>();
+
+    // Plants material — atlas covers cattails, lily pads, mint, calla, grass
+    auto* plantsMat = cache->GetResource<Material>("Materials/Pond/Pond_Plants_Atlas_MAT.xml", false);
+    // Props material — rocks, frogs, branches
+    auto* propsMat = cache->GetResource<Material>("Materials/Pond/Pond_Pack_MAT.xml", false);
+
+    struct WEdgeDef
+    {
+        const char* modelPath;
+        Material* mat;
+        float scale;
+    };
+
+    // Cattails — tall reeds at the waterline
+    WEdgeDef cattailDefs[] = {
+        { "Models/Pond/CatTail_1.mdl",          plantsMat, 0.5f },
+        { "Models/Pond/CatTail_2.mdl",          plantsMat, 0.5f },
+        { "Models/Pond/CatTail_3.mdl",          plantsMat, 0.5f },
+        { "Models/Pond/Long_Grass_Patch_1.mdl",  plantsMat, 0.4f },
+        { "Models/Pond/Long_Grass_Patch_2.mdl",  plantsMat, 0.4f },
+    };
+
+    // Lily pads — flat on water surface
+    WEdgeDef lilyDefs[] = {
+        { "Models/Pond/Water_Lily_Leaf_1.mdl",    plantsMat, 0.4f },
+        { "Models/Pond/Water_Lily_Leaf_2.mdl",    plantsMat, 0.4f },
+        { "Models/Pond/Water_Lily_Leaf_3.mdl",    plantsMat, 0.4f },
+        { "Models/Pond/Water_Lily_Leaf_4.mdl",    plantsMat, 0.4f },
+        { "Models/Pond/Water_Lily_Blossom_1.mdl", plantsMat, 0.3f },
+        { "Models/Pond/Water_Lily_Blossom_2.mdl", plantsMat, 0.3f },
+        { "Models/Pond/Water_Lettuce_1.mdl",      plantsMat, 0.3f },
+        { "Models/Pond/Water_Lettuce_2.mdl",      plantsMat, 0.3f },
+        { "Models/Pond/Water_Hyacinth_1.mdl",     plantsMat, 0.3f },
+        { "Models/Pond/Water_Hyacinth_2.mdl",     plantsMat, 0.3f },
+    };
+
+    // Bank plants — small waterside vegetation
+    WEdgeDef bankPlantDefs[] = {
+        { "Models/Pond/Water_Mint_1.mdl",        plantsMat, 0.35f },
+        { "Models/Pond/Water_Mint_2.mdl",        plantsMat, 0.35f },
+        { "Models/Pond/Swamp_Calla_1.mdl",       plantsMat, 0.35f },
+        { "Models/Pond/Swamp_Calla_2.mdl",       plantsMat, 0.35f },
+        { "Models/Pond/Short_Grass_Patch_1.mdl",  plantsMat, 0.35f },
+        { "Models/Pond/Short_Grass_Patch_2.mdl",  plantsMat, 0.35f },
+        { "Models/Pond/Mini_Plant_1.mdl",         plantsMat, 0.3f },
+        { "Models/Pond/Mini_Plant_2.mdl",         plantsMat, 0.3f },
+    };
+
+    // Frogs — bank wildlife
+    WEdgeDef frogDefs[] = {
+        { "Models/Pond/Frog_1.mdl", propsMat, 0.25f },
+        { "Models/Pond/Frog_2.mdl", propsMat, 0.25f },
+        { "Models/Pond/Frog_3.mdl", propsMat, 0.25f },
+    };
+
+    // Rocks — bank pebbles
+    WEdgeDef rockDefs[] = {
+        { "Models/Pond/Pebble_1a.mdl",      propsMat, 0.3f },
+        { "Models/Pond/Pebble_1b.mdl",      propsMat, 0.3f },
+        { "Models/Pond/Pebble_1a_Moss.mdl", propsMat, 0.3f },
+        { "Models/Pond/Pebble_2a.mdl",      propsMat, 0.25f },
+        { "Models/Pond/Pebble_2b.mdl",      propsMat, 0.25f },
+        { "Models/Pond/Pebble_2a_Moss.mdl", propsMat, 0.25f },
+        { "Models/Pond/Rock_1a.mdl",         propsMat, 0.35f },
+        { "Models/Pond/Rock_1b.mdl",         propsMat, 0.35f },
+        { "Models/Pond/Rock_2a.mdl",         propsMat, 0.35f },
+    };
+
+    struct CatDefs { WEdgeDef* defs; unsigned count; };
+    CatDefs allCats[NUM_WEDGE_CATEGORIES] = {
+        { cattailDefs,   sizeof(cattailDefs) / sizeof(cattailDefs[0]) },
+        { lilyDefs,      sizeof(lilyDefs) / sizeof(lilyDefs[0]) },
+        { bankPlantDefs, sizeof(bankPlantDefs) / sizeof(bankPlantDefs[0]) },
+        { frogDefs,      sizeof(frogDefs) / sizeof(frogDefs[0]) },
+        { rockDefs,      sizeof(rockDefs) / sizeof(rockDefs[0]) },
+    };
+
+    unsigned totalLoaded = 0;
+    for (int cat = 0; cat < NUM_WEDGE_CATEGORIES; ++cat)
+    {
+        CatDefs& cd = allCats[cat];
+        for (unsigned i = 0; i < cd.count; ++i)
+        {
+            auto* mdl = cache->GetResource<Model>(cd.defs[i].modelPath, false);
+            if (!mdl)
+                continue;
+            DecorEntry entry;
+            entry.model = mdl;
+            entry.material = cd.defs[i].mat;
+            entry.baseScale = cd.defs[i].scale;
+            waterEdgeModels_[cat].Push(entry);
+            ++totalLoaded;
+        }
+    }
+
+    waterEdgeModelsReady_ = true;
+    URHO3D_LOGINFOF("[WaterEdgeScatter] Loaded %u models across %d categories", totalLoaded, NUM_WEDGE_CATEGORIES);
+}
+
+void TerrainNode::UpdateWaterEdgeScatter()
+{
+    if (!terrain_ || !scene_ || !cameraNode_)
+        return;
+
+    InitWaterEdgeModels();
+    if (!waterEdgeModelsReady_)
+        return;
+
+    Vector3 camPos = cameraNode_->GetWorldPosition();
+    const float SPAWN_RADIUS = 100.0f;
+    const float DESPAWN_RADIUS = 130.0f;
+    const float SPAWN_RADIUS_SQ = SPAWN_RADIUS * SPAWN_RADIUS;
+    const float DESPAWN_RADIUS_SQ = DESPAWN_RADIUS * DESPAWN_RADIUS;
+    const float CELL_SIZE = 3.0f;  // denser than decor — water edges are narrow
+    const float waterLevel = 5.0f;
+
+    // Despawn beyond radius
+    Vector<unsigned> toRemove;
+    for (auto it = activeWaterEdgeNodes_.Begin(); it != activeWaterEdgeNodes_.End(); ++it)
+    {
+        Node* node = it->second_;
+        if (!node)
+        {
+            toRemove.Push(it->first_);
+            continue;
+        }
+        Vector3 diff = node->GetWorldPosition() - camPos;
+        diff.y_ = 0.0f;
+        if (diff.LengthSquared() > DESPAWN_RADIUS_SQ)
+        {
+            node->Remove();
+            toRemove.Push(it->first_);
+        }
+    }
+    for (unsigned key : toRemove)
+        activeWaterEdgeNodes_.Erase(key);
+
+    // Grid bounds around camera
+    int minCellX = (int)Floor((camPos.x_ - SPAWN_RADIUS) / CELL_SIZE);
+    int maxCellX = (int)Floor((camPos.x_ + SPAWN_RADIUS) / CELL_SIZE);
+    int minCellZ = (int)Floor((camPos.z_ - SPAWN_RADIUS) / CELL_SIZE);
+    int maxCellZ = (int)Floor((camPos.z_ + SPAWN_RADIUS) / CELL_SIZE);
+
+    unsigned spawned = 0;
+    const unsigned MAX_SPAWN_PER_FRAME = 30;
+
+    for (int cz = minCellZ; cz <= maxCellZ && spawned < MAX_SPAWN_PER_FRAME; ++cz)
+    {
+        for (int cx = minCellX; cx <= maxCellX && spawned < MAX_SPAWN_PER_FRAME; ++cx)
+        {
+            // Use offset hash space to avoid collisions with DecorScatter
+            unsigned cellKey = (unsigned)(cz + 32768) * 65536u + (unsigned)(cx + 32768);
+            cellKey ^= 0xA5A5A5A5u;  // separate hash space from decor
+            if (activeWaterEdgeNodes_.Contains(cellKey))
+                continue;
+
+            // Deterministic pseudo-random
+            unsigned h = cellKey;
+            h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16;
+
+            // Density gate — ~20% of cells near water get vegetation
+            if ((h & 0xFF) > 51)
+                continue;
+
+            // World position with jitter
+            float wx = ((float)cx + (float)((h >> 8) & 0xFF) / 255.0f) * CELL_SIZE;
+            float wz = ((float)cz + (float)((h >> 16) & 0xFF) / 255.0f) * CELL_SIZE;
+
+            float dx = wx - camPos.x_;
+            float dz = wz - camPos.z_;
+            if (dx * dx + dz * dz > SPAWN_RADIUS_SQ)
+                continue;
+
+            float wy = terrain_->GetHeight(Vector3(wx, 0.0f, wz));
+
+            // Zone classification:
+            // UNDERWATER: wy < waterLevel - 0.3  (lily pads float on surface)
+            // WATERLINE:  wy in [waterLevel - 0.3, waterLevel + 0.5] (cattails, reeds)
+            // BANK:       wy in [waterLevel + 0.5, waterLevel + 3.0] (plants, frogs, rocks)
+            // ABOVE:      wy > waterLevel + 3.0 → skip (too far from water)
+            float relHeight = wy - waterLevel;
+
+            int category = -1;
+            float placeY = wy;
+            unsigned variety = (h >> 24) & 0xFF;
+
+            if (relHeight < -0.3f)
+            {
+                // Underwater — lily pads float on water surface
+                if (relHeight < -3.0f)
+                    continue;  // too deep
+                category = WEDGE_LILYPAD;
+                placeY = waterLevel + 0.01f;  // float on surface
+            }
+            else if (relHeight < 0.5f)
+            {
+                // Waterline band — cattails and reeds
+                if (variety < 200)
+                    category = WEDGE_CATTAIL;
+                else
+                    category = WEDGE_BANKPLANT;
+            }
+            else if (relHeight < 3.0f)
+            {
+                // Bank — plants, frogs, rocks
+                if (variety < 80)
+                    category = WEDGE_BANKPLANT;
+                else if (variety < 110)
+                    category = WEDGE_FROG;
+                else if (variety < 180)
+                    category = WEDGE_ROCK;
+                else
+                    continue;  // sparse on upper bank
+            }
+            else
+            {
+                continue;  // too far from water
+            }
+
+            if (category < 0 || category >= NUM_WEDGE_CATEGORIES)
+                continue;
+            if (waterEdgeModels_[category].Empty())
+                continue;
+
+            unsigned modelIdx = h % waterEdgeModels_[category].Size();
+            const DecorEntry& entry = waterEdgeModels_[category][modelIdx];
+
+            float scaleVar = 0.8f + (float)((h >> 4) & 0xFF) / 255.0f * 0.4f;
+            float finalScale = entry.baseScale * scaleVar;
+            float yRot = (float)(h & 0xFFF) / 4096.0f * 360.0f;
+
+            Node* node = scene_->CreateTemporaryChild("WaterEdge", LOCAL);
+            node->SetWorldPosition(Vector3(wx, placeY, wz));
+            node->SetRotation(Quaternion(0.0f, yRot, 0.0f));
+            node->SetScale(finalScale);
+
+            auto* sm = node->CreateComponent<StaticModel>();
+            sm->SetModel(entry.model);
+            if (entry.material)
+                sm->SetMaterial(entry.material);
+            sm->SetCastShadows(false);
+            sm->SetViewMask(0x01);
+
+            activeWaterEdgeNodes_[cellKey] = node;
+            ++spawned;
+        }
+    }
 }

@@ -521,6 +521,43 @@ void DebugRenderer::AddQuad(const Vector3& center, float width, float height, co
     AddLine(v3, v0, uintColor, depthTest);
 }
 
+void DebugRenderer::AddCone(const Vector3& position, const Vector3& direction, float length, float halfAngle, const Color& color, int steps, bool depthTest)
+{
+    if (steps < 3)
+        steps = 3;
+
+    // Build a coordinate frame from the direction
+    Vector3 dir = direction.Normalized();
+    Vector3 up = (Abs(dir.y_) < 0.99f) ? Vector3::UP : Vector3::RIGHT;
+    Vector3 right = dir.CrossProduct(up).Normalized();
+    up = right.CrossProduct(dir).Normalized();
+
+    float baseRadius = length * tanf(halfAngle);
+    Vector3 baseCenter = position + dir * length;
+
+    unsigned uintColor = color.ToU32();
+
+    float angleStep = 360.0f / (float)steps;
+    Vector3 prevPoint;
+
+    for (int i = 0; i <= steps; ++i)
+    {
+        float angle = (float)i * angleStep;
+        float rad = angle * M_DEGTORAD;
+        Vector3 point = baseCenter + (right * cosf(rad) + up * sinf(rad)) * baseRadius;
+
+        if (i > 0)
+        {
+            // Base circle segment
+            AddLine(prevPoint, point, uintColor, depthTest);
+            // Side line from apex (every other step to avoid clutter)
+            if (i % 2 == 0 || steps <= 8)
+                AddLine(position, point, uintColor, depthTest);
+        }
+        prevPoint = point;
+    }
+}
+
 void DebugRenderer::Render()
 {
     if (!HasContent())

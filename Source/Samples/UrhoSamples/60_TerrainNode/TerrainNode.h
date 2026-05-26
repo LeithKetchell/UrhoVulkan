@@ -55,6 +55,7 @@
 #include "HabitatRules.h"
 #include "ResourcePickup.h"
 #include "ResourceMap.h"
+#include "SoilMap.h"
 #include <Urho3D/Graphics/TerrainBrush.h>
 #include <Urho3D/Graphics/ProfilerUI.h>
 #include <Urho3D/Game/GameDB.h>
@@ -319,8 +320,10 @@ private:
 
     WeakPtr<Node> sunNode_;
     WeakPtr<Node> moonNode_;
+    WeakPtr<Node> moonShadowNode_;   ///< Earth shadow disc — child of moonNode_
     SharedPtr<Material> sunMat_;
     SharedPtr<Material> moonMat_;
+    SharedPtr<Material> moonShadowMat_;  ///< Dark feathered disc material
     float sunOcclusionFade_{1.0f};
     float moonOcclusionFade_{1.0f};
     bool cachedSunOccluded_{false};
@@ -344,6 +347,7 @@ private:
     int baseDayOfYear_{};      // from Melbourne time, before offsets
     float baseMoonAge_{};      // from Melbourne time, before offsets
     float moonAge_{};
+    bool lunarEclipseActive_{false};  ///< Server says blood moon is happening
     float daySliderOffset_{};    // ±15 days
     float monthSliderOffset_{};  // ±6 months (in days)
     float yearSliderOffset_{};   // ±15 years (in days)
@@ -503,6 +507,9 @@ private:
     int lastSeasonDay_{-1};
     float cachedSeasonFactor_{};
     Color cachedSeasonBias_;
+    ClimateInfo cachedClimateDay_{15.0f, 2.0f, 3.0f};    ///< DB climate for current season, daytime
+    ClimateInfo cachedClimateNight_{8.0f, 3.0f, 4.0f};   ///< DB climate for current season, nighttime
+    void UpdateCachedClimate();
     float cachedFogStart_{500.0f};
     float cachedFogEnd_{750.0f};
     Color cachedTerrainTint_{Color::WHITE};
@@ -646,6 +653,47 @@ private:
     HashMap<unsigned, WeakPtr<Node>> activePickupNodes_;
     float resourceStreamTimer_{};
 
+    // --- Decoration Scatter (static Nature/ models placed by biome) ---
+    enum DecorCategory
+    {
+        DECOR_BUSH = 0,
+        DECOR_FLOWER,
+        DECOR_MUSHROOM,
+        DECOR_STUMP,
+        DECOR_ROCK,
+        DECOR_FERN,
+        NUM_DECOR_CATEGORIES
+    };
+    void InitDecorModels();
+    void UpdateDecorScatter();
+    struct DecorEntry
+    {
+        SharedPtr<Model> model;
+        SharedPtr<Material> material;
+        float baseScale{1.0f};
+    };
+    Vector<DecorEntry> decorModels_[NUM_DECOR_CATEGORIES];
+    HashMap<unsigned, WeakPtr<Node>> activeDecorNodes_;
+    bool decorModelsReady_{false};
+    float decorScatterTimer_{0.0f};
+
+    // --- Water Edge Scatter (Pond/ models at waterline, streamed by camera) ---
+    enum WaterEdgeCategory
+    {
+        WEDGE_CATTAIL = 0,   // at waterline — tall reeds
+        WEDGE_LILYPAD,       // on water surface
+        WEDGE_BANKPLANT,     // small plants on bank (mint, calla, grass)
+        WEDGE_FROG,          // bank wildlife
+        WEDGE_ROCK,          // bank pebbles and rocks
+        NUM_WEDGE_CATEGORIES
+    };
+    void InitWaterEdgeModels();
+    void UpdateWaterEdgeScatter();
+    Vector<DecorEntry> waterEdgeModels_[NUM_WEDGE_CATEGORIES];
+    HashMap<unsigned, WeakPtr<Node>> activeWaterEdgeNodes_;
+    bool waterEdgeModelsReady_{false};
+    float waterEdgeScatterTimer_{0.0f};
+
     // --- Grass (GPU-driven) ---
     void CreateGrass();
     SharedPtr<GrassSystem> grassSystem_;
@@ -659,6 +707,15 @@ private:
     // --- Metal deposits ---
     WeakPtr<class MetalDeposits> metalDeposits_;
 
+    // --- Soil map (Plan 9) ---
+    WeakPtr<SoilMap> soilMap_;
+    /// Query soil type at world position. Returns SOIL_ROCK if no map loaded.
+    SoilType GetSoilType(const Vector3& worldPos) const;
+    /// Query fertility (0-255) at world position.
+    unsigned char GetFertility(const Vector3& worldPos) const;
+    /// Query mineral density (0-255) at world position.
+    unsigned char GetMineralDensity(const Vector3& worldPos) const;
+
     // --- Fish ---
     void CreateFish();
     void CreateSchoolFish();
@@ -669,6 +726,8 @@ private:
     LandAnimalSpatialHash landAnimalHash_;
     Vector<WeakPtr<Node>> fishNodes_;
     SchoolStateCache schoolStateCache_;
+    /// Per-school population state (indexed by school ID).
+    Vector<FishPopulationState> schoolPopStates_;
 
     /// Server-provided fish spawn points (from water body analysis).
     struct FishSpawnInfo { float x, z, depth; };
@@ -699,6 +758,8 @@ private:
     WeakPtr<ParticleEmitter> campfireSmokeEmitter_;
     WeakPtr<ParticleEmitter> campfireEmbersEmitter_;
     float embersPhase_{0.0f};  // pulsation phase [0..2π]
+    float embersTimeRemaining_{0.0f};  // offline embers countdown before COLD (seconds)
+    static constexpr float EMBERS_DURATION = 120.0f;  // how long embers last before going cold
     // Fuel system — real wallclock seconds, immune to day-cycle scrub
     float fuelSeconds_{270.0f};      // current remaining fuel (≈3 sticks at startup)
     float maxFuelSeconds_{1800.0f};  // capacity cap (~30 min of stored burn)
@@ -732,9 +793,11 @@ private:
     void HandlePitIgnitionStatus(StringHash eventType, VariantMap& eventData);
     // Woodpile server sync — receive authoritative pile state from server
     void HandleWoodpileState(StringHash eventType, VariantMap& eventData);
-    // Phase 1 fuel item burn durations (real seconds). Phase 2 will read these from GameDB.
-    static constexpr float STICK_BURN_SECONDS = 90.0f;
-    static constexpr float CHARCOAL_BURN_SECONDS = 600.0f;
+    // Fuel burn durations (real seconds) — loaded from GameDB fuel_types table.
+    // fuel_value is a multiplier: burn_seconds = fuel_value * 3600 / fire_rules.fuel_per_hour.
+    float stickBurnSeconds_{90.0f};       // item 2 (Stick) — fallback
+    float charcoalBurnSeconds_{600.0f};   // item 43 (Charcoal) — fallback
+    FireRules fireRules_;                 // cached from DB
     void HandleCampfireSlider(StringHash eventType, VariantMap& eventData);
     void HandleCampfireSettingsChanged(StringHash eventType, VariantMap& eventData);
     void HandleAnimationTextKey(StringHash eventType, VariantMap& eventData);
@@ -1047,7 +1110,9 @@ private:
 
     // --- Crafting UI (Phase 4) ---
     void InitGameDB();
+    void BuildSpawnTable();
     void HandleAnimalDied(StringHash eventType, VariantMap& eventData);
+    void HandleFishBorn(StringHash eventType, VariantMap& eventData);
 
     /// Spawn one creature of the given species at the given position.
     /// Used by both the initial CreateAnimals loop and the Phase 1
@@ -1104,6 +1169,11 @@ private:
     SharedPtr<class GameDB> gameDB_;
     SharedPtr<class PopulationManager> popManager_;
     Vector<struct RecipeInfo> recipes_;
+
+    /// Cached gather source lookup: itemId → first matching GatherSourceInfo.
+    HashMap<int, struct GatherSourceInfo> gatherSourceByItem_;
+    /// Cached water sources from DB.
+    Vector<struct WaterSourceInfo> waterSources_;
     int selectedRecipeIndex_{-1};
     bool craftingOpen_{false};
     float craftTimer_{};          // countdown during crafting
@@ -1211,10 +1281,12 @@ private:
 
     // Resource Chain Phase 2 — trap state lookup. Server trap node id → local PlacedTrap node.
     // Populated in MSG_TRAP_SPAWNED, looked up in MSG_TRAP_REMOVED + the trap-check scanner.
-    // Replaces a per-removal scene walk (Planner fix-now from TASK_RESOURCE_CHAIN_PHASE_2.md addendum).
+    // Replaces a per-removal scene walk (fix from TASK_RESOURCE_CHAIN_PHASE_2.md addendum).
     HashMap<unsigned, WeakPtr<Node>> trapNodes_;
     /// Placed crops: cropId → scene node. Populated by MSG_CROP_SPAWNED, removed by MSG_CROP_REMOVED.
     HashMap<int, WeakPtr<Node>> cropNodes_;
+    /// Cached seed item IDs from GameDB crop_types — used by TryPlantCrop().
+    HashSet<int> seedItemIds_;
     // Trap-check scanner: per (trap, creature) dedupe so a creature standing in range only
     // generates one MSG_TRAP_CHECK round-trip. Cleared per-trap when the creature leaves range
     // or the trap is removed.

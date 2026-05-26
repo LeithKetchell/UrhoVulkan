@@ -170,6 +170,15 @@ i32 File::Read(void* dest, i32 size)
         return 0;
     }
 
+    // Virtual files (procfs, sysfs) report size 0 but contain data.
+    // Skip the size clamp and attempt a real read from the handle.
+    if (size_ == 0 && handle_ && !compressed_ && offset_ == 0)
+    {
+        size_t bytesRead = fread(dest, 1, size, (FILE*)handle_);
+        position_ += (i32)bytesRead;
+        return (i32)bytesRead;
+    }
+
     if (size + position_ > size_)
         size = size_ - position_;
     if (!size)
@@ -414,6 +423,16 @@ void File::Flush()
 {
     if (handle_)
         fflush((FILE*)handle_);
+}
+
+bool File::IsEof() const
+{
+    // Virtual files (procfs, sysfs) report size 0 but still contain data.
+    // Use feof() to check actual EOF for these files.
+    if (size_ == 0 && handle_)
+        return feof((FILE*)handle_) != 0;
+
+    return position_ >= size_;
 }
 
 bool File::IsOpen() const

@@ -56,6 +56,11 @@ public:
     /// @property{get_renderSurfaces}
     RenderSurface* GetRenderSurface(CubeMapFace face) const { return renderSurfaces_[face]; }
 
+#ifdef URHO3D_VULKAN
+    /// Return MSAA VkImage for resolve operations. Null if not multisampled.
+    void* GetMSAAImage() const { return msaaImage_; }
+#endif
+
 protected:
     /// Create the GPU texture.
     bool Create() override;
@@ -100,6 +105,12 @@ private:
 #ifdef URHO3D_VULKAN
     /// VMA allocation handle for Vulkan.
     void* vmaAllocation_{};
+    /// Multisampled VkImage for MSAA render targets (resolve source)
+    void* msaaImage_{};
+    /// VMA allocation for MSAA image
+    void* msaaAllocation_{};
+    /// VkImageView for MSAA image (used as framebuffer attachment)
+    void* msaaImageView_{};
 #endif
     /// Render surfaces.
     SharedPtr<RenderSurface> renderSurfaces_[MAX_CUBEMAP_FACES];

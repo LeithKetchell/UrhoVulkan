@@ -81,6 +81,9 @@ public:
     /// @property
     bool IsOpen() const;
 
+    /// Return whether end of file. Handles virtual files (procfs/sysfs) that report size 0.
+    bool IsEof() const override;
+
     /// Return the file handle.
     void* GetHandle() const { return handle_; }
 

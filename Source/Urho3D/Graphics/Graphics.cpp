@@ -651,6 +651,11 @@ Graphics::Graphics(Context* context, GAPI gapi)
     // Initialize viewport to default 1024x768 (will be updated by SetViewport after window creation)
     viewport_ = IntRect(0, 0, 1024, 768);
 
+    // In-engine timeline profiler (Phase 1 of PLAN_PROFILER_TIMELINE).
+    // Always created — backend-independent CPU recording. GPU lanes (Phase 2)
+    // hang off the same instance via Vulkan timestamp queries.
+    profilerTimeline_ = new ProfilerTimeline();
+
 #ifdef URHO3D_VULKAN
     // Create Vulkan profiler instance
     vulkanProfiler_ = new VulkanProfiler();

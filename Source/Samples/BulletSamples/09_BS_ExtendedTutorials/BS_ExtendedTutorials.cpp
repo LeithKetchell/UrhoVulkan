@@ -250,8 +250,7 @@ void BS_ExtendedTutorials::HandleUpdate(StringHash eventType, VariantMap& eventD
 
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
     }
 }
 

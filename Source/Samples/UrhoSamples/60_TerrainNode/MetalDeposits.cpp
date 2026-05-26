@@ -124,7 +124,7 @@ void MetalDeposits::SpawnOutcrops(Scene* scene, Terrain* terrain, float waterLev
             node->SetScale(0.4f + (purity / 255.0f) * 0.3f);
 
             auto* model = node->CreateComponent<StaticModel>();
-            Model* outcropMdl = cache->GetResource<Model>("Models/Nature/Rock_Medium_3.mdl");
+            Model* outcropMdl = cache->GetResource<Model>("Models/Pickups/Rock_Medium_3.mdl");
             if (!outcropMdl) outcropMdl = cache->GetResource<Model>("Models/Box.mdl");
             model->SetModel(outcropMdl);
 

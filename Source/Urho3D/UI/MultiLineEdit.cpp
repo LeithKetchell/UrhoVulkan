@@ -27,8 +27,9 @@ MultiLineEdit::MultiLineEdit(Context* context) : BorderImage(context)
     cursor_ = CreateChild<BorderImage>("MLE_Cursor");
     cursor_->SetInternal(true);
     cursor_->SetEnabled(false);
-    cursor_->SetFixedSize(1, 0);
+    cursor_->SetFixedSize(2, 0);
     cursor_->SetVisible(false);
+    cursor_->SetColor(Color(0.9f, 1.0f, 0.9f));  // Visible cursor (light green)
 
     SubscribeToEvent(this, E_FOCUSED, URHO3D_HANDLER(MultiLineEdit, HandleFocused));
     SubscribeToEvent(this, E_DEFOCUSED, URHO3D_HANDLER(MultiLineEdit, HandleDefocused));
@@ -68,6 +69,18 @@ void MultiLineEdit::Update(float timeStep)
     {
         cursor_->SetVisible(false);
     }
+
+    // Auto-size height to fit text content (for ScrollView wrapping)
+    if (textElement_)
+    {
+        int padding = 4;
+        int textH = textElement_->GetHeight() + padding * 2;
+        int minH = GetMinHeight();
+        if (minH <= 0) minH = 28;
+        int desiredH = Max(minH, textH);
+        if (desiredH != GetHeight())
+            SetHeight(desiredH);
+    }
 }
 
 void MultiLineEdit::OnClickBegin(const IntVector2& position, const IntVector2& screenPosition,
@@ -87,8 +100,70 @@ void MultiLineEdit::OnClickBegin(const IntVector2& position, const IntVector2& s
 void MultiLineEdit::OnDoubleClick(const IntVector2& position, const IntVector2& screenPosition,
     MouseButton button, MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor)
 {
-    if (button == MOUSEB_LEFT)
-        textElement_->SetSelection(0);  // Select all on double-click
+    if (button != MOUSEB_LEFT)
+        return;
+
+    // Double-click: select word under cursor
+    i32 pos = GetCharIndex(position);
+    if (pos == NINDEX)
+        return;
+
+    const String& text = text_;
+    i32 wordStart = pos, wordEnd = pos;
+
+    while (wordStart > 0)
+    {
+        char c = text[wordStart - 1];
+        if (isalpha(c) || isdigit(c) || c == '_' || c == '-')
+            --wordStart;
+        else
+            break;
+    }
+    while (wordEnd < (i32)text.Length())
+    {
+        char c = text[wordEnd];
+        if (isalpha(c) || isdigit(c) || c == '_' || c == '-')
+            ++wordEnd;
+        else
+            break;
+    }
+
+    if (wordEnd > wordStart)
+    {
+        // Toggle: if same word is already selected, deselect
+        if (textElement_->GetSelectionStart() == wordStart &&
+            textElement_->GetSelectionLength() == wordEnd - wordStart)
+            textElement_->ClearSelection();
+        else
+            textElement_->SetSelection(wordStart, wordEnd - wordStart);
+    }
+}
+
+void MultiLineEdit::OnTripleClick(const IntVector2& position, const IntVector2& screenPosition,
+    MouseButton button, MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor)
+{
+    if (button != MOUSEB_LEFT)
+        return;
+
+    // Triple-click: select/deselect entire line under cursor
+    i32 pos = GetCharIndex(position);
+    if (pos == NINDEX)
+        return;
+
+    const String& text = text_;
+    i32 lineStart = pos, lineEnd = pos;
+
+    while (lineStart > 0 && text[lineStart - 1] != '\n')
+        --lineStart;
+    while (lineEnd < (i32)text.Length() && text[lineEnd] != '\n')
+        ++lineEnd;
+
+    // Toggle: if same line is already selected, deselect
+    if (textElement_->GetSelectionStart() == lineStart &&
+        textElement_->GetSelectionLength() == lineEnd - lineStart)
+        textElement_->ClearSelection();
+    else
+        textElement_->SetSelection(lineStart, lineEnd - lineStart);
 }
 
 void MultiLineEdit::OnDragBegin(const IntVector2& position, const IntVector2& screenPosition,
@@ -118,57 +193,60 @@ void MultiLineEdit::OnKey(Key key, MouseButtonFlags buttons, QualifierFlags qual
     bool ctrl = (qualifiers & QUAL_CTRL) != 0;
     bool shift = (qualifiers & QUAL_SHIFT) != 0;
 
-    switch (key)
+    // Clipboard shortcuts
+    if (ctrl)
     {
-    case KEY_C:
-        if (ctrl)
+        switch (key)
         {
-            // Copy selected text to clipboard
-            String selected = GetSelectedText();
-            if (!selected.Empty())
-                GetSubsystem<UI>()->SetClipboardText(selected);
+        case KEY_C:
+        {
+            String sel = GetSelectedText();
+            if (!sel.Empty())
+                GetSubsystem<UI>()->SetClipboardText(sel);
+            return;
         }
-        break;
-
-    case KEY_A:
-        if (ctrl)
-            textElement_->SetSelection(0);  // Select all
-        break;
-
-    case KEY_V:
-        if (ctrl && !readOnly_)
+        case KEY_V:
         {
+            if (readOnly_)
+                return;
             const String& clip = GetSubsystem<UI>()->GetClipboardText();
             if (!clip.Empty())
-            {
-                // Insert at cursor
-                i32 pos = cursorPosition_;
-                text_ = text_.SubstringUTF8(0, pos) + clip + text_.SubstringUTF8(pos);
-                UpdateText();
-                SetCursorPosition(pos + clip.LengthUTF8());
-            }
+                InsertText(clip);
+            return;
         }
-        break;
-
-    case KEY_X:
-        if (ctrl)
+        case KEY_X:
         {
-            String selected = GetSelectedText();
-            if (!selected.Empty())
+            String sel = GetSelectedText();
+            if (!sel.Empty())
             {
-                GetSubsystem<UI>()->SetClipboardText(selected);
+                GetSubsystem<UI>()->SetClipboardText(sel);
                 if (!readOnly_)
                 {
-                    i32 start = textElement_->GetSelectionStart();
-                    i32 length = textElement_->GetSelectionLength();
-                    text_ = text_.SubstringUTF8(0, start) + text_.SubstringUTF8(start + length);
+                    i32 selStart = textElement_->GetSelectionStart();
+                    i32 selLen = textElement_->GetSelectionLength();
+                    text_ = text_.SubstringUTF8(0, selStart) + text_.SubstringUTF8(selStart + selLen);
                     textElement_->ClearSelection();
                     UpdateText();
-                    SetCursorPosition(start);
+                    SetCursorPosition(selStart);
                 }
             }
+            return;
         }
-        break;
+        case KEY_A:
+            textElement_->SetSelection(0, text_.LengthUTF8());
+            SetCursorPosition(text_.LengthUTF8());
+            return;
+        default:
+            return;
+        }
+    }
+
+    switch (key)
+    {
+    case KEY_RETURN:
+    case KEY_RETURN2:
+    case KEY_KP_ENTER:
+        return;
 
     case KEY_LEFT:
         if (shift && !textElement_->GetSelectionLength())
@@ -309,32 +387,44 @@ void MultiLineEdit::OnKey(Key key, MouseButtonFlags buttons, QualifierFlags qual
         break;
 
     case KEY_BACKSPACE:
-        if (!readOnly_ && cursorPosition_ > 0)
+        if (!readOnly_)
         {
-            i32 pos = cursorPosition_ - 1;
-            text_ = text_.SubstringUTF8(0, pos) + text_.SubstringUTF8(pos + 1);
-            UpdateText();
-            SetCursorPosition(pos);
+            i32 selStart = textElement_->GetSelectionStart();
+            i32 selLen = textElement_->GetSelectionLength();
+            if (selLen > 0)
+            {
+                text_ = text_.SubstringUTF8(0, selStart) + text_.SubstringUTF8(selStart + selLen);
+                textElement_->ClearSelection();
+                UpdateText();
+                SetCursorPosition(selStart);
+            }
+            else if (cursorPosition_ > 0)
+            {
+                i32 pos = cursorPosition_ - 1;
+                text_ = text_.SubstringUTF8(0, pos) + text_.SubstringUTF8(pos + 1);
+                UpdateText();
+                SetCursorPosition(pos);
+            }
         }
         break;
 
     case KEY_DELETE:
-        if (!readOnly_ && cursorPosition_ < text_.LengthUTF8())
-        {
-            text_ = text_.SubstringUTF8(0, cursorPosition_) + text_.SubstringUTF8(cursorPosition_ + 1);
-            UpdateText();
-        }
-        break;
-
-    case KEY_RETURN:
-    case KEY_RETURN2:
-    case KEY_KP_ENTER:
         if (!readOnly_)
         {
-            i32 pos = cursorPosition_;
-            text_ = text_.SubstringUTF8(0, pos) + "\n" + text_.SubstringUTF8(pos);
-            UpdateText();
-            SetCursorPosition(pos + 1);
+            i32 selStart = textElement_->GetSelectionStart();
+            i32 selLen = textElement_->GetSelectionLength();
+            if (selLen > 0)
+            {
+                text_ = text_.SubstringUTF8(0, selStart) + text_.SubstringUTF8(selStart + selLen);
+                textElement_->ClearSelection();
+                UpdateText();
+                SetCursorPosition(selStart);
+            }
+            else if (cursorPosition_ < text_.LengthUTF8())
+            {
+                text_ = text_.SubstringUTF8(0, cursorPosition_) + text_.SubstringUTF8(cursorPosition_ + 1);
+                UpdateText();
+            }
         }
         break;
 
@@ -348,10 +438,68 @@ void MultiLineEdit::OnTextInput(const String& input)
     if (readOnly_ || input.Empty())
         return;
 
-    i32 pos = cursorPosition_;
-    text_ = text_.SubstringUTF8(0, pos) + input + text_.SubstringUTF8(pos);
-    UpdateText();
-    SetCursorPosition(pos + input.LengthUTF8());
+    i32 selStart = textElement_->GetSelectionStart();
+    i32 selLen = textElement_->GetSelectionLength();
+    if (selLen > 0)
+    {
+        text_ = text_.SubstringUTF8(0, selStart) + input + text_.SubstringUTF8(selStart + selLen);
+        textElement_->ClearSelection();
+        UpdateText();
+        SetCursorPosition(selStart + input.LengthUTF8());
+    }
+    else
+    {
+        i32 pos = cursorPosition_;
+        text_ = text_.SubstringUTF8(0, pos) + input + text_.SubstringUTF8(pos);
+        UpdateText();
+        SetCursorPosition(pos + input.LengthUTF8());
+    }
+}
+
+void MultiLineEdit::InsertNewline()
+{
+    if (readOnly_)
+        return;
+
+    i32 selStart = textElement_->GetSelectionStart();
+    i32 selLen = textElement_->GetSelectionLength();
+    if (selLen > 0)
+    {
+        text_ = text_.SubstringUTF8(0, selStart) + "\n" + text_.SubstringUTF8(selStart + selLen);
+        textElement_->ClearSelection();
+        UpdateText();
+        SetCursorPosition(selStart + 1);
+    }
+    else
+    {
+        i32 pos = cursorPosition_;
+        text_ = text_.SubstringUTF8(0, pos) + "\n" + text_.SubstringUTF8(pos);
+        UpdateText();
+        SetCursorPosition(pos + 1);
+    }
+}
+
+void MultiLineEdit::InsertText(const String& input)
+{
+    if (readOnly_ || input.Empty())
+        return;
+
+    i32 selStart = textElement_->GetSelectionStart();
+    i32 selLen = textElement_->GetSelectionLength();
+    if (selLen > 0)
+    {
+        text_ = text_.SubstringUTF8(0, selStart) + input + text_.SubstringUTF8(selStart + selLen);
+        textElement_->ClearSelection();
+        UpdateText();
+        SetCursorPosition(selStart + input.LengthUTF8());
+    }
+    else
+    {
+        i32 pos = cursorPosition_;
+        text_ = text_.SubstringUTF8(0, pos) + input + text_.SubstringUTF8(pos);
+        UpdateText();
+        SetCursorPosition(pos + input.LengthUTF8());
+    }
 }
 
 void MultiLineEdit::SetText(const String& text)
@@ -368,7 +516,6 @@ void MultiLineEdit::AppendLine(const String& line)
     text_ += line;
     numLines_ = CountLines(text_);
 
-    // Trim oldest lines if over limit
     if (maxLines_ > 0 && numLines_ > maxLines_)
     {
         while (numLines_ > maxLines_)
@@ -386,9 +533,19 @@ void MultiLineEdit::AppendLine(const String& line)
 
     UpdateText();
 
-    // Auto-scroll: place cursor at end
     if (autoScroll_)
         SetCursorPosition(text_.LengthUTF8());
+}
+
+void MultiLineEdit::OnResize(const IntVector2& newSize, const IntVector2& delta)
+{
+    if (textElement_)
+    {
+        int padding = 4;
+        int textWidth = Max(newSize.x_ - padding * 2, 0);
+        textElement_->SetPosition(padding, padding);
+        textElement_->SetFixedWidth(textWidth);
+    }
 }
 
 void MultiLineEdit::SetWordWrap(bool enable)
@@ -430,7 +587,6 @@ i32 MultiLineEdit::GetCharIndex(const IntVector2& position)
     IntVector2 screenPosition = ElementToScreen(position);
     IntVector2 textPosition = textElement_->ScreenToElement(screenPosition);
 
-    // Find nearest character by checking all character positions
     i32 numChars = textElement_->GetNumChars();
     if (numChars == 0)
         return 0;
@@ -462,8 +618,10 @@ void MultiLineEdit::UpdateCursor()
     Vector2 charPos = textElement_->GetCharPosition(cursorPosition_);
     int rowHeight = textElement_->GetRowHeight();
 
-    cursor_->SetPosition(static_cast<int>(charPos.x_), static_cast<int>(charPos.y_));
-    cursor_->SetFixedSize(1, rowHeight);
+    IntVector2 textPos = textElement_->GetPosition();
+    cursor_->SetPosition(textPos.x_ + static_cast<int>(charPos.x_),
+                         textPos.y_ + static_cast<int>(charPos.y_));
+    cursor_->SetFixedSize(2, rowHeight);
 
     cursorBlinkTimer_ = 0.0f;
 }

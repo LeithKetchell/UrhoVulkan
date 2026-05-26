@@ -181,8 +181,7 @@ void Urho2DSpriterAnimation::HandleUpdate(StringHash eventType, VariantMap& even
     // Update profiler display
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
     }
 }
 

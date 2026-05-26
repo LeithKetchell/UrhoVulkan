@@ -285,8 +285,7 @@ void BS_DynamicControlDemo::HandleUpdate(StringHash eventType, VariantMap& event
 
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
     }
 }
 

@@ -1,5 +1,7 @@
 // Copyright (c) 2008-2022 the Urho3D project
 // License: MIT
+// Network cipher using hand-rolled X25519 + ChaCha20-Poly1305 + SHA-256.
+// No third-party crypto library required.
 
 #pragma once
 
@@ -9,34 +11,46 @@
 namespace Urho3D
 {
 
-/// Abstract base class for network encryption ciphers.
-/// Subclass to implement different encryption algorithms (e.g. libsodium, OpenSSL).
+/// Network cipher: X25519 key exchange, ChaCha20-Poly1305 AEAD encryption,
+/// SHA-256/HMAC for key derivation. All crypto is hand-rolled — zero dependencies.
 class URHO3D_API Cipher : public RefCounted
 {
 public:
-    /// Destruct.
-    ~Cipher() override = default;
+    Cipher();
+    ~Cipher();
 
-    /// Generate a new key pair for key exchange. Returns true on success.
-    virtual bool GenerateKeyPair() = 0;
-    /// Return the public key bytes for sending to the remote side.
-    virtual const Vector<unsigned char>& GetPublicKey() const = 0;
-    /// Return the public key size in bytes.
-    virtual unsigned GetPublicKeySize() const = 0;
-    /// Derive session keys from our key pair and the remote's public key. isServer determines key direction.
-    virtual bool DeriveSessionKeys(const unsigned char* remotePublicKey, unsigned remoteKeySize, bool isServer) = 0;
-    /// Return true if session keys have been derived and cipher is ready for encrypt/decrypt.
-    virtual bool IsReady() const = 0;
-    /// Encrypt plaintext into ciphertext. Returns true on success.
-    virtual bool Encrypt(const unsigned char* plaintext, unsigned plaintextSize, Vector<unsigned char>& ciphertext) = 0;
-    /// Decrypt ciphertext into plaintext. Returns true on success (includes authentication check).
-    virtual bool Decrypt(const unsigned char* ciphertext, unsigned ciphertextSize, Vector<unsigned char>& plaintext) = 0;
-    /// Return the overhead in bytes added by encryption (MAC tag + nonce if prepended).
-    virtual unsigned GetOverhead() const = 0;
-    /// Return human-readable cipher name.
-    virtual const char* GetName() const = 0;
-    /// Mix a password hash into existing session keys (PAKE). Returns true on success.
-    virtual bool MixPasswordIntoKeys(const unsigned char* passwordHash, unsigned hashSize) { return false; }
+    /// Generate X25519 key pair. Returns true on success.
+    bool GenerateKeyPair();
+    /// Return the 32-byte public key.
+    const Vector<unsigned char>& GetPublicKey() const { return publicKey_; }
+    /// Return public key size (32 bytes).
+    unsigned GetPublicKeySize() const { return 32; }
+    /// Derive tx/rx session keys via X25519 shared secret + HKDF-SHA256.
+    /// isServer determines which half of the derived key material is tx vs rx.
+    bool DeriveSessionKeys(const unsigned char* remotePublicKey, unsigned remoteKeySize, bool isServer);
+    /// Return true if session keys have been derived and encryption is ready.
+    bool IsReady() const { return ready_; }
+    /// Encrypt plaintext using ChaCha20-Poly1305 AEAD.
+    /// Output format: [12-byte nonce][ciphertext][16-byte tag].
+    bool Encrypt(const unsigned char* plaintext, unsigned plaintextSize, Vector<unsigned char>& ciphertext);
+    /// Decrypt ciphertext using ChaCha20-Poly1305 AEAD.
+    /// Expects format: [12-byte nonce][ciphertext][16-byte tag].
+    bool Decrypt(const unsigned char* ciphertext, unsigned ciphertextSize, Vector<unsigned char>& plaintext);
+    /// Return overhead: 12-byte nonce + 16-byte tag = 28 bytes.
+    unsigned GetOverhead() const { return 28; }
+    /// Return cipher name.
+    const char* GetName() const { return "X25519-ChaCha20-Poly1305"; }
+    /// Mix password hash into session keys using HMAC-SHA256(key, passwordHash).
+    /// Used for PAKE authentication.
+    bool MixPasswordIntoKeys(const unsigned char* passwordHash, unsigned hashSize);
+
+private:
+    Vector<unsigned char> publicKey_;   ///< Our X25519 public key (32 bytes)
+    Vector<unsigned char> secretKey_;   ///< Our X25519 secret key (32 bytes)
+    Vector<unsigned char> txKey_;       ///< Session transmit key (32 bytes)
+    Vector<unsigned char> rxKey_;       ///< Session receive key (32 bytes)
+    bool hasKeyPair_;
+    bool ready_;
 };
 
 }

@@ -17,6 +17,8 @@
 #include <Urho3D/Graphics/ParticleEmitter.h>
 #include <Urho3D/Graphics/Skeleton.h>
 #include <Urho3D/Audio/SoundSource3D.h>
+#include <Urho3D/Physics/RigidBody.h>
+#include <Urho3D/Physics/CollisionShape.h>
 #include <Urho3D/Resource/ResourceCache.h>
 
 #include <climits>
@@ -31,7 +33,7 @@ unsigned LandAnimal::nextStaggerID_ = 0;
 // CORPSE_SINK_DEPTH: metres to lower the node Y over the fade window.
 // During the fade phase stateTimer_ goes negative; when it reaches -CORPSE_FADE_DURATION
 // the node is removed from the scene.
-static const float CORPSE_DURATION       = 120.0f;
+#define CORPSE_DURATION (Creature::GetDeathRules().corpseDuration)
 static const float CORPSE_FADE_DURATION  =   2.0f;
 static const float CORPSE_SINK_DEPTH     =   1.5f;
 
@@ -75,6 +77,26 @@ void LandAnimal::Start()
         source->SetSoundType("Effect");
         source->SetNearDistance(1.0f);
         source->SetFarDistance(50.0f);
+    }
+
+    // Phase 0: Kinematic physics capsule for collision detection.
+    // Does not change movement — creature still uses MoveToward() + SnapToTerrain().
+    // Capsule size derived from model bounding box via GetDesiredSize().
+    if (!node_->GetComponent<RigidBody>())
+    {
+        float size = GetDesiredSize();
+        float capsuleHeight = size * 0.9f;
+        float capsuleDiameter = size * 0.4f;
+
+        auto* body = node_->CreateComponent<RigidBody>();
+        body->SetMass(1.0f);
+        body->SetKinematic(true);
+        body->SetAngularFactor(Vector3::ZERO);
+        body->SetCollisionLayer(4);   // creature layer
+        body->SetCollisionMask(3);    // collides with terrain (1) and static (2)
+
+        auto* shape = node_->CreateComponent<CollisionShape>();
+        shape->SetCapsule(capsuleDiameter, capsuleHeight, Vector3(0.0f, capsuleHeight * 0.5f, 0.0f));
     }
 }
 
@@ -423,8 +445,30 @@ void LandAnimal::FixedUpdate(float timeStep)
         {
             auto newState = static_cast<CreatureState>(aiVar.GetI32());
             float moveSpeed = node_->GetVar("MoveSpeed").GetFloat();
-            // Trace50 debug logging removed — was per-frame noise
-            ApplyServerState(newState, node_->GetWorldPosition(), moveSpeed);
+            // Use server's target position for client-side lerp, not the node's
+            // own world position (which is set by replication — chasing own tail).
+            const Variant& targetVar = node_->GetVar("TargetPos");
+            Vector3 targetPos = targetVar.IsEmpty() ? node_->GetWorldPosition() : targetVar.GetVector3();
+            ApplyServerState(newState, targetPos, moveSpeed);
+
+            // Juvenile scaling — offspring render at 40%-100% of adult size.
+            // Creature::Start() sets the adult-normalized scale. Growth modulates it.
+            const Variant& growthVar = node_->GetVar("GrowthProgress");
+            if (!growthVar.IsEmpty())
+            {
+                float gp = growthVar.GetFloat();
+                if (gp < 1.0f)
+                {
+                    auto* mdl = node_->GetComponent<AnimatedModel>(true);
+                    if (mdl)
+                    {
+                        BoundingBox bb = mdl->GetBoundingBox();
+                        float longest = Max(bb.Size().x_, Max(bb.Size().y_, bb.Size().z_));
+                        if (longest > 0.001f)
+                            node_->SetScale((GetDesiredSize() / longest) * (0.4f + 0.6f * gp));
+                    }
+                }
+            }
         }
         else if (spawnId_ == 50)
         {
@@ -445,33 +489,29 @@ void LandAnimal::FixedUpdate(float timeStep)
         }
     }
 
-    // Server-driven mode — server owns the brain. Client lerps toward
-    // server position and plays server-chosen animation.
+    // Server-driven mode — lerp toward server position, face movement direction.
+    // Nodes are LOCAL (not replicated), so client must move them toward serverPos_.
     if (serverDriven_ && node_)
     {
-        Vector3 pos = node_->GetWorldPosition();
-        Vector3 diff = serverPos_ - pos;
-        float dist = diff.Length();
+        Vector3 current = node_->GetWorldPosition();
+        Vector3 delta = serverPos_ - current;
+        delta.y_ = 0.0f;
+        float dist = delta.Length();
 
         if (dist > 0.1f)
         {
-            float lerpSpeed = Max(serverMoveSpeed_, 2.0f);
-            float step = lerpSpeed * timeStep;
-            if (dist > 10.0f)
-                node_->SetWorldPosition(serverPos_); // Snap if too far behind
-            else
-            {
-                Vector3 newPos = pos + diff.Normalized() * Min(step, dist);
-                // Y-snap to local terrain
-                if (terrain_)
-                    newPos.y_ = terrain_->GetHeight(newPos);
-                node_->SetWorldPosition(newPos);
-                // Face movement direction
-                Vector3 faceDir = diff;
-                faceDir.y_ = 0.0f;
-                if (faceDir.LengthSquared() > 0.01f)
-                    node_->SetWorldDirection(faceDir.Normalized());
-            }
+            float step = Max(serverMoveSpeed_, 3.0f) * timeStep;
+            if (step > dist)
+                step = dist;
+            Vector3 newPos = current + delta * (step / dist);
+
+            if (terrain_)
+                newPos.y_ = terrain_->GetHeight(newPos);
+
+            node_->SetWorldPosition(newPos);
+
+            delta.Normalize();
+            node_->SetWorldDirection(delta);
         }
 
         PostMovementUpdate(timeStep);
@@ -730,8 +770,13 @@ void LandAnimal::FixedUpdate(float timeStep)
 
     case CREATURE_TRAPPED:
         // Frozen — no movement, no AI transitions, no timer countdown.
-        // Stays trapped until external code (harvest) removes the creature
-        // node or calls SetState to release. Resource Chain Phase 2.
+        // DEX affects trap-escape check speed: high DEX creatures wriggle free faster.
+        // Server ultimately decides release, but client ticks a struggle timer for
+        // visual feedback and potential offline-mode self-release.
+        {
+            float escapeRate = 1.0f + stats_.DexMod() * 0.15f;  // +15% per DEX mod
+            combatTimer_ += timeStep * Clamp(escapeRate, 0.5f, 2.5f);
+        }
         break;
 
     case CREATURE_DIE:
@@ -1028,6 +1073,16 @@ void LandAnimal::FixedUpdate(float timeStep)
         }
         break;
     }
+
+    case CREATURE_FISH:
+    {
+        // Fishing at water's edge. Timer was set in SetState with DEX scaling.
+        // When timer expires, catch is complete — return to idle.
+        // DEX already reduced the base timer in SetState; no additional logic needed here.
+        if (stateTimer_ <= 0.0f)
+            SetState(CREATURE_IDLE);
+        break;
+    }
     }
 
     PostMovementUpdate(timeStep);
@@ -1074,7 +1129,9 @@ void LandAnimal::PostMovementUpdate(float timeStep)
 
     // Corpses don't get terrain-snapped (would fight the sink fade) and don't
     // run drowning checks (already dead). Skip both for any non-living state.
-    if (state_ != CREATURE_CORPSE)
+    // Server-driven creatures get their Y from the server — SnapToTerrain would
+    // fight the replicated position and cause jitter.
+    if (state_ != CREATURE_CORPSE && !serverDriven_)
         SnapToTerrain();
 
     // Drowning: only when the water covers the head bone (anatomical head,
@@ -1392,6 +1449,12 @@ void LandAnimal::SnapToTerrain()
     if (!terrain_)
         return;
 
+    // Phase 2: skip terrain snap when body is dynamic (physics-driven possessed mode).
+    // The physics engine handles ground contact via collision response.
+    auto* body = node_->GetComponent<RigidBody>();
+    if (body && !body->IsKinematic())
+        return;
+
     Vector3 pos = node_->GetWorldPosition();
 
     float dx = pos.x_ - cachedHeightPos_.x_;
@@ -1406,6 +1469,10 @@ void LandAnimal::SnapToTerrain()
     {
         pos.y_ = cachedHeight_;
         node_->SetWorldPosition(pos);
+
+        // Phase 0: keep kinematic body in sync after terrain snap
+        if (body)
+            body->SetPosition(pos);
     }
 }
 
@@ -1487,18 +1554,9 @@ bool LandAnimal::IsBlockedByWall(const Vector3& from, const Vector3& to) const
         if (dxFrom * dxFrom + dzFrom * dzFrom <= r2)
             continue;
 
-        // O(1) type lookup instead of inner loop
-        const BuildingTypeInfo* info = buildingSystem_->FindTypeInfo(pb.buildingTypeId);
-        if (info)
-        {
-            int tier = info->tier;
-            if (tier >= 3)
-                return true;
-            if (tier >= 2 && creatureId <= 5)
-                return true;
-            if (tier >= 1 && (creatureId == 1 || creatureId == 3))
-                return true;
-        }
+        // DB-driven wall_strength lookup
+        if (gameDB_ && gameDB_->DoesWallBlock(pb.buildingTypeId, creatureId))
+            return true;
     }
 
     return false;

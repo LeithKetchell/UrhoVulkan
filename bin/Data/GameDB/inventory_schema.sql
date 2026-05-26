@@ -38,4 +38,5 @@ CREATE TABLE IF NOT EXISTS container_bonus (
 
 INSERT OR IGNORE INTO container_bonus VALUES
 (500, 5,  5.0,  'back'),
-(503, 3,  2.0,  'hand');
+(503, 3,  2.0,  'hand'),
+(419, 4,  3.0,  'back');

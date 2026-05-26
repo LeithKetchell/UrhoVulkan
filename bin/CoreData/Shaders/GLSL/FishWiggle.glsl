@@ -49,8 +49,8 @@ void VS()
     vec3 worldPos = GetWorldPos(modelMatrix);
 
     // Fish tail wiggle
-    // Model-space Z: -159 (head) to +263 (tail), total 422 cm
-    float t = (iPos.z + 159.0) / 422.0;                    // 0 at head, 1 at tail
+    // Model-space Z: -0.159 (head) to +0.263 (tail), total 0.422 m
+    float t = (iPos.z + 0.159) / 0.422;                    // 0 at head, 1 at tail
     float ramp = smoothstep(cWiggleBodyStart, 1.0, t);      // 0 before midpoint, ramps to 1 at tail
     float localFreq = cWiggleFrequency * (1.0 + 2.0 * t);       // 1x at head, 3x at tail
     float phase = cElapsedTime * localFreq + t * 6.283;          // wave travels head-to-tail

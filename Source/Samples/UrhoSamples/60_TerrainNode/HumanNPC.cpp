@@ -12,8 +12,11 @@
 #include <Urho3D/Graphics/Model.h>
 #include <Urho3D/Graphics/StaticModel.h>
 #include <Urho3D/IO/Log.h>
+#include <Urho3D/IO/MemoryBuffer.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Math/MathDefs.h>
+#include <Urho3D/Physics/RigidBody.h>
+#include <Urho3D/Physics/PhysicsEvents.h>
 
 HumanNPC::HumanNPC(Context* context) :
     LandAnimal(context)
@@ -113,6 +116,7 @@ void HumanNPC::Start()
         float variation = 1.0f + Random(-0.1f, 0.1f);
         node_->SetScale(baseScale * variation);
     }
+
 }
 
 // FindNearbyResource() and PickTask() removed — all NPC decision-making
@@ -125,34 +129,66 @@ void HumanNPC::SetPossessed(bool possessed)
         return;
     possessed_ = possessed;
 
+    auto* body = node_ ? node_->GetComponent<RigidBody>() : nullptr;
+
     if (!possessed_)
     {
-        // Returning to AI — clear controls, reset to idle
+        // Returning to AI — switch body back to kinematic, clear controls
+        if (body)
+        {
+            body->SetLinearVelocity(Vector3::ZERO);
+            body->SetKinematic(true);
+            body->SetCollisionEventMode(COLLISION_ACTIVE);
+        }
+        if (node_)
+            UnsubscribeFromEvent(node_, E_NODECOLLISION);
+
         controls_.Reset();
         possessedAnim_.Clear();
-        inJump_ = false;
-        jumpVelocity_ = 0.0f;
+        onGround_ = false;
+        inAirTimer_ = 0.0f;
+        okToJump_ = true;
         possessedInWater_ = false;
         SetState(CREATURE_IDLE);
     }
     else
     {
-        // Being possessed — ensure idle animation starts clean
+        // Being possessed — switch body to dynamic for physics-driven movement
+        if (body)
+        {
+            body->SetKinematic(false);
+            body->SetCollisionEventMode(COLLISION_ALWAYS);
+            body->SetFriction(0.6f);
+            body->SetLinearDamping(0.0f);
+            body->SetAngularFactor(Vector3::ZERO);  // prevent tumbling
+            body->Activate();
+        }
+        if (node_)
+            SubscribeToEvent(node_, E_NODECOLLISION, URHO3D_HANDLER(HumanNPC, HandleNodeCollision));
+
         possessedAnim_.Clear();
-        inJump_ = false;
-        jumpVelocity_ = 0.0f;
+        onGround_ = false;
+        inAirTimer_ = 0.0f;
+        okToJump_ = true;
     }
 }
 
-// Possessed movement tuning
-static constexpr float SPRINT_STAMINA_DRAIN = 5.0f;   // extra stamina/sec while sprinting
-static constexpr float SWIM_STAMINA_DRAIN = 4.0f;     // extra stamina/sec while swimming
-static constexpr float JUMP_STAMINA_COST = 8.0f;      // stamina per jump
-static constexpr float JUMP_IMPULSE = 7.0f;           // initial vertical velocity (m/s)
-static constexpr float JUMP_GRAVITY = 20.0f;          // downward acceleration (m/s^2)
-static constexpr float JUMP_AIR_CONTROL = 0.4f;       // fraction of ground speed while airborne
+// Possessed movement tuning — sprint/swim/jump costs from DB StaminaRules
+#define SPRINT_STAMINA_DRAIN (Creature::GetStaminaRules().sprintCostSec)
+#define SWIM_STAMINA_DRAIN   (Creature::GetStaminaRules().swimCostSec)
+#define JUMP_STAMINA_COST    (Creature::GetStaminaRules().meleeCost)
 static constexpr float SWIM_SPEED_MULT = 0.6f;        // fraction of wander speed in water
-static constexpr float MIN_SPRINT_STAMINA = 5.0f;     // can't sprint below this
+#define MIN_SPRINT_STAMINA ((float)Creature::GetStaminaRules().lowThreshold)
+
+// Phase 2: Physics-driven possessed movement tuning.
+// At steady state: maxVelocity = moveForce / brakeFactor.
+// Walk: 0.8 / 0.4 = 2.0 m/s. Sprint: 2.4 / 0.4 = 6.0 m/s.
+static constexpr float POSSESSED_WALK_FORCE   = 0.8f;   // horizontal impulse per physics step (walk)
+static constexpr float POSSESSED_SPRINT_FORCE = 2.4f;   // horizontal impulse per physics step (sprint)
+static constexpr float POSSESSED_BRAKE        = 0.4f;   // velocity brake multiplier
+static constexpr float POSSESSED_AIR_FORCE    = 0.32f;  // air control impulse (40% of walk)
+static constexpr float POSSESSED_JUMP_FORCE   = 7.0f;   // upward jump impulse
+static constexpr float INAIR_THRESHOLD        = 0.1f;   // seconds of "soft grounding" tolerance
 
 void HumanNPC::SetSmoothedPosition(const Vector3& pos)
 {
@@ -168,28 +204,51 @@ void HumanNPC::UpdatePossessedMovement(float timeStep)
     if (!node_)
         return;
 
+    auto* body = node_->GetComponent<RigidBody>();
+    if (!body)
+        return;
+
     Vector3 pos = node_->GetWorldPosition();
     float terrainY = terrain_ ? terrain_->GetHeight(pos) : pos.y_;
 
-    // Detect water — terrain below water level means we're in water
+    // ── Water transition ──
+    // When entering water, switch body to kinematic for swim code compatibility.
+    // When leaving water, switch back to dynamic for physics-driven ground movement.
     bool wasInWater = possessedInWater_;
     possessedInWater_ = (terrainY < waterLevel_);
 
-    // Entering water cancels jump
     if (possessedInWater_ && !wasInWater)
     {
-        inJump_ = false;
-        jumpVelocity_ = 0.0f;
+        // Entering water — go kinematic for swim
+        body->SetLinearVelocity(Vector3::ZERO);
+        body->SetKinematic(true);
+    }
+    else if (!possessedInWater_ && wasInWater)
+    {
+        // Leaving water — go dynamic for ground physics
+        body->SetKinematic(false);
+        body->Activate();
+        onGround_ = false;
+        inAirTimer_ = 0.0f;
     }
 
-    // Delegate to swim handler when in water
     if (possessedInWater_)
     {
         UpdatePossessedSwim(timeStep);
         return;
     }
 
+    // ── Ground detection bookkeeping ──
+    // onGround_ is set by HandleNodeCollision each frame, reset here.
+    if (!onGround_)
+        inAirTimer_ += timeStep;
+    else
+        inAirTimer_ = 0.0f;
+    bool softGrounded = inAirTimer_ < INAIR_THRESHOLD;
+
     auto* animCtrl = node_->GetComponent<AnimationController>(true);
+    const Vector3& velocity = body->GetLinearVelocity();
+    Vector3 planeVelocity(velocity.x_, 0.0f, velocity.z_);
 
     // Build movement direction from controls
     Vector3 moveDir = Vector3::ZERO;
@@ -203,63 +262,12 @@ void HumanNPC::UpdatePossessedMovement(float timeStep)
         moveDir += Vector3::RIGHT;
 
     bool moving = moveDir.LengthSquared() > 0.0f;
-    bool sprinting = controls_.IsDown(CTRL_SPRINT) && moving && !inJump_ && stamina_ > MIN_SPRINT_STAMINA;
+    bool sprinting = controls_.IsDown(CTRL_SPRINT) && moving && softGrounded && stamina_ > MIN_SPRINT_STAMINA;
 
     // Extra stamina drain while sprinting
     if (sprinting)
         stamina_ = Max(0.0f, stamina_ - SPRINT_STAMINA_DRAIN * timeStep);
 
-    // ── Jump ──
-    if (inJump_)
-    {
-        jumpVelocity_ -= JUMP_GRAVITY * timeStep;
-        pos.y_ += jumpVelocity_ * timeStep;
-
-        // Land when back on terrain
-        if (pos.y_ <= terrainY)
-        {
-            pos.y_ = terrainY;
-            inJump_ = false;
-            jumpVelocity_ = 0.0f;
-            possessedAnim_.Clear();  // force anim refresh on landing
-        }
-
-        // Air control — reduced horizontal movement
-        if (moving)
-        {
-            moveDir.Normalize();
-            Quaternion yawRot(0.0f, controls_.yaw_, 0.0f);
-            moveDir = yawRot * moveDir;
-
-            float airSpeed = GetWanderSpeed() * JUMP_AIR_CONTROL;
-            Vector3 newPos = pos + moveDir * airSpeed * timeStep;
-            newPos.y_ = pos.y_;  // preserve jump Y
-
-            if (!IsBlockedByWall(pos, newPos))
-                pos = newPos;
-        }
-
-        SetSmoothedPosition(pos);
-        return;
-    }
-
-    // Initiate jump
-    if (controls_.IsDown(CTRL_JUMP) && stamina_ > JUMP_STAMINA_COST)
-    {
-        inJump_ = true;
-        jumpVelocity_ = JUMP_IMPULSE;
-        stamina_ = Max(0.0f, stamina_ - JUMP_STAMINA_COST);
-
-        String jumpAnim = GetJumpAnim();
-        if (!jumpAnim.Empty() && animCtrl)
-        {
-            animCtrl->PlayExclusive(jumpAnim, 0, false, 0.1f);
-            possessedAnim_ = jumpAnim;
-        }
-        return;
-    }
-
-    // ── Ground movement ──
     if (moving)
     {
         moveDir.Normalize();
@@ -267,6 +275,12 @@ void HumanNPC::UpdatePossessedMovement(float timeStep)
         // Rotate movement direction by yaw (camera-relative)
         Quaternion yawRot(0.0f, controls_.yaw_, 0.0f);
         moveDir = yawRot * moveDir;
+
+        // Apply movement impulse — force depends on grounded/airborne/sprint
+        float force = softGrounded
+            ? (sprinting ? POSSESSED_SPRINT_FORCE : POSSESSED_WALK_FORCE)
+            : POSSESSED_AIR_FORCE;
+        body->ApplyImpulse(moveDir * force);
 
         // Smooth turning toward movement direction
         Vector3 currentFwd = node_->GetWorldDirection();
@@ -280,15 +294,50 @@ void HumanNPC::UpdatePossessedMovement(float timeStep)
             newFwd.Normalize();
             node_->SetWorldDirection(newFwd);
         }
+    }
 
-        float speed = sprinting ? GetFleeSpeed() : GetWanderSpeed();
-        Vector3 newPos = pos + newFwd * speed * timeStep;
+    // Braking — limit ground velocity so we don't slide forever
+    if (softGrounded)
+    {
+        Vector3 brakeForce = -planeVelocity * POSSESSED_BRAKE;
+        body->ApplyImpulse(brakeForce);
+    }
 
-        // Wall check
-        if (!IsBlockedByWall(pos, newPos))
-            SetSmoothedPosition(newPos);
+    // ── Jump ──
+    if (controls_.IsDown(CTRL_JUMP))
+    {
+        if (softGrounded && okToJump_ && stamina_ > JUMP_STAMINA_COST)
+        {
+            body->ApplyImpulse(Vector3::UP * POSSESSED_JUMP_FORCE);
+            stamina_ = Max(0.0f, stamina_ - JUMP_STAMINA_COST);
+            okToJump_ = false;
 
-        // Play run or walk animation
+            String jumpAnim = GetJumpAnim();
+            if (!jumpAnim.Empty() && animCtrl)
+            {
+                animCtrl->PlayExclusive(jumpAnim, 0, false, 0.1f);
+                possessedAnim_ = jumpAnim;
+            }
+        }
+    }
+    else
+    {
+        okToJump_ = true;
+    }
+
+    // ── Animation ──
+    if (!onGround_)
+    {
+        // Airborne — keep jump anim playing
+        String jumpAnim = GetJumpAnim();
+        if (!jumpAnim.Empty() && jumpAnim != possessedAnim_ && animCtrl)
+        {
+            animCtrl->PlayExclusive(jumpAnim, 0, false, 0.2f);
+            possessedAnim_ = jumpAnim;
+        }
+    }
+    else if (moving)
+    {
         String targetAnim = sprinting ? GetRunAnim() : GetWalkAnim();
         if (!targetAnim.Empty() && targetAnim != possessedAnim_ && animCtrl)
         {
@@ -298,12 +347,36 @@ void HumanNPC::UpdatePossessedMovement(float timeStep)
     }
     else
     {
-        // Idle — play idle animation
         String idleAnim = GetIdleAnim();
         if (!idleAnim.Empty() && idleAnim != possessedAnim_ && animCtrl)
         {
             animCtrl->PlayExclusive(idleAnim, 0, true, 0.3f);
             possessedAnim_ = idleAnim;
+        }
+    }
+
+    // Reset ground flag — will be set again by HandleNodeCollision before next FixedUpdate
+    onGround_ = false;
+}
+
+void HumanNPC::HandleNodeCollision(StringHash eventType, VariantMap& eventData)
+{
+    using namespace NodeCollision;
+
+    MemoryBuffer contacts(eventData[P_CONTACTS].GetBuffer());
+
+    while (!contacts.IsEof())
+    {
+        Vector3 contactPosition = contacts.ReadVector3();
+        Vector3 contactNormal = contacts.ReadVector3();
+        /*float contactDistance = */contacts.ReadFloat();
+        /*float contactImpulse = */contacts.ReadFloat();
+
+        // Ground contact: normal points up (y > 0.75) and contact is below node center
+        if (contactPosition.y_ < (node_->GetPosition().y_ + 1.0f))
+        {
+            if (contactNormal.y_ > 0.75f)
+                onGround_ = true;
         }
     }
 }
@@ -464,7 +537,7 @@ void HumanNPC::FixedUpdate(float timeStep)
             bool showItem = (state_ == CREATURE_IDLE || state_ == CREATURE_WANDER ||
                              state_ == CREATURE_FIGHT || state_ == CREATURE_GREET ||
                              state_ == CREATURE_ALERT || state_ == CREATURE_FLEE ||
-                             state_ == CREATURE_LOOK);
+                             state_ == CREATURE_LOOK || state_ == CREATURE_FISH);
             heldItemNode_->SetEnabled(showItem);
         }
 
@@ -476,4 +549,243 @@ void HumanNPC::FixedUpdate(float timeStep)
     // All NPC decision-making is server-authoritative (even offline mode
     // has a local AuthServer). Client just idles until first MSG_CREATURE_AI_STATE.
     PostMovementUpdate(timeStep);
+}
+
+// ============================================================
+// Observation / Insight System
+// ============================================================
+
+// DC table by phenomenon complexity tier.
+// Tier 0 = trivial (fire burns things), tier 4 = subtle (metal smelting temperature).
+static int GetPhenomenonDC(int phenomenonType)
+{
+    // Group into complexity tiers: low byte = specific phenomenon, high byte = tier
+    int tier = (phenomenonType >> 8) & 0xF;
+    switch (tier)
+    {
+    case 0: return 8;   // obvious — fire, water, falling
+    case 1: return 11;  // moderate — animal patterns, weather signs
+    case 2: return 14;  // complex — material properties, tool physics
+    case 3: return 17;  // subtle — metallurgy, fermentation, agriculture
+    case 4: return 20;  // profound — astronomy, medicine, engineering
+    default: return 12;
+    }
+}
+
+bool HumanNPC::ObservePhenomenon(int phenomenonType, const Vector3& pos)
+{
+    // WIS check: d20 + WisMod vs DC based on phenomenon complexity
+    int dc = GetPhenomenonDC(phenomenonType);
+    int roll = (int)(Random(1, 21));  // d20
+    int total = roll + stats_.WisMod();
+
+    if (total < dc)
+        return false;  // NPC didn't notice or understand
+
+    // Get or create insight entry
+    unsigned key = (unsigned)phenomenonType;
+    auto it = insights_.Find(key);
+    if (it == insights_.End())
+    {
+        InsightEntry entry;
+        entry.phenomenonType = phenomenonType;
+        entry.count = 0;
+        entry.lastSeen = 0.0f;
+        insights_[key] = entry;
+        it = insights_.Find(key);
+    }
+
+    InsightEntry& insight = it->second_;
+    insight.count++;
+
+    // Record scene time of observation
+    Scene* scene = GetScene();
+    if (scene)
+        insight.lastSeen = scene->GetElapsedTime();
+
+    bool reachedThreshold = (insight.count == INSIGHT_THRESHOLD);
+
+    if (reachedThreshold)
+    {
+        URHO3D_LOGINFOF("NPC %u: reached insight threshold for phenomenon %d (%d observations) — ready for discovery",
+                        GetSpawnId(), phenomenonType, insight.count);
+    }
+
+    return reachedThreshold;
+}
+
+int HumanNPC::GetInsightCount(int phenomenonType) const
+{
+    auto it = insights_.Find((unsigned)phenomenonType);
+    if (it == insights_.End()) return 0;
+    return it->second_.count;
+}
+
+bool HumanNPC::IsReadyForDiscovery(int phenomenonType) const
+{
+    auto it = insights_.Find((unsigned)phenomenonType);
+    if (it == insights_.End()) return false;
+    return it->second_.count >= INSIGHT_THRESHOLD;
+}
+
+// ============================================================
+// Technique Discovery System
+// ============================================================
+
+Vector<int> HumanNPC::xpThresholds_;
+bool HumanNPC::xpThresholdsLoaded_ = false;
+
+static int GetXPForLevel(int level)
+{
+    if (!HumanNPC::xpThresholdsLoaded_)
+    {
+        // Hardcoded fallback matching skill_levels table
+        HumanNPC::xpThresholds_.Push(0);
+        HumanNPC::xpThresholds_.Push(10);
+        HumanNPC::xpThresholds_.Push(30);
+        HumanNPC::xpThresholds_.Push(60);
+        HumanNPC::xpThresholds_.Push(100);
+        HumanNPC::xpThresholds_.Push(200);
+        HumanNPC::xpThresholds_.Push(350);
+        HumanNPC::xpThresholds_.Push(550);
+        HumanNPC::xpThresholds_.Push(800);
+        HumanNPC::xpThresholds_.Push(1100);
+        HumanNPC::xpThresholds_.Push(1500);
+        HumanNPC::xpThresholdsLoaded_ = true;
+    }
+    if (level < 0) return 0;
+    if (level >= (int)HumanNPC::xpThresholds_.Size())
+        return HumanNPC::xpThresholds_.Back();
+    return HumanNPC::xpThresholds_[level];
+}
+
+bool HumanNPC::AwardTechniqueXP(int skillId, int baseXP)
+{
+    auto it = techniques_.Find((unsigned)skillId);
+    if (it == techniques_.End() || !it->second_.discovered)
+        return false;
+
+    NPCTechnique& tech = it->second_;
+
+    // INT modifier accelerates learning: each +1 = +10% XP
+    float intBonus = 1.0f + stats_.IntMod() * 0.1f;
+    intBonus = Max(intBonus, 0.5f);  // minimum 50% even with low INT
+    int xpGain = Max(1, (int)(baseXP * intBonus));
+
+    tech.xp += xpGain;
+
+    // Check for level-up
+    int nextLevel = tech.rating + 1;
+    int xpNeeded = GetXPForLevel(nextLevel);
+    if (tech.xp >= xpNeeded && nextLevel <= 10)
+    {
+        tech.rating = nextLevel;
+        tech.xp = 0;  // reset XP for next level
+        URHO3D_LOGINFOF("NPC %u: %s advanced to rating %d",
+                        GetSpawnId(), "technique", tech.rating);
+        return true;
+    }
+    return false;
+}
+
+int HumanNPC::GetTechniqueRating(int skillId) const
+{
+    auto it = techniques_.Find((unsigned)skillId);
+    if (it == techniques_.End()) return 0;
+    return it->second_.rating;
+}
+
+bool HumanNPC::KnowsTechnique(int skillId) const
+{
+    auto it = techniques_.Find((unsigned)skillId);
+    if (it == techniques_.End()) return false;
+    return it->second_.discovered;
+}
+
+int HumanNPC::AttemptDiscovery(int sourceSkillId)
+{
+    // Get source technique rating
+    int sourceRating = GetTechniqueRating(sourceSkillId);
+    if (sourceRating < 1) return 0;
+
+    // Discovery table: source_skill → target_skill + prereq_rating + DC
+    // Hardcoded for now — matches technique_discovery SQL table
+    struct DiscoveryRule { int source; int target; int prereq; int dc; };
+    static const DiscoveryRule rules[] = {
+        {23, 25, 3, 12}, {23, 26, 4, 14}, {20, 21, 3, 11},
+        {21, 22, 3, 13}, {28, 24, 3, 10}, {10, 11, 3, 12},
+        {10, 14, 4, 13}, {12, 13, 3, 12}, {14, 15, 5, 16},
+        {15, 16, 4, 14}, {30, 20, 2, 10}, {1, 4, 4, 13},
+        {11, 2, 4, 14}
+    };
+
+    for (const auto& rule : rules)
+    {
+        if (rule.source != sourceSkillId) continue;
+        if (sourceRating < rule.prereq) continue;
+        if (KnowsTechnique(rule.target)) continue;  // already known
+
+        // INT check: d20 + INT modifier + source rating vs DC
+        int roll = (int)(Random(1, 21));  // d20
+        int total = roll + stats_.IntMod() + sourceRating;
+        if (total >= rule.dc)
+        {
+            // Discovered!
+            NPCTechnique entry;
+            entry.skillId = rule.target;
+            entry.rating = 1;  // start at novice
+            entry.xp = 0;
+            entry.discovered = true;
+            techniques_[(unsigned)rule.target] = entry;
+
+            URHO3D_LOGINFOF("NPC %u discovered technique %d (from %d, roll %d+%d+%d=%d vs DC %d)",
+                            GetSpawnId(), rule.target, sourceSkillId,
+                            roll, stats_.IntMod(), sourceRating, total, rule.dc);
+            return rule.target;
+        }
+    }
+    return 0;
+}
+
+int HumanNPC::TeachTechnique(int skillId, HumanNPC* student)
+{
+    if (!student) return 0;
+    if (!KnowsTechnique(skillId)) return 0;
+    if (student->KnowsTechnique(skillId) && student->GetTechniqueRating(skillId) >= GetTechniqueRating(skillId))
+        return 0;  // student is at or above teacher's level
+
+    // Grant knowledge if student doesn't know it
+    if (!student->KnowsTechnique(skillId))
+    {
+        NPCTechnique entry;
+        entry.skillId = skillId;
+        entry.rating = 0;
+        entry.xp = 0;
+        entry.discovered = true;
+        student->techniques_[(unsigned)skillId] = entry;
+    }
+
+    // Transfer XP: base 5, scaled by teacher's CHA mod
+    int baseXP = 5;
+    float chaBonus = 1.0f + stats_.ChaMod() * 0.15f;  // CHA affects teaching speed
+    chaBonus = Max(chaBonus, 0.5f);
+    int xpTransferred = Max(1, (int)(baseXP * chaBonus));
+
+    student->AwardTechniqueXP(skillId, xpTransferred);
+    return xpTransferred;
+}
+
+void HumanNPC::GrantPrimitiveTechniques()
+{
+    // All NPCs start knowing Stone Age primitives at rating 1
+    static const int primitives[] = {23, 20, 28, 10, 1, 3, 27};  // foraging, tracking, fire, knapping, melee, defense, swimming
+    for (int id : primitives)
+    {
+        NPCTechnique entry;
+        entry.skillId = id;
+        entry.rating = 1;
+        entry.xp = 0;
+        entry.discovered = true;
+        techniques_[(unsigned)id] = entry;
+    }
 }

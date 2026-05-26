@@ -14,6 +14,8 @@
 
 using namespace Urho3D;
 
+namespace Urho3D { class GameDB; }
+
 /// Info about a building type from the DB.
 struct BuildingTypeInfo
 {
@@ -141,6 +143,9 @@ public:
     /// Set snap rules (loaded from GameDB).
     void SetSnapRules(const Vector<SnapRule>& rules) { snapRules_ = rules; }
 
+    /// Set GameDB reference for live snap rule lookups.
+    void SetGameDB(GameDB* db) { gameDB_ = db; }
+
     /// Find best snap point near cursor for the current building type.
     SnapResult FindSnapPoint(const Vector3& cursorPos, int buildingTypeId, Terrain* terrain) const;
 
@@ -233,6 +238,7 @@ private:
     HashMap<int, const BuildingTypeInfo*> typeMap_;  ///< O(1) type lookup by id.
     Vector<PlacedBuilding> placedBuildings_;
     Vector<SnapRule> snapRules_;
+    GameDB* gameDB_{nullptr};
     int snappedToId_{-1};
 
     /// Cached ghost materials (valid/snapped/invalid) — avoid Clone() per frame.

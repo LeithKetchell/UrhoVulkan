@@ -285,6 +285,10 @@ static const int MSG_FISH_SPAWNS = 0xFD;
 /// Format: u16 count, then count × (u8 spatch_x, u8 spatch_z, u16 settlement_id).
 static const int MSG_SETTLEMENT_CLAIMS = 0xFE;
 
+/// Server->client: phenomenon observed near NPC (spawnId u32, phenomenonType i32, pos vec3).
+/// Client routes to NPC's ObservePhenomenon() for WIS-gated insight accumulation.
+static const int MSG_PHENOMENON = 0xFF;
+
 /// Used to define custom messages, usually of the form MSG_USER + x, where x is an integer value.
 static const int MSG_USER = 0x200;
 

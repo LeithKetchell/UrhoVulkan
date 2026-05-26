@@ -30,10 +30,6 @@ protected:
     float GetDesiredSize() const override { return 0.48f; }
     float GetWanderRadius() const override { return 15.0f; }
     float GetWanderSpeed() const override { return 2.5f; }
-    float GetFleeSpeed() const override { return 7.0f; }
-    float GetFleeDistance() const override { return 15.0f; }
     float GetMinIdleDuration() const override { return 2.0f; }
     float GetMaxIdleDuration() const override { return 6.0f; }
-    float GetVisionRange() const override { return 20.0f; }
-    float GetVisionCosAngle() const override { return 0.5f; }  // 120 degrees
 };

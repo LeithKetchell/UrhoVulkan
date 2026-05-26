@@ -2,7 +2,16 @@
 
 #include "Creature.h"
 
+#include <Urho3D/IO/Log.h>
 #include <Urho3D/Core/Context.h>
+
+// Static rule caches — loaded once from GameDB
+HungerRules  Creature::hungerRules_{};
+ThirstRules  Creature::thirstRules_{};
+WarmthRules  Creature::warmthRules_{};
+StaminaRules Creature::staminaRules_{};
+DeathRules   Creature::deathRules_{};
+bool         Creature::rulesLoaded_{false};
 #include <Urho3D/Core/CoreEvents.h>
 #include <Urho3D/Graphics/AnimatedModel.h>
 #include <Urho3D/Graphics/AnimationController.h>
@@ -17,6 +26,7 @@
 #ifdef URHO3D_PHYSICS
 #include <Urho3D/Physics/PhysicsWorld.h>
 #include <Urho3D/Physics/PhysicsEvents.h>
+#include <Urho3D/Physics/RigidBody.h>
 #endif
 #include <Urho3D/Math/MathDefs.h>
 #include <Urho3D/IO/Log.h>
@@ -45,6 +55,12 @@ void Creature::Start()
         float longest = Max(size.x_, Max(size.y_, size.z_));
         if (longest > 0.001f)
             node_->SetScale(GetDesiredSize() / longest);
+
+        // Model origin is at the hips — offset the model child node upward so
+        // the feet (bb.min.y_) sit at the parent node's origin (terrain surface).
+        Node* modelNode = mdl->GetNode();
+        if (modelNode && modelNode != node_ && bb.min_.y_ < -0.001f)
+            modelNode->SetPosition(Vector3(modelNode->GetPosition().x_, -bb.min_.y_, modelNode->GetPosition().z_));
     }
 
     homePos_ = node_->GetWorldPosition();
@@ -153,6 +169,21 @@ void Creature::SetState(CreatureState newState)
         // Brief celebration after a successful kill, then return to idle.
         stateTimer_ = Random(2.0f, 3.0f);
         break;
+
+    case CREATURE_SHEAR:
+        // Shearing a tamed alpaca — kneel and gather wool.
+        stateTimer_ = Random(4.0f, 6.0f);
+        break;
+
+    case CREATURE_FISH:
+    {
+        // Fishing — sit at water's edge, wait for a bite.
+        // DEX modifier speeds up catch: base 8-15s, reduced by 0.5s per +1 DEX mod.
+        float baseFish = Random(8.0f, 15.0f);
+        baseFish -= stats_.DexMod() * 0.5f;
+        stateTimer_ = Clamp(baseFish, 3.0f, 20.0f);
+        break;
+    }
     }
 
     OnStateEnter(newState);
@@ -329,6 +360,22 @@ void Creature::OnStateEnter(CreatureState newState)
             animCtrl->SetSpeed(GetWalkAnim(), 0.6f);
         }
         break;
+
+    case CREATURE_SHEAR:
+        // Shearing — kneel/gather gesture at the alpaca
+        if (!GetShearAnim().Empty())
+            animCtrl->PlayExclusive(GetShearAnim(), 0, false, 0.3f);
+        else if (!GetEatAnim().Empty())
+            animCtrl->PlayExclusive(GetEatAnim(), 0, false, 0.3f);
+        break;
+
+    case CREATURE_FISH:
+        // Fishing — sit at water's edge and wait for a bite
+        if (!GetFishAnim().Empty())
+            animCtrl->PlayExclusive(GetFishAnim(), 0, true, 0.5f);
+        else if (!GetSitAnim().Empty())
+            animCtrl->PlayExclusive(GetSitAnim(), 0, true, 0.5f);
+        break;
     }
 }
 
@@ -459,6 +506,18 @@ void Creature::InitCombatStats(int hp, int attack, int defense, int damage, int 
     speed_        = speed;
     fleeFraction_ = fleeFraction;
     aggression_   = aggression;
+}
+
+void Creature::InitBehaviorStats(float fleeSpeed, float fleeDistance, float visionRange,
+                                  float visionAngle, bool isPredator, bool isScavenger, float foodGrassWt)
+{
+    dbFleeSpeed_    = fleeSpeed;
+    dbFleeDistance_  = fleeDistance;
+    dbVisionRange_  = visionRange;
+    dbVisionAngle_  = visionAngle;
+    dbIsPredator_   = isPredator ? 1 : 0;
+    dbIsScavenger_  = isScavenger ? 1 : 0;
+    dbFoodGrassWt_  = foodGrassWt;
 }
 
 bool Creature::TakeDamage(int amount)
@@ -636,53 +695,111 @@ void Creature::Update(float timeStep)
 // Vitals — depleting needs system
 // ============================================================================
 
+void Creature::LoadSurvivalRules(GameDB* db)
+{
+    if (!db || rulesLoaded_)
+        return;
+
+    // Defaults are baked into the structs by the schema defaults — these calls
+    // overwrite them with whatever the DB has. If a table is missing or empty,
+    // the struct keeps its zero-init and we fall back to the schema defaults below.
+    bool h = db->GetHungerRules(hungerRules_);
+    bool t = db->GetThirstRules(thirstRules_);
+    bool w = db->GetWarmthRules(warmthRules_);
+    bool s = db->GetStaminaRules(staminaRules_);
+
+    // If any table was missing, fill in the old hardcoded defaults so behavior
+    // doesn't silently break with zero drain rates.
+    if (!h)
+    {
+        hungerRules_.maxHunger = 100;
+        hungerRules_.drainPerDay = 25.0f;
+        URHO3D_LOGWARNING("hunger_rules not found in DB — using hardcoded defaults");
+    }
+    if (!t)
+    {
+        thirstRules_.maxThirst = 100;
+        thirstRules_.drainPerDay = 40.0f;
+        URHO3D_LOGWARNING("thirst_rules not found in DB — using hardcoded defaults");
+    }
+    if (!w)
+    {
+        warmthRules_.fireWarmth = 15.0f;
+        warmthRules_.fireRange = 5.0f;
+        warmthRules_.activityWarmth = 3.0f;
+        warmthRules_.coldHpPerDay = 3.0f;
+        URHO3D_LOGWARNING("warmth_rules not found in DB — using hardcoded defaults");
+    }
+    if (!s)
+    {
+        staminaRules_.maxStamina = 100;
+        staminaRules_.regenPerSecond = 2.0f;
+        staminaRules_.sprintCostSec = 5.0f;
+        URHO3D_LOGWARNING("stamina_rules not found in DB — using hardcoded defaults");
+    }
+
+    if (!db->GetDeathRules(deathRules_))
+    {
+        deathRules_.corpseDuration = 120.0f;
+        deathRules_.respawnDelay = 5.0f;
+        URHO3D_LOGWARNING("death_rules not found in DB — using hardcoded defaults");
+    }
+
+    rulesLoaded_ = true;
+    URHO3D_LOGINFO("Creature survival rules loaded from GameDB");
+}
+
 void Creature::UpdateVitals(float timeStep, float sunAltitude)
 {
     // sunAltitude: 1.0 = noon, 0.0 = horizon, -1.0 = midnight
     // Convert to a 0..1 "darkness" factor — higher at night
     float darkness = Clamp(0.5f - sunAltitude * 0.5f, 0.0f, 1.0f);
 
-    // Base depletion rates (units per second)
-    const float hungerRate     = 0.15f;   // hungry every ~10 minutes
-    const float thirstRate     = 0.20f;   // thirsty every ~8 minutes
-    const float staminaActive  = 0.30f;   // tired faster while doing things
-    const float staminaPassive = 0.05f;   // slow drain at rest
-    const float warmthBase     = 0.05f;
-    const float warmthNight    = 0.40f;   // cold at night
+    // Drain rates from DB (drain_per_day → per-second)
+    const float hungerRate     = hungerRules_.drainPerDay / 86400.0f * 100.0f;
+    const float thirstRate     = thirstRules_.drainPerDay / 86400.0f * 100.0f;
+    const float staminaActive  = staminaRules_.sprintCostSec;
+    const float staminaPassive = staminaRules_.regenPerSecond * -0.025f;  // slow passive drain (negative regen)
+    const float warmthBase     = warmthRules_.coldHpPerDay / 86400.0f * 100.0f;
+    const float warmthNight    = warmthBase * warmthRules_.nightMultiplier;
 
-    hunger_ -= hungerRate * timeStep;
-    thirst_ -= thirstRate * timeStep;
+    // CON modifier reduces drain rate (each +1 = 5% slower drain)
+    float conFactor = 1.0f - stats_.ConMod() * 0.05f;
+    conFactor = Clamp(conFactor, 0.5f, 1.5f);  // cap at ±50%
+
+    hunger_ -= hungerRate * conFactor * timeStep;
+    thirst_ -= thirstRate * conFactor * timeStep;
 
     // Stamina depletes faster while moving/working, less when sitting or sleeping
     bool resting = (state_ == CREATURE_SIT || state_ == CREATURE_SLEEP || state_ == CREATURE_IDLE);
-    stamina_ -= (resting ? staminaPassive : staminaActive) * timeStep;
+    stamina_ -= (resting ? staminaPassive : staminaActive) * conFactor * timeStep;
 
     // Warmth — base loss + extra at night
-    warmth_ -= (warmthBase + warmthNight * darkness) * timeStep;
+    warmth_ -= (warmthBase + warmthNight * darkness) * conFactor * timeStep;
 
     // Clamp
-    hunger_  = Clamp(hunger_,  0.0f, 100.0f);
-    thirst_  = Clamp(thirst_,  0.0f, 100.0f);
-    stamina_ = Clamp(stamina_, 0.0f, 100.0f);
+    hunger_  = Clamp(hunger_,  0.0f, (float)hungerRules_.maxHunger);
+    thirst_  = Clamp(thirst_,  0.0f, (float)thirstRules_.maxThirst);
+    stamina_ = Clamp(stamina_, 0.0f, (float)staminaRules_.maxStamina);
     warmth_  = Clamp(warmth_,  0.0f, 100.0f);
 }
 
 CreatureState Creature::PickNeedState()
 {
-    // Find the most depleted vital — only act on those below 50
-    struct Need { float value; CreatureState state; };
+    // Find the most depleted vital below its DB low_threshold
+    struct Need { float value; float threshold; CreatureState state; };
     Need needs[] = {
-        { stamina_, CREATURE_SLEEP },
-        { hunger_,  CREATURE_EAT   },
-        { thirst_,  CREATURE_EAT   },  // drinking uses gather/water anim
-        { warmth_,  CREATURE_SIT   },  // sit by fire (proximity check elsewhere)
+        { stamina_, (float)staminaRules_.lowThreshold, CREATURE_SLEEP },
+        { hunger_,  (float)hungerRules_.lowThreshold,  CREATURE_EAT   },
+        { thirst_,  (float)thirstRules_.lowThreshold,  CREATURE_EAT   },
+        { warmth_,  (float)warmthRules_.lowThreshold,  CREATURE_SIT   },
     };
 
-    float lowest = 50.0f;
+    float lowest = 999.0f;
     CreatureState pick = CREATURE_IDLE;
     for (const Need& n : needs)
     {
-        if (n.value < lowest)
+        if (n.value < n.threshold && n.value < lowest)
         {
             lowest = n.value;
             pick = n.state;
@@ -696,15 +813,15 @@ void Creature::OnActionComplete(CreatureState completedState)
     switch (completedState)
     {
     case CREATURE_EAT:
-        hunger_ = Min(100.0f, hunger_ + 35.0f);
-        thirst_ = Min(100.0f, thirst_ + 25.0f);
+        hunger_ = Min(100.0f, hunger_ + (float)hungerRules_.eatRestore);
+        thirst_ = Min(100.0f, thirst_ + (float)thirstRules_.eatRestore);
         break;
     case CREATURE_SIT:
-        stamina_ = Min(100.0f, stamina_ + 20.0f);
-        warmth_  = Min(100.0f, warmth_ + 30.0f);  // sitting near fire
+        stamina_ = Min(100.0f, stamina_ + staminaRules_.sitRestore);
+        warmth_  = Min(100.0f, warmth_ + warmthRules_.sitRestore);
         break;
     case CREATURE_SLEEP:
-        stamina_ = Min(100.0f, stamina_ + 60.0f);
+        stamina_ = Min(100.0f, stamina_ + staminaRules_.sleepRestore);
         break;
     default:
         break;
@@ -730,4 +847,91 @@ void Creature::ApplyServerState(CreatureState newState, const Vector3& pos, floa
 
     if (state_ != newState || firstApply)
         SetState(newState);
+}
+
+// --- DnD Dice Rolling ---
+
+/// Roll NdS: N dice with S sides, return sum.
+static int RollDice(int numDice, int sides)
+{
+    int total = 0;
+    for (int i = 0; i < numDice; ++i)
+        total += (int)(Random(1, sides + 1));
+    return total;
+}
+
+/// Roll 4d6, drop the lowest die.
+static int Roll4d6DropLowest()
+{
+    int rolls[4];
+    int lowest = 999;
+    int total = 0;
+    for (int i = 0; i < 4; ++i)
+    {
+        rolls[i] = (int)(Random(1, 7));
+        total += rolls[i];
+        if (rolls[i] < lowest)
+            lowest = rolls[i];
+    }
+    return total - lowest;
+}
+
+void Creature::RollStats(int method)
+{
+    auto roll = [&]() -> int {
+        if (method == 0)
+            return RollDice(3, 6);       // 3d6: range 3-18
+        else
+            return Roll4d6DropLowest();   // 4d6 drop lowest: range 3-18, biased higher
+    };
+
+    stats_.strength     = roll();
+    stats_.dexterity    = roll();
+    stats_.constitution = roll();
+    stats_.intelligence = roll();
+    stats_.wisdom       = roll();
+    stats_.charisma     = roll();
+
+    // CON modifier adjusts max HP (and current HP to match)
+    int conBonus = stats_.ConMod() * 2;
+    if (conBonus != 0)
+    {
+        maxHp_ += conBonus;
+        if (maxHp_ < 1)
+            maxHp_ = 1;
+        hp_ = maxHp_;
+    }
+}
+
+void Creature::RollStatsWithLineage(const AbilityScores& parent1, const AbilityScores& parent2)
+{
+    // For each stat: roll 4d6-drop-lowest twice, take the better roll
+    // if either parent has a positive modifier in that stat (advantage).
+    // Otherwise: standard 4d6-drop-lowest.
+    auto rollWithAdvantage = [](bool advantage) -> int {
+        int first = Roll4d6DropLowest();
+        if (advantage)
+        {
+            int second = Roll4d6DropLowest();
+            return Max(first, second);
+        }
+        return first;
+    };
+
+    stats_.strength     = rollWithAdvantage(parent1.StrMod() > 0 || parent2.StrMod() > 0);
+    stats_.dexterity    = rollWithAdvantage(parent1.DexMod() > 0 || parent2.DexMod() > 0);
+    stats_.constitution = rollWithAdvantage(parent1.ConMod() > 0 || parent2.ConMod() > 0);
+    stats_.intelligence = rollWithAdvantage(parent1.IntMod() > 0 || parent2.IntMod() > 0);
+    stats_.wisdom       = rollWithAdvantage(parent1.WisMod() > 0 || parent2.WisMod() > 0);
+    stats_.charisma     = rollWithAdvantage(parent1.ChaMod() > 0 || parent2.ChaMod() > 0);
+
+    // CON modifier adjusts max HP (and current HP to match)
+    int conBonus = stats_.ConMod() * 2;
+    if (conBonus != 0)
+    {
+        maxHp_ += conBonus;
+        if (maxHp_ < 1)
+            maxHp_ = 1;
+        hp_ = maxHp_;
+    }
 }

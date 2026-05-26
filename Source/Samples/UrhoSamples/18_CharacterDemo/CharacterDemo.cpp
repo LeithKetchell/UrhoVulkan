@@ -342,8 +342,7 @@ void CharacterDemo::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // Update profiler display
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(eventData[Update::P_TIMESTEP].GetFloat());
-        profilerUI_->Update();
+        profilerUI_->Update(eventData[Update::P_TIMESTEP].GetFloat());
     }
 }
 

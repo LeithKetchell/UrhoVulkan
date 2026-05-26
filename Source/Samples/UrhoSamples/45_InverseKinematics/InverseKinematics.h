@@ -5,67 +5,51 @@
 
 #include "Sample.h"
 #include <Urho3D/Graphics/ProfilerUI.h>
+#include <Urho3D/Graphics/BoneCollisionGenerator.h>
 
 namespace Urho3D
 {
 class AnimationController;
 class Node;
-class IKEffector;
-class IKSolver;
 class Scene;
+class AnimatedModel;
 }
 
-/// Inverse Kinematics demo.
-/// This sample demonstrates how to adjust the position of animated feet so they match the ground's angle using IK.
+/// Bone collision box demo.
+/// Generates per-bone bounding boxes from vertex weights and draws them.
 class InverseKinematics : public Sample
 {
     URHO3D_OBJECT(InverseKinematics, Sample);
 
 public:
-    /// Construct.
     explicit InverseKinematics(Context* context);
 
-    /// Setup after engine initialization and before running the main loop.
     void Start() override;
 
 protected:
-    /// Animation controller of Jack.
-    SharedPtr<Urho3D::AnimationController> jackAnimCtrl_;
-    /// Inverse kinematic left effector.
-    SharedPtr<Urho3D::IKEffector> leftEffector_;
-    /// Inverse kinematic right effector.
-    SharedPtr<Urho3D::IKEffector> rightEffector_;
-    /// Inverse kinematic solver.
-    SharedPtr<Urho3D::IKSolver> solver_;
-    /// Need references to these nodes to calculate foot angles and offsets.
-    SharedPtr<Urho3D::Node> leftFoot_;
-    SharedPtr<Urho3D::Node> rightFoot_;
-    SharedPtr<Urho3D::Node> jackNode_;
-    /// So we can rotate the floor.
+    SharedPtr<Urho3D::AnimationController> animCtrl_;
+    SharedPtr<Urho3D::Node> characterNode_;
     SharedPtr<Urho3D::Node> floorNode_;
     float floorPitch_{};
     float floorRoll_{};
-    /// Whether or not to draw debug geometry.
-    bool drawDebug_{};
+    bool drawDebug_{true};
 
 private:
-    /// Construct the scene content.
     void CreateScene();
-    /// Construct an instruction text to the UI.
     void CreateInstructions();
-    /// Set up a viewport for displaying the scene.
     void SetupViewport();
-    /// Read input and moves the camera.
     void UpdateCameraAndFloor(float timeStep);
-    /// Subscribe to application-wide logic update events.
     void SubscribeToEvents();
-    /// Handle the logic update event.
     void HandleUpdate(StringHash eventType, VariantMap& eventData);
-    /// Draw debug geometry.
     void HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData);
-    /// Process IK logic.
-    void HandleSceneDrawableUpdateFinished(StringHash eventType, VariantMap& eventData);
-    /// Camera node.
+
     SharedPtr<Node> cameraRotateNode_;
     SharedPtr<ProfilerUI> profilerUI_;
+
+    /// Per-bone bounding boxes from BoneCollisionGenerator.
+    Vector<BoneBounds> boneBoundsData_;
+    /// Ragdoll activated flag.
+    bool ragdollActive_{false};
+    /// Activate ragdoll — stop animation, add physics bodies + constraints.
+    void ActivateRagdoll();
 };

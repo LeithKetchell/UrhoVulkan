@@ -55,7 +55,7 @@ void Clicker::CreateUI()
     powerText->SetText("Power: " + power_.ToString());
     powerText->SetFont(cache->GetResource<Font>("Fonts/Anonymous Pro.ttf"), 30);
     powerText->SetColor(Color::WHITE);
-    powerText->SetPosition({10, 10});
+    powerText->SetPosition(IntVector2(10, 10));
 
     // Add Vulkan indicator in top-left corner
     auto* vulkanIndicator = new Text(context_);
@@ -151,8 +151,7 @@ void Clicker::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // Update profiler display
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
     }
 }
 

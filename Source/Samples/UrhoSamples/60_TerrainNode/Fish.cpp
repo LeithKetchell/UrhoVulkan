@@ -14,6 +14,8 @@
 Fish::Fish(Context* context) :
     WaterAnimal(context)
 {
+    // Randomize lifespan ±20% so fish don't all die at the same time
+    maxAge_ = maxAge_ * Random(0.8f, 1.2f);
 }
 
 void Fish::RegisterObject(Context* context)
@@ -40,6 +42,18 @@ void Fish::SetMaterials(Material* base, Material* orbit, Material* stare)
 
 void Fish::Update(float timeStep)
 {
+    // --- Age tick ---
+    age_ += timeStep;
+    if (!mature_ && age_ >= maturityAge_)
+        mature_ = true;
+
+    // --- Natural death (old age) ---
+    if (age_ >= maxAge_)
+    {
+        node_->Remove();
+        return;
+    }
+
     // --- Hunt scan: big fish look for school fish prey ---
     // Rate-limited: only scan when not already hunting, ~every 0.5s via hunt timer reuse
     if (!hunting_ && spatialHash_)
@@ -267,4 +281,18 @@ void Fish::Swim(float timeStep)
         if (want && sm->GetMaterial() != want)
             sm->SetMaterial(want);
     }
+}
+
+void Fish::InitFromDB(int /*creatureId*/, const String& modelPath, float speed,
+                      float wanderRad, float visionRange, float visionAngle,
+                      bool isPredator)
+{
+    if (!modelPath.Empty())
+        dbModelPath_ = modelPath;
+    dbSwimSpeed_ = speed;
+    swimSpeed_ = speed;
+    dbWanderRadius_ = wanderRad;
+    boundary_ = wanderRad;
+    // Use base class DB behavior members
+    InitBehaviorStats(speed, wanderRad, visionRange, visionAngle, isPredator, false, 0.0f);
 }

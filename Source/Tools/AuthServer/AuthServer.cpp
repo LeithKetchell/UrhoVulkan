@@ -31,7 +31,9 @@
 #include <Urho3D/IO/FileSystem.h>
 #include <Urho3D/UI/Slider.h>
 
-#include <libsodium/sodium.h>
+#include <Urho3D/Network/SHA256.h>
+#include <Urho3D/Network/CryptoRNG.h>
+#include <Urho3D/Resource/JSONFile.h>
 #include <SQLite/sqlite3.h>
 #include <ctime>
 
@@ -40,11 +42,23 @@
 #else
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <poll.h>
 #endif
 
 URHO3D_DEFINE_APPLICATION_MAIN(AuthServer);
+
+// Singleton bridge for CombatResolver external RNG callback
+static AuthServer* g_authServerInstance = nullptr;
+static int QuantumDiceRollBridge(int sides)
+{
+    if (g_authServerInstance)
+        return g_authServerInstance->DiceRoll(sides);
+    return (rand() % sides) + 1;
+}
 
 // Controls duplicate-instance behavior:
 //   true  — new instance kills the old one and takes over (hot-replace during development)
@@ -201,7 +215,8 @@ static const int MSG_PATCH_QUERY     = 111;
 static const int MSG_PATCH_RESULT    = 112;
 static const int MSG_LOAD_SCENE      = 103;
 static const int MSG_REGISTER_GUID   = 104;  // Client → AuthServer: register NAT GUID after auth
-static const int MSG_WEATHER_UPDATE  = 120;  // AuthServer → Client: weather forecast
+static const int MSG_WEATHER_UPDATE    = 120;  // AuthServer → Client: weather forecast
+static const int MSG_CELESTIAL_STATE   = 121;  // AuthServer → Client: moon phase, eclipse state
 // Edit messages: MSG_EDIT_TERRAIN (0xA2), MSG_EDIT_OBJECT (0xA3),
 // MSG_EDIT_REJECT (0xA4), MSG_EDIT_BROADCAST (0xA5) — defined in Protocol.h
 // MSG_PEER_INTRODUCE (0x9C), MSG_PEER_READY (0x9D), MSG_PEER_CONNECT_FAILED (0x9E),
@@ -293,35 +308,12 @@ static Vector<unsigned char> HexDecode(const String& hex)
     return result;
 }
 
-// Hash password with Argon2id, XOR-obfuscate, return hex string
-static String HashPasswordArgon2(const String& password)
-{
-    char hash[crypto_pwhash_STRBYTES];  // 128 bytes
-    memset(hash, 0, sizeof(hash));
-    int result = crypto_pwhash_str(hash, password.CString(), password.Length(),
-            crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE);
-    if (result != 0)
-    {
-        URHO3D_LOGERRORF("HashPasswordArgon2: crypto_pwhash_str failed (result=%d, pw_len=%u, opslimit=%llu, memlimit=%zu)",
-            result, password.Length(),
-            (unsigned long long)crypto_pwhash_OPSLIMIT_INTERACTIVE,
-            (size_t)crypto_pwhash_MEMLIMIT_INTERACTIVE);
-        return String::EMPTY;
-    }
-
-    unsigned char buf[crypto_pwhash_STRBYTES];
-    memcpy(buf, hash, crypto_pwhash_STRBYTES);
-    XorObfuscate(buf, crypto_pwhash_STRBYTES);
-    return HexEncode(buf, crypto_pwhash_STRBYTES);
-}
-
-// Hash password with BLAKE2b (32 bytes), XOR-obfuscate, return hex string
-static String HashPasswordBlake2(const String& password)
+// Hash password with SHA-256, XOR-obfuscate, return hex string (used for storage)
+static String HashPasswordSHA256(const String& password)
 {
     unsigned char hash[32];
-    crypto_generichash(hash, 32,
-        reinterpret_cast<const unsigned char*>(password.CString()), password.Length(),
-        nullptr, 0);
+    Urho3D::SHA256Hash(reinterpret_cast<const unsigned char*>(password.CString()),
+                       password.Length(), hash);
     XorObfuscate(hash, 32);
     return HexEncode(hash, 32);
 }
@@ -462,6 +454,12 @@ void AuthServer::Start()
     network->SetDiscoveryBeacon(beacon);
     LogMessage("LAN discovery beacon active");
 
+    // Seed entropy pool from /dev/urandom immediately, then attempt QRNG top-up
+    g_authServerInstance = this;
+    FillEntropyFromURandom(1024);
+    FetchQuantumEntropy();
+    LogMessage("Entropy pool seeded: " + String(entropyPoolSize_) + " values from " + entropySource_);
+
     // Subscribe to events
     SubscribeToEvent(E_KEYDOWN, URHO3D_HANDLER(AuthServer, HandleKeyDown));
     SubscribeToEvent(E_CLIENTCONNECTED, URHO3D_HANDLER(AuthServer, HandleClientConnected));
@@ -483,11 +481,15 @@ void AuthServer::Start()
     melbourneClock_ = new MelbourneClock(context_);
     melbourneClock_->Initialize(GetSubsystem<UI>()->GetRoot(), clockFont, 14);
 
+    InitIPC();
+
     LogMessage("AuthServer ready.");
 }
 
 void AuthServer::Stop()
 {
+    g_authServerInstance = nullptr;
+    StopIPC();
     SaveWaterMap();
 
     // Save all connected player states to world database
@@ -2271,13 +2273,6 @@ void AuthServer::HandleEditCancel(StringHash eventType, VariantMap& eventData)
 
 void AuthServer::InitDatabase()
 {
-    // Ensure libsodium is initialized before any hashing
-    if (sodium_init() < 0)
-    {
-        LogMessage("[ERROR] sodium_init() failed — password hashing unavailable");
-        return;
-    }
-
     auto* database = GetSubsystem<Database>();
     if (!database)
     {
@@ -2321,16 +2316,10 @@ void AuthServer::InitDatabase()
         DbResult check = db_->Execute("SELECT COUNT(*) FROM users");
         if (!check.GetRows().Empty() && check.GetRows()[0][0].GetI32() == 0)
         {
-            String argonHex = HashPasswordArgon2("admin");
-            String blakeHex = HashPasswordBlake2("admin");
-            LogMessage("Admin seed: argon2 len=" + String(argonHex.Length()) + ", blake2 len=" + String(blakeHex.Length()));
-            if (argonHex.Empty())
-                LogMessage("[ERROR] Argon2id hashing failed for admin seed!");
-            if (blakeHex.Empty())
-                LogMessage("[ERROR] BLAKE2b hashing failed for admin seed!");
+            String hashHex = HashPasswordSHA256("admin");
             db_->Execute(
                 "INSERT INTO users (username, password_hash, pake_hash, admin_level) "
-                "VALUES ('admin', '" + argonHex + "', '" + blakeHex + "', 25773)"
+                "VALUES ('admin', '" + hashHex + "', '" + hashHex + "', 25773)"
             );
             LogMessage("Created default superuser 'admin' (level 25773) — password hashed");
         }
@@ -2345,19 +2334,13 @@ void AuthServer::InitDatabase()
         {
             String user = unhashed.GetRows()[i][0].GetString();
             String plaintext = unhashed.GetRows()[i][1].GetString();
-            String argonHex = HashPasswordArgon2(plaintext);
-            String blakeHex = HashPasswordBlake2(plaintext);
-            if (!argonHex.Empty())
-            {
-                db_->Execute(
-                    "UPDATE users SET password_hash = '" + SqlEscape(argonHex) +
-                    "', pake_hash = '" + SqlEscape(blakeHex) +
-                    "' WHERE username = '" + SqlEscape(user) + "'"
-                );
-                LogMessage("Migrated password hash for user '" + user + "'");
-            }
-            else
-                LogMessage("[ERROR] Argon2id hash failed for user '" + user + "'");
+            String hashHex = HashPasswordSHA256(plaintext);
+            db_->Execute(
+                "UPDATE users SET password_hash = '" + SqlEscape(hashHex) +
+                "', pake_hash = '" + SqlEscape(hashHex) +
+                "' WHERE username = '" + SqlEscape(user) + "'"
+            );
+            LogMessage("Migrated password hash for user '" + user + "'");
         }
     }
 
@@ -3041,11 +3024,12 @@ void AuthServer::SpawnInitialCreatures()
             ai.regionId = regionId;
             ai.isHuman = IsHumanSpecies(entry.creatureId);
             ai.isPredator = IsPredatorSpecies(entry.creatureId);
+            ai.isMale = ai.isHuman ? (entry.creatureId == 20) : (Random(1.0f) < 0.5f);
             ai.moveSpeed = ai.isHuman ? 2.0f : 1.5f;
             ai.hunger = 50.0f + Random(30.0f);
             ai.thirst = 60.0f + Random(30.0f);
             ai.stamina = 80.0f + Random(20.0f);
-            ai.warmth = weatherTemperature_;
+            ai.warmth = GetEffectiveTemperature();
             ai.currentTask = STASK_IDLE;
             ai.spawnId = spawnId;
             if (ai.isHuman)
@@ -3912,7 +3896,20 @@ void AuthServer::HandleClientIdentity(StringHash eventType, VariantMap& eventDat
 
 String AuthServer::SqlEscape(const String& s)
 {
-    return s.Replaced("'", "''");
+    // Strip null bytes, escape single quotes for SQLite
+    String result;
+    result.Reserve(s.Length());
+    for (unsigned i = 0; i < s.Length(); ++i)
+    {
+        char c = s[i];
+        if (c == '\0')
+            continue;  // strip nulls
+        if (c == '\'')
+            result += "''";
+        else
+            result += c;
+    }
+    return result;
 }
 
 void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventData)
@@ -3931,8 +3928,9 @@ void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventDat
         String username = msg.ReadString();
         String passwordHash = msg.ReadString();
 
-        // Null/empty credentials — silent disconnect
-        if (username.Trimmed().Empty() || passwordHash.Trimmed().Empty())
+        // Boundary validation — reject oversized or empty credentials
+        if (username.Trimmed().Empty() || passwordHash.Trimmed().Empty() ||
+            username.Length() > 64 || passwordHash.Length() > 128)
         {
             connection->Disconnect();
             break;
@@ -4081,6 +4079,15 @@ void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventDat
     {
         String username = msg.ReadString();
         String passwordHash = msg.ReadString();
+
+        // Boundary validation — reject before touching DB
+        if (username.Trimmed().Empty() || passwordHash.Trimmed().Empty() ||
+            username.Length() > 64 || passwordHash.Length() > 128)
+        {
+            connection->Disconnect();
+            break;
+        }
+
         bool ok = RegisterUser(username, passwordHash);
 
         VectorBuffer reply;
@@ -4137,6 +4144,14 @@ void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventDat
 
     case MSG_PATCH_QUERY:
     {
+        // Auth gate — unauthenticated clients must not query patch ownership
+        auto pqIt = sessions_.Find(connection);
+        if (pqIt == sessions_.End() || !pqIt->second_.authenticated)
+        {
+            LogMessage("[WARN] MSG_PATCH_QUERY from unauthenticated client — ignoring");
+            break;
+        }
+
         int px = msg.ReadI32();
         int pz = msg.ReadI32();
         PatchInfo info = QueryPatchOwner(px, pz);
@@ -4355,13 +4370,38 @@ void AuthServer::HandleNetworkMessage(StringHash eventType, VariantMap& eventDat
         }
         float hour = msg.ReadFloat();
         int doy = msg.ReadI32();
-        timeOverrideHour_ = hour;
-        timeOverrideDOY_ = doy;
-        if (hour < 0.0f)
-            LogMessage("Admin time override CLEARED by " + sIt->second_.username);
+        // New format: if message has more data, read the UTC epoch override
+        if (msg.GetSize() - msg.GetPosition() >= 8)
+        {
+            long long epoch = (long long)msg.ReadI64();
+            if (epoch < 0)
+            {
+                utcEpochOverride_ = -1;
+                timeOverrideHour_ = -1.0f;
+                timeOverrideDOY_ = -1;
+                LogMessage("Admin time override CLEARED (epoch) by " + sIt->second_.username);
+            }
+            else
+            {
+                utcEpochOverride_ = epoch;
+                timeOverrideHour_ = -1.0f;  // epoch takes precedence
+                timeOverrideDOY_ = -1;
+                LogMessage("Admin UTC epoch override: " + String((long long)epoch) +
+                    " (darkness=" + String(GetDarkness(), 2) + ") by " + sIt->second_.username);
+            }
+        }
         else
-            LogMessage("Admin time override: hour=" + String(hour, 1) + " doy=" + String(doy) +
-                " (darkness=" + String(GetDarkness(), 2) + ") by " + sIt->second_.username);
+        {
+            // Legacy format: absolute hour + doy
+            timeOverrideHour_ = hour;
+            timeOverrideDOY_ = doy;
+            utcEpochOverride_ = -1;
+            if (hour < 0.0f)
+                LogMessage("Admin time override CLEARED by " + sIt->second_.username);
+            else
+                LogMessage("Admin time override: hour=" + String(hour, 1) + " doy=" + String(doy) +
+                    " (darkness=" + String(GetDarkness(), 2) + ") by " + sIt->second_.username);
+        }
         break;
     }
 
@@ -4441,6 +4481,9 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
     float dt = eventData[P_TIMESTEP].GetFloat();
     uptime_ += dt;
 
+    // Claudette IPC — non-blocking poll
+    PollIPC();
+
     // Melbourne clock
     if (melbourneClock_)
         melbourneClock_->Update();
@@ -4459,6 +4502,18 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // Check for completed HTTP responses
     ProcessBOMResponse();
 
+    // Quantum entropy pool: process in-flight QRNG response and refill when low
+    ProcessQRNGResponse();
+    if (entropyPoolSize_ < ENTROPY_REFILL_THRESHOLD)
+    {
+        qrngFetchTimer_ -= dt;
+        if (qrngFetchTimer_ <= 0.0f)
+        {
+            FetchQuantumEntropy();
+            qrngFetchTimer_ = QRNG_FETCH_COOLDOWN;
+        }
+    }
+
     // Broadcast weather to all clients periodically
     if (weatherReady_)
     {
@@ -4468,6 +4523,14 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
             weatherBroadcastTimer_ = WEATHER_BROADCAST_INTERVAL;
             BroadcastWeather();
         }
+    }
+
+    // Celestial state broadcast (lunar phase, eclipse)
+    celestialBroadcastTimer_ -= dt;
+    if (celestialBroadcastTimer_ <= 0.0f)
+    {
+        celestialBroadcastTimer_ = CELESTIAL_BROADCAST_INTERVAL;
+        BroadcastCelestialState();
     }
 
     // Trim terrain edit journals periodically
@@ -4492,6 +4555,9 @@ void AuthServer::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     // Rain collection: barrels fill during rain
     TickBarrelRainCollection(dt);
+
+    // World phenomena: fire-near-ore, seed-on-fertile, etc. (Plan 10)
+    PhenomenaTick(dt);
 
     // Agriculture: advance crop growth stages
     CropGrowthTick(dt);
@@ -4586,9 +4652,7 @@ void AuthServer::HandleKeyExchangeAuth(StringHash eventType, VariantMap& eventDa
         return;
     }
 
-    // Reserved offline-mode login (Sample 60 Offline button). The username is
-    // restricted to 127.0.0.1 / ::1 — a remote attacker who learned the constants
-    // still cannot use them. Auto-provisioned on first use.
+    // Reserved offline-mode login
     if (username == String(OFFLINE_RESERVED_USERNAME))
     {
         const String addr = connection ? connection->GetAddress() : String::EMPTY;
@@ -4601,8 +4665,6 @@ void AuthServer::HandleKeyExchangeAuth(StringHash eventType, VariantMap& eventDa
             return;
         }
 
-        // Auto-provision on first use. RegisterUser is idempotent-by-rejection
-        // (returns false if the row already exists), so we check first.
         DbResult exists = db_->Execute(
             "SELECT id FROM users WHERE username = '" +
             SqlEscape(String(OFFLINE_RESERVED_USERNAME)) + "'"
@@ -4620,7 +4682,6 @@ void AuthServer::HandleKeyExchangeAuth(StringHash eventType, VariantMap& eventDa
             LogMessage("PAKE: auto-provisioned reserved '" +
                        String(OFFLINE_RESERVED_USERNAME) + "' account for localhost client");
         }
-        // Fall through to the standard pake_hash lookup, which will now succeed.
     }
 
     // Look up stored PAKE hash for this user
@@ -4643,7 +4704,7 @@ void AuthServer::HandleKeyExchangeAuth(StringHash eventType, VariantMap& eventDa
         return;
     }
 
-    // Hex-decode and XOR-decode to recover the raw 32-byte BLAKE2b hash
+    // Hex-decode and XOR-decode to recover the raw 32-byte hash
     Vector<unsigned char> hash = HexDecode(storedHex);
     XorObfuscate(hash.Buffer(), hash.Size());
 
@@ -4763,6 +4824,9 @@ void AuthServer::HandleClientAuthenticated(StringHash eventType, VariantMap& eve
         SendWeatherToClient(connection);
     }
 
+    // Send celestial state (moon phase) on login
+    SendCelestialToClient(connection);
+
     // Per-patch resource streaming — send 3×3 neighbourhood around home patch
     URHO3D_LOGINFOF("[NetDebug] Sending patch neighbourhood to %s", username.CString());
     sessions_[connection].lastPatchPos = IntVector2(homePatchX, homePatchZ);
@@ -4818,13 +4882,21 @@ bool AuthServer::AuthenticateUser(const String& username, const String& password
     String storedHex = result.GetRows()[0][0].GetString();
     Vector<unsigned char> storedBytes = HexDecode(storedHex);
 
-    // XOR-decode to recover the Argon2id hash string
+    // XOR-decode to recover the stored SHA-256 hash
     XorObfuscate(storedBytes.Buffer(), storedBytes.Size());
 
-    // Verify password against the Argon2id hash
-    if (crypto_pwhash_str_verify(
-            reinterpret_cast<const char*>(storedBytes.Buffer()),
-            password.CString(), password.Length()) != 0)
+    // Hash the provided password and compare
+    unsigned char candidateHash[32];
+    Urho3D::SHA256Hash(reinterpret_cast<const unsigned char*>(password.CString()),
+                       password.Length(), candidateHash);
+
+    // Constant-time comparison
+    if (storedBytes.Size() != 32)
+        return false;
+    unsigned diff = 0;
+    for (int i = 0; i < 32; ++i)
+        diff |= storedBytes[i] ^ candidateHash[i];
+    if (diff != 0)
         return false;
 
     adminLevel = result.GetRows()[0][1].GetI32();
@@ -4842,17 +4914,11 @@ bool AuthServer::RegisterUser(const String& username, const String& password)
     if (!check.GetRows().Empty())
         return false;
 
-    String argonHex = HashPasswordArgon2(password);
-    String blakeHex = HashPasswordBlake2(password);
-    if (argonHex.Empty())
-    {
-        LogMessage("[ERROR] Argon2id hash failed during registration for '" + username + "'");
-        return false;
-    }
+    String hashHex = HashPasswordSHA256(password);
 
     db_->Execute(
         "INSERT INTO users (username, password_hash, pake_hash) VALUES ('" +
-        SqlEscape(username) + "', '" + SqlEscape(argonHex) + "', '" + SqlEscape(blakeHex) + "')"
+        SqlEscape(username) + "', '" + SqlEscape(hashHex) + "', '" + SqlEscape(hashHex) + "')"
     );
 
     // Auto-allocate a random patch to the new user
@@ -5016,7 +5082,7 @@ void AuthServer::IntroducePeers(Connection* requester, Connection* owner, int pa
 
     // Generate a 32-byte random token
     Vector<unsigned char> token(32);
-    randombytes_buf(token.Buffer(), 32);
+    Urho3D::CryptoRandomBytes(token.Buffer(), 32);
 
     // Send MSG_PEER_INTRODUCE to requester
     {
@@ -5053,8 +5119,15 @@ void AuthServer::HandleRelayToAuth(Connection* connection, MemoryBuffer& msg)
     }
 
     String subClientUsername = msg.ReadString();
+    if (subClientUsername.Length() > 64)
+        return;
     int innerMsgID = msg.ReadI32();
     unsigned innerSize = msg.ReadU32();
+    if (innerSize > 65536)  // 64KB cap — no legitimate message is larger
+    {
+        LogMessage("[WARN] Relay innerSize " + String(innerSize) + " exceeds cap — dropping");
+        return;
+    }
 
     // Read the inner message payload
     Vector<unsigned char> innerData(innerSize);
@@ -5777,7 +5850,7 @@ void AuthServer::SendWeatherToClient(Connection* connection)
     msg.WriteFloat(weatherPrecipitation_);
     msg.WriteFloat(Clamp(weatherWindSpeed_ / 80.0f, 0.0f, 1.0f)); // normalized 0-1
     msg.WriteFloat(weatherWindAngle_ * 3.14159f / 180.0f);         // degrees to radians
-    msg.WriteFloat(weatherTemperature_);
+    msg.WriteFloat(GetEffectiveTemperature());
     msg.WriteFloat(weatherHumidity_);
     msg.WriteString(weatherCondition_);
     connection->SendMessage(MSG_WEATHER_UPDATE, true, true, msg);
@@ -5802,6 +5875,75 @@ void AuthServer::BroadcastWeather(Connection* singleClient)
 
     if (count > 0)
         LogMessage("BOM: Weather broadcast to " + String(count) + " client(s)");
+}
+
+// ============================================================
+// Celestial state (server-authoritative lunar ephemeris)
+// ============================================================
+
+float AuthServer::CalculateMoonAge() const
+{
+    // Lunar synodic month: 29.53 days.
+    // Reference new moon: January 6, 2000 (Julian day 2451550.1).
+    // Calculate days since reference, mod by synodic period.
+    time_t now = time(nullptr);
+    // Days since Unix epoch
+    double daysSinceEpoch = (double)now / 86400.0;
+    // Reference: Jan 6 2000 = Unix day 10957.1 (approx)
+    double daysSinceRef = daysSinceEpoch - 10957.1;
+    double synodicMonth = 29.530588853;
+    double moonAge = fmod(daysSinceRef, synodicMonth);
+    if (moonAge < 0.0) moonAge += synodicMonth;
+    return (float)moonAge;
+}
+
+bool AuthServer::IsLunarEclipse() const
+{
+    // Simplified: a lunar eclipse occurs near full moon (age ~14.76 days)
+    // when the moon is near a lunar node (orbital plane crossing).
+    // Real eclipses occur ~2-3 times per year.
+    // Approximate by checking if moon age is within 0.5 days of full
+    // AND the day-of-year modulo roughly aligns with eclipse seasons.
+    float age = CalculateMoonAge();
+    float fullMoonDist = fabsf(age - 14.765f);
+    if (fullMoonDist > 0.5f) return false;
+
+    // Eclipse seasons repeat roughly every 173 days (half draconic year)
+    time_t now = time(nullptr);
+    struct tm* utc = gmtime(&now);
+    int doy = utc->tm_yday + 1;
+    // Approximate eclipse season windows: around day 15, 188, 361 (±10 days)
+    int season1 = abs(doy - 15);
+    int season2 = abs(doy - 188);
+    int season3 = abs(doy - 361);
+    int minDist = Min(season1, Min(season2, season3));
+    return minDist <= 10;
+}
+
+void AuthServer::SendCelestialToClient(Connection* connection)
+{
+    VectorBuffer msg;
+    float moonAge = CalculateMoonAge();
+    bool eclipse = IsLunarEclipse();
+    msg.WriteFloat(moonAge);          // 0..29.53 days
+    msg.WriteBool(eclipse);           // blood moon active
+    connection->SendMessage(MSG_CELESTIAL_STATE, true, true, msg);
+}
+
+void AuthServer::BroadcastCelestialState(Connection* singleClient)
+{
+    if (singleClient)
+    {
+        SendCelestialToClient(singleClient);
+        return;
+    }
+
+    for (auto it = sessions_.Begin(); it != sessions_.End(); ++it)
+    {
+        if (!it->second_.authenticated)
+            continue;
+        SendCelestialToClient(it->first_);
+    }
 }
 
 // ============================================================
@@ -6223,6 +6365,11 @@ void AuthServer::InitGameDB()
     gameDB_->ExecuteFile(skillsSchemaPath);
     gameDB_->CacheSkillRules();
 
+    // Technique discovery chains (depends on skills)
+    String techSchemaPath = fileSystem->GetProgramDir() + "Data/GameDB/technique_schema.sql";
+    gameDB_->ExecuteFile(techSchemaPath);
+    gameDB_->CacheTechniqueDiscovery();
+
     // Population dynamics schema
     String popSchemaPath = fileSystem->GetProgramDir() + "Data/GameDB/population_schema.sql";
     gameDB_->ExecuteFile(popSchemaPath);
@@ -6239,6 +6386,32 @@ void AuthServer::InitGameDB()
     String aiTuningPath = fileSystem->GetProgramDir() + "Data/GameDB/ai_tuning_schema.sql";
     gameDB_->ExecuteFile(aiTuningPath);
     LoadAITuning();
+
+    // Phenomena rules schema (Plan 10 — world phenomena generator)
+    String phenomenaPath = fileSystem->GetProgramDir() + "Data/GameDB/phenomena_rules.sql";
+    gameDB_->ExecuteFile(phenomenaPath);
+    CachePhenomenaRules();
+
+    // Apply balance patches from Data/GameDB/patches/ (alphabetical order)
+    {
+        String patchDir = fileSystem->GetProgramDir() + "Data/GameDB/patches";
+        if (fileSystem->DirExists(patchDir))
+        {
+            Vector<String> patchFiles;
+            fileSystem->ScanDir(patchFiles, patchDir, "*.sql", SCAN_FILES, false);
+            Sort(patchFiles.Begin(), patchFiles.End());
+            for (unsigned i = 0; i < patchFiles.Size(); ++i)
+            {
+                String patchPath = patchDir + "/" + patchFiles[i];
+                if (gameDB_->ApplyPatch(patchPath))
+                    LogMessage("[GameDB] Applied balance patch: " + patchFiles[i]);
+                else
+                    LogMessage("[GameDB] WARNING: failed to apply patch: " + patchFiles[i]);
+            }
+            if (patchFiles.Size() > 0)
+                LogMessage("[GameDB] " + String(patchFiles.Size()) + " balance patch(es) applied");
+        }
+    }
 
     // Initialize population manager
     populationManager_ = new PopulationManager(context_);
@@ -6266,6 +6439,28 @@ void AuthServer::InitGameDB()
     }
     else
         LogMessage("[GameDB] WARNING: survival rules not found in database");
+
+    // Cache warmth rules
+    if (gameDB_->GetWarmthRules(warmthRules_))
+    {
+        warmthRulesLoaded_ = true;
+        LogMessage("[GameDB] Warmth rules loaded — night_multiplier=" +
+            String(warmthRules_.nightMultiplier) + ", fire_warmth=" +
+            String(warmthRules_.fireWarmth));
+    }
+    else
+        LogMessage("[GameDB] WARNING: warmth rules not found in database");
+
+    // Cache death/respawn rules
+    if (gameDB_->GetDeathRules(deathRules_))
+    {
+        deathRulesLoaded_ = true;
+        LogMessage("[GameDB] Death rules loaded — respawn " + String(deathRules_.respawnDelay) +
+            "s, hp=" + String(deathRules_.hpOnRespawn) +
+            ", dropInventory=" + String(deathRules_.dropInventory ? "yes" : "no"));
+    }
+    else
+        LogMessage("[GameDB] WARNING: death rules not found in database");
 
     // Cache inventory rules
     if (gameDB_->GetInventoryRules(inventoryRules_))
@@ -6390,8 +6585,33 @@ void AuthServer::SurvivalTick(float dt)
     for (auto it = sessions_.Begin(); it != sessions_.End(); ++it)
     {
         ClientSession& s = it->second_;
-        if (!s.authenticated || !s.alive)
+        if (!s.authenticated)
             continue;
+
+        // Respawn tick — dead players count down to revival
+        if (!s.alive)
+        {
+            if (s.respawnTimer > 0.0f)
+            {
+                s.respawnTimer -= SURVIVAL_TICK_INTERVAL;
+                if (s.respawnTimer <= 0.0f)
+                {
+                    // Revive with DB-driven values (or hardcoded fallbacks)
+                    s.alive = true;
+                    s.respawnTimer = 0.0f;
+                    s.hp = deathRulesLoaded_ ? deathRules_.hpOnRespawn : 10;
+                    s.hunger = (float)(deathRulesLoaded_ ? deathRules_.hungerOnRespawn : 50);
+                    s.thirst = (float)(deathRulesLoaded_ ? deathRules_.thirstOnRespawn : 50);
+                    s.stamina = (float)(deathRulesLoaded_ ? deathRules_.staminaOnRespawn : 50);
+                    s.speedMult = 1.0f;
+                    SendVitalUpdate(it->first_, s, true);
+                    LogMessage(s.username + " respawned (hp=" + String(s.hp) +
+                        " hunger=" + String((int)s.hunger) +
+                        " thirst=" + String((int)s.thirst) + ")");
+                }
+            }
+            continue;
+        }
 
         // Hunger drain
         float hungerDrain = hungerRules_.drainPerDay * gameDayFraction;
@@ -6415,7 +6635,33 @@ void AuthServer::SurvivalTick(float dt)
         if (nodeIt != serverObjects_.End() && nodeIt->second_)
             playerPos = nodeIt->second_->GetWorldPosition();
         float shelterWarmth = GetShelterWarmth(playerPos.x_, playerPos.y_, playerPos.z_);
-        s.warmth = weatherTemperature_ + shelterWarmth;
+
+        // Clothing warmth — sum equipped items (same as NPC path in UpdateCreatureVitals)
+        float clothingWarmth = 0.0f;
+#ifdef URHO3D_DATABASE_SQLITE
+        if (worldDB_ && gameDB_)
+        {
+            int playerId = GetPlayerId(s.username);
+            if (playerId >= 0)
+            {
+                static const char* warmSlots[] = {"body", "back", "feet", "head"};
+                for (int ws = 0; ws < 4; ++ws)
+                {
+                    int itemId = worldDB_->GetEquippedItem(playerId, warmSlots[ws]);
+                    if (itemId > 0)
+                        clothingWarmth += gameDB_->GetClothingWarmth(itemId);
+                }
+            }
+        }
+#endif
+        s.warmth = weatherTemperature_ + shelterWarmth + clothingWarmth;
+
+        // Night warmth drain — same formula as NPC path, DB-driven multiplier
+        {
+            float darkness = GetDarkness();
+            float nightDrain = warmthRulesLoaded_ ? warmthRules_.nightMultiplier * 0.05f : 0.40f;
+            s.warmth -= darkness * nightDrain * SURVIVAL_TICK_INTERVAL;
+        }
 
         // Speed penalty
         if (s.hunger < (float)hungerRules_.criticalThreshold || s.thirst < (float)thirstRules_.criticalThreshold)
@@ -6425,13 +6671,15 @@ void AuthServer::SurvivalTick(float dt)
         else
             s.speedMult = 1.0f;
 
-        // Death check
+        // Death check — use DB-driven respawn delay
         if (s.hp <= 0)
         {
             s.alive = false;
             s.hp = 0;
+            s.respawnTimer = deathRulesLoaded_ ? deathRules_.respawnDelay : 5.0f;
             SendVitalUpdate(it->first_, s, true);
-            LogMessage(s.username + " died");
+            LogMessage(s.username + " died — respawning in " +
+                String(s.respawnTimer) + "s");
             continue;
         }
 
@@ -6747,7 +6995,7 @@ void AuthServer::HandlePickup(Connection* connection, MemoryBuffer& msg)
     // Remove world node
     itemNode->Remove();
 
-    // Economic doctrine: deduct from regional resource pool
+    // Economic doctrine: deduct from regional resource pool with scarcity check
     if (gameDB_ && populationManager_)
     {
         Vector3 pos = itemNode->GetWorldPosition();
@@ -6760,7 +7008,15 @@ void AuthServer::HandlePickup(Connection* connection, MemoryBuffer& msg)
             {
                 if (resTypes[r].itemId == itemId)
                 {
-                    gameDB_->ExtractResource(playerId, regionId, resTypes[r].id, currentGameDay_);
+                    float scarcity = gameDB_->GetScarcityModifier(regionId, resTypes[r].id);
+                    ExtractionResult result = gameDB_->ExtractResource(playerId, regionId, resTypes[r].id, currentGameDay_);
+                    if (result.success)
+                    {
+                        RegionResourceInfo pool;
+                        if (gameDB_->GetRegionResource(regionId, resTypes[r].id, pool))
+                            URHO3D_LOGDEBUGF("[Economy] Pickup %s: scarcity=%.2f remaining=%.0f/%.0f",
+                                resTypes[r].name.CString(), scarcity, pool.currentAmount, pool.maxAmount);
+                    }
                     break;
                 }
             }
@@ -6792,6 +7048,7 @@ void AuthServer::HandleAttack(Connection* connection, MemoryBuffer& msg)
     // Lazy-init combat resolver
     if (!combatResolver_)
         combatResolver_ = new CombatResolver(context_);
+        combatResolver_->SetExternalRNG(QuantumDiceRollBridge);
 
     // Get weapon stats from GameDB (bare hands fallback if not found)
     int attackMod  = 0;
@@ -7561,6 +7818,7 @@ bool AuthServer::CraftForOwner(int playerId, int recipeId, const Vector3& positi
     // Skill check: d20 + skill >= DC.  DC = 5 + tier * 3.
     if (!combatResolver_)
         combatResolver_ = new CombatResolver(context_);
+        combatResolver_->SetExternalRNG(QuantumDiceRollBridge);
 
     int skillId = SKILL_WOODWORK;
     if (craftAction == "craft_stone")        skillId = SKILL_KNAPPING;
@@ -7886,14 +8144,16 @@ void AuthServer::SetupDefaultPriorityCurves()
     }
 
     // DRINK: thirst low → high priority (driver 1 = thirst)
+    // Curve starts competing at thirst=60 so NPCs seek water before it's urgent.
+    // At thirst=40 it outbids tend_fire (12) and most other tasks.
     {
         PriorityCurveData c{};
         c.driverIndex = 1;  // thirst
         c.taskId = STASK_DRINK;
         c.numPoints = 3;
-        c.points[0] = {0.0f, 28.0f};   // dehydrated → 28
-        c.points[1] = {30.0f, 15.0f};  // thirsty → 15
-        c.points[2] = {50.0f, 0.0f};   // fine → 0
+        c.points[0] = {0.0f, 30.0f};   // dehydrated → 30 (top priority)
+        c.points[1] = {40.0f, 14.0f};  // thirsty → 14 (outbids tend_fire)
+        c.points[2] = {60.0f, 0.0f};   // comfortable → 0
         curves.Push(c);
     }
 
@@ -8796,6 +9056,24 @@ void AuthServer::ExecuteTradeSwap(TradeSession& session)
     {
         gameDB_->AwardXP(session.playerA, "complete_trade");
         gameDB_->AwardXP(session.playerB, "complete_trade");
+
+        // Log trade value from DB for balance tracking
+        float totalA = 0.0f, totalB = 0.0f;
+        for (auto oi = session.offerA.Begin(); oi != session.offerA.End(); ++oi)
+        {
+            TradeValue tv;
+            if (gameDB_->GetTradeValue(oi->first_, tv))
+                totalA += tv.baseValue * tv.scarcityMult * oi->second_;
+        }
+        for (auto oi = session.offerB.Begin(); oi != session.offerB.End(); ++oi)
+        {
+            TradeValue tv;
+            if (gameDB_->GetTradeValue(oi->first_, tv))
+                totalB += tv.baseValue * tv.scarcityMult * oi->second_;
+        }
+        if (totalA > 0.0f || totalB > 0.0f)
+            URHO3D_LOGINFOF("[Trade] Value: A=%.1f, B=%.1f (ratio %.2f)",
+                totalA, totalB, totalB > 0.0f ? totalA / totalB : 0.0f);
     }
 
     // Notify both
@@ -9066,7 +9344,7 @@ void AuthServer::InitResourceMap()
     }
 
     const float waterLevel = 5.0f;
-    resourceMap_->Generate(terrain, nullptr, waterLevel);
+    resourceMap_->Generate(terrain, nullptr, waterLevel, gameDB_);
     LogMessage("ResourceMap: generated " + String(resourceMap_->GetResourceCount()) +
                " resource pixels (server-authoritative)");
 
@@ -9137,7 +9415,7 @@ void AuthServer::HandleResourceHarvest(Connection* connection, MemoryBuffer& msg
 
     SendInventoryDelta(connection, itemId, taken, true);
 
-    // Economic doctrine: deduct from regional resource pool
+    // Economic doctrine: deduct from regional resource pool with scarcity check
     if (gameDB_ && populationManager_)
     {
         int regionId = populationManager_->FindRegion(worldX, worldZ);
@@ -9148,7 +9426,15 @@ void AuthServer::HandleResourceHarvest(Connection* connection, MemoryBuffer& msg
             {
                 if (resTypes[r].itemId == itemId)
                 {
-                    gameDB_->ExtractResource(playerId, regionId, resTypes[r].id, currentGameDay_);
+                    float scarcity = gameDB_->GetScarcityModifier(regionId, resTypes[r].id);
+                    ExtractionResult result = gameDB_->ExtractResource(playerId, regionId, resTypes[r].id, currentGameDay_);
+                    if (result.success)
+                    {
+                        RegionResourceInfo pool;
+                        if (gameDB_->GetRegionResource(regionId, resTypes[r].id, pool))
+                            URHO3D_LOGDEBUGF("[Economy] Harvest %s: scarcity=%.2f remaining=%.0f/%.0f",
+                                resTypes[r].name.CString(), scarcity, pool.currentAmount, pool.maxAmount);
+                    }
                     break;
                 }
             }
@@ -9322,6 +9608,7 @@ void AuthServer::HandleTrapCheck(Connection* connection, MemoryBuffer& msg)
 
     if (!combatResolver_)
         combatResolver_ = new CombatResolver(context_);
+        combatResolver_->SetExternalRNG(QuantumDiceRollBridge);
 
     // Trapping skill: experienced trappers build better traps (bonus to roll)
     int trapSkillBonus = 0;
@@ -9400,25 +9687,95 @@ void AuthServer::BroadcastSpawnCreature(int regionId, int creatureId, const Vect
             it->first_->SendMessage(MSG_SPAWN_CREATURE, true, true, buf);
     }
 
+    // Create a server-side REPLICATED scene node so the AI tick can sync
+    // position + state Vars, which Urho3D replicates to clients automatically.
+    // Without this, dynamically spawned creatures look frozen on clients.
+    if (scene_)
+    {
+        static const struct { const char* name; const char* model; const char* mat; int id; } spawnModels[] = {
+            {"Rabbit",    "Models/Animals/Rabbit.mdl",            "Models/Animals/Rabbit.txt",            1},
+            {"Deer",      "Models/Animals/Deer.mdl",              "Models/Animals/Deer.txt",              2},
+            {"Fox",       "Models/Animals/Fox.mdl",               "Models/Animals/Fox.txt",               3},
+            {"Stag",      "Models/Animals/Stag.mdl",              "Models/Animals/Stag.txt",              4},
+            {"Wolf",      "Models/Animals/Wolf.mdl",              "Models/Animals/Wolf.txt",              5},
+            {"Bull",      "Models/Animals/Bull.mdl",              "Models/Animals/Bull.txt",              6},
+            {"Cow",       "Models/Animals/Cow.mdl",               "Models/Animals/Cow.txt",               7},
+            {"Donkey",    "Models/Animals/Donkey.mdl",            "Models/Animals/Donkey.txt",             9},
+            {"Horse",     "Models/Animals/Horse.mdl",             "Models/Animals/Horse.txt",             10},
+            {"Alpaca",    "Models/Animals/Alpaca.mdl",            "Models/Animals/Alpaca.txt",            11},
+            {"Husky",     "Models/Animals/Husky.mdl",             "Models/Animals/Husky.txt",             12},
+            {"ShibaInu",  "Models/Animals/ShibaInu.mdl",          "Models/Animals/ShibaInu.txt",          13},
+            {"CaveMan",   "Models/Characters/CavemanMan.mdl",     "Models/Characters/CavemanMan.txt",     20},
+            {"CaveWoman", "Models/Characters/CavemanWoman.mdl",   "Models/Characters/CavemanWoman.txt",   21},
+        };
+        const char* nodeName = "Creature";
+        const char* modelPath = nullptr;
+        const char* matPath = nullptr;
+        for (const auto& sm : spawnModels)
+        {
+            if (sm.id == creatureId)
+            {
+                nodeName = sm.name;
+                modelPath = sm.model;
+                matPath = sm.mat;
+                break;
+            }
+        }
+
+        Vector3 nodePos = pos;
+        nodePos.y_ = GetTerrainHeightAI(pos.x_, pos.z_);
+
+        Node* node = scene_->CreateChild(nodeName);
+        node->SetPosition(nodePos);
+        node->SetVar("CreatureId", creatureId);
+        node->SetVar("SpawnId", spawnId);
+
+        if (modelPath)
+        {
+            auto* cache = GetSubsystem<ResourceCache>();
+            Node* modelNode = node->CreateChild(String(nodeName) + "Model");
+            modelNode->SetRotation(Quaternion(180.0f, Vector3::UP));
+            auto* model = modelNode->CreateComponent<AnimatedModel>();
+            auto* mdl = cache->GetResource<Model>(modelPath);
+            if (mdl)
+            {
+                model->SetModel(mdl, true, true);
+                if (matPath)
+                    model->ApplyMaterialList(matPath);
+                model->SetCastShadows(false);
+            }
+            modelNode->CreateComponent<AnimationController>();
+        }
+
+        creatureNodes_[spawnId] = node;
+    }
+
     // Register server-side AI tracking for ALL creatures.
     // Humans (20, 21) get full task AI. Animals get simpler wander+flee+hunt.
     // This is the "mini-Phase 8" that lets Phase 3 hunters target real prey.
     {
+        // Snap Y to terrain height on the server side — the network message
+        // sends Y=0 for clients to snap locally, but the server AI needs real Y
+        // to avoid false drowning detection.
+        Vector3 aiPos = pos;
+        aiPos.y_ = GetTerrainHeightAI(pos.x_, pos.z_);
+
         ServerCreatureAI ai;
-        ai.position = pos;
-        ai.targetPosition = pos;
-        ai.homePosition = pos;
+        ai.position = aiPos;
+        ai.targetPosition = aiPos;
+        ai.homePosition = aiPos;
         ai.creatureId = creatureId;
         ai.regionId = regionId;
         ai.isHuman = IsHumanSpecies(creatureId);
         ai.isPredator = IsPredatorSpecies(creatureId);
+        ai.isMale = ai.isHuman ? (creatureId == 20) : (Random(1.0f) < 0.5f);
         ai.moveSpeed = ai.isHuman ? 2.0f : 1.5f;
         // Start with slightly depleted vitals so NPCs begin working immediately
         // instead of idling for minutes waiting for hunger/thirst to decay.
         ai.hunger = 50.0f + Random(30.0f);     // 50-80: will gather soon
         ai.thirst = 60.0f + Random(30.0f);     // 60-90: will drink soon
         ai.stamina = 80.0f + Random(20.0f);    // 80-100: rested but not full
-        ai.warmth = weatherTemperature_;
+        ai.warmth = GetEffectiveTemperature();
         ai.currentTask = STASK_IDLE;
         ai.spawnId = spawnId;  // Self-reference for inventory ops (Phase 4)
         ai.growthProgress = growthProgress;  // 0.0 = newborn baby, 1.0 = adult
@@ -9629,7 +9986,24 @@ void AuthServer::EconomyDailyTick()
         sqlite3_finalize(stmt);
 
         for (unsigned i = 0; i < regionIds.Size(); ++i)
+        {
             gameDB_->RegenerateResources(regionIds[i], currentGameDay_);
+
+            // Log resource state after regeneration
+            Vector<RegionResourceInfo> pools = gameDB_->GetRegionResources(regionIds[i]);
+            for (unsigned p = 0; p < pools.Size(); ++p)
+            {
+                ResourceTypeInfo rtype;
+                if (gameDB_->GetResourceType(pools[p].resourceId, rtype))
+                {
+                    float scarcity = gameDB_->GetScarcityModifier(regionIds[i], pools[p].resourceId);
+                    if (scarcity < 0.5f)
+                        URHO3D_LOGWARNINGF("[Economy] Region %d %s depleted: %.0f/%.0f (scarcity %.2f)",
+                            regionIds[i], rtype.name.CString(),
+                            pools[p].currentAmount, pools[p].maxAmount, scarcity);
+                }
+            }
+        }
     }
 
     // 2. Population breeding tick
@@ -9809,6 +10183,17 @@ void AuthServer::TickCreatureAI(float dt)
     // Phase 16: tick tamed animal production and cooldowns
     TickTamedAnimals(dt);
 
+    // Diagnostic: log effective temperature once per minute for scrub verification
+    static float tempLogTimer = 0.0f;
+    tempLogTimer += dt;
+    if (tempLogTimer >= 60.0f)
+    {
+        URHO3D_LOGINFOF("[Temperature] effective=%.1fC BOM=%.1fC scrub=%s",
+            GetEffectiveTemperature(), weatherTemperature_,
+            (utcEpochOverride_ >= 0 || timeOverrideHour_ >= 0.0f) ? "ON" : "OFF");
+        tempLogTimer = 0.0f;
+    }
+
     // Phase 19: periodic soil update — trampling decay + seasonal regrowth
     if (ecosystem_)
     {
@@ -9859,17 +10244,42 @@ void AuthServer::TickCreatureAI(float dt)
         breedingTimer_ = 0.0f;
     }
 
+    // Vitals run on a round timer — rate-based math, accumulated dt
+    vitalsTickAccum_ += dt;
+    bool vitalsThisTick = (vitalsTickAccum_ >= VITALS_TICK_INTERVAL);
+    float vitalsDt = vitalsThisTick ? vitalsTickAccum_ : 0.0f;
+    if (vitalsThisTick)
+        vitalsTickAccum_ = 0.0f;
+
+    // Fish population recovery — slowly decrement catch pressure counters
+    fishRecoveryTimer_ += dt;
+    if (fishRecoveryTimer_ >= FISH_RECOVERY_INTERVAL)
+    {
+        fishRecoveryTimer_ = 0.0f;
+        for (auto it = fishCatchPressure_.Begin(); it != fishCatchPressure_.End();)
+        {
+            it->second_--;
+            if (it->second_ <= 0)
+                it = fishCatchPressure_.Erase(it);
+            else
+                ++it;
+        }
+    }
+
     Vector<Pair<unsigned, DeathCause>> vitalsDeaths;
     for (auto it = creatureAI_.Begin(); it != creatureAI_.End(); ++it)
     {
         ServerCreatureAI& ai = it->second_;
 
-        // Vital decay + movement — all creatures
-        DeathCause vitalsDeath = UpdateCreatureVitals(ai, dt);
-        if (vitalsDeath != DEATH_NONE)
+        // Vital decay — rate-based, runs on round timer (not per-frame)
+        if (vitalsThisTick)
         {
-            vitalsDeaths.Push(MakePair(it->first_, vitalsDeath));
-            continue;  // skip AI tick for dead creature
+            DeathCause vitalsDeath = UpdateCreatureVitals(ai, vitalsDt);
+            if (vitalsDeath != DEATH_NONE)
+            {
+                vitalsDeaths.Push(MakePair(it->first_, vitalsDeath));
+                continue;  // skip AI tick for dead creature
+            }
         }
         MoveCreature(ai, dt);
 
@@ -9939,6 +10349,31 @@ void AuthServer::TickCreatureAI(float dt)
                 }
             }
 
+            // Fish wading/swim transition — NPC walks into water to fish.
+            // Switch to CREATURE_FISH (sitting) when arrived at fishing spot.
+            if (ai.currentTask == STASK_FISH && ai.taskTimer > 0.0f)
+            {
+                float terrainY = GetTerrainHeightAI(ai.position.x_, ai.position.z_);
+                float depth = AI_WATER_LEVEL - terrainY;  // positive = submerged
+
+                // Still walking to water — adjust speed based on depth
+                if (ai.state == 1)  // CREATURE_WANDER (walking phase)
+                {
+                    if (depth > 0.0f)
+                        ai.moveSpeed = 1.2f;  // slower wading
+
+                    // Arrived at fishing spot — sit and fish
+                    Vector3 diff = ai.targetPosition - ai.position;
+                    diff.y_ = 0.0f;
+                    if (diff.Length() < 2.0f && depth > 0.0f)
+                    {
+                        ai.state = 20;  // CREATURE_FISH — sit at water's edge
+                        ai.moveSpeed = 0.0f;
+                    }
+                }
+                // Already fishing (sitting) — timer counts down normally
+            }
+
             // Phase 6: sleep interrupt (cold/dawn wakes NPC)
             if (ai.currentTask == STASK_SLEEP && ai.taskTimer > 0.0f)
             {
@@ -10004,10 +10439,13 @@ void AuthServer::TickCreatureAI(float dt)
         {
             Node* node = nodeIt->second_;
             node->SetPosition(ai.position);
-            // Replicate AI state and moveSpeed as node Vars — clients read these
-            // to drive animation. No custom message needed.
+            // Replicate AI state, moveSpeed, and target position as node Vars —
+            // clients read these to drive animation and movement lerp.
             node->SetVar("AIState", (int)ai.state);
             node->SetVar("MoveSpeed", ai.moveSpeed);
+            node->SetVar("TargetPos", ai.targetPosition);
+            if (ai.growthProgress < 1.0f)
+                node->SetVar("GrowthProgress", ai.growthProgress);
         }
     }
 
@@ -10029,20 +10467,18 @@ void AuthServer::TickCreatureAI(float dt)
             ServerCreatureState& cs = csIt->second_;
             cs.hp = 0;
             BroadcastCreatureDeath(spawnId, cs, nullptr, cause);
-            // Only spawn replacements for predation/combat kills — not vitals deaths.
-            // Starvation/dehydration/hypothermia deaths mean the population exceeds
-            // what the environment can sustain. Replacing them creates a death spiral.
-            if (cause == DEATH_COMBAT || cause == DEATH_SCAVENGE)
+            // Spawn replacements for ALL death causes. The population manager's
+            // maxCount cap prevents overspawning. Without this, vitals deaths
+            // (starvation, freezing, dehydration) during unattended server runtime
+            // drive the world to extinction with no recovery path.
+            if (populationManager_ && populationManager_->IsReady() && ai.regionId >= 0)
             {
-                if (populationManager_ && populationManager_->IsReady() && ai.regionId >= 0)
+                Vector<ReplacementSpawn> replacements =
+                    populationManager_->RecordKill(ai.regionId, ai.creatureId);
+                for (unsigned j = 0; j < replacements.Size(); ++j)
                 {
-                    Vector<ReplacementSpawn> replacements =
-                        populationManager_->RecordKill(ai.regionId, ai.creatureId);
-                    for (unsigned j = 0; j < replacements.Size(); ++j)
-                    {
-                        Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(replacements[j].regionId);
-                        BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos, 0.0f);
-                    }
+                    Vector3 spawnPos = populationManager_->PickSpawnPositionInRegion(replacements[j].regionId);
+                    BroadcastSpawnCreature(replacements[j].regionId, replacements[j].creatureId, spawnPos, 0.0f);
                 }
             }
             creatureStates_.Erase(csIt);
@@ -10471,8 +10907,9 @@ AuthServer::DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, fl
         }
     }
 
-    ai.warmth = weatherTemperature_ + shelterWarmth + clothingWarmth;
-    ai.warmth -= darkness * GetTuning("warmth_night_drain", 0.40f) * dt; // Extra warmth drain at night
+    ai.warmth = GetEffectiveTemperature() + shelterWarmth + clothingWarmth;
+    float nightDrain = warmthRulesLoaded_ ? warmthRules_.nightMultiplier * 0.05f : 0.40f;
+    ai.warmth -= darkness * nightDrain * dt;  // Night warmth drain from DB (night_multiplier * base rate)
 
     // Sleeping near home provides warmth bonus — but ONLY when the shared
     // campfire is actually alive (Phase 6). A dead fire = NPC eventually wakes.
@@ -10536,8 +10973,9 @@ AuthServer::DeathCause AuthServer::UpdateCreatureVitals(ServerCreatureAI& ai, fl
         else
             ai.thirstDmgTimer = 0.0f;
 
-        // Hypothermia: warmth < 20 + no fire/shelter nearby → 1 HP per interval
-        if (ai.warmth < 20.0f)
+        // Hypothermia: warmth below threshold + no fire/shelter nearby → 1 HP per interval
+        float coldThreshold = warmthRulesLoaded_ ? (float)warmthRules_.lowThreshold : 5.0f;
+        if (ai.warmth < coldThreshold)
         {
             bool hasProtection = false;
             auto cfIt = serverCampfires_.Find(ai.campfireId);
@@ -10997,6 +11435,21 @@ int AuthServer::PickCreatureTask(const ServerCreatureAI& ai)
     // 5. SLEEP — stamina critical OR nighttime near home
     if (ai.stamina < GetTuning("stamina_critical_threshold", 20.0f))
         return STASK_SLEEP;
+
+    // 5a. NIGHT FISHING — hungry NPC with a rod fishes before sleeping.
+    // Conditions: night (darkness > 0.6), hunger < 50, has fishing rod (item 105),
+    // water within 15m. Preferred over sleep when the tribe needs food.
+    if (ai.isHuman && darkness > 0.6f && ai.hunger < 50.0f)
+    {
+        int npcPid = GetNPCPlayerId(ai.spawnId);
+        if (npcPid > 0 && worldDB_ && worldDB_->GetItemCount(npcPid, 105) > 0)
+        {
+            Vector3 water = FindWaterEdge(ai.position, 15.0f);
+            if (water != Vector3::ZERO)
+                return STASK_FISH;
+        }
+    }
+
     if (darkness > GetTuning("darkness_deep_night", 0.80f))
     {
         // Deep night: prefer sleep if near campfire, or walk home first
@@ -11096,6 +11549,7 @@ int AuthServer::PickCreatureTask(const ServerCreatureAI& ai)
             { SKILL_TRADE,       STASK_TRADE },
             { SKILL_ANIMAL_LORE, STASK_TAME },
             { SKILL_ANIMAL_LORE, STASK_SHEAR },
+            { SKILL_WEAVING,     STASK_WEAVE },
             { SKILL_MELEE,       STASK_GUARD },
         };
 
@@ -11105,7 +11559,7 @@ int AuthServer::PickCreatureTask(const ServerCreatureAI& ai)
             SKILL_FARMING, SKILL_FISHING, SKILL_WOODWORK, SKILL_KNAPPING,
             SKILL_SMELTING, SKILL_FIREMAKING, SKILL_LEATHERWORK, SKILL_COOKING,
             SKILL_HERBALISM, SKILL_TRACKING, SKILL_TRADE, SKILL_ANIMAL_LORE,
-            SKILL_MELEE
+            SKILL_WEAVING, SKILL_MELEE
         };
         for (int sk : allSkills)
         {
@@ -11249,11 +11703,9 @@ int AuthServer::PickCreatureTask(const ServerCreatureAI& ai)
         int npcPid = GetNPCPlayerId(ai.spawnId);
         if (npcPid > 0)
         {
-            Vector<PlacedBuildingDBInfo> buildings = worldDB_->GetAllPlacedBuildings();
+            Vector<PlacedBuildingDBInfo> buildings = worldDB_->GetPlacedBuildingsByOwner(npcPid);
             for (unsigned b = 0; b < buildings.Size(); ++b)
             {
-                if (buildings[b].ownerId != npcPid)
-                    continue;
                 auto typeIt = cachedBuildingTypes_.Find(buildings[b].buildingId);
                 if (typeIt == cachedBuildingTypes_.End())
                     continue;
@@ -12189,12 +12641,10 @@ void AuthServer::StartCreatureTask(ServerCreatureAI& ai, int task)
         int npcPid = GetNPCPlayerId(ai.spawnId);
         if (npcPid > 0 && worldDB_)
         {
-            Vector<PlacedBuildingDBInfo> buildings = worldDB_->GetAllPlacedBuildings();
+            Vector<PlacedBuildingDBInfo> buildings = worldDB_->GetPlacedBuildingsByOwner(npcPid);
             float bestDist = 999.0f;
             for (unsigned b = 0; b < buildings.Size(); ++b)
             {
-                if (buildings[b].ownerId != npcPid)
-                    continue;
                 auto typeIt = cachedBuildingTypes_.Find(buildings[b].buildingId);
                 if (typeIt == cachedBuildingTypes_.End())
                     continue;
@@ -12260,6 +12710,27 @@ void AuthServer::StartCreatureTask(ServerCreatureAI& ai, int task)
                 ai.targetPosition = aIt->second_.position;
                 ai.targetId = aIt->first_;
                 break;
+            }
+        }
+        break;
+    }
+
+    case STASK_WEAVE:
+    {
+        // Walk to Loom (building type 91), weave wool thread into cloth on arrival
+        ai.state = 1;
+        ai.moveSpeed = 2.0f;
+        ai.taskTimer = 12.0f;
+        if (worldDB_)
+        {
+            Vector<PlacedBuildingDBInfo> buildings = worldDB_->GetAllPlacedBuildings();
+            for (unsigned b = 0; b < buildings.Size(); ++b)
+            {
+                if (buildings[b].buildingId == 91)
+                {
+                    ai.targetPosition = Vector3(buildings[b].posX, buildings[b].posY, buildings[b].posZ);
+                    break;
+                }
             }
         }
         break;
@@ -12350,13 +12821,32 @@ void AuthServer::StartCreatureTask(ServerCreatureAI& ai, int task)
 
     case STASK_FISH:
     {
-        // Walk to water's edge, fish on arrival (sit animation)
-        ai.state = 1; // CREATURE_WANDER
-        ai.moveSpeed = 2.0f;
-        ai.taskTimer = 15.0f;
+        // Wade into shallow water to fish. Target a point 4m past the water's
+        // edge so the NPC enters the water. The per-frame wading check (below
+        // in the AI tick) switches to CREATURE_FISH (sitting) when arrived.
+        ai.state = 1; // CREATURE_WANDER — walk to water's edge first
+        ai.moveSpeed = 1.5f;  // slower wading pace
+
+        // Fishing timer: skilled fishers land catches faster.
+        // Formula: Random(10,30) / (1 + fishing_rating * 0.1) / popRatio
+        // Low fish population → longer waits (popRatio < 1.0 → timer increases).
+        int fishingRating = GetNPCSkillLevel(ai.spawnId, SKILL_FISHING);
+        float baseTimer = 10.0f + Random(20.0f);  // Random(10,30)
+        float skillMod = 1.0f + fishingRating * 0.1f;
+        float popRatio = GetFishPopRatio(ai.position.x_, ai.position.z_);
+        ai.taskTimer = baseTimer / (skillMod * Max(popRatio, 0.15f));
+
         Vector3 water = FindWaterEdge(ai.position, 30.0f);
         if (water != Vector3::ZERO)
-            ai.targetPosition = water;
+        {
+            // Push target 4m past the edge, deeper into the water
+            Vector3 dir = water - ai.position;
+            dir.y_ = 0.0f;
+            if (dir.LengthSquared() > 0.01f)
+                dir.Normalize();
+            ai.targetPosition = water + dir * 4.0f;
+            ai.targetPosition.y_ = GetTerrainHeightAI(ai.targetPosition.x_, ai.targetPosition.z_);
+        }
         break;
     }
 
@@ -12827,6 +13317,7 @@ bool AuthServer::NPCAttemptSkill(ServerCreatureAI& ai, int skillId, int dc, cons
 
     if (!combatResolver_)
         combatResolver_ = new CombatResolver(context_);
+        combatResolver_->SetExternalRNG(QuantumDiceRollBridge);
 
     int skill = GetNPCSkillLevel(ai.spawnId, skillId);
     int roll = combatResolver_->RollD20();
@@ -13413,6 +13904,8 @@ void AuthServer::OnCreatureTaskComplete(ServerCreatureAI& ai)
     case STASK_SHEAR:
     {
         // Shear tamed alpaca for wool — Animal Lore 2+ skill check
+        // Show shearing animation on client (CREATURE_SHEAR = 20)
+        ai.state = 20;  // CREATURE_SHEAR — client plays kneeling gather anim
         if (ai.targetId != 0 && NPCAttemptSkill(ai, SKILL_ANIMAL_LORE, 8, "shear_alpaca"))
         {
             int npcPid = GetNPCPlayerId(ai.spawnId);
@@ -13430,6 +13923,38 @@ void AuthServer::OnCreatureTaskComplete(ServerCreatureAI& ai)
             }
         }
         ai.targetId = 0;
+        break;
+    }
+
+    case STASK_WEAVE:
+    {
+        // Weave wool thread into cloth at Loom — Weaving 3+ skill check
+        if (NPCAttemptSkill(ai, SKILL_WEAVING, 10, "craft_fiber"))
+        {
+            int npcPid = GetNPCPlayerId(ai.spawnId);
+            if (npcPid > 0 && worldDB_)
+            {
+                int threadCount = worldDB_->GetItemCount(npcPid, 881);
+                if (threadCount >= 4)
+                {
+                    worldDB_->RemoveItemFromInventory(npcPid, 881, 4);
+                    AddItemToWorldInventory(npcPid, 882, 1);  // Wool Cloth
+                    URHO3D_LOGINFOF("[Weave] NPC %u wove 4 wool thread -> 1 wool cloth", ai.spawnId);
+                    NPCAwardXP(ai, "craft_fiber");
+                }
+                else
+                {
+                    // Not enough thread — spin wool to thread first
+                    int woolCount = worldDB_->GetItemCount(npcPid, 880);
+                    if (woolCount >= 3)
+                    {
+                        worldDB_->RemoveItemFromInventory(npcPid, 880, 3);
+                        AddItemToWorldInventory(npcPid, 881, 2);  // Wool Thread
+                        URHO3D_LOGINFOF("[Weave] NPC %u spun 3 wool -> 2 wool thread", ai.spawnId);
+                    }
+                }
+            }
+        }
         break;
     }
 
@@ -14451,9 +14976,16 @@ int AuthServer::PickAnimalTask(const ServerCreatureAI& ai)
 
 float AuthServer::GetDarkness() const
 {
-    // Admin time override — when set, use overridden hour instead of wallclock
-    if (timeOverrideHour_ >= 0.0f)
+    // Determine the effective UTC time — either epoch override, legacy override, or wallclock
+    time_t effectiveTime;
+    if (utcEpochOverride_ >= 0)
     {
+        // Privileged client sent their local UTC + scrub delta as the new time basis
+        effectiveTime = (time_t)utcEpochOverride_;
+    }
+    else if (timeOverrideHour_ >= 0.0f)
+    {
+        // Legacy absolute hour+doy override
         float localHour = timeOverrideHour_;
         int dayOfYear = timeOverrideDOY_ > 0 ? timeOverrideDOY_ : 100;
         float decl = 23.44f * sinf((360.0f / 365.0f) * (dayOfYear - 81) * M_PI / 180.0f);
@@ -14467,11 +14999,13 @@ float AuthServer::GetDarkness() const
         if (sunAltDeg <= -6.0f) return 1.0f;
         return 1.0f - (sunAltDeg + 6.0f) / 16.0f;
     }
+    else
+    {
+        effectiveTime = time(nullptr);
+    }
 
-    // Derive sun altitude from UTC time at Melbourne latitude (-37.8).
-    // Simplified solar position: hour angle + seasonal declination.
-    time_t now = time(nullptr);
-    struct tm* utc = gmtime(&now);
+    // Derive sun altitude from effective UTC at Melbourne latitude (-37.8).
+    struct tm* utc = gmtime(&effectiveTime);
     float utcHour = (float)utc->tm_hour + utc->tm_min / 60.0f + utc->tm_sec / 3600.0f;
     int dayOfYear = utc->tm_yday + 1;
 
@@ -14495,6 +15029,52 @@ float AuthServer::GetDarkness() const
     if (sunAltDeg >= 10.0f) return 0.0f;
     if (sunAltDeg <= -6.0f) return 1.0f;
     return 1.0f - (sunAltDeg + 6.0f) / 16.0f;
+}
+
+float AuthServer::GetEffectiveTemperature() const
+{
+    // BOM gives weatherTemperature_ at real wallclock time.
+    // When time is scrubbed, interpolate temperature along a diurnal curve:
+    // cosine centered on 15:00 (peak warmth), trough at 03:00 (coldest).
+    // Diurnal amplitude = 5°C (range ~10°C for Melbourne).
+
+    static constexpr float DIURNAL_AMPLITUDE = 5.0f;
+    static constexpr float PEAK_HOUR = 15.0f;  // 3pm local = warmest
+
+    // Get real wallclock Melbourne hour
+    time_t now = time(nullptr);
+    struct tm* utcNow = gmtime(&now);
+    float realHour = (float)utcNow->tm_hour + utcNow->tm_min / 60.0f + 10.0f;  // UTC+10
+    if (realHour >= 24.0f) realHour -= 24.0f;
+
+    // Get effective (scrubbed) Melbourne hour — same logic as GetDarkness
+    float effectiveHour;
+    if (utcEpochOverride_ >= 0)
+    {
+        time_t eff = (time_t)utcEpochOverride_;
+        struct tm* utcEff = gmtime(&eff);
+        effectiveHour = (float)utcEff->tm_hour + utcEff->tm_min / 60.0f + 10.0f;
+        if (effectiveHour >= 24.0f) effectiveHour -= 24.0f;
+    }
+    else if (timeOverrideHour_ >= 0.0f)
+    {
+        effectiveHour = timeOverrideHour_;
+    }
+    else
+    {
+        return weatherTemperature_;  // no scrub — use BOM directly
+    }
+
+    // Where on the diurnal curve is the real observation?
+    float realPhase = (realHour - PEAK_HOUR) * M_PI / 12.0f;
+    float realCurve = cosf(realPhase);  // +1 at peak, -1 at trough
+
+    // BOM temp = midpoint + amplitude * realCurve → solve for midpoint
+    float midpoint = weatherTemperature_ - DIURNAL_AMPLITUDE * realCurve;
+
+    // Now evaluate at the scrubbed hour
+    float scrubPhase = (effectiveHour - PEAK_HOUR) * M_PI / 12.0f;
+    return midpoint + DIURNAL_AMPLITUDE * cosf(scrubPhase);
 }
 
 // ── Phase 6: Server-side campfire state ─────────────────────────────────
@@ -15252,6 +15832,7 @@ void AuthServer::TickWaterTraps(float dt)
 
     if (!combatResolver_)
         combatResolver_ = new CombatResolver(context_);
+        combatResolver_->SetExternalRNG(QuantumDiceRollBridge);
 
     for (auto it = trapStates_.Begin(); it != trapStates_.End(); ++it)
     {
@@ -19461,7 +20042,7 @@ bool AuthServer::NPCFish(ServerCreatureAI& ai)
     if (!gameDB_ || !worldDB_) return false;
     int npcPlayerId = GetNPCPlayerId(ai.spawnId);
     if (npcPlayerId <= 0) return false;
-    if (!combatResolver_) combatResolver_ = new CombatResolver(context_);
+    if (!combatResolver_) { combatResolver_ = new CombatResolver(context_); combatResolver_->SetExternalRNG(QuantumDiceRollBridge); }
 
     int fishingSkill = GetNPCSkillLevel(ai.spawnId, SKILL_FISHING);
     // Phase 26: boat bonus — if a canoe exists within 15m, +3 to fishing
@@ -19504,6 +20085,8 @@ bool AuthServer::NPCFish(ServerCreatureAI& ai)
     int qty = 1 + (fishingSkill >= 5 ? 1 : 0) + (fishingSkill >= 8 ? 1 : 0);
     if (HasInnovation(ai.campfireId, INNOV_BETTER_NETS)) qty += 2;
     AddItemToWorldInventory(npcPlayerId, 10 /* Small Fish */, qty);
+    // Award bonus fishing XP on successful catch (Plan 1 Phase 2)
+    NPCAwardXP(ai, "fish_catch");
     URHO3D_LOGINFOF("[NPCFish] NPC spawnId=%u caught %d fish (roll %d+%d vs DC %d)",
         ai.spawnId, qty, roll, fishingSkill, dc);
     return true;
@@ -19649,19 +20232,36 @@ bool AuthServer::NPCTrade(ServerCreatureAI& ai, unsigned partnerSpawnId)
     if (giveItemId == 0 && receiveItemId == 0) return false;
     if (giveItemId == receiveItemId) return false;
 
-    int tradeQty = 1;
-    if (ai.isMasterTrader && HasInnovation(ai.campfireId, INNOV_EFFICIENT_TRADE)) tradeQty = 4;
-    else if (ai.isMasterTrader) tradeQty = 3;
-    else if (HasInnovation(ai.campfireId, INNOV_EFFICIENT_TRADE)) tradeQty = 2;
+    // Base trade quantity from skill/innovation
+    int baseQty = 1;
+    if (ai.isMasterTrader && HasInnovation(ai.campfireId, INNOV_EFFICIENT_TRADE)) baseQty = 4;
+    else if (ai.isMasterTrader) baseQty = 3;
+    else if (HasInnovation(ai.campfireId, INNOV_EFFICIENT_TRADE)) baseQty = 2;
+
+    // Use DB trade values to compute fair exchange ratio
+    int giveQty = baseQty;
+    int receiveQty = baseQty;
+    TradeValue giveVal, receiveVal;
+    bool haveGiveVal = (giveItemId > 0 && gameDB_->GetTradeValue(giveItemId, giveVal));
+    bool haveRecvVal = (receiveItemId > 0 && gameDB_->GetTradeValue(receiveItemId, receiveVal));
+    if (haveGiveVal && haveRecvVal && giveVal.baseValue > 0.0f && receiveVal.baseValue > 0.0f)
+    {
+        // Fair ratio: give fewer of a high-value item, receive more of a low-value item
+        float ratio = (receiveVal.baseValue * receiveVal.scarcityMult) /
+                      (giveVal.baseValue * giveVal.scarcityMult);
+        giveQty = Max(1, (int)(baseQty * ratio + 0.5f));
+        receiveQty = baseQty;
+    }
+
     if (giveItemId > 0)
     {
-        worldDB_->RemoveItemFromInventory(myPid, giveItemId, tradeQty);
-        AddItemToWorldInventory(theirPid, giveItemId, tradeQty);
+        worldDB_->RemoveItemFromInventory(myPid, giveItemId, giveQty);
+        AddItemToWorldInventory(theirPid, giveItemId, giveQty);
     }
     if (receiveItemId > 0)
     {
-        worldDB_->RemoveItemFromInventory(theirPid, receiveItemId, tradeQty);
-        AddItemToWorldInventory(myPid, receiveItemId, tradeQty);
+        worldDB_->RemoveItemFromInventory(theirPid, receiveItemId, receiveQty);
+        AddItemToWorldInventory(myPid, receiveItemId, receiveQty);
     }
 
     NPCAwardXP(ai, "trade_complete");
@@ -19669,8 +20269,8 @@ bool AuthServer::NPCTrade(ServerCreatureAI& ai, unsigned partnerSpawnId)
     if (partnerIt != creatureAI_.End())
         NPCAwardXP(partnerIt->second_, "trade_complete");
 
-    URHO3D_LOGINFOF("[NPCTrade] NPC %u gave item %d, received item %d from NPC %u",
-        ai.spawnId, giveItemId, receiveItemId, partnerSpawnId);
+    URHO3D_LOGINFOF("[NPCTrade] NPC %u gave %dx item %d, received %dx item %d from NPC %u",
+        ai.spawnId, giveQty, giveItemId, receiveQty, receiveItemId, partnerSpawnId);
     return true;
 #else
     return false;
@@ -20174,6 +20774,174 @@ void AuthServer::TickBreeding(float dt)
             it->second_.breedCooldown = Max(0.0f, it->second_.breedCooldown - dt);
     }
     CheckTamedBreeding();
+    CheckWildBreeding();
+}
+
+void AuthServer::CheckWildBreeding()
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    if (!populationManager_ || !populationManager_->IsReady())
+        return;
+
+    // Spring/summer only
+    int season = GetCurrentSeasonIndex();
+    URHO3D_LOGINFOF("[WildBreeding-Diag] CheckWildBreeding called — season=%d (%s), creatureAI size=%u",
+        season, season==0?"spring":season==1?"summer":season==2?"autumn":"winter",
+        creatureAI_.Size());
+    if (season != 0 && season != 1)
+        return;
+
+    // Group wild animals by (region, species) — key = region<<16 | species
+    // Also track per-species rejection counts for diagnostics
+    struct SpeciesFilterStats { int tamed; int cooldown; int juvenile; int starving; int total; };
+    HashMap<unsigned, SpeciesFilterStats> filterStats;
+    HashMap<unsigned, Vector<unsigned>> groups;
+    for (auto it = creatureAI_.Begin(); it != creatureAI_.End(); ++it)
+    {
+        const ServerCreatureAI& ai = it->second_;
+        if (ai.isHuman) continue;
+        unsigned key = ((unsigned)ai.regionId << 16) | (unsigned)(ai.creatureId & 0xFFFF);
+        SpeciesFilterStats& fs = filterStats[key];
+        fs.total++;
+        if (ai.tamerId != 0)          { fs.tamed++; continue; }
+        if (ai.breedCooldown > 0.0f)  { fs.cooldown++; continue; }
+        if (ai.growthProgress < 1.0f) { fs.juvenile++; continue; }
+        if (ai.hunger < 20.0f)        { fs.starving++; continue; }
+        groups[key].Push(it->first_);
+    }
+
+    for (auto gIt = groups.Begin(); gIt != groups.End(); ++gIt)
+    {
+        Vector<unsigned>& members = gIt->second_;
+        int speciesId = (int)(gIt->first_ & 0xFFFF);
+        int regionId = (int)(gIt->first_ >> 16);
+        SpeciesFilterStats& fs = filterStats[gIt->first_];
+
+        // Count males and females, find closest male-female pair
+        int maleCount = 0, femaleCount = 0;
+        unsigned maleId = 0, femaleId = 0;
+        Vector<unsigned> males, females;
+        for (unsigned i = 0; i < members.Size(); ++i)
+        {
+            auto aiIt = creatureAI_.Find(members[i]);
+            if (aiIt == creatureAI_.End()) continue;
+            if (aiIt->second_.isMale) { maleCount++; males.Push(members[i]); }
+            else                      { femaleCount++; females.Push(members[i]); }
+        }
+
+        // Find closest male-female distance
+        float closestDist = 99999.0f;
+        unsigned closestMale = 0, closestFemale = 0;
+        for (unsigned m = 0; m < males.Size(); ++m)
+        {
+            auto mIt = creatureAI_.Find(males[m]);
+            if (mIt == creatureAI_.End()) continue;
+            for (unsigned f = 0; f < females.Size(); ++f)
+            {
+                auto fIt = creatureAI_.Find(females[f]);
+                if (fIt == creatureAI_.End()) continue;
+                float d = (mIt->second_.position - fIt->second_.position).Length();
+                if (d < closestDist) { closestDist = d; closestMale = males[m]; closestFemale = females[f]; }
+            }
+        }
+
+        // Determine rejection reason
+        const char* gate = "NONE";
+        if (members.Size() < 2)
+            gate = "too_few_eligible";
+        else if (maleCount == 0 || femaleCount == 0)
+            gate = "no_male_female_pair";
+        else
+        {
+            int currentPop = populationManager_->GetPopulation(regionId, speciesId);
+            int maxPop = populationManager_->GetMaxPopulation(regionId, speciesId);
+            if (maxPop > 0 && currentPop >= (int)(maxPop * 0.8f))
+                gate = "pop_cap";
+            else if (closestDist > 100.0f)
+                gate = "proximity";
+        }
+
+        URHO3D_LOGINFOF("[WildBreeding-Diag] species=%d region=%d total=%d eligible=%u M=%d F=%d "
+            "closest=%.1fm filtered(tamed=%d cooldown=%d juvenile=%d starving=%d) gate=%s",
+            speciesId, regionId, fs.total, members.Size(), maleCount, femaleCount,
+            closestDist < 99999.0f ? closestDist : -1.0f,
+            fs.tamed, fs.cooldown, fs.juvenile, fs.starving, gate);
+
+        if (members.Size() < 2) continue;
+
+        // Check population cap
+        int currentPop = populationManager_->GetPopulation(regionId, speciesId);
+        int maxPop = populationManager_->GetMaxPopulation(regionId, speciesId);
+        if (maxPop > 0 && currentPop >= (int)(maxPop * 0.8f))
+            continue;  // at or above 80% carrying capacity
+
+        if (maleCount == 0 || femaleCount == 0) continue;
+
+        maleId = closestMale;
+        femaleId = closestFemale;
+
+        auto maleIt = creatureAI_.Find(maleId);
+        auto femaleIt = creatureAI_.Find(femaleId);
+        if (maleIt == creatureAI_.End() || femaleIt == creatureAI_.End()) continue;
+
+        // Proximity check — must be within 100m of each other (roughly wander radius)
+        if (closestDist > 100.0f)
+            continue;
+
+        // Trait inheritance with drift
+        float drift = 0.05f;
+        float childSize  = Clamp((maleIt->second_.traitSize  + femaleIt->second_.traitSize)  * 0.5f + Random(-drift, drift), 0.8f, 1.2f);
+        float childSpeed = Clamp((maleIt->second_.traitSpeed + femaleIt->second_.traitSpeed) * 0.5f + Random(-drift, drift), 0.8f, 1.2f);
+        float childYield = Clamp((maleIt->second_.traitYield + femaleIt->second_.traitYield) * 0.5f + Random(-drift, drift), 0.8f, 1.2f);
+
+        // Spawn near the female
+        Vector3 spawnPos = femaleIt->second_.position;
+        spawnPos.x_ += Random(-3.0f, 3.0f);
+        spawnPos.z_ += Random(-3.0f, 3.0f);
+        spawnPos.y_ = GetTerrainHeightAI(spawnPos.x_, spawnPos.z_);
+        if (spawnPos.y_ <= AI_WATER_LEVEL) continue;  // don't spawn in water
+
+        unsigned childId = ++nextSpawnId_;
+        ServerCreatureAI& child = creatureAI_[childId];
+        child.position = spawnPos;
+        child.targetPosition = spawnPos;
+        child.homePosition = femaleIt->second_.homePosition;
+        child.creatureId = speciesId;
+        child.regionId = regionId;
+        child.isPredator = IsPredatorSpecies(speciesId);
+        child.moveSpeed = 1.5f * childSpeed;
+        child.isMale = (Random(1.0f) < 0.5f);
+        child.traitSize = childSize;
+        child.traitSpeed = childSpeed;
+        child.traitYield = childYield;
+        child.growthProgress = 0.0f;
+        child.maturityDays = 20;  // DB default, overridden below if available
+        child.hunger = 80.0f;
+        child.thirst = 80.0f;
+        child.stamina = 100.0f;
+        child.warmth = weatherTemperature_;
+        child.parentA = maleId;
+        child.parentB = femaleId;
+
+        ServerCreatureState cs;
+        cs.creatureId = speciesId;
+        cs.position = spawnPos;
+        cs.regionId = regionId;
+        if (!LoadCreatureCombat(speciesId, cs))
+        { cs.hp = cs.maxHp = 10; cs.defense = 5; }
+        creatureStates_[childId] = cs;
+
+        // Cooldown both parents
+        maleIt->second_.breedCooldown = 600.0f;
+        femaleIt->second_.breedCooldown = 600.0f;
+
+        // Broadcast to clients
+        BroadcastSpawnCreature(regionId, speciesId, spawnPos, 0.0f);
+
+        URHO3D_LOGINFOF("[WildBreeding] Offspring spawnId=%u species=%d traits(%.2f,%.2f,%.2f) parents=%u+%u region=%d",
+            childId, speciesId, childSize, childSpeed, childYield, maleId, femaleId, regionId);
+    }
+#endif
 }
 
 // (Phase 26 NPCBuildBoat implemented by coder at ~14523)
@@ -20299,5 +21067,579 @@ void AuthServer::HandleQueryDeathLog(Connection* connection, MemoryBuffer& msg)
     connection->SendMessage(MSG_DEATH_LOG_RESULT, false, false, buf);
     LogMessage("[DeathLog] Sent " + String(count) + " entries to client");
 #endif
+}
+
+// ── Claudette IPC (Unix domain socket) ──────────────────────────────────
+
+void AuthServer::InitIPC()
+{
+#ifndef _WIN32
+    // Ensure directory exists
+    mkdir("/tmp/urho_claude", 0755);
+    mkdir("/tmp/urho_claude/tty", 0755);
+
+    // Check if another instance owns the socket — try connecting to it.
+    // If the connect succeeds, someone else is listening — don't steal it.
+    {
+        int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (probe >= 0)
+        {
+            struct sockaddr_un probeAddr{};
+            probeAddr.sun_family = AF_UNIX;
+            strncpy(probeAddr.sun_path, IPC_SOCK_PATH, sizeof(probeAddr.sun_path) - 1);
+            if (connect(probe, (struct sockaddr*)&probeAddr, sizeof(probeAddr)) == 0)
+            {
+                close(probe);
+                URHO3D_LOGWARNING("[IPC] Socket already owned by another instance — skipping");
+                return;
+            }
+            close(probe);
+        }
+        // Connect failed — socket is stale or absent, safe to replace
+        unlink(IPC_SOCK_PATH);
+    }
+
+    ipcListenFd_ = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (ipcListenFd_ < 0)
+    {
+        URHO3D_LOGWARNING("[IPC] Failed to create socket");
+        return;
+    }
+
+    // Listen socket is non-blocking (accept returns immediately)
+    fcntl(ipcListenFd_, F_SETFL, O_NONBLOCK);
+
+    struct sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, IPC_SOCK_PATH, sizeof(addr.sun_path) - 1);
+
+    if (bind(ipcListenFd_, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+    {
+        URHO3D_LOGWARNING("[IPC] Failed to bind socket");
+        close(ipcListenFd_);
+        ipcListenFd_ = -1;
+        return;
+    }
+
+    if (listen(ipcListenFd_, 8) < 0)
+    {
+        URHO3D_LOGWARNING("[IPC] Failed to listen");
+        close(ipcListenFd_);
+        unlink(IPC_SOCK_PATH);
+        ipcListenFd_ = -1;
+        return;
+    }
+
+    URHO3D_LOGINFOF("[IPC] Listening on %s", IPC_SOCK_PATH);
+#endif
+}
+
+void AuthServer::StopIPC()
+{
+#ifndef _WIN32
+    if (ipcListenFd_ >= 0)
+    {
+        close(ipcListenFd_);
+        ipcListenFd_ = -1;
+        unlink(IPC_SOCK_PATH);
+        URHO3D_LOGINFO("[IPC] Socket closed");
+    }
+#endif
+}
+
+void AuthServer::PollIPC()
+{
+#ifndef _WIN32
+    if (ipcListenFd_ < 0)
+        return;
+
+    // Drain all pending connections this frame (not just one)
+    for (int handled = 0; handled < 8; ++handled)
+    {
+        int clientFd = accept(ipcListenFd_, nullptr, nullptr);
+        if (clientFd < 0)
+            break;
+
+        // Client fd is blocking — poll with short timeout for data arrival
+        struct pollfd pfd{};
+        pfd.fd = clientFd;
+        pfd.events = POLLIN;
+        int ready = poll(&pfd, 1, 50);  // 50ms max wait
+
+        if (ready <= 0 || !(pfd.revents & POLLIN))
+        {
+            close(clientFd);
+            continue;
+        }
+
+        char buf[4096];
+        ssize_t n = read(clientFd, buf, sizeof(buf) - 1);
+        if (n > 0)
+        {
+            buf[n] = '\0';
+            if (n > 0 && buf[n - 1] == '\n')
+                buf[--n] = '\0';
+
+            String message(buf);
+            URHO3D_LOGINFOF("[IPC] Received: %s", message.CString());
+
+            String reply = HandleIPCCommand(message);
+            if (!reply.Empty())
+            {
+                reply += "\n";
+                const char* data = reply.CString();
+                size_t remaining = reply.Length();
+                while (remaining > 0)
+                {
+                    ssize_t written = write(clientFd, data, remaining);
+                    if (written <= 0)
+                        break;
+                    data += written;
+                    remaining -= (size_t)written;
+                }
+            }
+        }
+
+        close(clientFd);
+    }
+#endif
+}
+
+String AuthServer::HandleIPCCommand(const String& message)
+{
+    // Strip sender prefix if present (e.g. "coder2@12345:status")
+    String cmd = message;
+    unsigned colonPos = cmd.Find(':');
+    String sender;
+    if (colonPos != String::NPOS)
+    {
+        sender = cmd.Substring(0, colonPos);
+        cmd = cmd.Substring(colonPos + 1);
+    }
+    cmd = cmd.Trimmed().ToLower();
+
+    if (cmd == "status")
+    {
+        int clientCount = (int)sessions_.Size();
+        int creatureCount = (int)creatureAI_.Size();
+        int season = GetCurrentSeasonIndex();
+        const char* seasonNames[] = {"spring", "summer", "autumn", "winter"};
+        return String("AuthServer up ") + String((int)uptime_) + "s — " +
+            String(clientCount) + " clients, " +
+            String(creatureCount) + " creatures, " +
+            seasonNames[season] + ", " +
+            String(weatherTemperature_, 1) + "C " + weatherCondition_;
+    }
+
+    if (cmd == "ping")
+        return "pong";
+
+    if (cmd == "population")
+    {
+        String result;
+        if (populationManager_ && populationManager_->IsReady())
+        {
+            // Count per-species totals from creatureAI_
+            HashMap<int, int> counts;
+            for (auto it = creatureAI_.Begin(); it != creatureAI_.End(); ++it)
+            {
+                if (!it->second_.isHuman)
+                    counts[it->second_.creatureId]++;
+            }
+            for (auto it = counts.Begin(); it != counts.End(); ++it)
+                result += "species=" + String(it->first_) + " count=" + String(it->second_) + "; ";
+        }
+        return result.Empty() ? "no population data" : result;
+    }
+
+    if (cmd == "entropy")
+    {
+        return "pool=" + String(entropyPoolSize_) + "/" + String(ENTROPY_POOL_CAPACITY)
+               + " source=" + entropySource_ + " rolls=" + String(totalDiceRolls_);
+    }
+
+    // Unknown command — echo back
+    return "AuthServer heard: " + message;
+}
+
+// ============================================================================
+// Quantum Random Dice — ANU QRNG + /dev/urandom fallback
+// ============================================================================
+
+void AuthServer::FetchQuantumEntropy()
+{
+    auto* network = GetSubsystem<Network>();
+    if (!network)
+        return;
+
+    // Don't start a new request while one is in-flight
+    if (qrngRequest_ && qrngRequest_->GetState() == HTTP_INITIALIZING)
+        return;
+
+    qrngResponseData_.Clear();
+    qrngRequest_ = network->MakeHttpRequest("https://qrng.anu.edu.au/API/jsonI.php?length=1024&type=uint16");
+    LogMessage("[QRNG] Fetching 1024 quantum random numbers from ANU...");
+}
+
+void AuthServer::ProcessQRNGResponse()
+{
+    if (!qrngRequest_)
+        return;
+
+    if (qrngRequest_->GetState() == HTTP_INITIALIZING)
+        return;
+
+    if (qrngRequest_->GetState() == HTTP_ERROR)
+    {
+        LogMessage("[QRNG] Fetch error: " + qrngRequest_->GetError() + " — using /dev/urandom fallback");
+        qrngRequest_.Reset();
+        if (entropyPoolSize_ < ENTROPY_REFILL_THRESHOLD)
+            FillEntropyFromURandom(1024);
+        return;
+    }
+
+    // Read available data
+    while (qrngRequest_->GetAvailableSize() > 0)
+        qrngResponseData_ += qrngRequest_->ReadLine() + "\n";
+
+    // Not done reading yet
+    if (qrngRequest_->GetState() != HTTP_CLOSED || qrngRequest_->GetAvailableSize() > 0)
+        return;
+
+    qrngRequest_.Reset();
+
+    // Parse JSON response: {"type":"uint16","length":1024,"data":[...]}
+    if (qrngResponseData_.Empty())
+    {
+        LogMessage("[QRNG] Empty response — falling back to /dev/urandom");
+        if (entropyPoolSize_ < ENTROPY_REFILL_THRESHOLD)
+            FillEntropyFromURandom(1024);
+        return;
+    }
+
+    SharedPtr<JSONFile> json(new JSONFile(context_));
+    if (!json->FromString(qrngResponseData_))
+    {
+        LogMessage("[QRNG] JSON parse error — falling back to /dev/urandom");
+        if (entropyPoolSize_ < ENTROPY_REFILL_THRESHOLD)
+            FillEntropyFromURandom(1024);
+        return;
+    }
+
+    const JSONValue& root = json->GetRoot();
+    if (!root.Get("success").GetBool())
+    {
+        LogMessage("[QRNG] API returned success=false — falling back to /dev/urandom");
+        if (entropyPoolSize_ < ENTROPY_REFILL_THRESHOLD)
+            FillEntropyFromURandom(1024);
+        return;
+    }
+
+    const JSONArray& data = root.Get("data").GetArray();
+    unsigned added = 0;
+    for (unsigned i = 0; i < data.Size() && entropyPoolSize_ < ENTROPY_POOL_CAPACITY; ++i)
+    {
+        unsigned writePos = (entropyPoolHead_ + entropyPoolSize_) % ENTROPY_POOL_CAPACITY;
+        entropyPool_[writePos] = (unsigned short)(int)data[i].GetDouble();
+        ++entropyPoolSize_;
+        ++added;
+    }
+
+    entropySource_ = "ANU QRNG";
+    LogMessage("[QRNG] Added " + String(added) + " quantum values — pool now " + String(entropyPoolSize_));
+}
+
+void AuthServer::FillEntropyFromURandom(unsigned count)
+{
+    // Clamp to available space
+    unsigned space = ENTROPY_POOL_CAPACITY - entropyPoolSize_;
+    if (count > space)
+        count = space;
+    if (count == 0)
+        return;
+
+    // Read raw bytes via Urho's CryptoRNG (uses /dev/urandom on Unix, CryptGenRandom on Win)
+    unsigned byteCount = count * 2;
+    Vector<unsigned char> buf(byteCount);
+    if (!CryptoRandomBytes(buf.Buffer(), byteCount))
+    {
+        URHO3D_LOGWARNING("[QRNG] CryptoRandomBytes failed — entropy pool not refilled");
+        return;
+    }
+
+    for (unsigned i = 0; i < count; ++i)
+    {
+        unsigned short val = (unsigned short)(buf[i * 2] | (buf[i * 2 + 1] << 8));
+        unsigned writePos = (entropyPoolHead_ + entropyPoolSize_) % ENTROPY_POOL_CAPACITY;
+        entropyPool_[writePos] = val;
+        ++entropyPoolSize_;
+    }
+
+    if (entropySource_ == "none")
+        entropySource_ = "/dev/urandom";
+}
+
+unsigned short AuthServer::ConsumeEntropy()
+{
+    if (entropyPoolSize_ == 0)
+    {
+        // Emergency refill — should be rare
+        FillEntropyFromURandom(512);
+        if (entropyPoolSize_ == 0)
+        {
+            URHO3D_LOGERROR("[QRNG] Entropy pool empty and refill failed!");
+            return 0;
+        }
+    }
+
+    unsigned short val = entropyPool_[entropyPoolHead_];
+    entropyPoolHead_ = (entropyPoolHead_ + 1) % ENTROPY_POOL_CAPACITY;
+    --entropyPoolSize_;
+    return val;
+}
+
+int AuthServer::DiceRoll(int sides)
+{
+    if (sides <= 0)
+        return 0;
+    ++totalDiceRolls_;
+    unsigned short raw = ConsumeEntropy();
+    return (int)(raw % (unsigned)sides) + 1;
+}
+
+int AuthServer::RollDice(int numDice, int sides)
+{
+    int total = 0;
+    for (int i = 0; i < numDice; ++i)
+        total += DiceRoll(sides);
+    return total;
+}
+
+int AuthServer::Roll4d6DropLowest()
+{
+    int rolls[4];
+    int lowest = 999;
+    int total = 0;
+    for (int i = 0; i < 4; ++i)
+    {
+        rolls[i] = DiceRoll(6);
+        total += rolls[i];
+        if (rolls[i] < lowest)
+            lowest = rolls[i];
+    }
+    return total - lowest;
+}
+
+// ─── WORLD PHENOMENA (Plan 10) ─────────────────────────────────────────────
+
+void AuthServer::CachePhenomenaRules()
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    if (!gameDB_) return;
+
+    cachedPhenomena_.Clear();
+
+    sqlite3* db = gameDB_->GetHandle();
+    if (!db) return;
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT id, condition_type, result_type, visual_hint, "
+                      "insight_category, epoch_tier_required FROM phenomena_rules";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        LogMessage("[Phenomena] WARNING: failed to query phenomena_rules");
+        return;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        PhenomenonRule rule;
+        rule.id = sqlite3_column_int(stmt, 0);
+        rule.conditionType = (const char*)sqlite3_column_text(stmt, 1);
+        rule.resultType = (const char*)sqlite3_column_text(stmt, 2);
+        rule.visualHint = (const char*)sqlite3_column_text(stmt, 3);
+        rule.insightCategory = (const char*)sqlite3_column_text(stmt, 4);
+        rule.epochTierRequired = sqlite3_column_int(stmt, 5);
+        cachedPhenomena_.Push(rule);
+    }
+    sqlite3_finalize(stmt);
+
+    LogMessage("[Phenomena] Cached " + String(cachedPhenomena_.Size()) + " phenomenon rules");
+#endif
+}
+
+void AuthServer::PhenomenaTick(float dt)
+{
+#ifdef URHO3D_DATABASE_SQLITE
+    phenomenaTickTimer_ += dt;
+    if (phenomenaTickTimer_ < PHENOMENA_TICK_INTERVAL)
+        return;
+    phenomenaTickTimer_ = 0.0f;
+
+    if (cachedPhenomena_.Empty() || !scene_)
+        return;
+
+    auto* terrain = scene_->GetComponent<Terrain>(true);
+
+    // Evaluate each rule
+    for (unsigned r = 0; r < cachedPhenomena_.Size(); ++r)
+    {
+        const PhenomenonRule& rule = cachedPhenomena_[r];
+
+        // ── FIRE_NEAR_ORE: check each LIT campfire against deposit map ──
+        if (rule.conditionType == "FIRE_NEAR_ORE")
+        {
+            if (!depositMap_ || !terrain)
+                continue;
+
+            for (auto cfIt = serverCampfires_.Begin(); cfIt != serverCampfires_.End(); ++cfIt)
+            {
+                if (cfIt->second_.state != PIT_LIT && cfIt->second_.state != PIT_EMBERS)
+                    continue;
+
+                const Vector3& firePos = cfIt->second_.position;
+
+                // Sample deposit map in a radius around the fire
+                IntVector2 center = terrain->WorldToHeightMap(Vector3(firePos.x_, 0, firePos.z_));
+                // Convert world-radius to pixel-radius (approximate)
+                float spacing = terrain->GetSpacing().x_;
+                int pixelRadius = (spacing > 0.001f) ? (int)(FIRE_ORE_PROXIMITY / spacing) : 5;
+
+                bool oreFound = false;
+                for (int dz = -pixelRadius; dz <= pixelRadius && !oreFound; dz += 2)
+                {
+                    for (int dx = -pixelRadius; dx <= pixelRadius && !oreFound; dx += 2)
+                    {
+                        int px = center.x_ + dx;
+                        int pz = center.y_ + dz;
+                        if (px < 0 || px >= depositMapSize_ || pz < 0 || pz >= depositMapSize_)
+                            continue;
+
+                        Color c = depositMap_->GetPixel(px, pz);
+                        int oreType = (int)(c.g_ * 255.0f + 0.5f);
+                        int oreQty = (int)(c.r_ * 255.0f + 0.5f);
+                        if (oreType > 0 && oreQty > 0)
+                        {
+                            oreFound = true;
+                            BroadcastPhenomenon(firePos, rule.id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── SEED_ON_FERTILE: check placed crops on highly fertile soil ──
+        else if (rule.conditionType == "SEED_ON_FERTILE")
+        {
+            if (!ecosystem_ || !worldDB_)
+                continue;
+
+            Vector<WorldDB::PlacedCropInfo> crops = worldDB_->GetAllPlacedCrops();
+            for (unsigned c = 0; c < crops.Size(); ++c)
+            {
+                // Only trigger for freshly planted (growthStage 0)
+                if (crops[c].growthStage != 0)
+                    continue;
+
+                float fertility = ecosystem_->SampleFertility(crops[c].posX, crops[c].posZ);
+                unsigned char fertByte = (unsigned char)(fertility * 255.0f);
+                if (fertByte >= FERTILE_THRESHOLD)
+                {
+                    Vector3 cropPos(crops[c].posX, crops[c].posY, crops[c].posZ);
+                    BroadcastPhenomenon(cropPos, rule.id);
+                }
+            }
+        }
+
+        // ── CLAY_NEAR_HEAT: check if any LIT campfire is near clay soil ──
+        else if (rule.conditionType == "CLAY_NEAR_HEAT")
+        {
+            if (!ecosystem_)
+                continue;
+
+            for (auto cfIt = serverCampfires_.Begin(); cfIt != serverCampfires_.End(); ++cfIt)
+            {
+                if (cfIt->second_.state != PIT_LIT)
+                    continue;
+
+                const Vector3& firePos = cfIt->second_.position;
+                // SampleComposition: 255 = clay, 128 = loam, 0 = sand
+                unsigned char comp = ecosystem_->SampleComposition(firePos.x_, firePos.z_);
+                if (comp >= 200)  // clay-rich soil
+                    BroadcastPhenomenon(firePos, rule.id);
+            }
+        }
+
+        // ── LIGHTNING_STRIKE: triggered by weather + random chance ──
+        else if (rule.conditionType == "LIGHTNING_STRIKE")
+        {
+            // Only during storm conditions with high precipitation
+            if (weatherCondition_ != "storm" && weatherCondition_ != "thunderstorm")
+                continue;
+
+            // Low probability per tick (30s interval) — roughly once per storm
+            if (Random(1.0f) > 0.05f)
+                continue;
+
+            // Pick a random world position (terrain bounds)
+            if (!terrain)
+                continue;
+
+            float halfSize = terrain->GetSpacing().x_ * terrain->GetHeightMap()->GetWidth() * 0.5f;
+            float rx = Random(-halfSize, halfSize);
+            float rz = Random(-halfSize, halfSize);
+            float ry = terrain->GetHeight(Vector3(rx, 0, rz));
+
+            if (ry > AI_WATER_LEVEL)
+                BroadcastPhenomenon(Vector3(rx, ry, rz), rule.id);
+        }
+    }
+#endif
+}
+
+void AuthServer::BroadcastPhenomenon(const Vector3& pos, int phenomenonType)
+{
+    // Look up visual hint from cached rules
+    String visualHint = "glow";
+    for (unsigned i = 0; i < cachedPhenomena_.Size(); ++i)
+    {
+        if (cachedPhenomena_[i].id == phenomenonType)
+        {
+            visualHint = cachedPhenomena_[i].visualHint;
+            break;
+        }
+    }
+
+    // Find human NPCs within observation range of the phenomenon
+    static constexpr float NPC_OBSERVE_RADIUS = 30.0f;
+    for (auto aiIt = creatureAI_.Begin(); aiIt != creatureAI_.End(); ++aiIt)
+    {
+        if (!aiIt->second_.isHuman)
+            continue;
+        if ((aiIt->second_.position - pos).Length() > NPC_OBSERVE_RADIUS)
+            continue;
+
+        // Build per-NPC message: spawnId, phenomenonType, pos, visualHint
+        VectorBuffer buf;
+        buf.WriteU32(aiIt->first_);
+        buf.WriteI32(phenomenonType);
+        buf.WriteVector3(pos);
+        buf.WriteString(visualHint);
+
+        // Send to all authenticated clients within broadcast radius
+        for (auto sIt = sessions_.Begin(); sIt != sessions_.End(); ++sIt)
+        {
+            if (!sIt->second_.authenticated)
+                continue;
+
+            auto avIt = serverObjects_.Find(sIt->first_);
+            if (avIt == serverObjects_.End() || !avIt->second_)
+                continue;
+            if ((avIt->second_->GetWorldPosition() - pos).Length() > PHENOMENA_BROADCAST_RADIUS)
+                continue;
+
+            sIt->first_->SendMessage(MSG_PHENOMENON, true, true, buf);
+        }
+    }
 }
 

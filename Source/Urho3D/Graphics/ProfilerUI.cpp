@@ -63,6 +63,12 @@ void ProfilerUI::Initialize(UI* ui, VulkanProfiler* profiler, Graphics* graphics
     instanceStatsText_->SetFontSize(12);
     instanceStatsText_->SetText("Instances: 0");
 
+    // Renderer stats (batches, triangles, pipeline changes)
+    rendererStatsText_ = window_->CreateChild<Text>();
+    rendererStatsText_->SetStyleAuto();
+    rendererStatsText_->SetFontSize(12);
+    rendererStatsText_->SetText("Tri: 0  Bat: 0  Pip: 0");
+
     // Camera position text
     cameraPosText_ = window_->CreateChild<Text>();
     cameraPosText_->SetStyleAuto();
@@ -76,10 +82,20 @@ void ProfilerUI::Initialize(UI* ui, VulkanProfiler* profiler, Graphics* graphics
     customStatsText_->SetText("");
 }
 
-void ProfilerUI::Update()
+void ProfilerUI::Update(float timeStep)
 {
+    // Always record frame data even if UI is hidden (maintains accurate rolling average)
+    if (profiler_)
+        profiler_->RecordFrame(timeStep);
+
     if (!profiler_ || !window_ || !window_->IsVisible())
         return;
+
+    // Throttle text updates to ~4 Hz (every 250ms) to avoid per-frame SetText / UI layout overhead
+    updateAccum_ += timeStep;
+    if (updateAccum_ < 0.25f)
+        return;
+    updateAccum_ = 0.0f;
 
     float fps = profiler_->GetFPS();
     float frameTime = profiler_->GetFrameTime();
@@ -102,7 +118,6 @@ void ProfilerUI::Update()
         avgFrameTimeText_->SetText(String(buf));
     }
 
-    // Update instance stats
     if (instanceStatsText_ && graphics_)
     {
         char buf[64];
@@ -110,6 +125,17 @@ void ProfilerUI::Update()
                 graphics_->GetNumInstancedDrawCalls(),
                 graphics_->GetTotalInstanceCount());
         instanceStatsText_->SetText(String(buf));
+    }
+
+    if (rendererStatsText_ && graphics_)
+    {
+        char buf[96];
+        sprintf(buf, "Tri: %u  Bat: %u  Pip: %u  VB: %u",
+                graphics_->GetNumPrimitives(),
+                graphics_->GetNumBatches(),
+                graphics_->GetNumPipelineChanges(),
+                graphics_->GetNumVertexBufferBinds());
+        rendererStatsText_->SetText(String(buf));
     }
 }
 

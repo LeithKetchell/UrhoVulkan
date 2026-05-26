@@ -1479,19 +1479,34 @@ void UI::ProcessClickBegin(const IntVector2& windowCursorPos, MouseButton button
             element->OnClickBegin(element->ScreenToElement(cursorPos), cursorPos, button, buttons, qualifiers, cursor);
             SendClickEvent(E_UIMOUSECLICK, nullptr, element, cursorPos, button, buttons, qualifiers);
 
+            // Fire triple click if this is the third click after a double-click
+            if (tripleClickElement_ && element == tripleClickElement_ &&
+                (tripleClickTimer_.GetMSec(true) < (unsigned)(doubleClickInterval_ * 1000)) && lastMouseButtons_ == buttons &&
+                (windowCursorPos - tripleClickPos_).Length() < maxDoubleClickDist_)
+            {
+                element->OnTripleClick(element->ScreenToElement(cursorPos), cursorPos, button, buttons, qualifiers, cursor);
+                tripleClickElement_.Reset();
+                doubleClickElement_.Reset();
+                SendTripleClickEvent(nullptr, element, tripleClickPos_, cursorPos, button, buttons, qualifiers);
+            }
             // Fire double click event if element matches and is in time and is within max distance from the original click
-            if (doubleClickElement_ && element == doubleClickElement_ &&
+            else if (doubleClickElement_ && element == doubleClickElement_ &&
                 (clickTimer_.GetMSec(true) < (unsigned)(doubleClickInterval_ * 1000)) && lastMouseButtons_ == buttons && (windowCursorPos - doubleClickFirstPos_).Length() < maxDoubleClickDist_)
             {
                 element->OnDoubleClick(element->ScreenToElement(cursorPos), cursorPos, button, buttons, qualifiers, cursor);
                 doubleClickElement_.Reset();
                 SendDoubleClickEvent(nullptr, element, doubleClickFirstPos_, cursorPos, button, buttons, qualifiers);
+                // Set up for potential triple-click
+                tripleClickElement_ = element;
+                tripleClickPos_ = windowCursorPos;
+                tripleClickTimer_.Reset();
             }
             else
             {
                 doubleClickElement_ = element;
                 doubleClickFirstPos_ = windowCursorPos;
                 clickTimer_.Reset();
+                tripleClickElement_.Reset();
             }
 
             // Handle start of drag. Click handling may have caused destruction of the element, so check the pointer again
@@ -1526,8 +1541,24 @@ void UI::ProcessClickBegin(const IntVector2& windowCursorPos, MouseButton button
                 SetFocusElement(nullptr);
             SendClickEvent(E_UIMOUSECLICK, nullptr, element, cursorPos, button, buttons, qualifiers);
 
-            if (clickTimer_.GetMSec(true) < (unsigned)(doubleClickInterval_ * 1000) && lastMouseButtons_ == buttons && (windowCursorPos - doubleClickFirstPos_).Length() < maxDoubleClickDist_)
+            if (tripleClickElement_ && element == tripleClickElement_ &&
+                (tripleClickTimer_.GetMSec(true) < (unsigned)(doubleClickInterval_ * 1000)) && lastMouseButtons_ == buttons &&
+                (windowCursorPos - tripleClickPos_).Length() < maxDoubleClickDist_)
+            {
+                tripleClickElement_.Reset();
+                SendTripleClickEvent(nullptr, element, tripleClickPos_, cursorPos, button, buttons, qualifiers);
+            }
+            else if (clickTimer_.GetMSec(true) < (unsigned)(doubleClickInterval_ * 1000) && lastMouseButtons_ == buttons && (windowCursorPos - doubleClickFirstPos_).Length() < maxDoubleClickDist_)
+            {
                 SendDoubleClickEvent(nullptr, element, doubleClickFirstPos_, cursorPos, button, buttons, qualifiers);
+                tripleClickElement_ = element;
+                tripleClickPos_ = windowCursorPos;
+                tripleClickTimer_.Reset();
+            }
+            else
+            {
+                tripleClickElement_.Reset();
+            }
         }
 
         lastMouseButtons_ = buttons;
@@ -1766,14 +1797,52 @@ void UI::SendDoubleClickEvent(UIElement* beginElement, UIElement* endElement, co
 }
 
 
+void UI::SendTripleClickEvent(UIElement* beginElement, UIElement* endElement, const IntVector2& firstPos, const IntVector2& secondPos, MouseButton button,
+    MouseButtonFlags buttons, QualifierFlags qualifiers)
+{
+    VariantMap& eventData = GetEventDataMap();
+    eventData[UIMouseTripleClick::P_ELEMENT] = endElement;
+    eventData[UIMouseTripleClick::P_X] = secondPos.x_;
+    eventData[UIMouseTripleClick::P_Y] = secondPos.y_;
+    eventData[UIMouseTripleClick::P_XBEGIN] = firstPos.x_;
+    eventData[UIMouseTripleClick::P_YBEGIN] = firstPos.y_;
+    eventData[UIMouseTripleClick::P_BUTTON] = button;
+    eventData[UIMouseTripleClick::P_BUTTONS] = (unsigned)buttons;
+    eventData[UIMouseTripleClick::P_QUALIFIERS] = (unsigned)qualifiers;
+
+    if (endElement)
+        endElement->SendEvent(E_TRIPLECLICK, eventData);
+
+    SendEvent(E_UIMOUSETRIPLECLICK, eventData);
+}
+
 void UI::HandleScreenMode(StringHash eventType, VariantMap& eventData)
 {
     using namespace ScreenMode;
 
     if (!initialized_)
+    {
         Initialize();
+        // Capture initial root size for future resize deltas
+        if (rootElement_)
+            previousRootSize_ = rootElement_->GetSize();
+    }
     else
+    {
+        IntVector2 oldSize = previousRootSize_;
         ResizeRootElement();
+        IntVector2 newSize = rootElement_->GetSize();
+
+        // Schedule font rescale for next frame if size actually changed
+        if (oldSize.x_ > 0 && oldSize.y_ > 0 && oldSize != newSize)
+        {
+            pendingFontScale_.x_ = (float)newSize.x_ / (float)oldSize.x_;
+            pendingFontScale_.y_ = (float)newSize.y_ / (float)oldSize.y_;
+            fontRescalePending_ = true;
+        }
+
+        previousRootSize_ = newSize;
+    }
 }
 
 void UI::HandleMouseButtonDown(StringHash eventType, VariantMap& eventData)
@@ -2064,12 +2133,24 @@ void UI::HandlePostUpdate(StringHash eventType, VariantMap& eventData)
 {
     using namespace PostUpdate;
 
+    // Font rescale disabled — was applying globally to all Text elements.
+    // TODO: make opt-in per element if needed.
+    fontRescalePending_ = false;
+
     Update(eventData[P_TIMESTEP].GetFloat());
 }
 
 void UI::HandleRenderUpdate(StringHash eventType, VariantMap& eventData)
 {
     RenderUpdate();
+
+    if (!firstFrameRendered_)
+    {
+        firstFrameRendered_ = true;
+        // Capture the stable root size after initialization settles
+        if (rootElement_)
+            previousRootSize_ = rootElement_->GetSize();
+    }
 }
 
 void UI::HandleDropFile(StringHash eventType, VariantMap& eventData)
@@ -2181,6 +2262,13 @@ void UI::ResizeRootElement()
     IntVector2 effectiveSize = GetEffectiveRootElementSize();
     rootElement_->SetSize(effectiveSize);
     rootModalElement_->SetSize(effectiveSize);
+
+    // Only propagate normalized coords after initialization is complete
+    if (firstFrameRendered_)
+    {
+        rootElement_->PropagateParentResize();
+        rootModalElement_->PropagateParentResize();
+    }
 }
 
 IntVector2 UI::GetEffectiveRootElementSize(bool applyScale) const
@@ -2197,6 +2285,29 @@ IntVector2 UI::GetEffectiveRootElementSize(bool applyScale) const
     }
 
     return size;
+}
+
+void UI::RescaleFonts(UIElement* element, const Vector2& scale)
+{
+    if (!element)
+        return;
+
+    // Use the smaller axis scale for fonts to maintain readability
+    float fontScale = Min(scale.x_, scale.y_);
+
+    // If this element is a Text, rescale its font
+    auto* text = dynamic_cast<Text*>(element);
+    if (text)
+    {
+        float oldSize = text->GetFontSize();
+        float newSize = Max(1.0f, oldSize * fontScale);
+        if ((int)newSize != (int)oldSize)
+            text->SetFontSize(newSize);
+    }
+
+    // Recurse to children
+    for (unsigned i = 0; i < element->GetNumChildren(); ++i)
+        RescaleFonts(element->GetChild(i), scale);
 }
 
 void UI::SetElementRenderTexture(UIElement* element, Texture2D* texture)

@@ -17,6 +17,7 @@
 
 #ifdef URHO3D_VULKAN
 #include "VulkanProfiler.h"
+#include "ProfilerTimeline.h"
 #endif
 
 #ifdef URHO3D_VULKAN
@@ -818,6 +819,12 @@ public:
     VulkanProfiler* GetVulkanProfiler() const { return nullptr; }
 #endif
 
+    /// Return the in-engine timeline profiler (Phase 1 of PLAN_PROFILER_TIMELINE).
+    /// CPU-only event recording today; Phase 2 will add GPU lanes via Vulkan
+    /// timestamp queries on the same ring buffer. Always non-null after Graphics
+    /// construction; safe to call from any backend.
+    ProfilerTimeline* GetProfilerTimeline() const { return profilerTimeline_.Get(); }
+
 private:
     /// Create the application window icon.
     void CreateWindowIcon();
@@ -1438,6 +1445,9 @@ private:
     mutable String lastShaderName_;
     /// Shader precache utility.
     SharedPtr<ShaderPrecache> shaderPrecache_;
+    /// In-engine timeline profiler (Phase 1 of PLAN_PROFILER_TIMELINE). Always
+    /// constructed regardless of backend. Header-only — no .cpp side effects.
+    SharedPtr<ProfilerTimeline> profilerTimeline_;
 #ifdef URHO3D_VULKAN
     /// Vulkan profiler utility.
     SharedPtr<VulkanProfiler> vulkanProfiler_;

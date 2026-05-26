@@ -88,16 +88,6 @@ void Decals::CreateScene()
     planeObject->SetModel(cache->GetResource<Model>("Models/Plane.mdl"));
     planeObject->SetMaterial(cache->GetResource<Material>("Materials/StoneTiled.xml"));
 
-    // ALPHA PASS TEST: Create a box with alpha-blended material to test if alpha pass works
-    {
-        Node* testNode = scene_->CreateChild("AlphaTestBox");
-        testNode->SetPosition(Vector3(0.0f, 2.0f, 5.0f));
-        testNode->SetScale(2.0f);
-        auto* testObject = testNode->CreateComponent<StaticModel>();
-        testObject->SetModel(cache->GetResource<Model>("Models/Box.mdl"));
-        testObject->SetMaterial(cache->GetResource<Material>("Materials/UrhoDecal.xml"));
-    }
-
     // Create a Zone component for ambient lighting & fog control
     Node* zoneNode = scene_->CreateChild("Zone");
     auto* zone = zoneNode->CreateComponent<Zone>();
@@ -302,9 +292,10 @@ void Decals::PaintDecal()
         // Add a square decal to the decal set using the geometry of the drawable that was hit, orient it to face the camera,
         // use full texture UV's (0,0) to (1,1). Note that if we create several decals to a large object (such as the ground
         // plane) over a large area using just one DecalSet component, the decals will all be culled as one unit. If that is
-        // undesirable, it may be necessary to create more than one DecalSet based on the distance
+        // undesirable, it may be necessary to create more than one DecalSet based on the distance.
+        // timeToLive = 30s prevents unbounded accumulation that degrades framerate over time.
         decal->AddDecal(hitDrawable, hitPos, cameraNode_->GetRotation(), 0.5f, 1.0f, 1.0f, Vector2::ZERO,
-            Vector2::ONE);
+            Vector2::ONE, 30.0f);
     }
 }
 
@@ -349,8 +340,7 @@ void Decals::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // Update profiler display
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
     }
 }
 

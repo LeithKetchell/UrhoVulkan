@@ -6,6 +6,7 @@
 #include "../Core/Context.h"
 #include "../Core/Mutex.h"
 #include "../Core/Profiler.h"
+#include "../Graphics/AnimatedModel.h"
 #include "../Graphics/DebugRenderer.h"
 #include "../Graphics/Model.h"
 #include "../IO/Log.h"
@@ -246,10 +247,10 @@ void PhysicsWorld::DrawDebugGeometry(DebugRenderer* debug, bool depthTest)
     {
         URHO3D_PROFILE(PhysicsDrawDebug);
 
-        debugRenderer_ = debug;
-        debugDepthTest_ = depthTest;
-        world_->debugDrawWorld();
-        debugRenderer_ = nullptr;
+        // Draw each body individually so kinematic bodies get fresh node transforms
+        // instead of Bullet's potentially stale internal transform.
+        for (unsigned i = 0; i < rigidBodies_.Size(); ++i)
+            rigidBodies_[i]->DrawDebugGeometry(debug, depthTest);
     }
 }
 
@@ -775,6 +776,24 @@ void PhysicsWorld::RemoveRigidBody(RigidBody* body)
     rigidBodyActiveState_.Erase(body);
 }
 
+void PhysicsWorld::AddPrePhysicsAnimModel(AnimatedModel* model)
+{
+    if (model)
+        prePhysicsAnimModels_.Push(WeakPtr<AnimatedModel>(model));
+}
+
+void PhysicsWorld::RemovePrePhysicsAnimModel(AnimatedModel* model)
+{
+    for (unsigned i = 0; i < prePhysicsAnimModels_.Size(); ++i)
+    {
+        if (prePhysicsAnimModels_[i] == model)
+        {
+            prePhysicsAnimModels_.Erase(i);
+            return;
+        }
+    }
+}
+
 void PhysicsWorld::AddCollisionShape(CollisionShape* shape)
 {
     collisionShapes_.Push(shape);
@@ -894,6 +913,20 @@ void PhysicsWorld::HandleSceneSubsystemUpdate(StringHash eventType, VariantMap& 
 
 void PhysicsWorld::PreStep(float timeStep)
 {
+    // Sync bone transforms for kinematic ragdoll models before physics reads them.
+    // Animation normally updates in E_RENDERUPDATE (after physics), so without this,
+    // kinematic bone bodies see last frame's poses.
+    for (unsigned i = prePhysicsAnimModels_.Size(); i > 0; --i)
+    {
+        AnimatedModel* model = prePhysicsAnimModels_[i - 1];
+        if (!model)
+        {
+            prePhysicsAnimModels_.Erase(i - 1);
+            continue;
+        }
+        model->ApplyAnimation();
+    }
+
     // Send pre-step event
     using namespace PhysicsPreStep;
 

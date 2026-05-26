@@ -330,6 +330,8 @@ private:
 
     /// Send a UI double click event.
     void SendDoubleClickEvent(UIElement* beginElement, UIElement* endElement, const IntVector2& firstPos, const IntVector2& secondPos, MouseButton button, MouseButtonFlags buttons, QualifierFlags qualifiers);
+    /// Send a UI triple click event.
+    void SendTripleClickEvent(UIElement* beginElement, UIElement* endElement, const IntVector2& firstPos, const IntVector2& secondPos, MouseButton button, MouseButtonFlags buttons, QualifierFlags qualifiers);
 
     /// Handle screen mode event.
     void HandleScreenMode(StringHash eventType, VariantMap& eventData);
@@ -369,6 +371,8 @@ private:
     void ResizeRootElement();
     /// Return effective size of the root element, according to UI scale and resolution / custom size.
     IntVector2 GetEffectiveRootElementSize(bool applyScale = true) const;
+    /// Recursively rescale fonts after window resize.
+    void RescaleFonts(UIElement* element, const Vector2& scale);
 
     /// Graphics subsystem.
     WeakPtr<Graphics> graphics_;
@@ -436,14 +440,22 @@ private:
     bool uiRendered_;
     /// Non-modal batch size (used internally for rendering).
     unsigned nonModalBatchSize_;
-    /// Timer used to trigger double click.
+    /// Timer used to trigger double/triple click.
     Timer clickTimer_;
-    /// UI element last clicked for tracking double clicks.
+    /// UI element last clicked for tracking multi-clicks.
     WeakPtr<UIElement> doubleClickElement_;
     /// Screen position of first mouse click for double click distance checking.
     IntVector2 doubleClickFirstPos_;
     /// Max screen distance the first click in a double click can be from the second click in a double click.
     float maxDoubleClickDist_;
+    /// Click count for triple-click detection (1=single, 2=double just fired, awaiting potential triple).
+    int uiClickCount_{0};
+    /// Timer for triple-click detection (time since last double-click).
+    Timer tripleClickTimer_;
+    /// Element that received the last double-click.
+    WeakPtr<UIElement> tripleClickElement_;
+    /// Screen position of the double-click for triple-click distance checking.
+    IntVector2 tripleClickPos_;
     /// Currently hovered elements.
     HashMap<WeakPtr<UIElement>, bool> hoveredElements_;
     /// Currently dragged elements.
@@ -462,6 +474,14 @@ private:
     IntVector2 customSize_;
     /// Elements that should be rendered to textures.
     HashMap<UIElement*, RenderToTextureData> renderToTexture_;
+    /// Pending font rescale from window resize (applied on next frame).
+    bool fontRescalePending_{false};
+    /// Scale factor for pending font rescale.
+    Vector2 pendingFontScale_{Vector2::ONE};
+    /// Previous root element size for computing resize scale.
+    IntVector2 previousRootSize_{IntVector2::ZERO};
+    /// Whether the first frame has rendered (initialization complete).
+    bool firstFrameRendered_{false};
 };
 
 /// Register UI library objects.

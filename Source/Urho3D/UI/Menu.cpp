@@ -278,27 +278,31 @@ void Menu::ShowPopup(bool enable)
     {
         OnShowPopup();
 
-        // Auto-size popup to fit its children
+        // Auto-size popup to fit visible children (allows both grow and shrink)
         popup_->UpdateLayout();
         {
             const IntRect& border = popup_->GetLayoutBorder();
             int maxChildW = 0;
             int totalH = border.top_ + border.bottom_;
             int spacing = popup_->GetLayoutSpacing();
+            int visCount = 0;
             const Vector<SharedPtr<UIElement>>& children = popup_->GetChildren();
             for (i32 i = 0; i < children.Size(); ++i)
             {
-                int childW = children[i]->GetEffectiveMinSize().x_;
+                if (!children[i]->IsVisible())
+                    continue;
+                int childW = Max(children[i]->GetWidth(), children[i]->GetEffectiveMinSize().x_);
                 if (childW > maxChildW)
                     maxChildW = childW;
-                totalH += children[i]->GetEffectiveMinSize().y_;
-                if (i > 0)
+                totalH += Max(children[i]->GetHeight(), children[i]->GetEffectiveMinSize().y_);
+                if (visCount > 0)
                     totalH += spacing;
+                ++visCount;
             }
             maxChildW += border.left_ + border.right_;
             IntVector2 curSize = popup_->GetSize();
-            if (maxChildW > curSize.x_ || totalH > curSize.y_)
-                popup_->SetSize(Max(curSize.x_, maxChildW), Max(curSize.y_, totalH));
+            popup_->SetSize(Max(curSize.x_, Max(popup_->GetMinWidth(), maxChildW)),
+                            Max(popup_->GetMinHeight(), totalH));
         }
 
         popup_->SetVar(VAR_ORIGIN, this);

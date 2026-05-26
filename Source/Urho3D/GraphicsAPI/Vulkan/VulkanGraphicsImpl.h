@@ -51,6 +51,17 @@ class RenderSurface;
 class ShaderProgram;
 class Texture2D;
 
+/// Maximum number of GPU timestamp queries per frame.
+/// Each BeginEvent/EndEvent pair uses 2 queries. 32 queries = 16 named GPU spans per frame.
+static const uint32_t MAX_GPU_TIMESTAMP_QUERIES = 32;
+
+/// GPU timestamp label — name for each timestamp written per frame
+struct GpuTimestampLabel
+{
+    String name;        ///< Human-readable label (e.g. "RenderPass Begin", "Frame End")
+    String category;    ///< Category for color coding in timeline UI
+};
+
 /// Per-frame synchronization resources
 /// Groups all resources needed for one frame in flight
 struct FrameResources
@@ -59,6 +70,11 @@ struct FrameResources
     VkFence fence{VK_NULL_HANDLE};
     VkSemaphore imageAcquired{VK_NULL_HANDLE};  // Per-frame: we don't know image index yet
     uint32_t imageIndex{0};  // Which swapchain image this frame acquired
+
+    // GPU timestamp queries (Phase 2 of Profiler Timeline)
+    VkQueryPool timestampQueryPool{VK_NULL_HANDLE};
+    uint32_t nextTimestampQuery{0};  // Next available query slot
+    GpuTimestampLabel timestampLabels[MAX_GPU_TIMESTAMP_QUERIES];  // Names for readback
 };
 
 /// Per-swapchain-image semaphores
@@ -260,6 +276,10 @@ public:
     ///   8. Set up memory allocator (VMA) and caches
     bool Initialize(Graphics* graphics, SDL_Window* window, int width, int height);
 
+    /// Enable or disable Vulkan validation layers. Must be called before Initialize().
+    void SetEnableValidation(bool enable) { enableValidation_ = enable; }
+    bool GetEnableValidation() const { return enableValidation_; }
+
     /// \brief Shutdown Vulkan resources
     /// \details Safely releases all Vulkan objects in reverse creation order.
     /// Can be called multiple times safely.
@@ -334,6 +354,30 @@ public:
     /// This must be called after all geometry rendering is complete and before lighting pass rendering begins.
     void NextSubpass();
 
+    /// \name GPU Timestamp Queries (Phase 2 of Profiler Timeline)
+    /// @{
+
+    /// \brief Check if GPU timestamp queries are supported
+    bool IsGpuTimestampSupported() const { return gpuTimestampSupported_; }
+
+    /// \brief Write a GPU timestamp into the current frame's query pool
+    /// \param label Name for this timestamp point (paired timestamps form spans in the timeline)
+    /// \param category Category for color coding (e.g. "render", "shadow", "post")
+    /// Returns the query index used, or ~0u if unavailable.
+    uint32_t WriteGpuTimestamp(const String& label = String::EMPTY, const String& category = String::EMPTY);
+
+    /// \brief Read back completed GPU timestamp results from a frame's query pool
+    /// \param frameIndex Which frame-in-flight slot to read (typically the one just waited on)
+    /// \param results Output: timestamps in nanoseconds, one per query written
+    /// \param count Output: number of valid results
+    /// \returns true if results were successfully read
+    bool ReadGpuTimestampResults(uint32_t frameIndex, Vector<uint64_t>& results, uint32_t& count);
+
+    /// \brief Get GPU timestamp period (nanoseconds per tick)
+    float GetTimestampPeriodNs() const { return timestampPeriodNs_; }
+
+    /// @}
+
     /// \brief Begin a one-time submit command buffer for uploads
     /// \returns VkCommandBuffer in recording state, ready for commands
     /// \details Creates and begins a transient command buffer for resource uploads (textures, buffers).
@@ -364,6 +408,12 @@ public:
     /// \brief Get graphics queue
     /// \returns VkQueue for graphics operations
     VkQueue GetGraphicsQueue() const { return graphicsQueue_; }
+
+    /// Get number of frames in flight
+    uint32_t GetMaxFramesInFlight() const { return frames_.Size(); }
+
+    /// Get fence for a specific in-flight frame (may be VK_NULL_HANDLE)
+    VkFence GetFrameFence(unsigned index) const { return index < frames_.Size() ? frames_[index].fence : VK_NULL_HANDLE; }
 
     /// Get command pool for allocating command buffers.
     VkCommandPool GetCommandPool() const { return commandPool_; }
@@ -927,6 +977,12 @@ private:
     /// Called during physical device selection to enable timeline-based synchronization.
     bool DetectTimelineSemaphoreSupport();
 
+    /// \brief Detect GPU timestamp query support and create per-frame query pools
+    /// \returns True if timestamps supported and pools created, false otherwise
+    /// \details Checks timestampPeriod and queueTimestampValidBits from device/queue properties.
+    /// Creates one VkQueryPool per frame-in-flight with MAX_GPU_TIMESTAMP_QUERIES slots each.
+    bool CreateTimestampQueryPools();
+
     /// \brief Create timeline semaphore for render completion tracking
     /// \returns True if semaphore created successfully, false on error
     /// \details Creates VkSemaphore with VK_SEMAPHORE_TYPE_TIMELINE for GPU-CPU sync.
@@ -959,6 +1015,9 @@ private:
                               VkPipelineStageFlags dstStage,
                               VkAccessFlags srcAccess,
                               VkAccessFlags dstAccess);
+
+    // Validation toggle — off by default, enable with -VulkanValidation=true
+    bool enableValidation_{false};
 
     // Vulkan instance and device objects
     VkInstance instance_{};
@@ -1112,11 +1171,21 @@ private:
     VkSemaphore timelineRenderSemaphore_{};          ///< Timeline semaphore for render completion (replaces 3 binary semaphores)
     uint64_t timelineRenderCounter_{0};              ///< Current timeline counter value (incremented after each frame)
 
+    // GPU timestamp query support (Phase 2 of Profiler Timeline)
+    bool gpuTimestampSupported_{false};              ///< Device + queue support timestamp queries
+    float timestampPeriodNs_{0.0f};                  ///< Nanoseconds per GPU timestamp tick
+    uint32_t timestampValidBits_{0};                 ///< Number of valid bits in timestamp values
+
     // Frame tracking
     uint32_t frameIndex_{0};
     uint32_t currentImageIndex_{0};
     bool renderPassActive_{false};
     bool frameActive_{false};
+
+    // Deferred resize — set by OnWindowResized_Vulkan, consumed by BeginFrame_Vulkan
+    bool resizePending_{false};
+    int pendingWidth_{0};
+    int pendingHeight_{0};
 
     // Debug callback
     VkDebugUtilsMessengerEXT debugMessenger_{};

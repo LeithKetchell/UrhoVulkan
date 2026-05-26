@@ -384,8 +384,7 @@ void MotionBlur::HandleUpdate(StringHash eventType, VariantMap& eventData)
     auto* graphics = GetSubsystem<Graphics>();
     if (profilerUI_)
     {
-        graphics->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
 
         unsigned numBatches = graphics->GetNumBatches();
         unsigned numPipelineChanges = graphics->GetNumPipelineChanges();

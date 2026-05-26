@@ -25,7 +25,6 @@ inline bool EnsureIPCDirectory()
     const char* instDir = "/tmp/urho_claude/instances";
     const char* fifos[] = {
         "/tmp/urho_claude/from_coder",
-        "/tmp/urho_claude/from_planner",
         "/tmp/urho_claude/from_unassigned"
     };
 

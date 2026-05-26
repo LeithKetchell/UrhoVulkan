@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS hunger_rules (
     swim_mult           REAL DEFAULT 2.0,
     starve_hp_day       REAL DEFAULT 5.0,
     low_threshold       INTEGER DEFAULT 25,
-    critical_threshold  INTEGER DEFAULT 10
+    critical_threshold  INTEGER DEFAULT 10,
+    eat_restore         INTEGER DEFAULT 35
 );
 
 -- Thirst configuration
@@ -31,7 +32,8 @@ CREATE TABLE IF NOT EXISTS thirst_rules (
     work_mult           REAL DEFAULT 1.5,
     dehydrate_hp_day    REAL DEFAULT 8.0,
     low_threshold       INTEGER DEFAULT 30,
-    critical_threshold  INTEGER DEFAULT 15
+    critical_threshold  INTEGER DEFAULT 15,
+    eat_restore         INTEGER DEFAULT 25
 );
 
 -- Water sources
@@ -59,7 +61,10 @@ CREATE TABLE IF NOT EXISTS warmth_rules (
     fire_warmth         REAL DEFAULT 15.0,
     fire_range          REAL DEFAULT 5.0,
     activity_warmth     REAL DEFAULT 3.0,
-    sprint_heat         REAL DEFAULT 5.0
+    sprint_heat         REAL DEFAULT 5.0,
+    night_multiplier    REAL DEFAULT 8.0,
+    low_threshold       INTEGER DEFAULT 30,
+    sit_restore         REAL DEFAULT 30.0
 );
 
 -- Stamina configuration
@@ -76,7 +81,9 @@ CREATE TABLE IF NOT EXISTS stamina_rules (
     build_cost          REAL DEFAULT 6.0,
     swim_cost_sec       REAL DEFAULT 4.0,
     low_threshold       INTEGER DEFAULT 20,
-    empty_penalty       TEXT DEFAULT 'no_sprint,slow_attack,slow_craft'
+    empty_penalty       TEXT DEFAULT 'no_sprint,slow_attack,slow_craft',
+    sit_restore         REAL DEFAULT 20.0,
+    sleep_restore       REAL DEFAULT 60.0
 );
 
 -- Sleep configuration

@@ -29,15 +29,22 @@ public:
         MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor) override;
     void OnDoubleClick(const IntVector2& position, const IntVector2& screenPosition, MouseButton button,
         MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor) override;
+    void OnTripleClick(const IntVector2& position, const IntVector2& screenPosition, MouseButton button,
+        MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor) override;
     void OnDragBegin(const IntVector2& position, const IntVector2& screenPosition,
         MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor) override;
     void OnDragMove(const IntVector2& position, const IntVector2& screenPosition, const IntVector2& deltaPos,
         MouseButtonFlags buttons, QualifierFlags qualifiers, Cursor* cursor) override;
     void OnKey(Key key, MouseButtonFlags buttons, QualifierFlags qualifiers) override;
     void OnTextInput(const String& text) override;
+    void OnResize(const IntVector2& newSize, const IntVector2& delta) override;
 
     /// Set text content.
     void SetText(const String& text);
+    /// Insert a newline at the cursor position. Application calls this explicitly (e.g. Shift+Enter).
+    void InsertNewline();
+    /// Insert arbitrary text at the cursor position.
+    void InsertText(const String& input);
     /// Append text (for log use — trims from top if over max lines).
     void AppendLine(const String& line);
     /// Set read-only mode (no editing, selection+copy still works).

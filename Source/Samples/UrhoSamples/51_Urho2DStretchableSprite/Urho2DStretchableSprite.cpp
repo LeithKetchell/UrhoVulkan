@@ -164,8 +164,7 @@ void Urho2DStretchableSprite::HandleUpdate(StringHash /*eventType*/, VariantMap&
     // Update profiler display
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
     }
 }
 

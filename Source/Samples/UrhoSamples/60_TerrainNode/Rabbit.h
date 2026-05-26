@@ -34,12 +34,7 @@ protected:
     float GetDesiredSize() const override { return 0.35f; }
     float GetWanderRadius() const override { return 12.0f; }
     float GetWanderSpeed() const override { return 1.5f; }
-    float GetFleeSpeed() const override { return 8.0f; }
-    float GetFleeDistance() const override { return 15.0f; }
     float GetMinIdleDuration() const override { return 2.0f; }
     float GetMaxIdleDuration() const override { return 6.0f; }
-    float GetVisionRange() const override { return 20.0f; }
-    float GetVisionCosAngle() const override { return 0.3f; }  // ~145 degrees — prey, nearly panoramic
-    float GetFoodGrassWeight() const override { return 0.8f; }
     float GetFoodShrubWeight() const override { return 0.2f; }
 };

@@ -10,6 +10,7 @@
 using namespace Urho3D;
 
 class BuildingSystem;
+namespace Urho3D { class GameDB; }
 
 /// Fired when any animal enters the ANIMAL_DIE state (player kill, drowning, etc.).
 URHO3D_EVENT(E_ANIMALDIED, AnimalDied)
@@ -49,6 +50,9 @@ public:
 
     /// Set building system reference for wall collision checks.
     void SetBuildingSystem(BuildingSystem* bs) { buildingSystem_ = bs; }
+
+    /// Set GameDB reference for DB-driven wall blocking lookups.
+    void SetGameDB(GameDB* db) { gameDB_ = db; }
 
     /// Get the creature ID for wall_strength lookups. Subclasses override.
     virtual int GetCreatureId() const { return 0; }
@@ -125,6 +129,8 @@ private:
 
     /// Building system for wall collision (raw ptr — same scene lifetime).
     BuildingSystem* buildingSystem_{nullptr};
+    /// GameDB for wall_strength lookups (raw ptr — same scene lifetime).
+    GameDB* gameDB_{nullptr};
 
     // --- Combat stats (loaded from GameDB creatures table) ---
     int hp_{10};

@@ -2,6 +2,7 @@
 // License: MIT
 
 #include "HUD.h"
+#include "Creature.h"
 
 #include <Urho3D/Core/Context.h>
 #include <Urho3D/Core/Timer.h>
@@ -160,11 +161,12 @@ void HUD::Update(float timeStep)
     // Temperature indicator — only visible when uncomfortable
     if (tempIndicator_)
     {
-        // Thresholds from warmth_rules defaults
-        bool freezing = temperature_ < -10.0f;
-        bool cold = temperature_ < 0.0f;
-        bool shivering = temperature_ < 5.0f;
-        bool hot = temperature_ > 40.0f;
+        // Thresholds from warmth_rules DB
+        const WarmthRules& wr = Creature::GetWarmthRules();
+        bool freezing = temperature_ < wr.severeCold;
+        bool cold = temperature_ < wr.coldThreshold;
+        bool shivering = temperature_ < wr.comfortMin;
+        bool hot = temperature_ > wr.heatThreshold;
         bool uncomfortable = shivering || hot;
 
         float targetAlpha = uncomfortable ? 1.0f : 0.0f;
@@ -358,12 +360,13 @@ void HUD::CreateStatusIcons()
 
 void HUD::UpdateStatusIcons(float timeStep)
 {
-    // Auto-derive some icon states from existing vitals
-    icons_[ICON_FREEZING].active = temperature_ < 0.0f;
-    icons_[ICON_OVERHEATING].active = temperature_ > 40.0f;
-    icons_[ICON_STARVING].active = hungerBar_.value < CRITICAL_THRESHOLD;
-    icons_[ICON_DEHYDRATED].active = thirstBar_.value < CRITICAL_THRESHOLD;
-    icons_[ICON_EXHAUSTED].active = staminaBar_.value < 0.1f;
+    // Auto-derive icon states from DB thresholds
+    const WarmthRules& wr = Creature::GetWarmthRules();
+    icons_[ICON_FREEZING].active = temperature_ < wr.coldThreshold;
+    icons_[ICON_OVERHEATING].active = temperature_ > wr.heatThreshold;
+    icons_[ICON_STARVING].active = hungerBar_.value < (float)Creature::GetHungerRules().criticalThreshold / 100.0f;
+    icons_[ICON_DEHYDRATED].active = thirstBar_.value < (float)Creature::GetThirstRules().criticalThreshold / 100.0f;
+    icons_[ICON_EXHAUSTED].active = staminaBar_.value < (float)Creature::GetStaminaRules().lowThreshold / 100.0f;
 
     for (int i = 0; i < ICON_MAX; ++i)
     {

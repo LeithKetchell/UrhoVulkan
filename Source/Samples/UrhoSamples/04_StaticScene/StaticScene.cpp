@@ -169,8 +169,7 @@ void StaticScene::HandleUpdate(StringHash eventType, VariantMap& eventData)
     auto* renderer = GetSubsystem<Renderer>();
     if (profilerUI_)
     {
-        graphics->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
 
         // Add custom stats to profiler UI
         unsigned numBatches = graphics->GetNumBatches();

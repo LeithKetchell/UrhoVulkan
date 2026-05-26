@@ -8,6 +8,7 @@
 #include "../Container/HashSet.h"
 #include "../Core/Mutex.h"
 #include "../Core/Object.h"
+#include "../Core/Timer.h"
 
 namespace Urho3D
 {
@@ -50,6 +51,42 @@ public:
     void SetListener(SoundListener* listener);
     /// Stop any sound source playing a certain sound clip.
     void StopSound(Sound* sound);
+
+    /// Return the number of available audio input (capture) devices.
+    unsigned GetNumCaptureDevices() const;
+    /// Return the name of an audio input device by index.
+    String GetCaptureDeviceName(unsigned index) const;
+    /// Open and warm up a capture device. Device starts UNPAUSED with hardware codec hot;
+    /// callback discards samples until StartCapture flips recording on. Eliminates the
+    /// SDL-unpause -> codec-wake latency (~1s on consumer audio chipsets).
+    bool PreOpenCapture(const String& deviceName = String::EMPTY, i32 sampleRate = 44100);
+    /// Begin recording on a pre-opened device (no SDL state change, just flag flip — first
+    /// non-zero callback delivers real mic data). Or open+start if not pre-opened (will
+    /// incur cold-start latency).
+    bool StartCapture(const String& deviceName = String::EMPTY, i32 sampleRate = 44100);
+    /// Pause SDL device and stop accumulating samples. Use only when done with the recording
+    /// session — re-recording incurs warm-up latency (PreOpen+StartCapture is the hot path).
+    void PauseCapture();
+    /// Stop capturing and close the input device (captured data is kept).
+    void StopCapture();
+    /// Write the captured audio to a WAV file.
+    bool SaveCapture(const String& path);
+    /// Return whether audio input is active (device open, recording or paused).
+    bool IsCapturing() const { return captureDeviceID_ != 0; }
+    /// Return whether actively recording (not just pre-opened/paused).
+    bool IsRecording() const { return captureDeviceID_ != 0 && captureRecording_; }
+    /// Discard captured audio data.
+    void ClearCapture();
+    /// Return the number of captured samples.
+    unsigned GetCaptureSampleCount() const;
+    /// Return capture duration in seconds.
+    float GetCaptureDuration() const;
+    /// Drain up to maxSamples from the capture buffer into dest. Returns the number of samples actually copied. Thread-safe.
+    unsigned DrainCaptureSamples(i16* dest, unsigned maxSamples);
+    /// Return the capture sample rate (actual rate obtained from the device).
+    i32 GetCaptureSampleRate() const { return captureSampleRate_; }
+    /// Return the name of the active capture device (empty if not capturing).
+    const String& GetCaptureDeviceName() const { return captureDeviceName_; }
 
     /// Return byte size of one sample.
     /// @property
@@ -113,6 +150,8 @@ private:
     void Release();
     /// Actually update sound sources with the specific timestep. Called internally.
     void UpdateInternal(float timeStep);
+    /// SDL audio capture callback.
+    static void SDLCaptureCallback(void* userdata, unsigned char* stream, int len);
 
     /// Clipping buffer for mixing.
     SharedArrayPtr<i32> clipBuffer_;
@@ -140,6 +179,22 @@ private:
     Vector<SoundSource*> soundSources_;
     /// Sound listener.
     WeakPtr<SoundListener> listener_;
+    /// SDL capture device ID.
+    u32 captureDeviceID_{};
+    /// Capture sample rate.
+    i32 captureSampleRate_{};
+    /// Name of the active capture device.
+    String captureDeviceName_;
+    /// Accumulated capture buffer (mono 16-bit PCM).
+    Vector<i16> captureBuffer_;
+    /// Mutex for capture buffer access.
+    Mutex captureMutex_;
+    /// True when actively recording (not just pre-opened/paused).
+    bool captureRecording_{};
+    /// Timestamp when recording started (microseconds, hires timer).
+    HiresTimer captureStartTimer_;
+    /// Elapsed microseconds at recording stop.
+    long long captureStopUSec_{};
 };
 
 /// Register Audio library objects.

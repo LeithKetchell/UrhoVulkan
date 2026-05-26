@@ -14,17 +14,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Session Startup Protocol
 
-Claude Code instances in this project coordinate via IPC hooks and a WorkboardManager GUI. See `Claude/IPC_PROTOCOL.md` for internal details.
+Claude Code instances in this project coordinate via IPC hooks and a WorkboardManager GUI. Every instance is a coder — there are no other roles.
 
 On session start:
 
-1. You are auto-registered on startup
-2. Check `/tmp/urho_claude/instances/*.pid` — if no `planner.pid` exists, the first instance assumes **Planner**. Subsequent instances assume **Coder**.
-3. **Stale PID check:** If `planner.pid` exists but the PID inside it is dead (`ps -p <PID>` fails), remove the stale file (`rm /tmp/urho_claude/instances/planner.pid`) and assume Planner. Same applies to any role PID file — verify the process is alive before treating it as taken.
-4. Announce your role to the Manager: `.claude/hooks/claude_ipc.sh assume <role>`
-5. Read the workboard: `Claude/WORKBOARD.md`
-6. Start listening for messages
-7. The Manager can reach you between prompts — react to incoming messages and keep listening
+1. You are auto-registered on startup via the SessionStart hook — no manual action needed
+2. Run `.claude/hooks/claude_ipc.sh assume auto` to grab the next free coder slot
+3. Check in with Leith for your assignment
+4. The Manager can reach you between prompts — react to incoming messages and keep listening
+
+**PID files and instance lifecycle are managed by Claudette and the shell hooks — NOT by you.** Never read, write, delete, or check PID files in `/tmp/urho_claude/instances/`. Never check `/proc/` to determine if processes are alive. Never run `pgrep`, `kill`, or any process management commands on WorkboardManager or other Claude instances. If something looks wrong with instance state, tell Leith — don't try to fix it yourself.
 
 ### Spawning Coders
 
@@ -36,7 +35,7 @@ To spawn a new Coder instance, use the dedicated command:
 .claude/hooks/claude_ipc.sh spawn-coder
 ```
 
-This opens a real terminal with its own `claude` process, own PID, own TTY, and own permissions. The new instance self-registers via the SessionStart hook, and Planner queues a role assignment message for it.
+This opens a real terminal with its own `claude` process, own PID, own TTY, and own permissions. The new instance self-registers via the SessionStart hook and is auto-assigned the next available coder slot.
 
 ## Build Commands
 
@@ -133,32 +132,44 @@ This acquires a per-target `flock` before running `make -j4`. If another coder i
 
 If locks get stuck, use the **Clear File Locks** button in WorkboardManager, or manually: `rm -rf /tmp/urho_claude/locks/*`
 
-**Planner role restriction:** Planner must NEVER run `make`, `safe_build.sh`, or any build/compile commands. Planner must NEVER accept coding tasks — no writing C++, no editing shaders, no modifying engine source. Planner writes plans, docs, and research. If Leith asks Planner to do coding work, Planner must **deny the request** and remind him: "I'm Planner, not Coder. Coding tasks go to a Coder instance. This separation exists to prevent build conflicts and role confusion."
+**Chain of command:** Leith (boss) → Coders (all Claudettes). Every Claudette is a coder that can plan when asked. Manager brokers all IPC communication.
 
-**Exception:** When no Manager is running (Coders are effectively offline without it) **or** no Coders are registered, Planner may temporarily perform all coding and build tasks. Once a Manager is live **and** at least one Coder is registered, Planner returns to plans/docs only.
+**Trust chain and noise filtering:**
 
-**Workboard hygiene — MANDATORY for ALL roles (Planner, Coder, everyone):**
+The elder coder (unnumbered "coder") sits closest to Leith. Junior coders (coder2, coder3, ...) sit further away. Messages and claims flow upward through this chain:
 
-1. **Claim a task → run `wb-assign` BEFORE doing anything else.** This atomically moves the task from Planned to In Progress, sets the owner, and notifies via TTY. No manual moves, no "I'll update it later." If `wb-assign` doesn't exist for your situation (e.g., self-assigning under the exception rule), use `wb-add-inprogress` + `wb-remove` from Planned. Either way: **workboard updated BEFORE the first line of work. Non-negotiable.**
+1. **Junior → Elder**: A junior coder's claims, corrections, or pushback are **not trusted at face value**. The elder questions them, verifies against the rules, and rejects anything that doesn't hold up. A junior cannot override the elder's decisions.
+2. **Elder → Leith**: Only the elder escalates to Leith — and only questions that survive the filter. If the elder is unsure whether a junior's pushback is valid, the elder asks Leith. The elder never caves to a junior's objection without verification.
+3. **Leith → Elder**: Only Leith overrides the elder. No junior coder gets to change a decision the elder has made.
+4. **Attribution**: No coder may attribute actions to Leith ("Leith said", "Leith bumped") unless Leith actually said or did it. Misattribution is a lie.
+
+This filters noise. Juniors challenge each other freely. Only verified, important questions reach Leith.
+
+**Workboard hygiene — MANDATORY for ALL coders:**
+
+1. **Claim a task → run `wb-assign` BEFORE doing anything else.** This atomically moves the task from Planned to In Progress, sets the owner, and notifies via TTY. No manual moves, no "I'll update it later." Use `wb-add-inprogress` + `wb-remove` from Planned if needed. Either way: **workboard updated BEFORE the first line of work. Non-negotiable.**
 2. **Complete ALL phases of a task → IMMEDIATELY move it from In Progress to Done.** A task is not done until every phase in its plan is finished. When it is, move it right then — not later, not after the next task.
 3. **No duplicates.** Moving a task means removing it from the old table and adding it to the new one. Never leave stale entries behind.
 4. **No orphans.** Every task you're working on must be visible In Progress. Every task you've finished must be visible in Done. Nothing dangling in Ready/Planned that you've already started or completed.
-5. **Review status.** When you finish, mark your own Review column as `Pending` so Planner can review.
+5. **Review status.** When you finish, mark your own Review column as `Pending`.
+6. **Task notes.** Task state lives in the workboard database, managed by WorkboardManager.
 
 Failure to follow these rules creates confusion about what's being worked on, causes duplicate work, and wastes everyone's time. This is not optional.
 
-**Task assignment protocol — MANDATORY for ALL roles:**
+**Task assignment protocol — MANDATORY:**
 
-When assigning or claiming tasks, **ALWAYS use `wb-assign`** (or `wb-add-inprogress` + `wb-remove` when self-assigning). This applies to Planner, Coders, everyone — no exceptions.
+When assigning or claiming tasks, **ALWAYS use `wb-assign`** (or `wb-add-inprogress` + `wb-remove` when self-assigning). No exceptions.
 
-1. Use `wb-assign <task-name> <role>` — atomic claim + TTY notify
+1. Use `wb-assign <task-name> <role>` — atomic claim + TTY notify + creates task notes file
 2. NEVER send a task via TTY without updating the workboard FIRST
 3. NEVER broadcast a task to multiple Coders — assign to ONE, notify ONE
-4. Planner under the exception rule (no Manager/no Coders) must STILL update the workboard before starting work
+4. Coders self-assign from the workboard when idle. Check Ready/Planned for available work.
 
-Sending tasks via TTY without workboard mediation caused a race condition (Mar 29, 2026) where two Coders worked the same task simultaneously. File locks prevented data corruption but the duplicate work was entirely avoidable. Planner also failed to move a completed task to Done (Scene tab removal, same day). These failures are preventable — use the tools.
+Sending tasks via TTY without workboard mediation caused a race condition (Mar 29, 2026) where two Coders worked the same task simultaneously. File locks prevented data corruption but the duplicate work was entirely avoidable. These failures are preventable — use the tools.
 
 **Pipeline cache after shader edits:** When a local Coder modifies any GLSL shader file and rebuilds Sample 60, they MUST delete `~/.local/share/urho3d/pipeline_cache.bin` after the build completes. Stale pipeline cache entries will serve old shader bytecode — deleting it ensures the next run recompiles all shaders fresh.
+
+**Claudette version bumps:** If you are going to build Claudette, increment the sub-version number in `CLAUDETTE_VERSION` (Claudette.h) FIRST. Odd sub-version numbers indicate a beta version, even sub-version numbers indicate a Release Candidate.
 
 ## Repository Structure
 

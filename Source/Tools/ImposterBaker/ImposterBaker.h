@@ -36,4 +36,6 @@ private:
 
     /// L-system mode: species name (oak, pine, eucalyptus) or empty for model mode.
     String ltreeSpecies_;
+    /// If non-empty, save the generated model to this path and exit.
+    String saveModelPath_;
 };

@@ -113,8 +113,48 @@ void LineEdit::OnClickBegin(const IntVector2& position, const IntVector2& screen
 void LineEdit::OnDoubleClick(const IntVector2& position, const IntVector2& screenPosition, MouseButton button, MouseButtonFlags buttons, QualifierFlags qualifiers,
     Cursor* cursor)
 {
-    if (button == MOUSEB_LEFT)
+    if (button != MOUSEB_LEFT)
+        return;
+
+    // Double-click: select word under cursor
+    i32 pos = GetCharIndex(position);
+    if (pos == NINDEX)
+    {
         text_->SetSelection(0);
+        return;
+    }
+
+    const String& line = this->line_;
+    i32 wordStart = pos, wordEnd = pos;
+
+    while (wordStart > 0)
+    {
+        char c = line[wordStart - 1];
+        if (isalpha(c) || isdigit(c) || c == '_' || c == '-')
+            --wordStart;
+        else
+            break;
+    }
+    while (wordEnd < (i32)line.Length())
+    {
+        char c = line[wordEnd];
+        if (isalpha(c) || isdigit(c) || c == '_' || c == '-')
+            ++wordEnd;
+        else
+            break;
+    }
+
+    if (wordEnd > wordStart)
+        text_->SetSelection(wordStart, wordEnd - wordStart);
+    else
+        text_->SetSelection(0);  // Fallback: select all
+}
+
+void LineEdit::OnTripleClick(const IntVector2& position, const IntVector2& screenPosition, MouseButton button, MouseButtonFlags buttons, QualifierFlags qualifiers,
+    Cursor* cursor)
+{
+    if (button == MOUSEB_LEFT)
+        text_->SetSelection(0);  // Triple-click: select all (single-line)
 }
 
 void LineEdit::OnDragBegin(const IntVector2& position, const IntVector2& screenPosition, MouseButtonFlags buttons, QualifierFlags qualifiers,

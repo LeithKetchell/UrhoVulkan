@@ -31,22 +31,23 @@ String WorkboardBase::GetProjectRoot()
 
 String WorkboardBase::GetClaudeDir()
 {
-    return projectRoot_ + "Claude/";
+    return projectRoot_ + "Claude.disabled/";
 }
 
 // ============================================================================
 // UI Creation
 // ============================================================================
 
-void WorkboardBase::CreateWorkboardPanel(UIElement* parent, int x, int y, int w, int h)
+void WorkboardBase::CreateWorkboardPanel(UIElement* parent, float minX, float minY, float maxX, float maxY)
 {
     workboardPanel_ = parent->CreateChild<Window>("WorkboardPanel");
     workboardPanel_->SetStyle("Window");
-    workboardPanel_->SetPosition(x, y);
-    workboardPanel_->SetSize(w, h);
-    workboardPanel_->SetMovable(true);
-    workboardPanel_->SetResizable(true);
-    workboardPanel_->SetResizeBorder(IntRect(6, 6, 6, 6));
+    workboardPanel_->SetOpacity(0.6f);
+    workboardPanel_->SetEnableAnchor(true);
+    workboardPanel_->SetMinAnchor(minX, minY);
+    workboardPanel_->SetMaxAnchor(maxX, maxY);
+    workboardPanel_->SetMovable(false);
+    workboardPanel_->SetResizable(false);
     workboardPanel_->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
 
     auto* titleText = workboardPanel_->CreateChild<Text>("WBTitle");
@@ -56,23 +57,22 @@ void WorkboardBase::CreateWorkboardPanel(UIElement* parent, int x, int y, int w,
 
     workboardScroll_ = workboardPanel_->CreateChild<ScrollView>("WBScroll");
     workboardScroll_->SetStyleAuto();
-    workboardScroll_->SetFixedHeight(h - 30);
 
     workboardContent_ = new UIElement(context_);
     workboardContent_->SetLayout(LM_VERTICAL, 2);
-    workboardContent_->SetFixedWidth(w - 20);
     workboardScroll_->SetContentElement(workboardContent_);
 }
 
-void WorkboardBase::CreatePlanPanel(UIElement* parent, int x, int y, int w, int h)
+void WorkboardBase::CreatePlanPanel(UIElement* parent, float minX, float minY, float maxX, float maxY)
 {
     planPanel_ = parent->CreateChild<Window>("PlanPanel");
     planPanel_->SetStyle("Window");
-    planPanel_->SetPosition(x, y);
-    planPanel_->SetSize(w, h);
-    planPanel_->SetMovable(true);
-    planPanel_->SetResizable(true);
-    planPanel_->SetResizeBorder(IntRect(6, 6, 6, 6));
+    planPanel_->SetOpacity(0.6f);
+    planPanel_->SetEnableAnchor(true);
+    planPanel_->SetMinAnchor(minX, minY);
+    planPanel_->SetMaxAnchor(maxX, maxY);
+    planPanel_->SetMovable(false);
+    planPanel_->SetResizable(false);
     planPanel_->SetLayout(LM_VERTICAL, 2, IntRect(4, 4, 4, 4));
 
     auto* titleText = planPanel_->CreateChild<Text>("PlanTitle");
@@ -90,8 +90,6 @@ void WorkboardBase::CreatePlanPanel(UIElement* parent, int x, int y, int w, int 
     // Plan content (bottom ~70%)
     planContentScroll_ = planPanel_->CreateChild<ScrollView>("PlanScroll");
     planContentScroll_->SetStyleAuto();
-    int scrollHeight = h - 180;
-    planContentScroll_->SetFixedHeight(scrollHeight > 100 ? scrollHeight : 100);
     planContentScroll_->SetClipChildren(true);
     planContentScroll_->SetScrollBarsAutoVisible(true);
     auto* hBar = planContentScroll_->GetHorizontalScrollBar();
@@ -102,7 +100,6 @@ void WorkboardBase::CreatePlanPanel(UIElement* parent, int x, int y, int w, int 
     planContentText_->SetFont(font_, fontSize_);
     planContentText_->SetColor(Color(0.85f, 0.85f, 0.85f));
     planContentText_->SetWordwrap(true);
-    planContentText_->SetFixedWidth(w - 20);
     planContentText_->SetText("Select a plan file to view its contents.");
     planContentScroll_->SetContentElement(planContentText_);
 }
@@ -196,19 +193,28 @@ void WorkboardBase::RenderWorkboardUI()
 
 void WorkboardBase::AddSectionToUI(const WorkboardSection& section)
 {
-    Color titleColor(0.7f, 0.7f, 0.7f);
-    if (section.title.Contains("Ready"))
-        titleColor = Color(1.0f, 0.9f, 0.3f);
+    // VIBGYOR (reverse rainbow) evenly spaced top-to-bottom, Morgue is grey
+    Color titleColor(0.6f, 0.6f, 0.6f);  // default grey
+    if (section.title.Contains("Team"))
+        titleColor = Color(0.58f, 0.0f, 0.83f);  // Violet        (hue 270)
+    else if (section.title.Contains("Rules"))
+        titleColor = Color(0.29f, 0.0f, 0.93f);  // Indigo        (hue 251)
+    else if (section.title.Contains("Planned"))
+        titleColor = Color(0.0f, 0.45f, 1.0f);   // Blue          (hue 213)
+    else if (section.title.Contains("Ready"))
+        titleColor = Color(0.0f, 0.85f, 0.45f);  // Green         (hue 152)
     else if (section.title.Contains("In Progress"))
-        titleColor = Color(0.3f, 0.9f, 1.0f);
-    else if (section.title.Contains("Done"))
-        titleColor = Color(0.3f, 1.0f, 0.5f);
-    else if (section.title.Contains("Team"))
-        titleColor = Color(0.8f, 0.6f, 1.0f);
+        titleColor = Color(0.85f, 0.85f, 0.0f);  // Yellow        (hue  60)
     else if (section.title.Contains("Coder Status"))
-        titleColor = Color(0.3f, 0.9f, 1.0f);
+        titleColor = Color(1.0f, 0.65f, 0.0f);   // Amber-Orange  (hue  39)
+    else if (section.title.Contains("Done"))
+        titleColor = Color(1.0f, 0.40f, 0.0f);   // Orange        (hue  24)
     else if (section.title.Contains("Archive"))
-        titleColor = Color(0.5f, 0.5f, 0.5f);
+        titleColor = Color(1.0f, 0.20f, 0.0f);   // Red-Orange    (hue  12)
+    else if (section.title.Contains("Morgue"))
+        titleColor = Color(0.5f, 0.5f, 0.5f);    // Grey (dead)
+    else if (section.title.Contains("Shared"))
+        titleColor = Color(0.9f, 0.0f, 0.0f);    // Red           (hue   0)
 
     // Clickable section title
     auto* titleText = workboardContent_->CreateChild<Text>();
@@ -261,10 +267,8 @@ void WorkboardBase::AddSectionToUI(const WorkboardSection& section)
         String hdr = section.headers[h].ToLower().Trimmed();
         if (hdr == "pri")
             colWidths[h] = 30;
-        else if (hdr == "owner" || hdr == "started" || hdr == "completed")
-            colWidths[h] = 65;
-        else if (hdr == "review")
-            colWidths[h] = 75;
+        else if (hdr == "blocked by" || hdr == "outcome" || hdr == "learned")
+            colWidths[h] = 80;
         else
         {
             colWidths[h] = 0;
@@ -298,38 +302,91 @@ void WorkboardBase::AddSectionToUI(const WorkboardSection& section)
         cell->SetFixedWidth(colWidths[h]);
     }
 
-    // Data rows
+    // Identify which columns are "detail" (notes, summary, file) — these go in the dropdown
+    Vector<bool> isDetail;
+    isDetail.Resize(numCols, false);
+    for (unsigned h = 0; h < numCols; ++h)
+    {
+        String hdr = section.headers[h].ToLower().Trimmed();
+        if (hdr == "notes" || hdr == "summary" || hdr == "file" || hdr == "description")
+            isDetail[h] = true;
+    }
+
+    // ROYGBIV row colors — cycle through rainbow for each data row
+    static const Color roygbiv[] = {
+        Color(1.0f, 0.4f, 0.4f),   // Red
+        Color(1.0f, 0.65f, 0.25f), // Orange
+        Color(1.0f, 0.95f, 0.35f), // Yellow
+        Color(0.4f, 1.0f, 0.55f),  // Green
+        Color(0.4f, 0.65f, 1.0f),  // Blue
+        Color(0.55f, 0.35f, 0.9f), // Indigo
+        Color(0.8f, 0.45f, 1.0f),  // Violet
+    };
+
+    // Data rows — title line is clickable, detail columns hidden in dropdown
     for (unsigned r = 0; r < section.rows.Size(); ++r)
     {
         const WorkboardRow& row = section.rows[r];
+        Color rowColor = roygbiv[r % 7];
+
+        // Collect detail text from hidden columns
+        String detailText;
+        for (unsigned c = 0; c < row.cells.Size() && c < numCols; ++c)
+        {
+            if (isDetail[c])
+            {
+                String val = row.cells[c].Trimmed();
+                if (!val.Empty() && val != "\xe2\x80\x94" && val != "--")  // skip em-dash and double-dash placeholders
+                {
+                    if (!detailText.Empty()) detailText += "\n";
+                    detailText += section.headers[c] + ": " + val;
+                }
+            }
+        }
+        bool hasDetail = !detailText.Empty();
+
+        // Title row — shows non-detail columns inline
         auto* rowElem = content->CreateChild<UIElement>("DataRow");
         rowElem->SetLayout(LM_HORIZONTAL, 2);
+        if (hasDetail)
+            rowElem->SetEnabled(true);  // clickable
 
         for (unsigned c = 0; c < row.cells.Size() && c < numCols; ++c)
         {
+            if (isDetail[c])
+                continue;  // hidden — goes in dropdown
+
             auto* cell = rowElem->CreateChild<Text>();
             cell->SetFont(font_, fontSize_ - 1);
             cell->SetText(row.cells[c].Trimmed());
             cell->SetFixedWidth(colWidths[c]);
             cell->SetWordwrap(true);
 
-            String hdr = (c < numCols) ? section.headers[c].ToLower().Trimmed() : String::EMPTY;
-            if (hdr == "review")
-            {
-                String val = row.cells[c].Trimmed().ToLower();
-                if (val.Contains("accepted"))
-                    cell->SetColor(Color(0.3f, 1.0f, 0.5f));
-                else if (val.Contains("pending"))
-                    cell->SetColor(Color(1.0f, 0.9f, 0.3f));
-                else if (val.Contains("unacceptable"))
-                    cell->SetColor(Color(1.0f, 0.3f, 0.3f));
-                else
-                    cell->SetColor(Color(0.5f, 0.5f, 0.5f));
-            }
+            // Color blocked_by red if non-empty
+            String hdr = section.headers[c].ToLower().Trimmed();
+            if (hdr == "blocked by" && !row.cells[c].Trimmed().Empty())
+                cell->SetColor(Color(1.0f, 0.4f, 0.3f));
             else
             {
-                cell->SetColor(Color(0.8f, 0.8f, 0.8f));
+                cell->SetColor(rowColor);
             }
+        }
+
+        // Detail dropdown — hidden by default, toggled on click
+        if (hasDetail)
+        {
+            auto* detailElem = content->CreateChild<UIElement>("DetailDrop");
+            detailElem->SetLayout(LM_VERTICAL, 1, IntRect(20, 2, 4, 2));
+            detailElem->SetVisible(false);
+
+            auto* detailLabel = detailElem->CreateChild<Text>();
+            detailLabel->SetFont(font_, fontSize_ - 2);
+            detailLabel->SetText(detailText);
+            detailLabel->SetColor(Color(0.65f, 0.65f, 0.65f));
+            detailLabel->SetWordwrap(true);
+
+            rowElem->SetVar("SectionContent", detailElem);
+            SubscribeToEvent(rowElem, E_CLICK, URHO3D_HANDLER(WorkboardBase, HandleSectionToggle));
         }
     }
 

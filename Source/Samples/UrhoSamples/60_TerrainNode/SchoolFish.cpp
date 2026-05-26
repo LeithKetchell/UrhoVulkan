@@ -6,13 +6,25 @@
 
 #include <Urho3D/Core/Context.h>
 #include <Urho3D/Graphics/StaticModel.h>
+#include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
 #include <Urho3D/Scene/Node.h>
 #include <Urho3D/Math/MathDefs.h>
+#include <Urho3D/IO/Log.h>
 
 SchoolFish::SchoolFish(Context* context) :
     Fish(context)
 {
+    // School fish defaults — smaller, faster, wider vision (prey)
+    dbSwimSpeed_ = 0.8f;
+    swimSpeed_ = 0.8f;
+    dbWanderRadius_ = 40.0f;
+    boundary_ = 40.0f;
+    maturityAge_ = 45.0f;  // School fish mature faster than big fish
+    InitBehaviorStats(0.8f, 40.0f, 15.0f, 0.3f, false, false, 0.0f);
+
+    // Stagger breed timers so not all fish try to breed on the same frame
+    breedTimer_ = Random(BREED_INTERVAL_BASE * 0.5f, BREED_INTERVAL_BASE * 1.5f);
 }
 
 void SchoolFish::RegisterObject(Context* context)
@@ -23,6 +35,18 @@ void SchoolFish::RegisterObject(Context* context)
 void SchoolFish::Start()
 {
     Fish::Start();
+    adultScale_ = node_->GetScale().x_;  // capture adult size before growth kicks in
+}
+
+void SchoolFish::Stop()
+{
+    // Decrement live population count when this fish is removed from the scene.
+    // totalCaught is incremented only by explicit fishing/harvest actions (not here)
+    // to distinguish natural death/cleanup from player-caused depletion.
+    if (popState_ && popState_->currentCount > 0)
+        popState_->currentCount--;
+
+    Fish::Stop();
 }
 
 void SchoolFish::ComputeSchoolState(Vector3& centroid, Vector3& avgHeading, unsigned& count)
@@ -78,6 +102,36 @@ void SchoolFish::ComputeSchoolState(Vector3& centroid, Vector3& avgHeading, unsi
 
 void SchoolFish::Update(float timeStep)
 {
+    // Age tick (inherited, but we also run breeding)
+    age_ += timeStep;
+    if (!mature_ && age_ >= maturityAge_)
+        mature_ = true;
+
+    // Natural death (old age)
+    if (age_ >= maxAge_)
+    {
+        node_->Remove();
+        return;
+    }
+
+    // Visual growth — scale represents age continuously
+    {
+        float growthFrac = Clamp(age_ / graduationAge_, 0.0f, 1.0f);
+        float scale = adultScale_ * Lerp(0.6f, 2.0f, growthFrac);  // grow to 2x school scale at graduation
+        node_->SetScale(scale);
+    }
+
+    // Graduation — leave the school and become a solitary Fish
+    if (age_ >= graduationAge_)
+    {
+        Graduate();
+        return;  // this component is now removed
+    }
+
+    // Breeding attempt (only mature fish try)
+    if (mature_)
+        TryBreed(timeStep);
+
     Vector3 pos = node_->GetWorldPosition();
     Quaternion rot = node_->GetWorldRotation();
     Vector3 forward = rot * Vector3::BACK;
@@ -290,4 +344,126 @@ void SchoolFish::Update(float timeStep)
     pos.y_ = Clamp(pos.y_, floorY, ceilY);
 
     node_->SetPosition(pos);
+}
+
+void SchoolFish::Graduate()
+{
+    // Swap from SchoolFish to solitary Fish on the same node.
+    // Keep position, rotation, model — just change the AI component.
+    Node* n = node_;
+
+    // Capture state before removal
+    Node* camNode = GetCameraNode();
+    FishSpatialHash* hash = spatialHash_;
+    float currentAge = age_;
+    float remainingLife = maxAge_ - age_;
+
+    // Remove this SchoolFish component (triggers Stop → pop decrement)
+    n->RemoveComponent(this);
+
+    // Attach solitary Fish component
+    auto* fish = n->CreateComponent<Fish>();
+    fish->SetCameraNode(camNode);
+    fish->SetSpatialHash(hash);
+
+    // Transfer age — the fish continues aging from where it was
+    // Set a lifespan relative to remaining life
+    fish->SetMaxAge(currentAge + remainingLife);
+
+    // Solitary fish are predators with wider wander radius
+    fish->InitFromDB(8, "Models/UrhoFish.mdl", 0.5f, 75.0f, 20.0f, 0.5f, true);
+
+    // Materials — use the base material already on the model
+    auto* sm = n->GetComponent<StaticModel>();
+    if (sm)
+    {
+        Material* mat = sm->GetMaterial();
+        fish->SetMaterials(mat, mat, mat);
+    }
+
+    // Fire FishBorn event so TerrainNode tracks the graduated fish
+    using namespace FishBorn;
+    VariantMap& eventData = fish->GetEventDataMap();
+    eventData[P_NODE] = n;
+    eventData[P_SCHOOLID] = (unsigned)0xFFFFFFFF;  // sentinel: not a school fish
+    fish->SendEvent(E_FISHBORN, eventData);
+
+    URHO3D_LOGDEBUG("SchoolFish graduated to solitary Fish");
+}
+
+void SchoolFish::TryBreed(float timeStep)
+{
+    if (!popState_)
+        return;
+
+    // Check breeding multiplier — 0 means population collapse, no breeding
+    float breedMult = popState_->GetBreedingMultiplier();
+    if (breedMult <= 0.0f)
+        return;
+
+    // At or above cap — no breeding
+    if (popState_->currentCount >= popState_->populationCap)
+        return;
+
+    // Tick breed timer (faster when stressed)
+    breedTimer_ -= timeStep * breedMult;
+    if (breedTimer_ > 0.0f)
+        return;
+
+    // Reset timer for next attempt
+    breedTimer_ = BREED_INTERVAL_BASE + Random(-5.0f, 5.0f);
+
+    // Need at least 2 mature fish in the school to breed
+    // Use the school state cache — memberCount includes all fish (mature or not)
+    // but requiring 2+ total with ourselves mature is a sufficient approximation
+    if (schoolCache_)
+    {
+        SchoolState& state = schoolCache_->GetState(schoolID_);
+        if (state.memberCount < 2)
+            return;
+    }
+
+    // Spawn a juvenile near our position
+    Node* juvenile = node_->GetScene()->CreateTemporaryChild("SchoolFish", LOCAL);
+    if (!juvenile)
+        return;
+
+    Vector3 pos = node_->GetWorldPosition();
+    Vector3 offset(Random(-1.0f, 1.0f), Random(-0.2f, 0.2f), Random(-1.0f, 1.0f));
+    juvenile->SetPosition(pos + offset);
+    juvenile->SetRotation(Quaternion(0.0f, Random(0.0f, 360.0f), 0.0f));
+    juvenile->SetScale(node_->GetScale());
+
+    // Copy model from parent
+    auto* parentModel = node_->GetComponent<StaticModel>();
+    if (parentModel)
+    {
+        auto* sm = juvenile->CreateComponent<StaticModel>();
+        sm->SetModel(parentModel->GetModel(), true);
+        sm->SetMaterial(parentModel->GetMaterial());
+        sm->SetCastShadows(false);
+    }
+
+    // Attach SchoolFish component with same school membership
+    auto* baby = juvenile->CreateComponent<SchoolFish>();
+    baby->SetSchoolID(schoolID_);
+    baby->SetCameraNode(GetCameraNode());
+    baby->SetSpatialHash(spatialHash_);
+    baby->SetSchoolCache(schoolCache_);
+    baby->SetPopulationState(popState_);
+    if (sunLightNode_)
+        baby->SetSunLightNode(sunLightNode_);
+
+    // Update population count
+    popState_->currentCount++;
+
+    // Notify TerrainNode to track the new node in fishNodes_ / spatial hash
+    using namespace FishBorn;
+    VariantMap& eventData = GetEventDataMap();
+    eventData[P_NODE] = juvenile;
+    eventData[P_SCHOOLID] = schoolID_;
+    SendEvent(E_FISHBORN, eventData);
+
+    URHO3D_LOGDEBUGF("SchoolFish: juvenile spawned in school %u (pop %d/%d)",
+                     schoolID_, popState_->currentCount, popState_->populationCap);
 }

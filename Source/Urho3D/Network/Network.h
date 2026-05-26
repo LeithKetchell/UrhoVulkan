@@ -90,13 +90,13 @@ public:
     SharedPtr<HttpRequest> MakeHttpRequest(const String& url, const String& verb = String::EMPTY, const Vector<String>& headers = Vector<String>(), const String& postData = String::EMPTY);
     /// Send the deferred identity message (called after key exchange completes).
     void SendIdentityNow();
-    /// Set PAKE credentials for the next connection. Hashes password with BLAKE2b.
+    /// Set PAKE credentials for the next connection. Hashes password with SHA-256.
     void SetCredentials(const String& username, const String& password);
     /// Return whether PAKE credentials have been set.
     bool HasCredentials() const { return !pakeUsername_.Empty(); }
     /// Return the PAKE username.
     const String& GetPakeUsername() const { return pakeUsername_; }
-    /// Return the 32-byte BLAKE2b password hash.
+    /// Return the 32-byte SHA-256 password hash.
     const Vector<unsigned char>& GetPasswordHash() const { return pakePasswordHash_; }
     /// Clear stored PAKE credentials.
     void ClearCredentials();
@@ -227,7 +227,7 @@ private:
     bool identityPending_;
     /// PAKE username for the next connection.
     String pakeUsername_;
-    /// PAKE 32-byte BLAKE2b password hash.
+    /// PAKE 32-byte SHA-256 password hash.
     Vector<unsigned char> pakePasswordHash_;
     /// Peer connections (GUID → Connection) for NAT punchthrough peers.
     HashMap<String, SharedPtr<Connection>> peerConnections_;

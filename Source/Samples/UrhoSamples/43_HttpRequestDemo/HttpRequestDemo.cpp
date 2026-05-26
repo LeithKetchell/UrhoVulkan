@@ -89,8 +89,7 @@ void HttpRequestDemo::HandleUpdate(StringHash eventType, VariantMap& eventData)
     // Update profiler display
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(eventData[P_TIMESTEP].GetFloat());
-        profilerUI_->Update();
+        profilerUI_->Update(eventData[P_TIMESTEP].GetFloat());
     }
 
     auto* network = GetSubsystem<Network>();

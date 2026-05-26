@@ -11,6 +11,9 @@
 #include <Urho3D/IO/Log.h>
 #include <Urho3D/Resource/Image.h>
 #include <Urho3D/Resource/ResourceCache.h>
+#ifdef URHO3D_DATABASE_SQLITE
+#include <Urho3D/Game/GameDB.h>
+#endif
 
 #include <Urho3D/DebugNew.h>
 
@@ -40,7 +43,31 @@ Vector2 ResourceMap::PixelToWorld(int px, int pz) const
     return Vector2(x, z);
 }
 
-void ResourceMap::Generate(Terrain* terrain, EcosystemManager* eco, float waterLevel)
+/// Classify terrain at a point into a gather_sources terrain string.
+static String ClassifyPixelTerrain(float height, float slope, float waterLevel,
+                                   float grassDensity, float shrubDensity, unsigned char treeMaturity)
+{
+    float distToWater = height - waterLevel;
+    if (height < waterLevel)
+        return "water";
+    if (distToWater < 5.0f && slope < 0.15f)
+        return "riverbank";
+    if (height > 15.0f && slope > 0.1f)
+        return "mountain";
+    if (treeMaturity > 60)
+        return "forest";
+    if (grassDensity > 0.3f)
+        return "grassland";
+    return "grassland";  // default
+}
+
+/// Check if a pixel's terrain matches a gather source's terrain field.
+static bool PixelMatchesTerrain(const String& sourceTerrain, const String& pixelTerrain)
+{
+    return sourceTerrain == "any" || sourceTerrain == pixelTerrain;
+}
+
+void ResourceMap::Generate(Terrain* terrain, EcosystemManager* eco, float waterLevel, GameDB* gameDB)
 {
     if (!terrain)
     {
@@ -70,27 +97,83 @@ void ResourceMap::Generate(Terrain* terrain, EcosystemManager* eco, float waterL
 
     resourceCount_ = 0;
 
+    // --- DB-driven placement rules ---
+    struct PlacementRule
+    {
+        ResourceType resType;
+        String terrain;
+        float minHeight, maxHeight;
+        unsigned char baseQty;
+        unsigned char flags;
+        float spawnChance;   // base probability per pixel
+    };
+    Vector<PlacementRule> rules;
+    bool usingDB = false;
+
+#ifdef URHO3D_DATABASE_SQLITE
+    if (gameDB && gameDB->IsOpen())
+    {
+        Vector<GatherSourceInfo> sources = gameDB->GetAllGatherSources();
+        for (unsigned i = 0; i < sources.Size(); ++i)
+        {
+            ResourceType rt = ItemIdToResourceType(sources[i].itemId);
+            if (rt == RES_NONE)
+                continue;
+
+            PlacementRule rule;
+            rule.resType = rt;
+            rule.terrain = sources[i].terrain;
+            rule.minHeight = sources[i].minHeight;
+            rule.maxHeight = sources[i].maxHeight;
+            rule.baseQty = (unsigned char)Max(1, sources[i].quantity);
+            rule.flags = RFLAG_RESPAWNABLE;
+            if (sources[i].seasonal != "any" && !sources[i].seasonal.Empty())
+                rule.flags |= RFLAG_SEASONAL;
+            // Derive spawn density: rarer resources (longer respawn) spawn less densely
+            rule.spawnChance = sources[i].respawn > 1000.0f ? 0.01f :
+                               sources[i].respawn > 300.0f  ? 0.02f : 0.03f;
+            rules.Push(rule);
+        }
+        if (!rules.Empty())
+        {
+            usingDB = true;
+            URHO3D_LOGINFOF("ResourceMap: using %u DB-driven placement rules from gather_sources", rules.Size());
+        }
+    }
+#endif
+
+    if (!usingDB)
+    {
+        // Hardcoded fallback — original placement rules
+        URHO3D_LOGINFO("ResourceMap: using hardcoded placement rules (no DB or empty gather_sources)");
+        rules.Push({RES_STONE,    "any",       -999.f, 999.f, 2, RFLAG_RESPAWNABLE, 0.02f});
+        rules.Push({RES_FLINT,    "mountain",   15.f,  999.f, 1, RFLAG_RESPAWNABLE, 0.01f});
+        rules.Push({RES_STICK,    "forest",    -999.f, 999.f, 2, RFLAG_RESPAWNABLE, 0.04f});
+        rules.Push({RES_LOG,      "forest",    -999.f, 999.f, 1, RFLAG_RESPAWNABLE, 0.015f});
+        rules.Push({RES_BERRIES,  "forest",    -999.f, 999.f, 3, RFLAG_RESPAWNABLE | RFLAG_SEASONAL, 0.02f});
+        rules.Push({RES_FIBER,    "grassland", -999.f, 999.f, 2, RFLAG_RESPAWNABLE, 0.03f});
+        rules.Push({RES_CLAY,     "riverbank", -999.f,   8.f, 3, RFLAG_RESPAWNABLE, 0.04f});
+        rules.Push({RES_SOFTWOOD, "any",       -999.f, 999.f, 2, RFLAG_RESPAWNABLE, 0.03f});
+        rules.Push({RES_HARDWOOD, "forest",    -999.f, 999.f, 1, RFLAG_RESPAWNABLE, 0.02f});
+    }
+
     for (int pz = 0; pz < MAP_SIZE; ++pz)
     {
         for (int px = 0; px < MAP_SIZE; ++px)
         {
             Vector2 world = PixelToWorld(px, pz);
             float height = terrain->GetHeight(Vector3(world.x_, 0.f, world.y_));
-            float distToWater = height - waterLevel;
 
-            // Skip underwater pixels
+            // Skip underwater pixels (unless a 'water' terrain rule exists)
             if (height < waterLevel)
                 continue;
 
-            // Slope estimate from terrain normal
             Vector3 normal = terrain->GetNormal(Vector3(world.x_, 0.f, world.y_));
-            float slope = 1.0f - normal.y_;  // 0 = flat, 1 = vertical
+            float slope = 1.0f - normal.y_;
 
-            // Ecosystem data (if available)
             float grassDensity = 0.f;
             float shrubDensity = 0.f;
             unsigned char treeMaturity = 0;
-
             if (eco)
             {
                 grassDensity  = eco->SampleGrassDensity(world.x_, world.y_);
@@ -98,99 +181,36 @@ void ResourceMap::Generate(Terrain* terrain, EcosystemManager* eco, float waterL
                 treeMaturity  = eco->SampleTreeMaturity(world.x_, world.y_);
             }
 
-            // Score each resource type — pick dominant, add randomness
-            // Most pixels stay RES_NONE. Resources are sparse.
+            String pixelTerrain = ClassifyPixelTerrain(height, slope, waterLevel,
+                                                        grassDensity, shrubDensity, treeMaturity);
+
             float roll = nextRand();
             ResourceType chosen = RES_NONE;
             unsigned char qty = 0;
-            unsigned char variant = 0;
             unsigned char flags = 0;
 
-            // Stone: high altitude + steep slope (mountain scree) — original concentration
-            if (height > 15.f && slope > 0.15f && roll < 0.03f)
+            // Evaluate rules in order — first match wins
+            for (unsigned r = 0; r < rules.Size(); ++r)
             {
-                chosen = RES_STONE;
-                qty = 1 + (unsigned char)(nextRand() * 2.f);
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Stone: plentiful uniform spawn anywhere above waterline (Phase 1b — Fire system).
-            // Same item as mountain scree (Rough Stone, item 1). Fire-pit construction needs
-            // ~5 stones per pit; this keeps gathering quick instead of forcing a mountain hike.
-            else if (slope < 0.5f && roll < 0.018f)
-            {
-                chosen = RES_STONE;
-                qty = 1 + (unsigned char)(nextRand() * 2.f);
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Flint: mountain biome, altitude > 15m, rarer than stone
-            else if (height > 15.f && slope > 0.1f && roll < 0.01f)
-            {
-                chosen = RES_FLINT;
-                qty = 1 + (unsigned char)(nextRand() * 1.f);
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Log: near large trees (high maturity)
-            else if (treeMaturity > 200 && roll < 0.02f)
-            {
-                chosen = RES_LOG;
-                qty = 1;
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Stick: under trees (moderate maturity)
-            else if (treeMaturity > 80 && roll < 0.05f)
-            {
-                chosen = RES_STICK;
-                qty = 1 + (unsigned char)(nextRand() * 2.f);
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Berries: forest with shrub density
-            else if (shrubDensity > 0.3f && treeMaturity > 40 && roll < 0.02f)
-            {
-                chosen = RES_BERRIES;
-                qty = 2 + (unsigned char)(nextRand() * 3.f);
-                flags = RFLAG_RESPAWNABLE | RFLAG_SEASONAL;
-            }
-            // Fiber: grassland/riverbank with grass density
-            else if (grassDensity > 0.4f && distToWater < 10.f && roll < 0.03f)
-            {
-                chosen = RES_FIBER;
-                qty = 1 + (unsigned char)(nextRand() * 3.f);
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Clay: within 5m of waterline + low slope
-            else if (distToWater > 0.f && distToWater < 5.f && slope < 0.1f && roll < 0.04f)
-            {
-                chosen = RES_CLAY;
-                qty = 2 + (unsigned char)(nextRand() * 3.f);
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Hardwood: bias toward old/large trees (high maturity); fewer per pixel.
-            // Phase 1b — Fire system. "Trees are decorative spawn bias, not harvested entities."
-            else if (treeMaturity > 200 && roll < 0.025f)
-            {
-                chosen = RES_HARDWOOD;
-                qty = 1 + (unsigned char)(nextRand() * 1.f);
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Softwood: bias toward any tree presence; more plentiful than hardwood.
-            else if (treeMaturity > 60 && roll < 0.05f)
-            {
-                chosen = RES_SOFTWOOD;
-                qty = 1 + (unsigned char)(nextRand() * 2.f);
-                flags = RFLAG_RESPAWNABLE;
-            }
-            // Softwood (uniform fallback): any above-waterline pixel, low rate.
-            // Plan: "Uniform distribution above waterline."
-            else if (slope < 0.4f && roll < 0.012f)
-            {
-                chosen = RES_SOFTWOOD;
-                qty = 1 + (unsigned char)(nextRand() * 1.f);
-                flags = RFLAG_RESPAWNABLE;
+                const PlacementRule& rule = rules[r];
+                if (!PixelMatchesTerrain(rule.terrain, pixelTerrain))
+                    continue;
+                if (height < rule.minHeight || height > rule.maxHeight)
+                    continue;
+                if (roll < rule.spawnChance)
+                {
+                    chosen = rule.resType;
+                    qty = rule.baseQty + (unsigned char)(nextRand() * (float)rule.baseQty);
+                    flags = rule.flags;
+                    break;
+                }
+                // Consume probability band so later rules get independent rolls
+                roll -= rule.spawnChance;
             }
 
             if (chosen != RES_NONE)
             {
-                variant = (unsigned char)(nextRand() * 255.f);
+                unsigned char variant = (unsigned char)(nextRand() * 255.f);
                 resourceImage_->SetPixelInt(px, pz, (unsigned)chosen | ((unsigned)qty << 8) |
                     ((unsigned)variant << 16) | ((unsigned)flags << 24));
                 ++resourceCount_;
@@ -198,8 +218,8 @@ void ResourceMap::Generate(Terrain* terrain, EcosystemManager* eco, float waterL
         }
     }
 
-    URHO3D_LOGINFOF("ResourceMap: generated %u resource pixels over %.0fx%.0f terrain",
-                    resourceCount_, terrainSizeX_, terrainSizeZ_);
+    URHO3D_LOGINFOF("ResourceMap: generated %u resource pixels over %.0fx%.0f terrain (%s rules)",
+                    resourceCount_, terrainSizeX_, terrainSizeZ_, usingDB ? "DB-driven" : "hardcoded");
 }
 
 bool ResourceMap::LoadMap(const String& path)

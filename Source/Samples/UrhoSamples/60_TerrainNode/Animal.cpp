@@ -3,6 +3,7 @@
 #include "Animal.h"
 #include "BuildingSystem.h"
 
+#include <Urho3D/Game/GameDB.h>
 #include <Urho3D/Core/Context.h>
 #include <Urho3D/Graphics/AnimatedModel.h>
 #include <Urho3D/Graphics/AnimationController.h>
@@ -406,24 +407,9 @@ bool Animal::IsBlockedByWall(const Vector3& from, const Vector3& to) const
         if (distFrom <= radius)
             continue;  // already inside, let them move out
 
-        // Check wall_strength — does this wall block this creature?
-        // Find building type for tier-based strength lookup
-        for (unsigned t = 0; t < types.Size(); ++t)
-        {
-            if (types[t].id == pb.buildingTypeId)
-            {
-                // Simple tier-based blocking: tier 1 blocks small, tier 2 blocks medium, tier 3 blocks all
-                // Creature IDs from seed data: 1=rabbit, 2=deer, 3=fox, 4=boar, 5=wolf, 6=bear
-                int tier = types[t].tier;
-                if (tier >= 3)
-                    return true;  // stone blocks everything
-                if (tier >= 2 && creatureId <= 5)
-                    return true;  // wood blocks everything except bear
-                if (tier >= 1 && (creatureId == 1 || creatureId == 3))
-                    return true;  // stick blocks rabbit and fox
-                break;
-            }
-        }
+        // Check wall_strength via GameDB lookup
+        if (gameDB_ && gameDB_->DoesWallBlock(pb.buildingTypeId, creatureId))
+            return true;
     }
 
     return false;

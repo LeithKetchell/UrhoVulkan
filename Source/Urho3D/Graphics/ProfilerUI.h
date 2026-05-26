@@ -26,8 +26,8 @@ public:
     /// Initialize profiler UI
     void Initialize(UI* ui, VulkanProfiler* profiler, Graphics* graphics = nullptr);
 
-    /// Update profiler display
-    void Update();
+    /// Update profiler display (throttled to ~4Hz to avoid per-frame SetText overhead)
+    void Update(float timeStep = 0.0f);
 
     /// Show/hide profiler UI
     void SetVisible(bool visible);
@@ -60,6 +60,9 @@ private:
     /// Text element for instance stats
     SharedPtr<Text> instanceStatsText_;
 
+    /// Text element for renderer stats (batches, triangles, pipeline changes)
+    SharedPtr<Text> rendererStatsText_;
+
     /// Text element for camera position
     SharedPtr<Text> cameraPosText_;
 
@@ -68,6 +71,9 @@ private:
 
     /// Graphics reference for instance stats
     Graphics* graphics_;
+
+    /// Accumulator for throttling text updates (seconds)
+    float updateAccum_ = 0.0f;
 };
 
 } // namespace Urho3D

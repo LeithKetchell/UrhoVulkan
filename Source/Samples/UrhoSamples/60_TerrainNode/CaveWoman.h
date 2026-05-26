@@ -36,6 +36,13 @@ protected:
     // Shared caveman rig — reuses the same pickup anim as CaveMan for the
     // brief reach/stoke gesture overlaid on SIT arrival.
     String GetTendAnim() const override { return String(CaveAnims::DIR) + "Caveman_Picking_Up.ani"; }
+    String GetTreadWaterAnim() const override { return String(CaveAnims::DIR) + CaveAnims::TREAD_WATER; }
+    String GetCrawlAnim() const override { return String(CaveAnims::DIR) + CaveAnims::CRAWL; }
+    String GetStandingAnim() const override { return String(CaveAnims::DIR) + CaveAnims::STANDING; }
+    String GetDisappointedAnim() const override { return String(CaveAnims::DIR) + CaveAnims::DISAPPOINTED; }
+    String GetDanceAnim() const override { return String(CaveAnims::DIR) + CaveAnims::SAMBA; }
+    String GetShearAnim() const override { return String(CaveAnims::DIR) + "Caveman_Picking_Up.ani"; }
+    String GetFishAnim() const override { return String(CaveAnims::DIR) + "Caveman_Sitting_Idle.ani"; }
 
     bool HasVitals() const override { return true; }
     int GetCreatureId() const override { return 21; }

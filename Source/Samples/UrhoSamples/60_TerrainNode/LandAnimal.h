@@ -25,20 +25,22 @@ public:
     /// Set building system reference for wall collision checks.
     void SetBuildingSystem(BuildingSystem* bs) { buildingSystem_ = bs; }
 
+    /// Set GameDB reference for DB-driven wall blocking lookups.
+    void SetGameDB(GameDB* db) { gameDB_ = db; }
+
     /// Set spatial hash for vision neighbor queries.
     void SetSpatialHash(LandAnimalSpatialHash* hash) { spatialHash_ = hash; }
 
     /// Set ecosystem manager for food queries (Phase 4).
     void SetEcosystem(class EcosystemManager* eco) { ecosystem_ = eco; }
 
-    /// Food preference weights (Phase 4). Override per species.
+    /// Food preference weights (Phase 4). DB value if set, else subclass override.
     /// Predators return 0,0 (don't eat vegetation).
-    virtual float GetFoodGrassWeight() const { return 0.6f; }
+    virtual float GetFoodGrassWeight() const { return dbFoodGrassWt_ >= 0.0f ? dbFoodGrassWt_ : 0.6f; }
     virtual float GetFoodShrubWeight() const { return 0.3f; }
 
-    /// True if this species investigates corpses (wolves, foxes, huskies).
-    /// Override = true in scavenger species headers. Default false = ignores death sites.
-    virtual bool IsScavenger() const { return false; }
+    /// True if this species investigates corpses. DB value if set, else subclass override.
+    virtual bool IsScavenger() const { return dbIsScavenger_ >= 0 ? (dbIsScavenger_ != 0) : false; }
 
     /// Find the head bone in a skeleton purely by structure: walk from
     /// the root, at each step pick the child whose bind-pose world Y is
@@ -164,6 +166,8 @@ private:
 
     /// Building system for wall collision.
     BuildingSystem* buildingSystem_{nullptr};
+    /// GameDB for wall_strength lookups.
+    GameDB* gameDB_{nullptr};
 
     /// Spatial hash for vision neighbor queries.
     LandAnimalSpatialHash* spatialHash_{nullptr};

@@ -14,6 +14,7 @@
 #include <Urho3D/Network/Protocol.h>
 #include <Urho3D/Resource/ResourceCache.h>
 #include <Urho3D/Scene/Scene.h>
+#include <Urho3D/Game/GameDB.h>
 
 BuildingSystem::BuildingSystem(Context* context)
     : Component(context)
@@ -56,17 +57,23 @@ SnapResult BuildingSystem::FindSnapPoint(const Vector3& cursorPos, int buildingT
         if (existing.snapType.Empty() || existing.snapType == "free" || existing.snapType == "interior")
             continue;
 
-        // Check if there's a snap rule for this combination
-        const SnapRule* rule = nullptr;
-        for (unsigned r = 0; r < snapRules_.Size(); ++r)
+        // Check if there's a snap rule for this combination via GameDB
+        String alignStr;
+        if (gameDB_)
+            alignStr = gameDB_->GetSnapAlign(newInfo->snapType, existing.snapType);
+        else
         {
-            if (snapRules_[r].fromType == newInfo->snapType && snapRules_[r].toType == existing.snapType)
+            // Fallback to cached rules if no DB
+            for (unsigned r = 0; r < snapRules_.Size(); ++r)
             {
-                rule = &snapRules_[r];
-                break;
+                if (snapRules_[r].fromType == newInfo->snapType && snapRules_[r].toType == existing.snapType)
+                {
+                    alignStr = snapRules_[r].align;
+                    break;
+                }
             }
         }
-        if (!rule)
+        if (alignStr.Empty())
             continue;
 
         // Compute the two endpoint anchors of the existing building
@@ -91,7 +98,7 @@ SnapResult BuildingSystem::FindSnapPoint(const Vector3& cursorPos, int buildingT
                 snapPos.y_ = terrain->GetHeight(snapPos);
 
             float snapRot = existing.rotation;
-            if (rule->align == "corner")
+            if (alignStr == "corner")
                 snapRot += 90.0f;
 
             result.found = true;
@@ -110,7 +117,7 @@ SnapResult BuildingSystem::FindSnapPoint(const Vector3& cursorPos, int buildingT
                 snapPos.y_ = terrain->GetHeight(snapPos);
 
             float snapRot = existing.rotation;
-            if (rule->align == "corner")
+            if (alignStr == "corner")
                 snapRot -= 90.0f;
 
             result.found = true;
@@ -511,6 +518,15 @@ void BuildingSystem::RequestRepair(Connection* serverConn, int placedBuildingId)
         buf.WriteI32(placedBuildingId);
         serverConn->SendMessage(MSG_REPAIR, true, true, buf);
     }
+    else
+    {
+        PlacedBuilding* pb = FindPlacedMutable(placedBuildingId);
+        if (pb)
+        {
+            HandleBuildingHpUpdate(placedBuildingId, pb->maxHp);
+            URHO3D_LOGINFOF("Building %d repaired (offline): hp=%d", placedBuildingId, pb->maxHp);
+        }
+    }
 }
 
 void BuildingSystem::RequestSleep(Connection* serverConn, int placedBuildingId)
@@ -521,6 +537,10 @@ void BuildingSystem::RequestSleep(Connection* serverConn, int placedBuildingId)
         buf.WriteI32(placedBuildingId);
         serverConn->SendMessage(MSG_SLEEP, true, true, buf);
     }
+    else
+    {
+        URHO3D_LOGINFOF("Sleep at building %d (offline)", placedBuildingId);
+    }
 }
 
 void BuildingSystem::RequestSetRespawn(Connection* serverConn, int placedBuildingId)
@@ -530,6 +550,13 @@ void BuildingSystem::RequestSetRespawn(Connection* serverConn, int placedBuildin
         VectorBuffer buf;
         buf.WriteI32(placedBuildingId);
         serverConn->SendMessage(MSG_SET_RESPAWN, true, true, buf);
+    }
+    else
+    {
+        PlacedBuilding* pb = FindPlacedMutable(placedBuildingId);
+        if (pb)
+            URHO3D_LOGINFOF("Respawn set at building %d (offline) pos=(%.1f,%.1f,%.1f)",
+                placedBuildingId, pb->position.x_, pb->position.y_, pb->position.z_);
     }
 }
 

@@ -31,6 +31,7 @@ struct btSoftBodyWorldInfo;
 namespace Urho3D
 {
 
+class AnimatedModel;
 class CollisionShape;
 class Deserializer;
 class Constraint;
@@ -277,6 +278,10 @@ public:
     void AddRigidBody(RigidBody* body);
     /// Remove a rigid body. Called by RigidBody.
     void RemoveRigidBody(RigidBody* body);
+    /// Register an AnimatedModel for pre-physics animation sync (kinematic bone bodies).
+    void AddPrePhysicsAnimModel(AnimatedModel* model);
+    /// Unregister an AnimatedModel from pre-physics animation sync.
+    void RemovePrePhysicsAnimModel(AnimatedModel* model);
     /// Add a collision shape to keep track of. Called by CollisionShape.
     void AddCollisionShape(CollisionShape* shape);
     /// Remove a collision shape. Called by CollisionShape.
@@ -375,6 +380,8 @@ private:
 
     /// Extra weak pointer to scene to allow for cleanup in case the world is destroyed before other components.
     WeakPtr<Scene> scene_;
+    /// AnimatedModels that need bone transforms synced before physics step.
+    Vector<WeakPtr<AnimatedModel>> prePhysicsAnimModels_;
     /// Rigid bodies in the world.
     Vector<RigidBody*> rigidBodies_;
     /// Collision shapes in the world.

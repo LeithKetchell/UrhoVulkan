@@ -22,6 +22,11 @@ namespace CaveAnims
     static const char* VICTORY = "Caveman_victory.ani";
     static const char* SCREAM  = "Caveman_scream.ani";
     static const char* JUMP    = "Caveman_jump.ani";
+    static const char* TREAD_WATER = "Caveman_Treading_Water.ani";
+    static const char* CRAWL  = "Caveman_Low_Crawl.ani";
+    static const char* STANDING = "Caveman_standing.ani";
+    static const char* DISAPPOINTED = "Caveman_isappointed.ani";
+    static const char* SAMBA  = "Caveman_samba.ani";
 
     // Variants — randomly picked each time
     static const char* EAT_VARIANTS[] = {
@@ -81,6 +86,13 @@ protected:
     // Brief reach/stoke gesture overlaid on SIT when arriving at the fire —
     // reuses an existing gather-style anim rather than a new asset.
     String GetTendAnim() const override { return String(CaveAnims::DIR) + "Caveman_Picking_Up.ani"; }
+    String GetTreadWaterAnim() const override { return String(CaveAnims::DIR) + CaveAnims::TREAD_WATER; }
+    String GetCrawlAnim() const override { return String(CaveAnims::DIR) + CaveAnims::CRAWL; }
+    String GetStandingAnim() const override { return String(CaveAnims::DIR) + CaveAnims::STANDING; }
+    String GetDisappointedAnim() const override { return String(CaveAnims::DIR) + CaveAnims::DISAPPOINTED; }
+    String GetDanceAnim() const override { return String(CaveAnims::DIR) + CaveAnims::SAMBA; }
+    String GetShearAnim() const override { return String(CaveAnims::DIR) + "Caveman_Picking_Up.ani"; }
+    String GetFishAnim() const override { return String(CaveAnims::DIR) + "Caveman_Sitting_Idle.ani"; }
 
     bool HasVitals() const override { return true; }
     int GetCreatureId() const override { return 20; }

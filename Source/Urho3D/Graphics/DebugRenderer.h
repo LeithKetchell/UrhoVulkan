@@ -132,6 +132,8 @@ public:
     void AddCross(const Vector3& center, float size, const Color& color, bool depthTest = true);
     /// Add a quad on the XZ plane.
     void AddQuad(const Vector3& center, float width, float height, const Color& color, bool depthTest = true);
+    /// Add a wireframe cone. Apex at position, extending along direction for length, with half-angle in radians.
+    void AddCone(const Vector3& position, const Vector3& direction, float length, float halfAngle, const Color& color, int steps = 16, bool depthTest = true);
 
     /// Update vertex buffer and render all debug lines. The viewport and rendertarget should be set before.
     void Render();

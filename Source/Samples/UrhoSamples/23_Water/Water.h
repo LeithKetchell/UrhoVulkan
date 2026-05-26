@@ -289,8 +289,7 @@ private:
     SharedPtr<Texture2D> minimapTex_;
     SharedPtr<Node> minimapCameraNode_;
 
-    // --- Compute shader / Erosion ---
-    void TestComputeShader();
+    // --- Erosion ---
     void RunErosion(int iterations);
     void WakeSleepingBodiesOnTerrain();
     void HandleErosionSlider(StringHash eventType, VariantMap& eventData);

@@ -50,6 +50,15 @@ URHO3D_EVENT(E_WB_CLIENT_LIST, WbClientList)
     URHO3D_PARAM(P_CLIENTS, Clients);         // String (newline-separated "name:role")
 }
 
+/// Server graceful-shutdown notice (Phase 2c). Sent before the server tears
+/// down connections so clients can distinguish a server-initiated disconnect
+/// from a network failure or a mutation error. Replaces the earlier shoehorn
+/// of MUTATION_ACK with Reason="Server shutting down".
+URHO3D_EVENT(E_WB_SERVER_SHUTDOWN, WbServerShutdown)
+{
+    URHO3D_PARAM(P_REASON, Reason);           // String — human-readable explanation
+}
+
 // ── Client → Server remote events ──
 
 /// Client requests a specific plan file.
@@ -61,7 +70,7 @@ URHO3D_EVENT(E_WB_REQUEST_PLAN, WbRequestPlan)
 /// Client sends a workboard mutation (wb-* command).
 URHO3D_EVENT(E_WB_MUTATION, WbMutation)
 {
-    URHO3D_PARAM(P_COMMAND, Command);         // String — e.g. "add-ready", "move-done"
+    URHO3D_PARAM(P_COMMAND, Command);         // String — e.g. "add", "move", "done"
     URHO3D_PARAM(P_ARGS, Args);              // String — command arguments
 }
 
@@ -72,6 +81,14 @@ URHO3D_EVENT(E_WB_SET_IDENTITY, WbSetIdentity)
     URHO3D_PARAM(P_ROLE, Role);               // String
 }
 
+/// Client reports local instance liveness to Manager (every 5s).
+URHO3D_EVENT(E_WB_INSTANCE_STATUS, WbInstanceStatus)
+{
+    URHO3D_PARAM(P_YUKI_ALIVE, YukiAlive);       // bool
+    URHO3D_PARAM(P_CODER_COUNT, CoderCount);     // int
+    URHO3D_PARAM(P_CODER_ROLES, CoderRoles);     // String — comma-separated role names
+}
+
 // ── Client info tracked by server ──
 
 struct WbClientInfo
@@ -80,6 +97,10 @@ struct WbClientInfo
     String name_;
     String role_;
     bool authenticated_{false};
+    // Remote instance liveness (Phase 1-2)
+    bool remoteYukiAlive_{false};
+    int remoteCoderCount_{0};
+    String remoteCoderRoles_;
 };
 
 // ── Shared workboard data structures ──

@@ -14,6 +14,32 @@
 namespace Urho3D
 {
 
+/// Fixed-size ring buffer for O(1) push/average without heap allocation or element shifting.
+template <typename T, unsigned CAPACITY>
+struct RingBuffer
+{
+    T data_[CAPACITY]{};
+    unsigned head_ = 0;
+    unsigned count_ = 0;
+    T runningSum_{};
+
+    void Push(T value)
+    {
+        if (count_ == CAPACITY)
+            runningSum_ -= data_[head_];
+        else
+            ++count_;
+        data_[head_] = value;
+        runningSum_ += value;
+        head_ = (head_ + 1) % CAPACITY;
+    }
+
+    T Average() const { return count_ > 0 ? runningSum_ / (T)count_ : T{}; }
+    bool Empty() const { return count_ == 0; }
+    unsigned Size() const { return count_; }
+    void Clear() { head_ = 0; count_ = 0; runningSum_ = T{}; }
+};
+
 /// High-resolution timer for Vulkan graphics profiling.
 /// Measures per-phase timing in command buffer recording, state management, and submission.
 class VulkanProfiler : public RefCounted
@@ -38,16 +64,7 @@ public:
         auto now = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(now - phaseStart_);
 
-        // Record timing in microseconds for precision
         phaseTimings_[currentPhase_].Push(duration.count());
-
-        // Keep rolling average of last 60 frames
-        auto& timings = phaseTimings_[currentPhase_];
-        if (timings.Size() > 60)
-        {
-            timings.Erase(timings.Begin());
-        }
-
         currentPhase_.Clear();
     }
 
@@ -58,23 +75,11 @@ public:
         frameCount_++;
         totalTime_ += deltaTime;
 
-        // Keep rolling buffer of frame times (last 60 frames)
-        frameTimes_.Push(deltaTime * 1000.0f); // Convert to milliseconds
-        if (frameTimes_.Size() > 60)
-        {
-            frameTimes_.Erase(frameTimes_.Begin());
-        }
+        frameTimes_.Push(deltaTime * 1000.0f);
 
-        // Calculate FPS from average frame time in the rolling buffer
-        // FPS = 1000 ms / average_frame_time_in_ms
-        if (!frameTimes_.Empty())
-        {
-            float avgFrameTime = GetAverageFrameTime();
-            if (avgFrameTime > 0.0f)
-            {
-                fps_ = 1000.0f / avgFrameTime;
-            }
-        }
+        float avgFrameTime = frameTimes_.Average();
+        if (avgFrameTime > 0.0f)
+            fps_ = 1000.0f / avgFrameTime;
     }
 
     /// Get current FPS
@@ -84,18 +89,7 @@ public:
     float GetFrameTime() const { return frameTime_ * 1000.0f; }
 
     /// Get average frame time from rolling buffer in milliseconds
-    float GetAverageFrameTime() const
-    {
-        if (frameTimes_.Empty())
-            return 0.0f;
-
-        float sum = 0.0f;
-        for (float time : frameTimes_)
-        {
-            sum += time;
-        }
-        return sum / frameTimes_.Size();
-    }
+    float GetAverageFrameTime() const { return frameTimes_.Average(); }
 
     /// Get average time for a phase in milliseconds
     float GetAveragePhaseTime(const String& phaseName) const
@@ -104,12 +98,7 @@ public:
         if (it == phaseTimings_.End() || it->second_.Empty())
             return 0.0f;
 
-        double sum = 0.0;
-        for (double timing : it->second_)
-        {
-            sum += timing;
-        }
-        return (float)(sum / it->second_.Size() / 1000.0); // Convert microseconds to milliseconds
+        return (float)(it->second_.Average() / 1000.0);
     }
 
     /// Get all phase timing statistics for debug output
@@ -120,23 +109,10 @@ public:
             if (pair.second_.Empty())
                 continue;
 
-            double sum = 0.0;
-            double minTime = 1e9;
-            double maxTime = 0.0;
-
-            for (double timing : pair.second_)
-            {
-                sum += timing;
-                minTime = std::min(minTime, timing);
-                maxTime = std::max(maxTime, timing);
-            }
-
-            double avg = sum / pair.second_.Size();
+            double avg = pair.second_.Average();
 
             URHO3D_LOGINFO(String("Vulkan Phase: ") + pair.first_ +
-                           " | Avg: " + String(avg / 1000.0f, 2) + "ms" +
-                           " | Min: " + String(minTime / 1000.0f, 2) + "ms" +
-                           " | Max: " + String(maxTime / 1000.0f, 2) + "ms");
+                           " | Avg: " + String(avg / 1000.0f, 2) + "ms");
         }
     }
 
@@ -179,15 +155,15 @@ private:
     /// Current phase being measured
     String currentPhase_;
 
-    /// Recorded timings per phase (in microseconds, rolling buffer of 60 frames)
-    HashMap<String, Vector<double>> phaseTimings_;
+    /// Recorded timings per phase (in microseconds, 60-frame ring buffer)
+    HashMap<String, RingBuffer<double, 60>> phaseTimings_;
 
     /// FPS tracking
     float fps_ = 0.0f;
     float frameTime_ = 0.0f;
     unsigned frameCount_ = 0;
     float totalTime_ = 0.0f;
-    Vector<float> frameTimes_;
+    RingBuffer<float, 60> frameTimes_;
 
     /// Phase 36A: Operation counters (e.g., descriptor set bindings, pipeline layout creations)
     HashMap<String, unsigned> counters_;

@@ -33,14 +33,7 @@ protected:
     float GetDesiredSize() const override { return 0.9f; }
     float GetWanderRadius() const override { return 35.0f; }
     float GetWanderSpeed() const override { return 3.5f; }
-    float GetFleeSpeed() const override { return 9.0f; }
-    float GetFleeDistance() const override { return 20.0f; }
     float GetMinIdleDuration() const override { return 2.0f; }
     float GetMaxIdleDuration() const override { return 5.0f; }
-    bool IsScavenger() const override { return true; }
-    bool IsPredator() const override { return true; }
-    float GetVisionRange() const override { return 40.0f; }
-    float GetVisionCosAngle() const override { return 0.5f; }  // 120 degrees
-    float GetFoodGrassWeight() const override { return 0.0f; }
     float GetFoodShrubWeight() const override { return 0.0f; }  // predator — eats prey, not plants
 };

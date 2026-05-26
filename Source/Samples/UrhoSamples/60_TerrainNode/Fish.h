@@ -22,29 +22,50 @@ public:
 
     void SetMaterials(Material* base, Material* orbit, Material* stare);
     void SetCameraNode(Node* camNode) { cameraNode_ = WeakPtr<Node>(camNode); }
+    Node* GetCameraNode() const { return cameraNode_; }
     void SetSpatialHash(FishSpatialHash* hash) { spatialHash_ = hash; }
 
     /// Type flag for fast RTTI avoidance in spatial hash queries.
     virtual bool IsSchoolFish() const { return false; }
 
-    // --- Vision: big fish are predators ---
-    bool IsPredator() const override { return true; }
-    float GetVisionRange() const override { return 20.0f; }
-    float GetVisionCosAngle() const override { return 0.5f; }  // 120 degrees
+    // --- Age / Maturity / Lifespan (breeding system, client-local) ---
+    float GetAge() const { return age_; }
+    bool IsMature() const { return mature_; }
+    void SetMaturityAge(float seconds) { maturityAge_ = seconds; }
+    void SetMaxAge(float seconds) { maxAge_ = seconds; }
+
+    // --- Vision: uses base class DB-driven members (set via InitFromDB → InitBehaviorStats) ---
+
+    /// Initialize from DB creature stats. Call after CreateComponent.
+    void InitFromDB(int creatureId, const String& modelPath, float speed,
+                    float wanderRad, float visionRange, float visionAngle,
+                    bool isPredator);
 
 protected:
-    String GetModelPath() const override { return "Models/UrhoFish.mdl"; }
+    String GetModelPath() const override { return dbModelPath_; }
 
-    float GetWanderSpeed() const override { return 0.5f; }
-    float GetWanderRadius() const override { return 75.0f; }
+    float GetWanderSpeed() const override { return dbSwimSpeed_; }
+    float GetWanderRadius() const override { return dbWanderRadius_; }
+
+protected:
+    // Fish-specific DB values (vision/predator use base class db*_ members)
+    String dbModelPath_{"Models/UrhoFish.mdl"};
+    float dbSwimSpeed_{0.5f};
+    float dbWanderRadius_{75.0f};
+    float swimSpeed_{0.5f};   // overwritten by InitFromDB
+    float boundary_{75.0f};
+
+    // --- Age / Maturity / Lifespan ---
+    float age_{0.0f};           ///< Seconds alive
+    float maturityAge_{60.0f};  ///< Seconds to reach breeding age (DB-overridable)
+    float maxAge_{300.0f};      ///< Lifespan in seconds — dies when exceeded
+    bool mature_{false};        ///< Cached flag: age >= maturityAge_
 
 private:
     void Swim(float timeStep);
 
     float turnSpeed_{2.0f};
-    float swimSpeed_{0.5f};
     float comfortDist_{12.0f};
-    float boundary_{75.0f};
 
     // Camera interaction
     float stareDist_{3.0f};

@@ -264,8 +264,12 @@ public:
 private:
     /// File to run.
     String fileName_;
-    /// Command line split in arguments.
-    const Vector<String>& arguments_;
+    /// Command line split in arguments. Stored by VALUE — the caller's vector
+    /// goes out of scope as soon as SystemRunAsync returns, so a reference here
+    /// dangles into freed stack memory. Reading arguments_.Size() then returns
+    /// garbage and the worker thread either segfaults or execvp's with junk
+    /// argv pointers. Found Apr 9 2026 while debugging Sample 60 offline mode.
+    Vector<String> arguments_;
 };
 
 FileSystem::FileSystem(Context* context) :
@@ -602,8 +606,12 @@ bool FileSystem::FileExists(const String& fileName) const
     if (attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_DIRECTORY)
         return false;
 #else
+    // Use S_ISDIR macro — bit-test (st.st_mode & S_IFDIR) is broken because
+    // file-type bits are not independent flags. S_IFSOCK = 0140000 shares
+    // the S_IFDIR bit (0040000), causing sockets to be misidentified as
+    // directories and FileExists to wrongly return false.
     struct stat st{};
-    if (stat(fixedName.CString(), &st) || st.st_mode & S_IFDIR)
+    if (stat(fixedName.CString(), &st) || S_ISDIR(st.st_mode))
         return false;
 #endif
 
@@ -656,8 +664,11 @@ bool FileSystem::DirExists(const String& pathName) const
     if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY))
         return false;
 #else
+    // Use S_ISDIR — !(st_mode & S_IFDIR) returns the wrong answer for sockets
+    // (S_IFSOCK shares the S_IFDIR bit pattern), so a directory containing a
+    // socket would still return true here without the macro.
     struct stat st{};
-    if (stat(fixedName.CString(), &st) || !(st.st_mode & S_IFDIR))
+    if (stat(fixedName.CString(), &st) || !S_ISDIR(st.st_mode))
         return false;
 #endif
 
@@ -868,7 +879,9 @@ void FileSystem::ScanDirInternal(Vector<String>& result, String path, const Stri
             String pathAndName = path + fileName;
             if (!stat(pathAndName.CString(), &st))
             {
-                if (st.st_mode & S_IFDIR)
+                // Use S_ISDIR — bit-test (st_mode & S_IFDIR) misclassifies sockets
+                // as directories because S_IFSOCK shares the S_IFDIR bit pattern.
+                if (S_ISDIR(st.st_mode))
                 {
                     if (flags & SCAN_DIRS)
                         result.Push(deltaPath + fileName);

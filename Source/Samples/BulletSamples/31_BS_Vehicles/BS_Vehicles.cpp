@@ -310,8 +310,7 @@ void BS_Vehicles::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
-        profilerUI_->Update();
+        profilerUI_->Update(timeStep);
     }
 }
 

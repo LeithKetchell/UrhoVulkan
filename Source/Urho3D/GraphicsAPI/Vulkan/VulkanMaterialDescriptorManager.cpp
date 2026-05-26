@@ -586,124 +586,80 @@ bool VulkanMaterialDescriptorManager::UpdateTextureBindings(Material* material, 
     if (!device)
         return false;
 
-    // Phase 18.2-18.3: Update texture bindings in descriptor set
-    // Bind material textures to descriptor set bindings 1-3
+    // Bind all material textures to their descriptor set bindings.
+    // Layout supports 5 texture slots matching the shader compiler's sampler bindings:
+    //   binding 100 = TU_DIFFUSE      (sDiffMap / sWeightMap0)
+    //   binding 102 = TU_NORMAL       (sNormalMap / sDetailMap1)
+    //   binding 103 = TU_SPECULAR     (sSpecMap / sDetailMap2)
+    //   binding 104 = TU_EMISSIVE     (sEmissiveMap / sDetailMap3)
+    //   binding 105 = TU_ENVIRONMENT  (sEnvMap / sWaterMap4)
 
-    // Phase 18.2.1: Get sampler cache from graphics
-    // VulkanSamplerCache provides efficient sampler pooling
-    // Note: samplerCache integration point - retrieves cached VkSampler objects
-
-    // Phase 18.2.2: Prepare descriptor image writes
-    // Array to hold descriptor writes for all texture bindings
-    VkWriteDescriptorSet textureWrites[3];
-    VkDescriptorImageInfo imageInfos[3];
-    uint32_t writeCount = 0;
-
-    // Phase 20: Material Texture Extraction Implementation
-    // Phase 21: Default Texture Fallback System
-    // Extract textures from material and bind to descriptor set
-    // The framework supports three key material textures:
-    // - Binding 1: Diffuse/Color texture (TU_DIFFUSE)
-    // - Binding 2: Normal map texture (TU_NORMAL)
-    // - Binding 3: Specular/Roughness texture (TU_SPECULAR)
-
-    // Phase 22B: Automatic Binding with Default Textures
-    // When materials don't have textures, use default 1x1 placeholder textures
-    // This eliminates shader complexity and provides consistent behavior
-
-    // Phase 20.1 - Extract textures from material
-    // Cast Texture* to Texture2D* since GetTexture returns base Texture class
-    Texture2D* diffuseTexture = dynamic_cast<Texture2D*>(material->GetTexture(TU_DIFFUSE));
-    Texture2D* normalTexture = dynamic_cast<Texture2D*>(material->GetTexture(TU_NORMAL));
-    Texture2D* specularTexture = dynamic_cast<Texture2D*>(material->GetTexture(TU_SPECULAR));
-
-    // Phase 22.1 - Fallback to default textures if material textures are null
-    // Use white 1x1 diffuse texture as fallback
-    if (!diffuseTexture)
-    {
-        diffuseTexture = graphics_->GetDefaultDiffuseTexture();
-        if (diffuseTexture)
-            URHO3D_LOGDEBUG("VulkanMaterialDescriptorManager: Using default diffuse texture for material without diffuse map");
-    }
-
-    // Use neutral normal map (0.5, 0.5, 1.0) as fallback
-    if (!normalTexture)
-    {
-        normalTexture = graphics_->GetDefaultNormalTexture();
-        if (normalTexture)
-            URHO3D_LOGDEBUG("VulkanMaterialDescriptorManager: Using default normal texture for material without normal map");
-    }
-
-    // Use white 1x1 specular texture as fallback
-    if (!specularTexture)
-    {
-        specularTexture = graphics_->GetDefaultSpecularTexture();
-        if (specularTexture)
-            URHO3D_LOGDEBUG("VulkanMaterialDescriptorManager: Using default specular texture for material without specular map");
-    }
-
-    // Phase 20.2 - Get sampler cache for texture sampling
     VulkanSamplerCache* samplerCache = graphics_->GetSamplerCache();
     if (!samplerCache)
         return false;
 
-    // Phase 22B.1 - Bind textures to descriptor set
-    // Process each texture type (diffuse, normal, specular)
-    // All textures now have values (either from material or fallback defaults)
-    const TextureUnit textureUnits[] = {TU_DIFFUSE, TU_NORMAL, TU_SPECULAR};
-    Texture2D* textures[] = {diffuseTexture, normalTexture, specularTexture};
-    const uint32_t bindingOffsets[] = {100, 102, 103};  // Match descriptor set layout bindings
+    // All 5 texture units the descriptor set layout declares
+    const TextureUnit units[] = {TU_DIFFUSE, TU_NORMAL, TU_SPECULAR, TU_EMISSIVE, TU_ENVIRONMENT};
+    const uint32_t bindings[] = {100, 102, 103, 104, 105};
+    const unsigned NUM_SLOTS = 5;
 
-    for (uint32_t i = 0; i < 3; ++i)
+    VkWriteDescriptorSet textureWrites[NUM_SLOTS];
+    VkDescriptorImageInfo imageInfos[NUM_SLOTS];
+    uint32_t writeCount = 0;
+
+    for (unsigned i = 0; i < NUM_SLOTS; ++i)
     {
-        // Phase 22B: With fallback textures, we always bind (no null check needed)
-        if (!textures[i])
-            continue;  // Safety check in case fallback texture creation failed
+        Texture2D* tex = dynamic_cast<Texture2D*>(material->GetTexture(units[i]));
 
-        // Get sampler with per-axis address modes
-        VkSampler sampler = samplerCache->GetSampler(
-            textures[i]->GetFilterMode(),
-            textures[i]->GetAddressMode(COORD_U),
-            textures[i]->GetAddressMode(COORD_V),
-            textures[i]->GetAddressMode(COORD_W),
-            textures[i]->GetAnisotropy()
-        );
-
-        if (!sampler)
-            continue;  // Skip if sampler creation failed
-
-        // Phase 20.3.2 - Fill descriptor image info
-        imageInfos[writeCount].sampler = sampler;
-        imageInfos[writeCount].imageView = GetTextureImageView(textures[i]);
-        // Depth textures used as render targets are in DEPTH_STENCIL_READ_ONLY layout after render pass
+        // Fallback to default textures for the three standard slots
+        if (!tex)
         {
-            unsigned fmt = textures[i]->GetFormat();
+            if (units[i] == TU_DIFFUSE)
+                tex = graphics_->GetDefaultDiffuseTexture();
+            else if (units[i] == TU_NORMAL)
+                tex = graphics_->GetDefaultNormalTexture();
+            else if (units[i] == TU_SPECULAR)
+                tex = graphics_->GetDefaultSpecularTexture();
+            // TU_EMISSIVE and TU_ENVIRONMENT: no fallback — skip if absent
+        }
+
+        if (!tex)
+            continue;
+
+        VkSampler sampler = samplerCache->GetSampler(
+            tex->GetFilterMode(),
+            tex->GetAddressMode(COORD_U),
+            tex->GetAddressMode(COORD_V),
+            tex->GetAddressMode(COORD_W),
+            tex->GetAnisotropy()
+        );
+        if (!sampler)
+            continue;
+
+        imageInfos[writeCount].sampler = sampler;
+        imageInfos[writeCount].imageView = GetTextureImageView(tex);
+        {
+            unsigned fmt = tex->GetFormat();
             bool isDepthFmt = (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT ||
                                fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT);
             imageInfos[writeCount].imageLayout = isDepthFmt ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                                                             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
-        // Phase 20.3.3 - Prepare descriptor write for this texture
+        textureWrites[writeCount] = {};
         textureWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         textureWrites[writeCount].dstSet = descriptorSet;
-        textureWrites[writeCount].dstBinding = bindingOffsets[i];  // Bindings 1-3
+        textureWrites[writeCount].dstBinding = bindings[i];
         textureWrites[writeCount].descriptorCount = 1;
         textureWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         textureWrites[writeCount].pImageInfo = &imageInfos[writeCount];
-
         writeCount++;
     }
 
-    // Phase 20.3.4 - Submit descriptor updates to GPU
     if (writeCount > 0)
     {
         vkUpdateDescriptorSets(device, writeCount, textureWrites, 0, nullptr);
         URHO3D_LOGDEBUG("VulkanMaterialDescriptorManager: Bound " + String(writeCount) + " textures to material descriptor");
-    }
-    else
-    {
-        URHO3D_LOGDEBUG("VulkanMaterialDescriptorManager: Material has no textures bound");
     }
 
     return true;

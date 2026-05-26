@@ -72,7 +72,18 @@ CREATE TABLE IF NOT EXISTS creatures (
     attack_anim     TEXT,
     die_anim        TEXT,
     desired_size    REAL DEFAULT 1.0,
-    wander_radius   REAL DEFAULT 20.0
+    wander_radius   REAL DEFAULT 20.0,
+    sound_near      REAL DEFAULT 1.0,    -- SoundSource3D near distance (metres)
+    sound_far       REAL DEFAULT 50.0,  -- SoundSource3D far distance (metres)
+    flee_speed      REAL DEFAULT 6.0,   -- run speed when fleeing
+    flee_distance   REAL DEFAULT 30.0,  -- how far to flee
+    min_idle        REAL DEFAULT 3.0,   -- minimum idle duration (seconds)
+    max_idle        REAL DEFAULT 8.0,   -- maximum idle duration (seconds)
+    vision_range    REAL DEFAULT 0.0,   -- sight distance (0 = blind)
+    vision_angle    REAL DEFAULT 0.5,   -- cosine of vision half-angle (0.5 = 120 deg)
+    is_predator     INTEGER DEFAULT 0,  -- hunts live prey
+    is_scavenger    INTEGER DEFAULT 0,  -- investigates corpses
+    food_grass_wt   REAL DEFAULT 0.6    -- vegetation food preference (0 = carnivore)
 );
 
 -- Loot tables: what creatures drop
@@ -129,6 +140,16 @@ CREATE TABLE IF NOT EXISTS climate_rules (
     rain_chill  REAL DEFAULT 0
 );
 
+-- Situational combat modifiers (Phase 3). Values used by server ComputeSituationalMods.
+-- Tunable via SQL UPDATE without recompilation.
+CREATE TABLE IF NOT EXISTS combat_modifiers (
+    name        TEXT PRIMARY KEY,
+    attack_mod  INTEGER DEFAULT 0,
+    defense_mod INTEGER DEFAULT 0,
+    speed_mod   INTEGER DEFAULT 0,
+    description TEXT
+);
+
 -- Clothing warmth values
 CREATE TABLE IF NOT EXISTS clothing_warmth (
     item_id     INTEGER PRIMARY KEY REFERENCES items(id),
@@ -182,6 +203,22 @@ CREATE TABLE IF NOT EXISTS player_stats (
     pos_z       REAL DEFAULT 0,
     shelter_id  INTEGER DEFAULT 0,
     alive       INTEGER DEFAULT 1
+);
+
+-- Crop types: farming rules per seed item
+CREATE TABLE IF NOT EXISTS crop_types (
+    seed_item_id    INTEGER PRIMARY KEY REFERENCES items(id),
+    harvest_item_id INTEGER NOT NULL REFERENCES items(id),
+    harvest_qty     INTEGER DEFAULT 3,
+    seed_return     INTEGER DEFAULT 1,
+    plant_season    TEXT NOT NULL DEFAULT 'spring',
+    harvest_season  TEXT NOT NULL DEFAULT 'autumn',
+    grow_days       INTEGER DEFAULT 90,
+    min_flat        REAL DEFAULT 0.9,
+    near_water_range REAL DEFAULT 30.0,
+    tool_req        INTEGER DEFAULT 102,
+    model           TEXT,
+    description     TEXT
 );
 
 -- Indices for common queries

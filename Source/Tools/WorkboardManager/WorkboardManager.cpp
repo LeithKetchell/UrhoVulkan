@@ -209,18 +209,17 @@ void WorkboardManager::Start()
                 { dbEmpty = false; break; }
             }
             if (dbEmpty)
-            {
-                // Parse markdown first, then bootstrap DB
-                LoadWorkboardFromMarkdown();
-                workboardDB_.BootstrapFromSections(sections_);
-                AppendLog("System", "SQL backing bootstrapped from WORKBOARD.md");
-            }
+                AppendLog("System", "Workboard DB is empty — add tasks via IPC or Manager UI");
+
+            // Boot cleanup — prune stale shared memories
+            workboardDB_.PruneStaleMemories(7);
         }
     }
 
     LoadWorkboard();
     ScanPlanFiles();
     CreateIPCPaths();
+    UpdateCoderCapText();  // Write initial cap file
     StartRelaySocket();
     RefreshInstanceStatus();
 
@@ -720,6 +719,38 @@ void WorkboardManager::CreateComposer(UIElement* parent, float minX, float minY,
     sc->SetText("Spawn");
     sc->SetAlignment(HA_CENTER, VA_CENTER);
     SubscribeToEvent(spawnCoderBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleSpawnCoder));
+
+    // Coder cap controls: [−] count/max [+]
+    coderCapMinusBtn_ = row2->CreateChild<Button>("CoderCapMinus");
+    coderCapMinusBtn_->SetStyleAuto();
+    coderCapMinusBtn_->SetFixedSize(24, 24);
+    coderCapMinusBtn_->SetLayoutFlexScale(Vector2(0.0f, 0.0f));
+    coderCapMinusBtn_->SetVerticalAlignment(VA_CENTER);
+    coderCapMinusBtn_->SetClipChildren(true);
+    auto* capM = coderCapMinusBtn_->CreateChild<Text>();
+    capM->SetFont(font_, currentFontSize_);
+    capM->SetText("-");
+    capM->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(coderCapMinusBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleCoderCapMinus));
+
+    coderCapText_ = row2->CreateChild<Text>("CoderCapText");
+    coderCapText_->SetFont(font_, currentFontSize_ - 1);
+    coderCapText_->SetFixedWidth(30);
+    coderCapText_->SetLayoutFlexScale(Vector2(0.0f, 0.0f));
+    coderCapText_->SetAlignment(HA_CENTER, VA_CENTER);
+    UpdateCoderCapText();
+
+    coderCapPlusBtn_ = row2->CreateChild<Button>("CoderCapPlus");
+    coderCapPlusBtn_->SetStyleAuto();
+    coderCapPlusBtn_->SetFixedSize(24, 24);
+    coderCapPlusBtn_->SetLayoutFlexScale(Vector2(0.0f, 0.0f));
+    coderCapPlusBtn_->SetVerticalAlignment(VA_CENTER);
+    coderCapPlusBtn_->SetClipChildren(true);
+    auto* capP = coderCapPlusBtn_->CreateChild<Text>();
+    capP->SetFont(font_, currentFontSize_);
+    capP->SetText("+");
+    capP->SetAlignment(HA_CENTER, VA_CENTER);
+    SubscribeToEvent(coderCapPlusBtn_, "Released", URHO3D_HANDLER(WorkboardManager, HandleCoderCapPlus));
 
     // Screenshot toggle — blocks all Claude instances from taking screenshots
     screenshotToggleBtn_ = row2->CreateChild<Button>("ScreenshotToggle");
@@ -1281,56 +1312,18 @@ void WorkboardManager::AppendYukiChat(const String& sender, const String& messag
 
 void WorkboardManager::LoadWorkboard()
 {
-    if (workboardDB_.IsOpen())
-    {
-        // Preferred path: read from SQL
-        // Check DB mtime to avoid redundant reloads
-        String dbPath = ipcDir_ + "workboard.db";
-        auto* fs = GetSubsystem<FileSystem>();
-        unsigned mtime = fs->FileExists(dbPath) ? fs->GetLastModifiedTime(dbPath) : 0;
-        if (mtime != 0 && mtime == lastWriteMtime_)
-            return;
-
-        sections_ = workboardDB_.LoadAllSections();
-        lastWriteMtime_ = mtime;
-        RenderWorkboardUI();
+    if (!workboardDB_.IsOpen())
         return;
-    }
 
-    // Fallback: parse markdown directly
-    LoadWorkboardFromMarkdown();
-}
-
-void WorkboardManager::LoadWorkboardFromMarkdown()
-{
-    String path = GetClaudeDir() + "WORKBOARD.md";
+    // SQL is the sole source of truth
+    String dbPath = ipcDir_ + "workboard.db";
     auto* fs = GetSubsystem<FileSystem>();
-    if (!fs->FileExists(path))
-    {
-        AppendLog("System", "WORKBOARD.md not found at: " + path);
-        return;
-    }
-
-    // Skip reload if we were the last writer (avoid clobbering our own changes)
-    unsigned mtime = fs->GetLastModifiedTime(path);
+    unsigned mtime = fs->FileExists(dbPath) ? fs->GetLastModifiedTime(dbPath) : 0;
     if (mtime != 0 && mtime == lastWriteMtime_)
         return;
 
-    File file(context_, path, FILE_READ);
-    if (!file.IsOpen())
-    {
-        AppendLog("System", "Failed to open WORKBOARD.md");
-        return;
-    }
-
-    unsigned size = file.GetSize();
-    String content;
-    content.Resize(size);
-    file.Read(&content[0], size);
-    file.Close();
-
+    sections_ = workboardDB_.LoadAllSections();
     lastWriteMtime_ = mtime;
-    ParseWorkboard(content);
     RenderWorkboardUI();
 }
 
@@ -1590,86 +1583,42 @@ void WorkboardManager::EmitTableRows(String& output, const WorkboardSection* sec
     }
 }
 
+String WorkboardManager::SerializeSectionsToMarkdown()
+{
+    String output;
+    output += "# Workboard\n";
+
+    for (unsigned s = 0; s < sections_.Size(); ++s)
+    {
+        const WorkboardSection& sec = sections_[s];
+        output += "## " + sec.title + "\n";
+
+        if (sec.headers.Size() > 0)
+        {
+            // Header row
+            output += "|";
+            for (unsigned h = 0; h < sec.headers.Size(); ++h)
+                output += " " + sec.headers[h] + " |";
+            output += "\n";
+
+            // Separator
+            output += "|";
+            for (unsigned h = 0; h < sec.headers.Size(); ++h)
+                output += "------|";
+            output += "\n";
+
+            // Data rows
+            EmitTableRows(output, const_cast<WorkboardSection*>(&sec));
+        }
+        output += "\n";
+    }
+    return output;
+}
+
 void WorkboardManager::WriteWorkboard()
 {
-    String path = GetClaudeDir() + "WORKBOARD.md";
-
-    // Re-read raw file to preserve non-table content
-    File readFile(context_, path, FILE_READ);
-    if (!readFile.IsOpen()) return;
-    unsigned size = readFile.GetSize();
-    String raw;
-    raw.Resize(size);
-    readFile.Read(&raw[0], size);
-    readFile.Close();
-
-    Vector<String> lines = raw.Split('\n', false);
-    String output;
-
-    WorkboardSection* currentSec = nullptr;
-    bool headerEmitted = false;
-    bool separatorEmitted = false;
-    bool rowsEmitted = false;
-
-    for (unsigned i = 0; i < lines.Size(); ++i)
-    {
-        String trimmed = lines[i].Trimmed();
-
-        // Detect new section header
-        if (trimmed.StartsWith("## "))
-        {
-            // If previous section had rows pending, emit them
-            if (currentSec && !rowsEmitted && separatorEmitted)
-                EmitTableRows(output, currentSec);
-
-            String sectionTitle = trimmed.Substring(3).Trimmed();
-            currentSec = FindSection(sectionTitle);
-            headerEmitted = false;
-            separatorEmitted = false;
-            rowsEmitted = false;
-            output += lines[i] + "\n";
-            continue;
-        }
-
-        // Inside a section with an in-memory model
-        if (currentSec && currentSec->headers.Size() > 0
-            && trimmed.StartsWith("|") && trimmed.EndsWith("|"))
-        {
-            if (!headerEmitted)
-            {
-                // Header row — pass through
-                output += lines[i] + "\n";
-                headerEmitted = true;
-                continue;
-            }
-            if (!separatorEmitted && trimmed.Contains("---"))
-            {
-                // Separator row — pass through, then emit our rows
-                output += lines[i] + "\n";
-                separatorEmitted = true;
-                EmitTableRows(output, currentSec);
-                rowsEmitted = true;
-                continue;
-            }
-            // Skip old data rows — we already emitted ours
-            if (separatorEmitted)
-                continue;
-        }
-
-        // Pass through all non-table lines
-        output += lines[i] + "\n";
-    }
-
-    // Atomic write via .tmp + rename
-    String tmpPath = path + ".tmp";
-    File writeFile(context_, tmpPath, FILE_WRITE);
-    if (writeFile.IsOpen())
-    {
-        writeFile.Write(output.CString(), output.Length());
-        writeFile.Close();
-        GetSubsystem<FileSystem>()->Rename(tmpPath, path);
-        lastWriteMtime_ = GetSubsystem<FileSystem>()->GetLastModifiedTime(path);
-    }
+    // SQL is the sole authority — no markdown write-back needed.
+    // Remote clients receive serialized sections via SerializeSectionsToMarkdown().
 }
 
 bool WorkboardManager::HandleWorkboardCommand(const String& message)
@@ -1768,11 +1717,9 @@ bool WorkboardManager::HandleWorkboardCommand(const String& message)
 
     if (mutationOk)
     {
-        WriteWorkboard();
-
-        // SQL dual-write: re-sync DB from current in-memory sections
+        // Persist in-memory state to SQL (incremental sync)
         if (workboardDB_.IsOpen())
-            workboardDB_.BootstrapFromSections(sections_);
+            workboardDB_.SyncFromSections(sections_);
 
         RenderWorkboardUI();
     }
@@ -2233,6 +2180,7 @@ void WorkboardManager::RefreshInstanceStatus()
         anyChanged = true;
 
         knownCoderRoles_ = liveCoders;
+        UpdateCoderCapText();
 
         // Rebuild unified receiver dropdown
         if (coderDropdown_)
@@ -2718,6 +2666,25 @@ void WorkboardManager::PollRelaySocket()
             continue;
         }
 
+        // __REMEMBER__:fact — coder stores a shared memory
+        if (message.StartsWith("__REMEMBER__:"))
+        {
+            String fact = message.Substring(13).Trimmed();
+            String source = sender.Empty() ? "unknown" : sender;
+            if (!fact.Empty() && workboardDB_.IsOpen())
+                workboardDB_.Remember(source, fact);
+            continue;
+        }
+
+        // __HELLO__ — new coder announcing itself; send shared memory
+        if (message.StartsWith("__HELLO__") && !sender.Empty() && workboardDB_.IsOpen())
+        {
+            String memories = workboardDB_.GetAllMemories();
+            if (!memories.Empty())
+                SendToSocket(sender, "[SHARED MEMORY]\n" + memories);
+            continue;
+        }
+
         // __BUILD_REQUEST__:target — coder requests a managed build
         if (message.StartsWith("__BUILD_REQUEST__:"))
         {
@@ -2999,9 +2966,9 @@ void WorkboardManager::HandleSpawnCoder(StringHash /*eventType*/, VariantMap& /*
 {
     // Enforce local instance cap
     Vector<String> liveCoders = DiscoverCoderRoles();
-    if (liveCoders.Size() >= MAX_LOCAL_CODERS)
+    if (liveCoders.Size() >= maxLocalCoders_)
     {
-        AppendLog("Manager", "Spawn refused: " + String(liveCoders.Size()) + "/" + String(MAX_LOCAL_CODERS) + " local coders already running");
+        AppendLog("Manager", "Spawn refused: " + String(liveCoders.Size()) + "/" + String(maxLocalCoders_) + " local coders already running");
         return;
     }
 
@@ -3019,9 +2986,41 @@ void WorkboardManager::HandleSpawnCoder(StringHash /*eventType*/, VariantMap& /*
     // which gnome-terminal needs. The script launches in the background (&).
     int ret = fs->SystemCommand(scriptPath + " spawn-coder");
     if (ret == 0)
-        AppendLog("Manager", "Spawn Coder command executed (" + String(liveCoders.Size() + 1) + "/" + String(MAX_LOCAL_CODERS) + ")");
+        AppendLog("Manager", "Spawn Coder command executed (" + String(liveCoders.Size() + 1) + "/" + String(maxLocalCoders_) + ")");
     else
         AppendLog("Manager", "Spawn Coder failed (exit code " + String(ret) + ")");
+}
+
+void WorkboardManager::HandleCoderCapMinus(StringHash /*eventType*/, VariantMap& /*eventData*/)
+{
+    if (maxLocalCoders_ > 1)
+    {
+        --maxLocalCoders_;
+        UpdateCoderCapText();
+    }
+}
+
+void WorkboardManager::HandleCoderCapPlus(StringHash /*eventType*/, VariantMap& /*eventData*/)
+{
+    if (maxLocalCoders_ < 8)
+    {
+        ++maxLocalCoders_;
+        UpdateCoderCapText();
+    }
+}
+
+void WorkboardManager::UpdateCoderCapText()
+{
+    if (!coderCapText_)
+        return;
+    Vector<String> liveCoders = DiscoverCoderRoles();
+    coderCapText_->SetText(String(liveCoders.Size()) + "/" + String(maxLocalCoders_));
+
+    // Write cap to file so shell scripts can enforce it
+    String capPath = ipcDir_ + "coder_cap";
+    File capFile(context_, capPath, FILE_WRITE);
+    if (capFile.IsOpen())
+        capFile.WriteLine(String(maxLocalCoders_));
 }
 
 void WorkboardManager::HandleToggleScreenshots(StringHash /*eventType*/, VariantMap& /*eventData*/)
@@ -3287,8 +3286,11 @@ void WorkboardManager::SweepStaleRoleFiles()
     // Elder died — promote next oldest and renumber everyone down
     if (elderDied)
     {
-        // Collect living numbered coders in order
-        Vector<int> liveNums;
+        // Collect living numbered coders with their uptime (merit = longest serving)
+        struct CoderInfo { int num; unsigned uptimeSec; };
+        Vector<CoderInfo> liveCandidates;
+        String healthDir = ipcDir_ + "health/";
+
         for (int n = 2; n <= 20; ++n)
         {
             String pf = instDir + "coder" + String(n) + ".pid";
@@ -3299,12 +3301,38 @@ void WorkboardManager::SweepStaleRoleFiles()
                 continue;
             int cpid = atoi(cf.ReadLine().Trimmed().CString());
             cf.Close();
-            if (cpid > 0 && IsProcessAlive(cpid))
-                liveNums.Push(n);
+            if (cpid <= 0 || !IsProcessAlive(cpid))
+                continue;
+
+            // Read uptime from health file (written by Claudette every 5s)
+            unsigned uptime = 0;
+            String hpath = healthDir + "coder" + String(n) + ".json";
+            if (fs->FileExists(hpath))
+            {
+                File hf(context_, hpath);
+                if (hf.IsOpen())
+                {
+                    String content;
+                    while (!hf.IsEof())
+                        content += hf.ReadLine() + "\n";
+                    hf.Close();
+                    // Parse uptimeSec from JSON
+                    unsigned pos = content.Find("\"uptimeSec\":");
+                    if (pos != String::NPOS)
+                        uptime = (unsigned)atoi(content.CString() + pos + 13);
+                }
+            }
+            liveCandidates.Push({n, uptime});
         }
 
-        if (!liveNums.Empty())
+        if (!liveCandidates.Empty())
         {
+            // Sort by uptime descending — longest serving wins
+            for (unsigned i = 0; i < liveCandidates.Size(); ++i)
+                for (unsigned j = i + 1; j < liveCandidates.Size(); ++j)
+                    if (liveCandidates[j].uptimeSec > liveCandidates[i].uptimeSec)
+                        Swap(liveCandidates[i], liveCandidates[j]);
+
             String ttyDir = ipcDir_ + "tty/";
 
             // Rename helper — moves pid, heartbeat, socket for one role
@@ -3332,24 +3360,39 @@ void WorkboardManager::SweepStaleRoleFiles()
                     rename(oldSock.CString(), newSock.CString());
                 }
 #endif
-                // Windows: named pipes are kernel objects — no rename needed.
-                // The old pipe name dies when the owning process disconnects,
-                // and the new name is created fresh on next connect.
             };
 
-            // Promote lowest to elder
-            String promoted = "coder" + String(liveNums[0]);
+            // Promote most meritorious (longest uptime) to elder
+            int elderNum = liveCandidates[0].num;
+            String promoted = "coder" + String(elderNum);
+            // Send __ROLE__ before renaming so Claudette updates its banner
+            SendToSocket(promoted, "__ROLE__:coder");
             renameRole(promoted, "coder");
-            AppendLog("System", promoted + " promoted to elder (coder)");
+            AppendLog("System", promoted + " promoted to elder (merit: " +
+                String(liveCandidates[0].uptimeSec) + "s uptime)");
 
-            // Renumber the rest contiguously
-            int slot = 2;
-            for (unsigned i = 1; i < liveNums.Size(); ++i)
+            // Notify the new elder via their new socket
+            SendToSocket("coder",
+                "[SUCCESSION] You (" + promoted +
+                ") are promoted to elder by merit (longest serving).");
+
+            // Transfer shared memory to the new elder
+            if (workboardDB_.IsOpen())
             {
-                String oldName = "coder" + String(liveNums[i]);
+                String memories = workboardDB_.GetAllMemories();
+                if (!memories.Empty())
+                    SendToSocket("coder", "[SHARED MEMORY]\n" + memories);
+            }
+
+            // Renumber the rest contiguously by uptime (next longest = coder2, etc.)
+            int slot = 2;
+            for (unsigned i = 1; i < liveCandidates.Size(); ++i)
+            {
+                String oldName = "coder" + String(liveCandidates[i].num);
                 String newName = "coder" + String(slot);
                 if (oldName != newName)
                 {
+                    SendToSocket(oldName, "__ROLE__:" + newName);
                     renameRole(oldName, newName);
                     AppendLog("System", oldName + " renumbered to " + newName);
                 }
@@ -3604,70 +3647,13 @@ void WorkboardManager::HandleUpdate(StringHash /*eventType*/, VariantMap& eventD
     {
         refreshAccumulator_ = 0.0f;
 
-        // Track mtime before reload to detect changes
-        auto* fs = GetSubsystem<FileSystem>();
-        String wbPath = GetClaudeDir() + "WORKBOARD.md";
-        unsigned oldMtime = lastWorkboardMtime_;
-        if (fs->FileExists(wbPath))
-            lastWorkboardMtime_ = fs->GetLastModifiedTime(wbPath);
-
         LoadWorkboard();
         ScanPlanFiles();
         RefreshInstanceStatus();
         SampleSystemStats();
-
-        // Push workboard to remote clients if it changed
-        if (lastWorkboardMtime_ != oldMtime && !wbClients_.Empty())
-            PushWorkboardToAllClients();
     }
 
-    // Reconciliation — every 60 seconds, compare DB vs markdown
-    if (workboardDB_.IsOpen())
-    {
-        reconcileAccumulator_ += timeStep;
-        if (reconcileAccumulator_ >= RECONCILE_INTERVAL)
-        {
-            reconcileAccumulator_ = 0.0f;
-
-            // Parse markdown fresh
-            String wbPath = GetClaudeDir() + "WORKBOARD.md";
-            auto* fs2 = GetSubsystem<FileSystem>();
-            if (fs2->FileExists(wbPath))
-            {
-                File mdFile(context_, wbPath, FILE_READ);
-                if (mdFile.IsOpen())
-                {
-                    unsigned sz = mdFile.GetSize();
-                    String mdContent;
-                    mdContent.Resize(sz);
-                    mdFile.Read(&mdContent[0], sz);
-                    mdFile.Close();
-
-                    Vector<WorkboardSection> mdSections;
-                    // Temporarily parse into local sections
-                    Vector<WorkboardSection> savedSections = sections_;
-                    ParseWorkboard(mdContent);
-                    mdSections = sections_;
-                    sections_ = savedSections;
-
-                    Vector<WorkboardDiscrepancy> discs = workboardDB_.Reconcile(mdSections);
-                    if (!discs.Empty())
-                    {
-                        URHO3D_LOGWARNINGF("WorkboardDB: %u discrepancies found, re-bootstrapping from markdown", discs.Size());
-                        for (unsigned d = 0; d < discs.Size(); ++d)
-                        {
-                            URHO3D_LOGWARNINGF("  %s [%s]: %s",
-                                discs[d].type == WorkboardDiscrepancy::MARKDOWN_ONLY ? "MARKDOWN_ONLY" : "DB_ONLY",
-                                discs[d].section.CString(), discs[d].taskName.CString());
-                        }
-                        workboardDB_.BootstrapFromSections(mdSections);
-                        // Force a reload from the freshly-synced DB
-                        lastWriteMtime_ = 0;
-                    }
-                }
-            }
-        }
-    }
+    // SQL is the sole authority — no markdown reconciliation.
 
     // ── Yuki training lump check ──
     trainingCheckAccumulator_ += timeStep;
@@ -3862,16 +3848,9 @@ void WorkboardManager::HandleClientAuthenticated(StringHash /*eventType*/, Varia
 
 void WorkboardManager::PushWorkboardToClient(Connection* conn)
 {
-    String wbPath = GetClaudeDir() + "WORKBOARD.md";
-    File file(context_, wbPath, FILE_READ);
-    if (!file.IsOpen())
+    String content = SerializeSectionsToMarkdown();
+    if (content.Empty())
         return;
-
-    unsigned size = file.GetSize();
-    String content;
-    content.Resize(size);
-    file.Read(&content[0], size);
-    file.Close();
 
     VariantMap data;
     data["Markdown"] = content;
@@ -3899,17 +3878,7 @@ void WorkboardManager::PushWorkboardToAllClients()
     if (wbClients_.Empty())
         return;
 
-    // Read workboard content once
-    String wbPath = GetClaudeDir() + "WORKBOARD.md";
-    File file(context_, wbPath, FILE_READ);
-    if (!file.IsOpen())
-        return;
-
-    unsigned size = file.GetSize();
-    String content;
-    content.Resize(size);
-    file.Read(&content[0], size);
-    file.Close();
+    String content = SerializeSectionsToMarkdown();
 
     VariantMap data;
     data["Markdown"] = content;
@@ -4054,17 +4023,11 @@ void WorkboardManager::SampleSystemStats()
 {
 #ifdef __linux__
     // ── CPU usage from /proc/stat ──
-    // Note: /proc is a virtual filesystem — Urho File reports size 0, so
-    // IsEof() is true immediately and ReadLine() returns empty.  Use fopen.
     {
-        FILE* procStat = fopen("/proc/stat", "r");
-        if (procStat)
+        File procStat(context_);
+        if (procStat.Open("/proc/stat", FILE_READ))
         {
-            char buf[512];
-            String line;
-            if (fgets(buf, sizeof(buf), procStat))
-                line = String(buf).Trimmed();
-            fclose(procStat);
+            String line = procStat.ReadLine().Trimmed();
 
             Vector<String> parts = line.Split(' ');
             // Split may produce empty strings from consecutive spaces — filter
@@ -4103,47 +4066,59 @@ void WorkboardManager::SampleSystemStats()
     {
         bool found = false;
         // Try AMD sysfs — scan card0..card7
-        // Note: sysfs is virtual like /proc — Urho File sees size 0.  Use fopen.
         for (int card = 0; card < 8 && !found; ++card)
         {
             String path = "/sys/class/drm/card" + String(card) + "/device/gpu_busy_percent";
-            FILE* gpuFile = fopen(path.CString(), "r");
-            if (gpuFile)
+            File gpuFile(context_);
+            if (gpuFile.Open(path, FILE_READ))
             {
-                char buf[32];
-                if (fgets(buf, sizeof(buf), gpuFile))
+                String val = gpuFile.ReadLine().Trimmed();
+                if (!val.Empty())
                 {
-                    String val(buf);
-                    val = val.Trimmed();
-                    if (!val.Empty())
-                    {
-                        if (gpuText_)
-                            gpuText_->SetText("GPU: " + val + "%");
-                        found = true;
-                    }
+                    if (gpuText_)
+                        gpuText_->SetText("GPU: " + val + "%");
+                    found = true;
                 }
-                fclose(gpuFile);
             }
         }
-        // Try NVIDIA via nvidia-smi
+        // Try NVIDIA via nvidia-smi — redirect to temp file, read with Urho File
         if (!found)
         {
-            FILE* pipe = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null", "r");
-            if (pipe)
+            auto* fs = GetSubsystem<FileSystem>();
+            if (fs)
             {
-                char buf[64];
-                if (fgets(buf, sizeof(buf), pipe))
+                String tmpPath = fs->GetTemporaryDir() + "urho_gpu_query.tmp";
+                int ret = fs->SystemCommand("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits > " + tmpPath + " 2>/dev/null");
+                if (ret == 0)
                 {
-                    String val(buf);
-                    val = val.Trimmed();
-                    if (!val.Empty() && val != "N/A")
+                    File tmpFile(context_);
+                    if (tmpFile.Open(tmpPath, FILE_READ))
                     {
-                        if (gpuText_)
-                            gpuText_->SetText("GPU: " + val + "%");
-                        found = true;
+                        String val = tmpFile.ReadLine().Trimmed();
+                        if (!val.Empty() && val != "N/A")
+                        {
+                            if (gpuText_)
+                                gpuText_->SetText("GPU: " + val + "%");
+                            found = true;
+                        }
                     }
                 }
-                pclose(pipe);
+                fs->Delete(tmpPath);
+            }
+        }
+        // Try Intel sysfs
+        if (!found)
+        {
+            File intelGpu(context_);
+            if (intelGpu.Open("/sys/class/drm/card0/gt/gt0/rps_act_freq_mhz", FILE_READ))
+            {
+                String val = intelGpu.ReadLine().Trimmed();
+                if (!val.Empty())
+                {
+                    if (gpuText_)
+                        gpuText_->SetText("GPU: " + val + " MHz");
+                    found = true;
+                }
             }
         }
         if (!found && gpuText_)
@@ -4151,26 +4126,23 @@ void WorkboardManager::SampleSystemStats()
     }
 
     // ── RAM from /proc/meminfo ──
-    // Note: Urho File reports size 0 for /proc virtual files, causing IsEof()
-    // to return true immediately. Use fopen/fgets for multi-line virtual files.
     {
-        FILE* memFile = fopen("/proc/meminfo", "r");
-        if (memFile)
+        File memFile(context_);
+        if (memFile.Open("/proc/meminfo", FILE_READ))
         {
             unsigned long long memTotal = 0, memAvail = 0, swapTotal = 0, swapFree = 0;
-            char buf[256];
-            while (fgets(buf, sizeof(buf), memFile))
+            while (!memFile.IsEof())
             {
-                if (strncmp(buf, "MemTotal:", 9) == 0)
-                    memTotal = strtoull(buf + 9, nullptr, 10);
-                else if (strncmp(buf, "MemAvailable:", 13) == 0)
-                    memAvail = strtoull(buf + 13, nullptr, 10);
-                else if (strncmp(buf, "SwapTotal:", 10) == 0)
-                    swapTotal = strtoull(buf + 10, nullptr, 10);
-                else if (strncmp(buf, "SwapFree:", 9) == 0)
-                    swapFree = strtoull(buf + 9, nullptr, 10);
+                String line = memFile.ReadLine();
+                if (line.StartsWith("MemTotal:"))
+                    memTotal = strtoull(line.CString() + 9, nullptr, 10);
+                else if (line.StartsWith("MemAvailable:"))
+                    memAvail = strtoull(line.CString() + 13, nullptr, 10);
+                else if (line.StartsWith("SwapTotal:"))
+                    swapTotal = strtoull(line.CString() + 10, nullptr, 10);
+                else if (line.StartsWith("SwapFree:"))
+                    swapFree = strtoull(line.CString() + 9, nullptr, 10);
             }
-            fclose(memFile);
 
             if (memTotal > 0)
             {

@@ -10630,8 +10630,8 @@ template <class T> void RegisterMembers_ProfilerUI(asIScriptEngine* engine, cons
     // void ProfilerUI::SetVisible(bool visible)
     engine->RegisterObjectMethod(className, "void SetVisible(bool)", AS_METHODPR(T, SetVisible, (bool), void), AS_CALL_THISCALL);
 
-    // void ProfilerUI::Update()
-    engine->RegisterObjectMethod(className, "void Update()", AS_METHODPR(T, Update, (), void), AS_CALL_THISCALL);
+    // void ProfilerUI::Update(float timeStep = 0.0f)
+    engine->RegisterObjectMethod(className, "void Update(float = 0.0f)", AS_METHODPR(T, Update, (float), void), AS_CALL_THISCALL);
 
     #ifdef REGISTER_MEMBERS_MANUAL_PART_ProfilerUI
         REGISTER_MEMBERS_MANUAL_PART_ProfilerUI();

@@ -136,7 +136,7 @@ URHO3D_EVENT(E_KEYEXCHANGEAUTH, KeyExchangeAuth)
 {
     URHO3D_PARAM(P_CONNECTION, Connection);        // Connection pointer
     URHO3D_PARAM(P_USERNAME, Username);            // String — username from client
-    URHO3D_PARAM(P_PASSWORDHASH, PasswordHash);    // Buffer — app fills with 32-byte BLAKE2b hash (out param)
+    URHO3D_PARAM(P_PASSWORDHASH, PasswordHash);    // Buffer — app fills with 32-byte hash (out param)
     URHO3D_PARAM(P_FOUND, Found);                  // bool — app sets true if user exists (out param)
 }
 

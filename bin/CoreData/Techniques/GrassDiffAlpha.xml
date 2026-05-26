@@ -1,1 +1,3 @@
-/home/leith/Desktop/URHO/New/urho3d-2.0.1/bin/CoreData/Techniques/GrassDiffAlpha.xml
+<technique vs="Grass" ps="Grass" vsdefines="DIFFMAP DENSITYMAP" psdefines="DIFFMAP ALPHAMASK HEIGHTFOG" >
+    <pass name="base" />
+</technique>

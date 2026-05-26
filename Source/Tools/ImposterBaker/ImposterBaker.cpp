@@ -65,6 +65,8 @@ bool ImposterBaker::ParseArgs()
             outputPrefix_ = args[++i];
         else if (arg == "-ltree" && i + 1 < args.Size())
             ltreeSpecies_ = args[++i].ToLower();
+        else if (arg == "-savemodel" && i + 1 < args.Size())
+            saveModelPath_ = args[++i];
     }
 
     if (modelPath_.Empty() && ltreeSpecies_.Empty())
@@ -128,6 +130,18 @@ void ImposterBaker::Start()
             return;
         }
         PrintLine("Generated L-system tree: " + ltreeSpecies_);
+
+        // Save model to disk if requested
+        if (!saveModelPath_.Empty())
+        {
+            File outFile(context_, saveModelPath_, FILE_WRITE);
+            if (model->Save(outFile))
+                PrintLine("Saved model: " + saveModelPath_);
+            else
+                PrintLine("ERROR: Failed to save model: " + saveModelPath_);
+            engine_->Exit();
+            return;
+        }
     }
     else
     {
@@ -292,6 +306,10 @@ SharedPtr<Model> ImposterBaker::GenerateLTree(SharedPtr<Material>& barkMat, Shar
         preset = LTreeGenerator::SheOak();
         barkTexPath = "Textures/Bark_TwistedTree.png";
         leafTexPath = "Textures/Leaf_Pine_C.png";
+    }
+    else if (ltreeSpecies_ == "fishingrod")
+    {
+        preset = LTreeGenerator::FishingRod();
     }
     else
         return nullptr;

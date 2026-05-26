@@ -349,6 +349,11 @@ ADD_ASSIMP_IMPORTER( B3D
   AssetLib/B3D/B3DImporter.h
 )
 
+ADD_ASSIMP_IMPORTER( URHO3D
+  AssetLib/Urho3D/Urho3DImporter.cpp
+  AssetLib/Urho3D/Urho3DImporter.h
+)
+
 ADD_ASSIMP_IMPORTER( BVH
   AssetLib/BVH/BVHLoader.cpp
   AssetLib/BVH/BVHLoader.h

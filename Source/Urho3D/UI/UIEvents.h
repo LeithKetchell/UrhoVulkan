@@ -80,6 +80,32 @@ URHO3D_EVENT(E_DOUBLECLICK, DoubleClick)
     URHO3D_PARAM(P_QUALIFIERS, Qualifiers);        // int
 }
 
+/// Global mouse triple click in the UI. Sent by the UI subsystem.
+URHO3D_EVENT(E_UIMOUSETRIPLECLICK, UIMouseTripleClick)
+{
+    URHO3D_PARAM(P_ELEMENT, Element);              // UIElement pointer
+    URHO3D_PARAM(P_X, X);                          // int
+    URHO3D_PARAM(P_Y, Y);                          // int
+    URHO3D_PARAM(P_XBEGIN, XBegin);                // int
+    URHO3D_PARAM(P_YBEGIN, YBegin);                // int
+    URHO3D_PARAM(P_BUTTON, Button);                // int
+    URHO3D_PARAM(P_BUTTONS, Buttons);              // int
+    URHO3D_PARAM(P_QUALIFIERS, Qualifiers);        // int
+}
+
+/// Mouse triple click on a UI element. Parameters are same as in UIMouseTripleClick event, but is sent by the element.
+URHO3D_EVENT(E_TRIPLECLICK, TripleClick)
+{
+    URHO3D_PARAM(P_ELEMENT, Element);              // UIElement pointer
+    URHO3D_PARAM(P_X, X);                          // int
+    URHO3D_PARAM(P_Y, Y);                          // int
+    URHO3D_PARAM(P_XBEGIN, XBegin);                // int
+    URHO3D_PARAM(P_YBEGIN, YBegin);                // int
+    URHO3D_PARAM(P_BUTTON, Button);                // int
+    URHO3D_PARAM(P_BUTTONS, Buttons);              // int
+    URHO3D_PARAM(P_QUALIFIERS, Qualifiers);        // int
+}
+
 /// Drag and drop test.
 URHO3D_EVENT(E_DRAGDROPTEST, DragDropTest)
 {

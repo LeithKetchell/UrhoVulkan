@@ -69,7 +69,7 @@ bool IndexBuffer::Create_Vulkan()
         return false;
 
     VulkanGraphicsImpl* impl = graphics->GetImpl_Vulkan();
-    if (!impl)
+    if (!impl || !impl->GetAllocator())
         return false;
 
     // Calculate buffer size

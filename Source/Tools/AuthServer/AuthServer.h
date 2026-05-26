@@ -69,6 +69,9 @@ public:
     void Start() override;
     void Stop() override;
 
+    /// Roll a single die with N sides (1..sides). Consumes from quantum entropy pool.
+    int DiceRoll(int sides);
+
 private:
     // Database
     void InitDatabase();
@@ -125,6 +128,7 @@ private:
         float warmth{15.0f};
         bool alive{true};
         float speedMult{1.0f};
+        float respawnTimer{0.0f};  // countdown to respawn (0 = not dead)
 
         // Last-sent vitals for delta detection (send-on-change)
         int sentHp{-1};
@@ -370,6 +374,33 @@ private:
     /// Phase 25: selective breeding — tamed animal pairs produce offspring.
     void TickBreeding(float dt);
     float breedingTimer_{0.0f};
+    // ── World Phenomena (Plan 10) ──────────────────────────────────────────────
+    /// Cached phenomenon rule from phenomena_rules table.
+    struct PhenomenonRule
+    {
+        int id;
+        String conditionType;   // FIRE_NEAR_ORE, SEED_ON_FERTILE, etc.
+        String resultType;
+        String visualHint;
+        String insightCategory;
+        int epochTierRequired;
+    };
+    Vector<PhenomenonRule> cachedPhenomena_;
+    /// Load phenomena_rules from GameDB at startup.
+    void CachePhenomenaRules();
+    /// Evaluate world conditions every 30s — fire vs ore, seeds vs fertility, etc.
+    void PhenomenaTick(float dt);
+    float phenomenaTickTimer_{0.0f};
+    static constexpr float PHENOMENA_TICK_INTERVAL = 30.0f;
+    /// Broadcast MSG_PHENOMENON to all authenticated clients within range.
+    void BroadcastPhenomenon(const Vector3& pos, int phenomenonType);
+    /// Radius within which clients receive a phenomenon broadcast.
+    static constexpr float PHENOMENA_BROADCAST_RADIUS = 100.0f;
+    /// Distance between fire pit and deposit for FIRE_NEAR_ORE detection.
+    static constexpr float FIRE_ORE_PROXIMITY = 15.0f;
+    /// Minimum fertility for SEED_ON_FERTILE (0-255 scale from ecosystem).
+    static constexpr unsigned char FERTILE_THRESHOLD = 180;
+
     /// Timer for periodic resource respawn ticks.
     float resourceRespawnTimer_{0.f};
     static constexpr float RESOURCE_RESPAWN_INTERVAL = 60.f;  // once per game-minute
@@ -441,6 +472,7 @@ private:
         STASK_DELIVER_FIRE, // Directed: carry fire to specific cold camp (chieftain/god order)
         STASK_CARRY_WATER,  // Carry water-filled vessel to allied camp with low waterReserve
         STASK_SHEAR,        // Shear tamed alpaca for wool (Animal Lore 2+)
+        STASK_WEAVE,        // Weave wool thread into cloth at Loom (Weaving 3+)
         STASK_WANDER,       // Short patrol near home
         STASK_IDLE          // Stand around (lowest priority)
     };
@@ -467,6 +499,7 @@ private:
         int regionId{0};              // owning region
         bool isPredator{false};
         bool isHuman{false};
+        bool isMale{true};
         int currentTask{STASK_IDLE};  // current high-level task
         Vector3 homePosition;         // spawn origin / campfire area
         float wanderRadius{25.0f};    // max distance from home for wander
@@ -575,6 +608,9 @@ private:
 
     /// Tick all tracked creature AI (called from HandleUpdate).
     void TickCreatureAI(float dt);
+    /// Accumulated dt for vitals evaluation (rate-based, not per-frame).
+    float vitalsTickAccum_{0.0f};
+    static constexpr float VITALS_TICK_INTERVAL = 2.0f;
     /// Push creature state to all authenticated clients.
     void BroadcastCreatureAIState(unsigned nodeId, const ServerCreatureAI& ai);
     /// Map spawnId → scene node for syncing AI positions to replicated nodes.
@@ -674,6 +710,7 @@ private:
     /// Get current darkness factor (0 = full daylight, 1 = deep night).
     /// Derived from UTC time at Melbourne latitude (-37.8).
     float GetDarkness() const;
+    float GetEffectiveTemperature() const;
 
     /// Server-side campfire / fire-pit state. Phase 3 promoted this from a
     /// pure NPC-AI helper into the authoritative pit entity. Client receives
@@ -892,6 +929,7 @@ private:
     void TransferKnowledge(unsigned deadSpawnId, const Vector3& position);
     /// Phase 25: Check tamed animal breeding conditions at each settlement.
     void CheckTamedBreeding();
+    void CheckWildBreeding();
     /// Phase 26: Build a dugout canoe at the waterside.
     bool NPCBuildBoat(ServerCreatureAI& ai);
     /// Phase 30: Generate a unique NPC name from syllable pool. Unique within settlement.
@@ -1118,8 +1156,12 @@ private:
     HashMap<unsigned, int> gpuPriorityCache_;
     HungerRules hungerRules_{};
     ThirstRules thirstRules_{};
+    WarmthRules warmthRules_{};
+    DeathRules deathRules_{};
     InventoryRules inventoryRules_{};
     bool survivalRulesLoaded_{false};
+    bool warmthRulesLoaded_{false};
+    bool deathRulesLoaded_{false};
     bool inventoryRulesLoaded_{false};
     float survivalTickTimer_{0.0f};
     static constexpr float SURVIVAL_TICK_INTERVAL = 1.0f;  // check every second, drain is rate-based
@@ -1175,6 +1217,30 @@ private:
     void SendTreesTo(Connection* connection);
     void SendFishSpawnsTo(Connection* connection);
     void SendSettlementClaimsTo(Connection* connection);
+
+    // Fish population tracking (Plan 1 Phase 4) — catch pressure per water body area.
+    // Key: approximate area index (position hashed to 64m grid cell).
+    // Value: cumulative catches in this cell. Decays slowly over time.
+    HashMap<unsigned, int> fishCatchPressure_;
+    float fishRecoveryTimer_{0.0f};
+    static constexpr float FISH_RECOVERY_INTERVAL = 60.0f;  // every 60s, decrement all counters
+    static constexpr int FISH_POP_CAPACITY = 15;             // assumed fish per area cell
+    /// Get spatial hash key for fish population tracking (64m grid).
+    unsigned GetFishAreaKey(float x, float z) const
+    {
+        int ix = (int)(x / 64.0f);
+        int iz = (int)(z / 64.0f);
+        return (unsigned)((ix & 0xFFFF) | ((iz & 0xFFFF) << 16));
+    }
+    /// Get population ratio for fishing timer scaling (1.0 = full, <1.0 = depleted).
+    float GetFishPopRatio(float x, float z) const
+    {
+        unsigned key = GetFishAreaKey(x, z);
+        auto it = fishCatchPressure_.Find(key);
+        int caught = (it != fishCatchPressure_.End()) ? it->second_ : 0;
+        int remaining = Max(FISH_POP_CAPACITY - caught, 2);  // min 2 — never fully depleted
+        return (float)remaining / (float)FISH_POP_CAPACITY;
+    }
     bool treesSpawned_{false};
     int nextTreeId_{1};
     HashMap<Connection*, WeakPtr<Node>> serverObjects_;
@@ -1311,6 +1377,14 @@ private:
     void BroadcastWeather(Connection* singleClient = nullptr);
     void SendWeatherToClient(Connection* connection);
 
+    // Celestial state (lunar ephemeris — server-authoritative)
+    void BroadcastCelestialState(Connection* singleClient = nullptr);
+    void SendCelestialToClient(Connection* connection);
+    float CalculateMoonAge() const;  ///< Synodic month position from real date (0..29.53)
+    bool IsLunarEclipse() const;     ///< True when sun-earth-moon alignment is close enough
+    float celestialBroadcastTimer_{0.0f};
+    static constexpr float CELESTIAL_BROADCAST_INTERVAL = 60.0f;  // every 60s
+
     SharedPtr<HttpRequest> bomObsRequest_;      // observations in-flight
     SharedPtr<HttpRequest> bomForecastRequest_;  // forecast in-flight
     String bomObsData_;
@@ -1339,8 +1413,11 @@ private:
     static constexpr float DROUGHT_WATER_DROP = 1.5f; // max water level drop at full severity
 
     /// Admin time override — god-level only. -1 = use wallclock.
-    float timeOverrideHour_{-1.0f};
-    int timeOverrideDOY_{-1};
+    float timeOverrideHour_{-1.0f};  // legacy, kept for compat
+    int timeOverrideDOY_{-1};        // legacy, kept for compat
+    /// UTC epoch override — privileged client sends their local UTC + scrub delta.
+    /// When >= 0, replaces time(nullptr) in all server time calculations.
+    long long utcEpochOverride_{-1};
     String weatherCondition_;  // "rain", "cloudy", "mostly_sunny", etc.
 
     // Water heightmap (server-authoritative, same resolution as terrain)
@@ -1397,4 +1474,48 @@ private:
     void HandleTerrainSync(Connection* connection, MemoryBuffer& msg);
     float journalTrimTimer_{0.0f};
     static constexpr float JOURNAL_TRIM_INTERVAL = 3600.0f;  // trim journals every hour
+
+    // ── Quantum Random Dice (ANU QRNG + /dev/urandom fallback) ──
+    /// Fetch a batch of true random uint16s from ANU quantum RNG API.
+    void FetchQuantumEntropy();
+    /// Process completed QRNG HTTP response and fill the pool.
+    void ProcessQRNGResponse();
+    /// Fill entropy pool from /dev/urandom (kernel entropy fallback).
+    void FillEntropyFromURandom(unsigned count);
+    /// Consume one uint16 from the entropy pool. Refills from urandom if empty.
+    unsigned short ConsumeEntropy();
+    /// Roll multiple dice and sum: e.g. RollDice(3, 6) = 3d6.
+    int RollDice(int numDice, int sides);
+    /// Roll 4d6, drop lowest — standard D&D stat generation.
+    int Roll4d6DropLowest();
+    /// Get current pool size (for diagnostics / GUI).
+    unsigned GetEntropyPoolSize() const { return entropyPoolSize_; }
+    /// Get entropy source label ("ANU QRNG" or "/dev/urandom").
+    const String& GetEntropySource() const { return entropySource_; }
+
+    /// Ring buffer of true random uint16 values.
+    static constexpr unsigned ENTROPY_POOL_CAPACITY = 2048;
+    unsigned short entropyPool_[ENTROPY_POOL_CAPACITY]{};
+    unsigned entropyPoolHead_{0};     ///< Next read position
+    unsigned entropyPoolSize_{0};     ///< Number of valid entries
+    /// Refill threshold — fetch more when pool drops below this.
+    static constexpr unsigned ENTROPY_REFILL_THRESHOLD = 256;
+    /// In-flight QRNG HTTP request.
+    SharedPtr<HttpRequest> qrngRequest_;
+    String qrngResponseData_;
+    /// Timer between QRNG fetch attempts (rate limit protection).
+    float qrngFetchTimer_{0.0f};
+    static constexpr float QRNG_FETCH_COOLDOWN = 30.0f;  // min 30s between API calls
+    /// Track entropy source for logging.
+    String entropySource_{"none"};
+    /// Total dice rolls served (diagnostic).
+    unsigned totalDiceRolls_{0};
+
+    // ── Claudette IPC (Unix domain socket) ──
+    void InitIPC();
+    void StopIPC();
+    void PollIPC();
+    String HandleIPCCommand(const String& message);
+    int ipcListenFd_{-1};
+    static constexpr const char* IPC_SOCK_PATH = "/tmp/urho_claude/tty/authserver.sock";
 };

@@ -17,10 +17,9 @@
 #include "../Network/NetworkEvents.h"
 #include "../Network/NetworkIdentity.h"
 #include "../Network/Protocol.h"
-#include "../Network/SodiumCipher.h"
+#include "../Network/Cipher.h"
+#include "../Network/SHA256.h"
 #include "../Scene/Scene.h"
-
-#include <libsodium/sodium.h>
 
 #include <slikenet/MessageIdentifiers.h>
 #include <slikenet/NatPunchthroughClient.h>
@@ -271,9 +270,13 @@ Network::~Network()
     delete natPunchServerAddress_;
     natPunchServerAddress_ = nullptr;
 
-    // Shutdown both peers before destroying — DestroyInstance on an active peer hangs
-    rakPeer_->Shutdown(300);
-    rakPeerClient_->Shutdown(300);
+    // Shutdown both peers before destroying — DestroyInstance on an active peer hangs.
+    // Only call Shutdown if the peer was actually started; idle peers don't need it
+    // and Shutdown() can block waiting for ACKs that will never come.
+    if (rakPeer_->IsActive())
+        rakPeer_->Shutdown(100);
+    if (rakPeerClient_->IsActive())
+        rakPeerClient_->Shutdown(100);
     SLNet::RakPeerInterface::DestroyInstance(rakPeer_);
     SLNet::RakPeerInterface::DestroyInstance(rakPeerClient_);
     rakPeer_ = nullptr;
@@ -799,6 +802,9 @@ void Network::HandleIncomingPacket(SLNet::Packet* packet, bool isServer)
     }
     else if (packetID == ID_CONNECTION_LOST || packetID == ID_DISCONNECTION_NOTIFICATION)
     {
+        URHO3D_LOGINFOF("[NetDebug] SLikeNet disconnect: %s from %s (isServer=%d)",
+            packetID == ID_CONNECTION_LOST ? "CONNECTION_LOST" : "DISCONNECTION_NOTIFICATION",
+            packet->systemAddress.ToString(), (int)isServer);
         // Check if this is a peer connection first
         bool wasPeer = false;
         for (auto it = peerConnections_.Begin(); it != peerConnections_.End(); ++it)
@@ -974,7 +980,6 @@ void Network::HandleIncomingPacket(SLNet::Packet* packet, bool isServer)
             }
             else
             {
-                // PAKE: decrypt failure on authenticated connection = wrong password
                 if (isServer && conn->IsPakeConnection() && !conn->IsPakeAuthenticated())
                 {
                     URHO3D_LOGERROR("Network: PAKE authentication failed for '" + conn->GetPakeUsername() + "' — wrong password, disconnecting");
@@ -986,7 +991,6 @@ void Network::HandleIncomingPacket(SLNet::Packet* packet, bool isServer)
                 {
                     URHO3D_LOGERROR("Network: Decryption failed — dropping packet");
                     packetHandled = true;
-                    // fall through to avoid processing garbage
                     msgLength = 0;
                 }
             }
@@ -1153,19 +1157,17 @@ void Network::OnServerConnected(const SLNet::AddressOrGUID& address)
     URHO3D_LOGINFO("Connected to server!");
 
     // Initiate key exchange before sending identity
-    SharedPtr<SodiumCipher> cipher(new SodiumCipher());
+    SharedPtr<Cipher> cipher(new Cipher());
     if (cipher->GenerateKeyPair())
     {
         serverConnection_->SetCipher(cipher);
 
-        // Send username (if PAKE) + public key to the server
         VectorBuffer keyMsg;
         keyMsg.WriteString(HasCredentials() ? pakeUsername_ : String::EMPTY);
         const auto& pubKey = cipher->GetPublicKey();
         keyMsg.Write(pubKey.Buffer(), pubKey.Size());
         serverConnection_->SendMessage(MSG_KEY_EXCHANGE, true, true, keyMsg);
 
-        // Defer identity until key exchange completes
         pendingIdentity_ = serverConnection_->GetIdentity();
         identityPending_ = true;
 
@@ -1175,7 +1177,6 @@ void Network::OnServerConnected(const SLNet::AddressOrGUID& address)
     }
     else
     {
-        // Key generation failed — fall back to plaintext
         URHO3D_LOGWARNING("Key pair generation failed — sending identity without encryption");
         VectorBuffer msg;
         msg.WriteVariantMap(serverConnection_->GetIdentity());
@@ -1200,18 +1201,10 @@ void Network::SendIdentityNow()
 
 void Network::SetCredentials(const String& username, const String& password)
 {
-    if (sodium_init() < 0)
-    {
-        URHO3D_LOGERROR("Network::SetCredentials: sodium_init() failed");
-        return;
-    }
-
     pakeUsername_ = username;
     pakePasswordHash_.Resize(32);
-    crypto_generichash(pakePasswordHash_.Buffer(), 32,
-        reinterpret_cast<const unsigned char*>(password.CString()), password.Length(),
-        nullptr, 0);
-
+    SHA256Hash(reinterpret_cast<const unsigned char*>(password.CString()), password.Length(),
+               pakePasswordHash_.Buffer());
     URHO3D_LOGINFO("Network: PAKE credentials set for user '" + username + "'");
 }
 
@@ -1220,7 +1213,7 @@ void Network::ClearCredentials()
     pakeUsername_.Clear();
     if (pakePasswordHash_.Size())
     {
-        sodium_memzero(pakePasswordHash_.Buffer(), pakePasswordHash_.Size());
+        memset(pakePasswordHash_.Buffer(), 0, pakePasswordHash_.Size());
         pakePasswordHash_.Clear();
     }
 }

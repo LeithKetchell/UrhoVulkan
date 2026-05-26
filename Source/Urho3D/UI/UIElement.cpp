@@ -527,6 +527,40 @@ void UIElement::SetPosition(int x, int y)
     SetPosition(IntVector2(x, y));
 }
 
+void UIElement::SetPosition(const Vector2& normalizedPosition)
+{
+    normalizedPosition_ = normalizedPosition;
+    normalizedCoordsSet_ = true;
+
+    if (parent_ && parent_->size_.x_ > 0 && parent_->size_.y_ > 0)
+    {
+        IntVector2 pixelPos(
+            (int)(normalizedPosition_.x_ * (float)parent_->size_.x_),
+            (int)(normalizedPosition_.y_ * (float)parent_->size_.y_)
+        );
+        applyingNormalized_ = true;
+        SetPosition(pixelPos);
+        applyingNormalized_ = false;
+    }
+}
+
+void UIElement::SetSize(const Vector2& normalizedSize)
+{
+    normalizedSize_ = normalizedSize;
+    normalizedCoordsSet_ = true;
+
+    if (parent_ && parent_->size_.x_ > 0 && parent_->size_.y_ > 0)
+    {
+        IntVector2 pixelSize(
+            (int)(normalizedSize_.x_ * (float)parent_->size_.x_),
+            (int)(normalizedSize_.y_ * (float)parent_->size_.y_)
+        );
+        applyingNormalized_ = true;
+        SetSize(pixelSize);
+        applyingNormalized_ = false;
+    }
+}
+
 void UIElement::SetSize(const IntVector2& size)
 {
     ++resizeNestingLevel_;
@@ -2052,6 +2086,60 @@ void UIElement::UpdateAnchoring()
             SetPosition(minOffset_);
         if (size_ != newSize)
             SetSize(newSize);
+    }
+}
+
+void UIElement::CaptureNormalizedCoords()
+{
+    if (parent_ && parent_->size_.x_ > 0 && parent_->size_.y_ > 0 && (size_.x_ > 0 || size_.y_ > 0))
+    {
+        normalizedPosition_.x_ = (float)position_.x_ / (float)parent_->size_.x_;
+        normalizedPosition_.y_ = (float)position_.y_ / (float)parent_->size_.y_;
+        normalizedSize_.x_ = (float)size_.x_ / (float)parent_->size_.x_;
+        normalizedSize_.y_ = (float)size_.y_ / (float)parent_->size_.y_;
+        normalizedCoordsSet_ = true;
+    }
+}
+
+void UIElement::ApplyNormalizedCoords()
+{
+    if (!normalizedCoordsSet_ || !parent_ || parent_->size_.x_ <= 0 || parent_->size_.y_ <= 0)
+        return;
+
+    // Skip elements managed by parent layout (their position/size is layout-driven)
+    if (parent_->layoutMode_ != LM_FREE)
+        return;
+
+    // Skip elements with anchor enabled (handled by UpdateAnchoring)
+    if (enableAnchor_)
+        return;
+
+    applyingNormalized_ = true;
+
+    IntVector2 newPos(
+        (int)(normalizedPosition_.x_ * (float)parent_->size_.x_),
+        (int)(normalizedPosition_.y_ * (float)parent_->size_.y_)
+    );
+    IntVector2 newSize(
+        (int)(normalizedSize_.x_ * (float)parent_->size_.x_),
+        (int)(normalizedSize_.y_ * (float)parent_->size_.y_)
+    );
+
+    if (newPos != position_)
+        SetPosition(newPos);
+    if (newSize != size_)
+        SetSize(newSize);
+
+    applyingNormalized_ = false;
+}
+
+void UIElement::PropagateParentResize()
+{
+    for (Vector<SharedPtr<UIElement>>::Iterator i = children_.Begin(); i != children_.End(); ++i)
+    {
+        UIElement* child = *i;
+        if (child->normalizedCoordsSet_)
+            child->ApplyNormalizedCoords();
     }
 }
 

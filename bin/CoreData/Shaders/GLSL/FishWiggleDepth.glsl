@@ -13,7 +13,7 @@ void VS()
     vec3 worldPos = GetWorldPos(modelMatrix);
 
     // Fish tail wiggle (must match FishWiggle.glsl)
-    float t = (iPos.z + 159.0) / 422.0;
+    float t = (iPos.z + 0.159) / 0.422;
     float ramp = smoothstep(cWiggleBodyStart, 1.0, t);
     float localFreq = cWiggleFrequency * (1.0 + 2.0 * t);
     float phase = cElapsedTime * localFreq + t * 6.283;

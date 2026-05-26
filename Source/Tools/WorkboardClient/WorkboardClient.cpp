@@ -280,7 +280,7 @@ void WorkboardClient::RegisterRemoteEvents()
     if (!network)
         return;
 
-    // All 9 remote events from WorkboardProtocol.h
+    // All 10 remote events from WorkboardProtocol.h
     network->RegisterRemoteEvent(E_WB_WELCOME);
     network->RegisterRemoteEvent(E_WB_WORKBOARD_FULL);
     network->RegisterRemoteEvent(E_WB_PLAN_LIST);
@@ -290,6 +290,7 @@ void WorkboardClient::RegisterRemoteEvents()
     network->RegisterRemoteEvent(E_WB_REQUEST_PLAN);
     network->RegisterRemoteEvent(E_WB_MUTATION);
     network->RegisterRemoteEvent(E_WB_SET_IDENTITY);
+    network->RegisterRemoteEvent(E_WB_INSTANCE_STATUS);
 }
 
 void WorkboardClient::StartDiscovery()
@@ -706,6 +707,21 @@ Vector<String> WorkboardClient::DiscoverCoderRoles()
     return roles;
 }
 
+bool WorkboardClient::IsYukiAlive()
+{
+    auto* fs = GetSubsystem<FileSystem>();
+    String pidPath = ipcDir_ + "instances/yuki.pid";
+    if (!fs->FileExists(pidPath))
+        return false;
+
+    File f(context_, pidPath);
+    if (!f.IsOpen())
+        return false;
+
+    int pid = atoi(f.ReadLine().Trimmed().CString());
+    return pid > 0 && IsProcessAlive(pid);
+}
+
 void WorkboardClient::RefreshInstanceStatus()
 {
     Vector<String> liveCoders = DiscoverCoderRoles();
@@ -782,6 +798,29 @@ void WorkboardClient::RefreshInstanceStatus()
         coderStatusDropdown_->SetSelection(prevSel);
     else if (coderStatusDropdown_->GetNumItems() > 0)
         coderStatusDropdown_->SetSelection(0);
+
+    // Report local instance liveness to Manager
+    if (connected_)
+    {
+        auto* network = GetSubsystem<Network>();
+        auto* conn = network ? network->GetServerConnection() : nullptr;
+        if (conn)
+        {
+            String coderRolesStr;
+            for (unsigned i = 0; i < knownCoderRoles_.Size(); ++i)
+            {
+                if (i > 0)
+                    coderRolesStr += ",";
+                coderRolesStr += knownCoderRoles_[i];
+            }
+
+            VariantMap data;
+            data[WbInstanceStatus::P_YUKI_ALIVE] = IsYukiAlive();
+            data[WbInstanceStatus::P_CODER_COUNT] = static_cast<int>(knownCoderRoles_.Size());
+            data[WbInstanceStatus::P_CODER_ROLES] = coderRolesStr;
+            conn->SendRemoteEvent(E_WB_INSTANCE_STATUS, true, data);
+        }
+    }
 }
 
 // ============================================================================

@@ -55,6 +55,9 @@ private:
     void HandleWbPlanContent(StringHash eventType, VariantMap& eventData);
     void HandleWbClientList(StringHash eventType, VariantMap& eventData);
     void HandleWbMutationAck(StringHash eventType, VariantMap& eventData);
+    /// Phase 2c: server-initiated graceful shutdown notice. Distinguishes a
+    /// planned server stop from a network drop or mutation failure.
+    void HandleWbServerShutdown(StringHash eventType, VariantMap& eventData);
 
     // Connection lifecycle
     void HandleServerConnected(StringHash eventType, VariantMap& eventData);
@@ -69,6 +72,7 @@ private:
 
     // ── Local instance tracking ──
     Vector<String> DiscoverCoderRoles();
+    bool IsYukiAlive();
     void RefreshInstanceStatus();
 
     // ── Helpers ──
@@ -100,6 +104,10 @@ private:
     float instanceRefreshTimer_{0.0f};
     static constexpr float INSTANCE_REFRESH_INTERVAL = 5.0f;
     String ipcDir_;
+
+    // ── Auto-spawn (doorkeeper) ──
+    float autoSpawnCooldown_{0.0f};
+    static constexpr float AUTO_SPAWN_COOLDOWN = 30.0f;
 
     // ── Mutation bar UI ──
     LineEdit* taskNameInput_{};

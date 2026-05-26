@@ -1519,6 +1519,29 @@ macro (setup_executable)
 
     check_source_files ()
     add_executable (${TARGET_NAME} ${ARG_UNPARSED_ARGUMENTS} ${SOURCE_FILES})
+
+    # Serialize link steps on UNIX to prevent concurrent link of the same target
+    # corrupting its output. safe_build.sh sets URHO_BUILD_SERIALIZED=1 at build
+    # time (it already holds a per-target flock); the wrapper detects this and
+    # becomes a no-op. Raw `make -j4 <target>` (disallowed by project rules, but
+    # still possible) is serialized by the wrapper's own flock.
+    #
+    # Uses CXX_LINKER_LAUNCHER (the documented mechanism) rather than
+    # RULE_LAUNCH_LINK (marked "internal use by ctest"). Launcher receives
+    # <linker> <args...> and re-exec's them after the optional flock.
+    # CMAKE_SOURCE_DIR is the overall top-level (Source/Samples/ and Source/Tools/
+    # each have their own project() calls that shift PROJECT_SOURCE_DIR, so we
+    # can't use STREQUAL PROJECT_SOURCE_DIR here). EXISTS gate is sufficient —
+    # downstream Urho3D users won't have the hook file and will skip.
+    if (UNIX)
+        set (_link_serialize "${CMAKE_SOURCE_DIR}/.claude/hooks/link_serialize.sh")
+        if (EXISTS "${_link_serialize}")
+            set_target_properties (${TARGET_NAME} PROPERTIES
+                CXX_LINKER_LAUNCHER "${_link_serialize};${TARGET_NAME}"
+                C_LINKER_LAUNCHER   "${_link_serialize};${TARGET_NAME}")
+        endif ()
+    endif ()
+
     set (RUNTIME_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
     if (ARG_PRIVATE)
         set_output_directories (. LOCAL RUNTIME PDB)
@@ -1539,6 +1562,17 @@ macro (setup_executable)
         list (APPEND TARGET_PROPERTIES XCODE_ATTRIBUTE_OTHER_LDFLAGS[arch=x86_64] "${LUAJIT_EXE_LINKER_FLAGS_APPLE} $(OTHER_LDFLAGS)")
     endif ()
     _setup_target ()
+
+    # Auto-resolve circular ThirdParty archive deps (needed when tools link external
+    # Vulkan-compute libs like llama.cpp that pull symbols across static archives).
+    # --start-group is a no-op when there are no circular deps, so existing tools are
+    # unaffected; only costs slightly slower link times on GNU ld.
+    if (URHO3D_LIB_TYPE STREQUAL STATIC AND NOT MSVC AND NOT APPLE)
+        file (GLOB_RECURSE _THIRDPARTY_LIBS "${CMAKE_BINARY_DIR}/Source/ThirdParty/lib*.a")
+        if (_THIRDPARTY_LIBS)
+            target_link_libraries (${TARGET_NAME} -Wl,--start-group ${_THIRDPARTY_LIBS} -Wl,--end-group)
+        endif ()
+    endif ()
 
     if (URHO3D_SCP_TO_TARGET)
         add_custom_command (TARGET ${TARGET_NAME} POST_BUILD COMMAND scp $<TARGET_FILE:${TARGET_NAME}> ${URHO3D_SCP_TO_TARGET} || exit 0

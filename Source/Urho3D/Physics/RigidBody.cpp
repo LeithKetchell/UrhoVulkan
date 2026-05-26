@@ -230,11 +230,20 @@ void RigidBody::DrawDebugGeometry(DebugRenderer* debug, bool depthTest)
 {
     if (debug && physicsWorld_ && body_ && IsEnabledEffective())
     {
+        // Kinematic bodies: Bullet's stored transform may be stale (only refreshed
+        // during simulation steps). Pull current node transform for accurate debug draw.
+        btTransform drawTransform = body_->getWorldTransform();
+        if (kinematic_ && node_)
+        {
+            drawTransform.setOrigin(ToBtVector3(node_->GetWorldPosition() + node_->GetWorldRotation() * centerOfMass_));
+            drawTransform.setRotation(ToBtQuaternion(node_->GetWorldRotation()));
+        }
+
         physicsWorld_->SetDebugRenderer(debug);
         physicsWorld_->SetDebugDepthTest(depthTest);
 
         btDiscreteDynamicsWorld* world = physicsWorld_->GetWorld();
-        world->debugDrawObject(body_->getWorldTransform(), shiftedCompoundShape_.get(), IsActive() ? btVector3(1.0f, 1.0f, 1.0f) :
+        world->debugDrawObject(drawTransform, shiftedCompoundShape_.get(), IsActive() ? btVector3(1.0f, 1.0f, 1.0f) :
             btVector3(0.0f, 1.0f, 0.0f));
 
         physicsWorld_->SetDebugRenderer(nullptr);

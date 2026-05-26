@@ -92,6 +92,8 @@ struct ConvexData : public CollisionGeometryData
     ConvexData(Model* model, i32 lodLevel);
     /// Construct from a custom geometry.
     explicit ConvexData(CustomGeometry* custom);
+    /// Construct from a raw vertex list.
+    explicit ConvexData(const Vector<Vector3>& vertices);
 
     /// Build the convex hull from vertices.
     void BuildHull(const Vector<Vector3>& vertices);
@@ -168,6 +170,9 @@ public:
         const Quaternion& rotation = Quaternion::IDENTITY);
     /// Set as a convex hull from CustomGeometry.
     void SetCustomConvexHull(CustomGeometry* custom, const Vector3& scale = Vector3::ONE, const Vector3& position = Vector3::ZERO,
+        const Quaternion& rotation = Quaternion::IDENTITY);
+    /// Set as a convex hull from a raw vertex list. For procedural geometry, bone clouds, etc.
+    void SetConvexHull(const Vector<Vector3>& vertices, const Vector3& scale = Vector3::ONE, const Vector3& position = Vector3::ZERO,
         const Quaternion& rotation = Quaternion::IDENTITY);
     /// Set as a triangle mesh from Model. If you update a model's geometry and want to reapply the shape, call physicsWorld->RemoveCachedGeometry(model) first.
     void SetGImpactMesh(Model* model, i32 lodLevel = 0, const Vector3& scale = Vector3::ONE, const Vector3& position = Vector3::ZERO,

@@ -1141,7 +1141,6 @@ void Water::HandleMenuButton(StringHash eventType, VariantMap& eventData)
 
     // Compute shaders
     case 240: RunErosion(erosionIterations_); break;
-    case 241: TestComputeShader(); break;
     }
 
     // Highlight selected mode/shape button
@@ -2386,15 +2385,15 @@ void Water::HandleImportModelChosen(StringHash eventType, VariantMap& eventData)
     String outputDir = fs->GetProgramDir() + "Data/Models/";
     String outputMdl = outputDir + baseName + ".mdl";
 
-    // Run AssetImporter
-    String toolPath = fs->GetProgramDir() + "tool/AssetImporter";
+    // Run AssetTool
+    String toolPath = fs->GetProgramDir() + "tool/AssetTool";
     String cmd = "\"" + toolPath + "\" model \"" + path + "\" \"" + outputMdl + "\" -t";
     URHO3D_LOGINFOF("Running: %s", cmd.CString());
 
     int result = fs->SystemCommand(cmd);
     if (result != 0)
     {
-        URHO3D_LOGERRORF("AssetImporter failed (exit code %d)", result);
+        URHO3D_LOGERRORF("AssetTool failed (exit code %d)", result);
         return;
     }
 
@@ -4326,9 +4325,6 @@ void Water::CreateFish()
         // Random facing
         fishNode->SetRotation(Quaternion(0.0f, Random(0.0f, 360.0f), 0.0f));
 
-        // Scale down — model is in centimetres (~423 units long), we want ~0.5m fish
-        fishNode->SetScale(0.001f);
-
         auto* sm = fishNode->CreateComponent<StaticModel>();
         sm->SetModel(fishModel, true);  // allowOversized=true
         sm->SetMaterial(fishMat);
@@ -4898,9 +4894,8 @@ void Water::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update(timeStep);
         profilerUI_->SetCameraPos(cameraNode_->GetWorldPosition());
-        profilerUI_->Update();
     }
 }
 
@@ -4977,69 +4972,6 @@ void Water::HandlePostRenderUpdate(StringHash eventType, VariantMap& eventData)
     auto* physics = scene_->GetComponent<PhysicsWorld>();
     if (physics)
         physics->DrawDebugGeometry(true);
-}
-
-void Water::TestComputeShader()
-{
-    auto* graphics = GetSubsystem<Graphics>();
-    auto* cache = GetSubsystem<ResourceCache>();
-
-    // Load the test compute shader
-    auto* shader = cache->GetResource<Shader>("Shaders/GLSL/TestCompute.glsl");
-    if (!shader)
-    {
-        URHO3D_LOGERROR("TestCompute: Failed to load TestCompute.glsl");
-        return;
-    }
-
-    ShaderVariation* cs = shader->GetVariation(CS, "");
-    if (!cs)
-    {
-        URHO3D_LOGERROR("TestCompute: Failed to get compute shader variation");
-        return;
-    }
-
-    // Create input buffer: 64 floats [1.0, 2.0, ... 64.0]
-    const unsigned NUM_FLOATS = 64;
-    float inputData[NUM_FLOATS];
-    for (unsigned i = 0; i < NUM_FLOATS; ++i)
-        inputData[i] = (float)(i + 1);
-
-    // Create output buffer: 64 floats initialized to zero
-    float outputData[NUM_FLOATS];
-    memset(outputData, 0, sizeof(outputData));
-
-    // Use VertexBuffers as SSBOs (they have STORAGE_BUFFER_BIT usage flag)
-    // Each "vertex" is one float (4 bytes) — use a single FLOAT element
-    Vector<VertexElement> elements;
-    elements.Push(VertexElement(TYPE_FLOAT, SEM_POSITION));
-
-    SharedPtr<VertexBuffer> inputBuffer(new VertexBuffer(context_));
-    inputBuffer->SetShadowed(true);
-    inputBuffer->SetSize(NUM_FLOATS, elements, false);
-    inputBuffer->SetData(inputData);
-
-    SharedPtr<VertexBuffer> outputBuffer(new VertexBuffer(context_));
-    outputBuffer->SetShadowed(true);
-    outputBuffer->SetSize(NUM_FLOATS, elements, false);
-    outputBuffer->SetData(outputData);
-
-    URHO3D_LOGINFO("TestCompute: Buffers created, dispatching compute shader...");
-
-    // Bind compute shader and storage buffers
-    graphics->SetComputeShader(cs);
-    graphics->SetStorageBuffer(0, inputBuffer);
-    graphics->SetStorageBuffer(1, outputBuffer);
-
-    // Dispatch: 1 group of 64 threads
-    graphics->DispatchCompute(1);
-
-    URHO3D_LOGINFO("TestCompute: Dispatch complete — check log for errors");
-
-    // Clean up
-    graphics->SetComputeShader(nullptr);
-    graphics->SetStorageBuffer(0, nullptr);
-    graphics->SetStorageBuffer(1, nullptr);
 }
 
 void Water::RunErosion(int iterations)

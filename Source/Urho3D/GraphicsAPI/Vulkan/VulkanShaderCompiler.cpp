@@ -293,6 +293,7 @@ static int GetSamplerBinding(const String& name)
     if (name == "sDetailMap2")          return 103;  // TU_SPECULAR
     if (name == "sDetailMap3")          return 104;  // TU_EMISSIVE
     if (name == "sWaterMap4")           return 105;  // TU_ENVIRONMENT
+    if (name == "sTramplingMap5")       return 120;  // Trampling overlay (unique binding)
     return -1;  // Unknown sampler — will use sequential fallback
 }
 
@@ -459,14 +460,46 @@ static String AddExplicitLayoutQualifiers(const String& source,
 #endif
         }
 
-        // NEW: Handle uniform block declarations (add unique binding)
-        // Match: "uniform BlockName" (opening of uniform block, not a sampler)
-        // Each uniform block gets a unique binding number
+        // Handle uniform block declarations (add binding qualifier)
+        // Named blocks from Uniforms.glsl get FIXED binding numbers to match GetUniformBlockInfo().
+        // Custom blocks (from CUSTOM_MATERIAL_CBUFFER shaders) get sequential bindings starting at 11.
         if (trimmed.StartsWith("uniform ") && !trimmed.Contains("sampler") &&
             !trimmed.Contains(";") && !trimmed.Contains("layout(binding"))
         {
-            // This is a uniform block opening - assign unique binding
-            line = "layout(binding = " + String(uniformBlockBinding++) + ", set = 0) " + trimmed;
+            // Extract block name: "uniform BlockName" or "uniform BlockName\n{"
+            String blockName = trimmed.Substring(8).Trimmed();
+            // Strip trailing '{' if on same line
+            if (blockName.EndsWith("{"))
+                blockName = blockName.Substring(0, blockName.Length() - 1).Trimmed();
+
+            // Fixed binding map — must match GetUniformBlockInfo() in Graphics_Vulkan.cpp
+            int fixedBinding = -1;
+            if (blockName == "FrameVS")    fixedBinding = 0;
+            else if (blockName == "CameraVS")   fixedBinding = 1;
+            else if (blockName == "ZoneVS")     fixedBinding = 2;
+            else if (blockName == "LightVS")    fixedBinding = 3;
+            else if (blockName == "MaterialVS") fixedBinding = 4;
+            else if (blockName == "ObjectVS")   fixedBinding = 5;
+            else if (blockName == "FramePS")    fixedBinding = 6;
+            else if (blockName == "CameraPS")   fixedBinding = 7;
+            else if (blockName == "ZonePS")     fixedBinding = 8;
+            else if (blockName == "LightPS")    fixedBinding = 9;
+            else if (blockName == "MaterialPS") fixedBinding = 10;
+
+            if (fixedBinding >= 0)
+            {
+                line = "layout(binding = " + String(fixedBinding) + ", set = 0) " + trimmed;
+                // Keep counter above all fixed bindings so custom blocks start at 11+
+                if (fixedBinding >= uniformBlockBinding)
+                    uniformBlockBinding = fixedBinding + 1;
+            }
+            else
+            {
+                // Unknown block (custom) — assign next available binding
+                if (uniformBlockBinding < 11)
+                    uniformBlockBinding = 11;  // Ensure custom blocks start at 11
+                line = "layout(binding = " + String(uniformBlockBinding++) + ", set = 0) " + trimmed;
+            }
 #if VULKAN_SHADER_DEBUG_LOGGING
 #endif
         }

@@ -47,7 +47,7 @@ private:
 
     // ── Workboard ──
     void LoadWorkboard();
-    void LoadWorkboardFromMarkdown();  ///< Fallback: parse markdown directly
+    String SerializeSectionsToMarkdown();
 
     // ── Workboard mutations (Manager is single authority) ──
     bool HandleWorkboardCommand(const String& message);
@@ -181,8 +181,6 @@ private:
     float refreshAccumulator_{};
     static constexpr float REFRESH_INTERVAL = 2.5f;
     unsigned lastWriteMtime_{0};
-    float reconcileAccumulator_{0.0f};
-    static constexpr float RECONCILE_INTERVAL = 60.0f;
 
     // ── Yuki training lump collection ──
     float trainingCheckAccumulator_{0.0f};
@@ -288,13 +286,20 @@ private:
     // ── Auto-spawn (doorkeeper) ──
     float autoSpawnCooldown_{60.0f};  // Grace period on startup — let existing instances re-register
     static constexpr float AUTO_SPAWN_COOLDOWN = 30.0f;
-    static constexpr unsigned MAX_LOCAL_CODERS = 4;
+    unsigned maxLocalCoders_{4};
+
+    // ── Coder cap UI ──
+    Button* coderCapMinusBtn_{};
+    Text* coderCapText_{};
+    Button* coderCapPlusBtn_{};
+    void HandleCoderCapMinus(StringHash eventType, VariantMap& eventData);
+    void HandleCoderCapPlus(StringHash eventType, VariantMap& eventData);
+    void UpdateCoderCapText();
 
     // ── Remote workboard sync (Phase 2a) ──
     HashMap<Connection*, WbClientInfo> wbClients_;
     String wbSecret_;
     unsigned char pakeSecretHash_[32]{};
     bool pakeSecretValid_{false};
-    unsigned lastWorkboardMtime_{0};
     unsigned lastPlanListHash_{0};
 };

@@ -295,7 +295,7 @@ void MultipleViewports::HandleUpdate(StringHash eventType, VariantMap& eventData
     // Update profiler display with culling diagnostics
     if (profilerUI_)
     {
-        GetSubsystem<Graphics>()->GetVulkanProfiler()->RecordFrame(timeStep);
+        profilerUI_->Update(timeStep);
 
         // Per-viewport culling stats
         auto* renderer = GetSubsystem<Renderer>();
@@ -329,8 +329,6 @@ void MultipleViewports::HandleUpdate(StringHash eventType, VariantMap& eventData
         stats += "UP n.y:" + String((int)(upPlane.normal_.y_ * 100)) + " DN n.y:" + String((int)(downPlane.normal_.y_ * 100)) + "\n";
         stats += "TestPt(20m fwd,y=0.5): " + String(testResult == INSIDE ? "IN" : "OUT");
         profilerUI_->SetCustomStats(stats);
-
-        profilerUI_->Update();
     }
 }
 

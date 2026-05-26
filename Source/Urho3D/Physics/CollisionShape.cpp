@@ -253,6 +253,11 @@ ConvexData::ConvexData(Model* model, i32 lodLevel)
     BuildHull(vertices);
 }
 
+ConvexData::ConvexData(const Vector<Vector3>& vertices)
+{
+    BuildHull(vertices);
+}
+
 ConvexData::ConvexData(CustomGeometry* custom)
 {
     const Vector<Vector<CustomGeometryVertex>>& srcVertices = custom->GetVertices();
@@ -685,6 +690,35 @@ void CollisionShape::SetCustomConvexHull(CustomGeometry* custom, const Vector3& 
     const Quaternion& rotation)
 {
     SetCustomShape(SHAPE_CONVEXHULL, custom, scale, position, rotation);
+}
+
+void CollisionShape::SetConvexHull(const Vector<Vector3>& vertices, const Vector3& scale, const Vector3& position,
+    const Quaternion& rotation)
+{
+    if (vertices.Empty())
+    {
+        URHO3D_LOGERROR("Empty vertex list, can not set convex hull shape");
+        return;
+    }
+
+    if (model_)
+        UnsubscribeFromEvent(model_, E_RELOADFINISHED);
+
+    // Build hull geometry from raw vertices
+    auto* convex = new ConvexData(vertices);
+
+    shapeType_ = SHAPE_CONVEXHULL;
+    model_.Reset();
+    lodLevel_ = 0;
+    size_ = scale;
+    position_ = position;
+    rotation_ = rotation;
+    customGeometryID_ = 0;
+    geometry_ = convex;
+
+    UpdateShape();
+    NotifyRigidBody();
+    MarkNetworkUpdate();
 }
 
 void CollisionShape::SetGImpactMesh(Model* model, i32 lodLevel, const Vector3& scale, const Vector3& position,
@@ -1133,6 +1167,11 @@ void CollisionShape::UpdateCachedGeometryShape(CollisionGeometryDataCache& cache
         assert(shape_);
         // Watch for live reloads of the collision model to reload the geometry if necessary
         SubscribeToEvent(model_, E_RELOADFINISHED, URHO3D_HANDLER(CollisionShape, HandleModelReloadFinished));
+    }
+    else if (geometry_)
+    {
+        // Pre-built geometry (e.g. from raw vertex list) — use directly
+        shape_.reset(CreateCollisionGeometryDataShape(shapeType_, geometry_.Get(), cachedWorldScale_ * size_));
     }
 }
 
