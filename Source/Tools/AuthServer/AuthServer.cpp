@@ -7913,6 +7913,36 @@ bool AuthServer::CraftForOwner(int playerId, int recipeId, const Vector3& positi
         " (roll " + String(roll) + "+" + String(craftSkill) +
         " vs DC " + String(dc) + ")");
 
+    // Spawn visual drop at crafter's position so crafted items appear in the world
+    {
+        ItemInfo outputItem;
+        if (gameDB_->GetItem(recipe.outputId, outputItem) && scene_ && !outputItem.model.Empty())
+        {
+            // Offset slightly forward and up from crafter
+            float angle = Random(6.2831853f);
+            Vector3 dropPos = position + Vector3(cosf(angle) * 0.8f, 0.3f, sinf(angle) * 0.8f);
+
+            // Snap Y to terrain if available
+            if (scene_->GetComponent<Terrain>())
+            {
+                float terrainY = scene_->GetComponent<Terrain>()->GetHeight(dropPos);
+                if (terrainY > 0.0f)
+                    dropPos.y_ = terrainY + 0.3f;
+            }
+
+            Node* craftNode = scene_->CreateChild("CraftedItem");
+            craftNode->SetPosition(dropPos);
+            craftNode->SetVar("ItemID", recipe.outputId);
+            craftNode->SetVar("ItemQty", recipe.outputQty);
+
+            auto* cache = GetSubsystem<ResourceCache>();
+            auto* sm = craftNode->CreateComponent<StaticModel>();
+            auto* model = cache->GetResource<Model>(outputItem.model);
+            if (model)
+                sm->SetModel(model);
+        }
+    }
+
     // Phase 30: record settlement firsts for NPC crafters
     if (playerId >= 10000)
     {

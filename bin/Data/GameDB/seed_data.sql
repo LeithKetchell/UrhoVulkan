@@ -992,11 +992,11 @@ UPDATE items SET model = 'Models/Weapons/Axe_Small.mdl'      WHERE id = 810;  --
 UPDATE items SET model = 'Models/Weapons/Spear.mdl'          WHERE id = 811;  -- Copper Spear
 
 -- Bronze Age
-UPDATE items SET model = 'Models/Weapons/Axe.mdl'            WHERE id = 812;  -- Bronze Axe
+UPDATE items SET model = 'Models/Megakit/Axe_Bronze.mdl'     WHERE id = 812;  -- Bronze Axe
 UPDATE items SET model = 'Models/Weapons/Spear.mdl'          WHERE id = 813;  -- Bronze Spear
-UPDATE items SET model = 'Models/Weapons/Sword.mdl'          WHERE id = 814;  -- Bronze Sword
+UPDATE items SET model = 'Models/Megakit/Sword_Bronze.mdl'   WHERE id = 814;  -- Bronze Sword
 UPDATE items SET model = 'Models/Weapons/Shield_Round.mdl'   WHERE id = 816;  -- Bronze Shield
-UPDATE items SET model = 'Models/Weapons/Dagger.mdl'         WHERE id = 817;  -- Bronze Knife
+UPDATE items SET model = 'Models/Megakit/Table_Knife.mdl'    WHERE id = 817;  -- Bronze Knife
 
 -- Iron Age
 UPDATE items SET model = 'Models/Weapons/Axe.mdl'            WHERE id = 820;  -- Iron Axe
@@ -1351,3 +1351,155 @@ INSERT OR IGNORE INTO items VALUES (915, 'Cauldron',         'container', 1, 8.0
 INSERT OR IGNORE INTO items VALUES (920, 'Bronze Pickaxe',   'tool',      1, 2.0,  40, 0, 'Models/Megakit/Pickaxe_Bronze.mdl',      NULL, 'Bronze-tipped pickaxe for mining.',          2);
 INSERT OR IGNORE INTO items VALUES (921, 'Market Stall',     'furniture', 1, 12.0, 60, 0, 'Models/Megakit/Stall_Empty.mdl',          NULL, 'Open market stall for trading.',             2);
 INSERT OR IGNORE INTO items VALUES (922, 'Market Cart',      'furniture', 1, 15.0, 80, 0, 'Models/Megakit/Stall_Cart_Empty.mdl',     NULL, 'Wheeled cart for mobile trade.',             2);
+
+-- ============================================================
+-- EPOCH PROGRESSION — Weapons & Tools from Asset Audit
+-- ============================================================
+
+-- Bronze Age tools (tier 3-4)
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, tier, model, description) VALUES
+(110, 'Bronze Saw',       'tool',   1, 1.5, 80,  4, 'Models/Tools/saw.mdl',       'Toothed bronze blade. Cuts planks twice as fast.'),
+(111, 'Bronze Tongs',     'tool',   1, 1.0, 100, 4, 'Models/Tools/tongs.mdl',     'Grip hot metal. Required for forge work.'),
+(112, 'Bronze Handplane', 'tool',   1, 1.0, 60,  4, 'Models/Tools/handplane.mdl', 'Shaves wood smooth. Fine woodwork.'),
+(113, 'Grindstone',       'tool',   1, 5.0, 200, 4, 'Models/Tools/grindstone.mdl','Sharpen blades. +1 attack to weapons sharpened here.');
+
+-- Iron Age tools (tier 5)
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, tier, model, description) VALUES
+(114, 'Iron Shovel',      'tool',   1, 2.0, 120, 5, 'Models/Tools/shovel.mdl',    'Digs faster and deeper than a stick. Mining and farming.'),
+(115, 'Iron File',        'tool',   1, 0.8, 100, 5, 'Models/Tools/file.mdl',      'Smooth rough edges. Finishing tool for metalwork.'),
+(116, 'Iron Shears',      'tool',   1, 0.6, 80,  5, 'Models/Tools/scissors.mdl',  'Cut cloth and shear wool faster.'),
+(117, 'Iron Lantern',     'tool',   1, 1.5, 200, 5, 'Models/Tools/lantern.mdl',   'Permanent enclosed flame. Wind and rain proof.'),
+(118, 'Iron Bucket',      'tool',   1, 2.0, 150, 5, 'Models/Tools/bucket_metal.mdl', 'Carry water or materials. Sturdy.'),
+(119, 'Iron Nails',       'material', 20, 0.1, 0, 5, 'Models/Tools/nail.mdl',     'Fasteners. Stronger joints for buildings and furniture.');
+
+-- Bronze Age weapons (tier 4)
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, tier, model, description) VALUES
+(207, 'Composite Bow',    'weapon', 1, 1.5, 80,  4, 'Models/Weapons/Bow_Wooden2.mdl', 'Laminated wood and sinew. Greater range and power.'),
+(208, 'Bronze Mace',      'weapon', 1, 2.5, 100, 4, 'Models/Weapons/Hammer_Small.mdl','Flanged bronze head. Crushes bone through armor.');
+
+-- Iron Age weapons (tier 5)
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, tier, model, description) VALUES
+(209, 'Iron Knife',       'weapon', 1, 0.8, 80,  5, 'Models/Weapons/Dagger_2.mdl',   'Hardened iron blade. Holds an edge longer.'),
+(210, 'Iron War Hammer',  'weapon', 1, 4.0, 120, 5, 'Models/Weapons/Hammer_Double.mdl','Double-headed iron. Shatters shields.'),
+(211, 'Iron Scythe',      'weapon', 1, 3.0, 100, 5, 'Models/Weapons/Scythe.mdl',     'Long curved blade. Harvest crops or cut down foes.');
+
+-- Steel Age weapons (tier 6)
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, tier, model, description) VALUES
+(212, 'Steel Greatsword', 'weapon', 1, 5.0, 150, 6, 'Models/Weapons/Sword_Big.mdl',  'Two-handed. Massive reach and damage. Slow.'),
+(213, 'Steel War Hammer', 'weapon', 1, 5.0, 160, 6, 'Models/Weapons/Hammer_Double.mdl','Steel-headed destroyer. Nothing survives a hit.');
+
+-- Legendary weapons (tier 7) — rare crafts or quest rewards
+INSERT OR IGNORE INTO items (id, name, category, stack_max, weight, durability, tier, model, description) VALUES
+(214, 'Golden Bow',       'weapon', 1, 1.5, 200, 7, 'Models/Weapons/Bow_Golden.mdl',  'Gold-inlaid masterwork. The finest ranged weapon.'),
+(215, 'Golden Sword',     'weapon', 1, 3.0, 200, 7, 'Models/Weapons/Sword_Golden.mdl','Gilded blade. Symbol of a chieftain.'),
+(216, 'Golden Shield',    'armor',  1, 6.0, 200, 7, 'Models/Weapons/Shield_Celtic_Golden.mdl', 'Ornate golden shield. Defense and prestige.'),
+(217, 'Iron Heater Shield','armor', 1, 5.5, 120, 5, 'Models/Weapons/Shield_Heater_2.mdl', 'Full-body iron shield. Superior coverage.');
+
+-- ============================================================
+-- COMBAT STATS — New weapons
+-- ============================================================
+
+-- Bronze Age
+INSERT OR IGNORE INTO combat_stats (item_id, attack_mod, damage, range, slot) VALUES
+(207,  4, 5, 35.0, 'hand'),   -- Composite Bow (better than basic bow)
+(208,  5, 8, 1.5,  'hand');   -- Bronze Mace (blunt, good vs armor)
+
+-- Iron Age
+INSERT OR IGNORE INTO combat_stats (item_id, attack_mod, damage, range, slot) VALUES
+(209,  6, 5, 1.0, 'hand'),    -- Iron Knife (fast)
+(210,  7, 11, 1.5, 'hand'),   -- Iron War Hammer (heavy hitter)
+(211,  5, 7, 2.5, 'hand');    -- Iron Scythe (reach weapon)
+
+-- Steel Age
+INSERT OR IGNORE INTO combat_stats (item_id, attack_mod, damage, range, slot) VALUES
+(212, 10, 14, 2.0, 'hand'),   -- Steel Greatsword (two-handed beast)
+(213,  9, 13, 1.5, 'hand');   -- Steel War Hammer
+
+-- Legendary
+INSERT OR IGNORE INTO combat_stats (item_id, attack_mod, damage, range, slot) VALUES
+(214,  8, 8, 40.0, 'hand'),   -- Golden Bow
+(215, 12, 15, 1.5, 'hand');   -- Golden Sword
+
+-- Shields (defense)
+INSERT OR IGNORE INTO combat_stats (item_id, defense_mod, slot) VALUES
+(216, 10, 'offhand'),          -- Golden Shield
+(217,  6, 'offhand');          -- Iron Heater Shield
+
+-- Two-handed flags
+UPDATE combat_stats SET two_handed = 1 WHERE item_id IN (212, 213);
+
+-- ============================================================
+-- RECIPES — Crafting paths for new items
+-- ============================================================
+
+-- Bronze Age tools (station_req 604 = Kiln)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, tool_req, station_req, tier, description) VALUES
+(176, 'Bronze Saw',       110, 1, 107, 604, 4, 'Toothed blade for cutting planks.'),
+(177, 'Bronze Tongs',     111, 1, 107, 604, 4, 'Grip hot metal safely.'),
+(178, 'Bronze Handplane', 112, 1, 107, 604, 4, 'Smooth wood surfaces.'),
+(179, 'Grindstone',       113, 1, 107, 0,   4, 'Sharpening wheel from stone and bronze.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity) VALUES
+(176, 806, 2), (176, 12, 1),   -- 2 bronze ingot + 1 plank
+(177, 806, 2),                  -- 2 bronze ingot
+(178, 806, 1), (178, 12, 1),   -- 1 bronze ingot + 1 plank
+(179, 1, 10), (179, 806, 1);   -- 10 rough stone + 1 bronze ingot
+
+-- Iron Age tools (station_req 81 = Forge)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, tool_req, station_req, tier, description) VALUES
+(180, 'Iron Shovel',      114, 1, 107, 81, 5, 'Dig deep. Mine fast.'),
+(181, 'Iron File',        115, 1, 107, 81, 5, 'Finishing tool for metalwork.'),
+(182, 'Iron Shears',      116, 1, 107, 81, 5, 'Cut cloth and shear wool.'),
+(183, 'Iron Lantern',     117, 1, 107, 81, 5, 'Enclosed flame. Windproof.'),
+(184, 'Iron Bucket',      118, 1, 107, 81, 5, 'Carry water or materials.'),
+(185, 'Iron Nails',       119, 10,107, 81, 5, 'Batch of nails from one ingot.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity) VALUES
+(180, 807, 2), (180, 12, 1),    -- 2 iron ingot + 1 plank
+(181, 807, 1),                   -- 1 iron ingot
+(182, 807, 1),                   -- 1 iron ingot
+(183, 807, 2), (183, 43, 1),    -- 2 iron ingot + 1 charcoal (for glass)
+(184, 807, 2),                   -- 2 iron ingot
+(185, 807, 1);                   -- 1 iron ingot → 10 nails
+
+-- Bronze Age weapons (station_req 604 = Kiln)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, tool_req, station_req, tier, description) VALUES
+(186, 'Composite Bow',    207, 1, 107, 0,   4, 'Laminated bow. Sinew-backed for power.'),
+(187, 'Bronze Mace',      208, 1, 107, 604, 4, 'Flanged head on a haft.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity) VALUES
+(186, 12, 2), (186, 20, 3), (186, 25, 2),  -- 2 plank + 3 sinew + 2 gut
+(187, 806, 3), (187, 2, 1);                 -- 3 bronze ingot + 1 stick
+
+-- Iron Age weapons (station_req 81 = Forge)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, tool_req, station_req, tier, description) VALUES
+(188, 'Iron Knife',       209, 1, 107, 81, 5, 'Hardened iron blade.'),
+(189, 'Iron War Hammer',  210, 1, 107, 81, 5, 'Double-headed iron hammer.'),
+(190, 'Iron Scythe',      211, 1, 107, 81, 5, 'Long curved harvesting blade.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity) VALUES
+(188, 807, 2), (188, 22, 1),                -- 2 iron ingot + 1 leather (grip)
+(189, 807, 4), (189, 11, 1),                -- 4 iron ingot + 1 log (haft)
+(190, 807, 3), (190, 2, 1);                 -- 3 iron ingot + 1 stick (handle)
+
+-- Steel Age weapons (station_req 81 = Forge)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, tool_req, station_req, tier, description) VALUES
+(191, 'Steel Greatsword', 212, 1, 107, 81, 6, 'Massive two-handed blade.'),
+(192, 'Steel War Hammer', 213, 1, 107, 81, 6, 'Steel-headed war hammer.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity) VALUES
+(191, 825, 5), (191, 22, 2),                -- 5 steel ingot + 2 leather (grip)
+(192, 825, 4), (192, 11, 1);                -- 4 steel ingot + 1 log (haft)
+
+-- Legendary weapons (station_req 81 = Forge, high tier)
+INSERT OR IGNORE INTO recipes (id, name, output_id, output_qty, tool_req, station_req, tier, description) VALUES
+(193, 'Golden Bow',       214, 1, 107, 81, 7, 'Gold-inlaid masterwork bow.'),
+(194, 'Golden Sword',     215, 1, 107, 81, 7, 'Gilded ceremonial blade.'),
+(195, 'Golden Shield',    216, 1, 107, 81, 7, 'Ornate golden shield.'),
+(196, 'Iron Heater Shield', 217, 1, 107, 81, 5, 'Full-body iron shield.');
+
+INSERT OR IGNORE INTO recipe_inputs (recipe_id, item_id, quantity) VALUES
+(193, 825, 2), (193, 803, 3), (193, 12, 2), (193, 20, 3),  -- 2 steel + 3 gold + 2 plank + 3 sinew
+(194, 825, 3), (194, 803, 5),                                -- 3 steel + 5 gold
+(195, 825, 3), (195, 803, 5), (195, 22, 2),                  -- 3 steel + 5 gold + 2 leather
+(196, 807, 4), (196, 22, 1);                                  -- 4 iron ingot + 1 leather
